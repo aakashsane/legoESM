@@ -266,7 +266,11 @@ classical:
   rrtmgp_gpoint_batch_size: 8
   param_init:
     atm.clouds.CloudConfig.rh_crit: 0.85
-    atm.clouds.CloudConfig.q_c_diagnostic: 5.0e-06
+    # 0.0, as in the MPAS production deck (cloud_q_c_diagnostic: 0.0): the
+    # diagnostic condensate floor exists to compensate for the closure liquid
+    # the partition now delivers, so leaving it on would make the clouds
+    # opaque twice. The driver's own validation refuses the pair.
+    atm.clouds.CloudConfig.q_c_diagnostic: 0.0
   param_fixed:
     atm.clouds.CloudConfig:
       cloud_optics_inhomogeneity: two_region
@@ -278,10 +282,26 @@ classical:
       saturation_scheme: mixed_phase
     atm.turb.CLUBBConfig:
       prognostic: true
+      # CAM6 clubb_intr: the closure's diagnosed liquid IS the host cloud
+      # water (seeded in, written back out), so the microphysics stops
+      # manufacturing its own. Matches the MPAS production deck's
+      # clubb_liquid_partition: true.
+      liquid_partition: true
     atm.micro.MorrisonConfig:
-      hard_saturation_adjustment: true
+      # CAM6 clubb_do_liqsupersat = .false.: no condensation step after the
+      # physics, and no ice-curve blend of it. Matches the MPAS production
+      # deck (config/amip/amip_production.yaml, both rows false).
+      hard_saturation_adjustment: false
+      # The other half of the partition: Morrison's own condensation branch
+      # is clamped off, since CLUBB now delivers the liquid.
+      liquid_from_closure: true
       homogeneous_ice_nucleation: true
       sed_cfl_substeps: true
       sed_cfl_substeps_max: 256
       sed_cfl_substeps_strict: false
   clubb_top_press_hpa: 150.0
+  # CAM6 namelist_defaults_cam.xml:1254 (mg2 + clubb_sgs): turbulence and
+  # microphysics run in sequence at dt/3 = 600 s inside each physics step,
+  # which is what lets the closure's liquid reach the microphysics within
+  # the step. Required by the liquid partition.
+  cld_macmic_num_steps: 3

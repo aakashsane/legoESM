@@ -258,6 +258,7 @@ _WB_SPECTRAL_KEYS = frozenset({
 # nested blocks (#1663 review: these were unvalidated, so a nested typo like
 # ``nn_hiden`` silently fell back to the default -- the inert-key defect class).
 _WB_CLASSICAL_KEYS = frozenset({
+    "cld_macmic_num_steps",
     "cloud", "clubb_top_press_hpa", "convection", "gwd", "microphysics",
     "convective_rain_to_surface", "orbital_insolation",
     "param_fixed", "param_init",
@@ -601,6 +602,13 @@ def _build_mode_components_spectral(cfg, yml):
         # 32-level arm sets 50 hPa — the diagnostic scheme's measured
         # stratospheric excursion lives 16-50 hPa there. A non-finite or
         # non-positive value is a config error, not a silent off-switch.
+        # CAM macro/micro sub-cycle count (CAM6 namelist cld_macmic_num_steps,
+        # 3 with mg2+clubb_sgs). 1 = the parallel accumulate, unchanged.
+        _macmic = int(_cl.get("cld_macmic_num_steps", 1))
+        if _macmic < 1:
+            raise ValueError(
+                "classical.cld_macmic_num_steps must be >= 1, got "
+                f"{_macmic!r}")
         _clubb_top_hpa = _cl.get("clubb_top_press_hpa")
         if _clubb_top_hpa is None:
             _clubb_top = None
@@ -650,7 +658,8 @@ def _build_mode_components_spectral(cfg, yml):
                     _cl.get("orbital_insolation", False)),
                 convective_rain_to_surface=bool(
                     _cl.get("convective_rain_to_surface", False)),
-                clubb_top_press=_clubb_top, **_schemes)
+                clubb_top_press=_clubb_top,
+                cld_macmic_num_steps=_macmic, **_schemes)
         # The sample's forcing carries ERA5 skin temperature and the scene's
         # real calendar.  It used to be dropped here: the surface then sat at
         # the lowest model level's own air temperature (zero sensible heat

@@ -1151,6 +1151,7 @@ def make_aimip_classical_spectral_physics(
     # no-op branch); the 32-level WB arm sets 5000 Pa (see CLUBBConfig
     # docstring).
     clubb_top_press: float | None = None,
+    cld_macmic_num_steps: int = 1,
     # Ablations that deliberately drop a family set this True; production
     # training does not (see validate_classical_scheme_set).
     allow_unfilled_families: bool = False,
@@ -1644,7 +1645,11 @@ def make_aimip_classical_spectral_physics(
             "(turbulence.scheme='clubb', diagnostic or prognostic); got "
             f"turbulence.scheme={turb_cfg.scheme!r} (cloud_scheme={cloud_scheme!r})."
         )
-    non_rad_raw = make_physics(non_rad_cfg, model_type="spectral_pe", dt=dt)
+    # CAM macro/micro sub-cycle: turbulence and microphysics run in sequence
+    # inside the non-radiative factory (radiation is split out and is a
+    # "once" module, so the split does not change the sub-cycle's meaning).
+    non_rad_raw = make_physics(non_rad_cfg, model_type="spectral_pe", dt=dt,
+                               cld_macmic_num_steps=cld_macmic_num_steps)
     rad_only_raw = make_radiation_physics(
         rad_cfg, "spectral_pe",
         sfc_albedo_override=_sfc_albedo_override,

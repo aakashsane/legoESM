@@ -527,7 +527,7 @@ def make_turbulence_physics(
             f"{model_type!r} pipeline has its own land tile (they would be "
             "silently inert here). Drop them or use model_type='mpas'."
         )
-    if model_type != "mpas":
+    if model_type not in ("mpas", "spectral_pe"):
         _sub = getattr(materialize_sub_config(turbulence_config),
                        turbulence_config.scheme, None)
         _srf = getattr(_sub, "surface", None)
@@ -542,6 +542,7 @@ def make_turbulence_physics(
         # vapour tendency that has had that liquid removed. Only the MPAS lane
         # routes it to a tracer today; dropping it on a lane that cannot would
         # destroy exactly that much water every step, silently. Refuse instead.
+        # (The spectral_pe bridge routes it too, so it is exempt above.)
         if _sub is not None and getattr(_sub, "liquid_partition", False):
             raise NotImplementedError(
                 "CLUBBConfig.liquid_partition returns a cloud-liquid tendency "
@@ -1314,6 +1315,23 @@ def _make_spectral_pe_turbulence(
     scheme_name, turb_fn, scheme_config = get_turbulence_fn(turbulence_config)
     needs_tke = turbulence_scheme_traits(scheme_name).carries_energy
     carry_field = turbulence_carry_field(scheme_name, scheme_config)
+    # CLUBB liquid partition (CAM clubb_intr): the closure is SEEDED with the
+    # host cloud liquid and returns its own diagnosed liquid as ``dq_c_dt``,
+    # paired with a vapour tendency that has had exactly that water removed.
+    # Both halves are routed below; the pair conserves total water and the
+    # condensation heating already rides ``dT_dt``. Static Python (build-time)
+    # so a state that cannot hold the pair is refused before any trace.
+    _liquid_partition = bool(getattr(scheme_config, "liquid_partition", False))
+    if _liquid_partition and carry_field != "clubb_moments":
+        # Only the prognostic closure takes the host liquid (clubb.py's
+        # ``clubb_turbulence_prognostic`` has the ``q_c`` argument; the
+        # diagnostic entry does not), so a diagnostic selection would seed
+        # nothing and write its rcm back over a tracer the closure never saw.
+        raise ValueError(
+            "CLUBBConfig.liquid_partition needs the PROGNOSTIC CLUBB closure "
+            "(CLUBBConfig.prognostic=True): the diagnostic entry point takes "
+            f"no host cloud liquid. Resolved carry={carry_field!r}, "
+            f"scheme={scheme_name!r}.")
     if carry_field == "qke":
         # MYNN-2.5 stays refused on this lane. The mechanism below is not
         # carry-specific, so it would probably work -- but "probably" is not a
@@ -1378,6 +1396,24 @@ def _make_spectral_pe_turbulence(
         # and its surface latent flux was evaluated against q_v = 0, i.e.
         # the largest moisture gradient the bulk formula can produce.
         # Clipped at zero on the way in, matching the microphysics bridge.
+        _qc_col = None
+        if _liquid_partition:
+            # BOTH halves, as on the MPAS bridge: the vapour block below
+            # substitutes zeros for a missing 'q_v', so a state carrying
+            # liquid but no vapour would evaporate liquid into a tendency
+            # nothing applies -- water destroyed, silently.
+            _missing = [n for n in ("q_v", "q_c")
+                        if state.tracers is None or n not in state.tracers]
+            if _missing:
+                raise ValueError(
+                    "CLUBBConfig.liquid_partition exchanges water between the "
+                    f"vapour and liquid tracers, and {_missing} is not carried "
+                    "by this spectral state. Both must exist, or the half that "
+                    "is missing is destroyed. Carry them, or switch the "
+                    "partition off.")
+            _qc_raw = state.tracers["q_c"]
+            _qc_col = (_qc_raw.data if hasattr(_qc_raw, "data")
+                       else _qc_raw).reshape(ncol, nlev)
         if state.tracers is not None and "q_v" in state.tracers:
             _qv_raw = state.tracers["q_v"]
             _qv_data = _qv_raw.data if hasattr(_qv_raw, "data") else _qv_raw
@@ -1422,18 +1458,20 @@ def _make_spectral_pe_turbulence(
                     "select diagnostic CLUBB.")
             tke_in = _read_turb_carry(
                 phys_state, carry_field, ncol, nlev, scheme_config, _state_dtype)
+            _liq_kw = {"q_c": _qc_col} if _liquid_partition else {}
             turb_out, tke_new = turb_fn(
                 u_col, v_col, T_col, q_v_col, tke_in,
                 p_full_col, p_half_col, z_full, z_half,
-                T_sfc, q_sfc, rho, dt, step_config,
+                T_sfc, q_sfc, rho, dt, step_config, **_liq_kw,
             )
             tke_out = tke_new
         else:
             # No land-flux hand-over on this lane (see the hydrostatic closure).
+            _liq_kw = {"q_c": _qc_col} if _liquid_partition else {}
             turb_out = turb_fn(
                 u_col, v_col, T_col, q_v_col,
                 p_full_col, p_half_col, z_full, z_half,
-                T_sfc, q_sfc, rho, dt, step_config,
+                T_sfc, q_sfc, rho, dt, step_config, **_liq_kw,
             )
 
         # Reshape tendencies to grid space
@@ -1477,10 +1515,23 @@ def _make_spectral_pe_turbulence(
         tracers_tend = None
         if state.tracers is not None:
             dq_v_dt = turb_out.dq_v_dt.reshape(n_lat, n_lon, nlev)
+            if _liquid_partition and turb_out.dq_c_dt is None:
+                raise ValueError(
+                    "CLUBBConfig.liquid_partition is on but the closure "
+                    "returned no cloud-liquid tendency (dq_c_dt is None); the "
+                    "vapour tendency has already had that liquid removed, so "
+                    "routing only the vapour half would destroy it.")
+            dq_c_dt = (turb_out.dq_c_dt.reshape(n_lat, n_lon, nlev)
+                       if _liquid_partition else None)
             tracers_tend = {}
             for name, template in state.tracers.items():
                 if name == "q_v":
                     arr = dq_v_dt
+                elif name == "q_c" and dq_c_dt is not None:
+                    # Paired with the vapour tendency above: together they
+                    # conserve total water, so this must land wherever that
+                    # one did.
+                    arr = dq_c_dt
                 elif hasattr(template, "data"):
                     arr = jnp.zeros_like(template.data)
                 else:

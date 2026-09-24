@@ -890,7 +890,7 @@ class PhysicsPipeline:
         ``step_multilayer_land`` with the pipeline's land config / per-column params.
         Pure + differentiable w.r.t. the land params (the whole point of the refactor).
         Deferred land imports avoid a core->land top-level cross-package cycle."""
-        from legoesm.core.coupling_fields import AtmToSurface
+        from legoesm.core.coupling_fields import AtmToSurface, lowest_level_height
         from legoesm.land.multilayer_land import step_multilayer_land
         from legoesm.thermo import saturation_mixing_ratio
         ad = self.adapter
@@ -907,6 +907,9 @@ class PhysicsPipeline:
         # a shared faithful-zenith upgrade for those is a separate follow-up).
         _cosz = cos_zenith_col if cos_zenith_col is not None else 0.5 * ones
         forcing = AtmToSurface(
+            z_lowest=lowest_level_height(
+                T_air, self.sigma_coord.pressure_at_half(p_s_col),
+                self.sigma_coord.pressure_at_full(p_s_col)),
             sw_down=sw_down_col, lw_down=lw_down_col, precip_total=precip,
             precip_snow=jnp.where(T_air < constants.T_freeze, precip, 0.0),
             T_lowest=T_air, q_lowest=q_air, u_lowest=u_low, v_lowest=v_low,
@@ -4114,16 +4117,24 @@ def _resolve_microphysics(config):
     _hs_thr = getattr(config, "hard_sat_adjust_threshold", None)
     _hs_cap = getattr(config, "hard_sat_max_heating_K", None)
     _hom_nuc = bool(getattr(config, "homogeneous_ice_nucleation", False))
-    if _hs_thr is not None or _hs_cap is not None or _hom_nuc:
-        from legoesm.atmosphere.physics.microphysics.config import (
-            apply_microphysics_experiment_flags,
-        )
-        micro_config = apply_microphysics_experiment_flags(
-            micro_config, scheme,
-            hard_sat_adjust_threshold=_hs_thr,
-            hard_sat_max_heating_K=_hs_cap,
-            homogeneous_ice_nucleation=_hom_nuc,
-        )
+    # Second half of the CLUBB liquid partition; see the MPAS call site.
+    _liq_closure = bool(config._liquid_partition_resolved())
+    # Called UNCONDITIONALLY.  The clearing assignment inside the helper is
+    # what stops a microphysics override that already carries
+    # liquid_from_closure=True from reaching a built model with no liquid
+    # source; gating the call on the other flags being set left exactly that
+    # leak standing (GLM).  All-None / all-False is a no-op on every other
+    # knob, so this is free.
+    from legoesm.atmosphere.physics.microphysics.config import (
+        apply_microphysics_experiment_flags,
+    )
+    micro_config = apply_microphysics_experiment_flags(
+        micro_config, scheme,
+        hard_sat_adjust_threshold=_hs_thr,
+        hard_sat_max_heating_K=_hs_cap,
+        homogeneous_ice_nucleation=_hom_nuc,
+        liquid_from_closure=_liq_closure,
+    )
 
     # Morrison ice-process tunables (flat ``morrison_*`` ExperimentConfig
     # scalars, declared with "MorrisonConfig.<field>" comments but NEVER
@@ -4183,6 +4194,36 @@ def apply_surface_flux_config(tc, config):
     stc = getattr(config, "surface_thermo_convention", "legoesm")
     sss = getattr(config, "surface_stability_scheme", "dyer1974")
     zml = getattr(config, "surface_z_ref_model_level", None)
+
+    # #1783: the unified land-flux law pins the reference height OFF.
+    #
+    # The height correction tells the MOST solver the real height of the lowest
+    # full level (~135 m instead of a nominal 10 m) and brings the air down
+    # dry-adiabatically, ~1.5 K.  Against the unified land interface that
+    # manufactures an air-surface contrast that is not there: with it on, five
+    # tests of TestUnifiedLaneOneFluxLaw fail with sensible heat at
+    # -1.13 .. -7.94 W/m^2 where the blended law wants +43.6 .. -16.9, i.e. a
+    # downward flux out of nothing.  Forcing it off takes that class to 7
+    # passed and the whole module to 29 passed -- measured, one constructor
+    # field, job 9946756.
+    #
+    # Only when the run does not state it.  An explicit request is never
+    # silently inverted; the two settings genuinely disagree, so asking for
+    # both is refused rather than resolved behind the caller's back.
+    if getattr(config, "land_interface_flux", None) == "unified":
+        if zml is None:
+            zml = False
+        elif bool(zml):
+            raise ValueError(
+                "land_interface_flux='unified' with "
+                "surface_z_ref_model_level=True is not a supported "
+                "combination (#1783): the lowest-level height correction "
+                "invents an air-surface contrast that the unified flux law "
+                "then debits, producing a downward sensible heat flux out of "
+                "nothing. Set surface_z_ref_model_level=False or leave it "
+                "unset (the unified lane pins it off), or select a different "
+                "land_interface_flux."
+            )
     _qsal_req = getattr(config, "surface_ocean_q_sfc_saline", None)
     # None = "on wherever the lane can honour it".  CAPABILITY, not grid: the
     # sea-water surface humidity needs a path that separates the ocean from
@@ -4343,6 +4384,27 @@ def turbulence_config_for(config):
             )
             tc = materialize_sub_config(tc)
             tc = tc._replace(clubb=tc.clubb._replace(prognostic=True))
+        # CLUBB's two-sided cloud-liquid exchange with the host (CAM
+        # clubb_intr.F90).  Same threading and the same refusal as the flag
+        # above, plus a prognostic requirement: the liquid the closure writes
+        # back is the POST-ADVANCE PDF's rcm, which only the prognostic path
+        # produces from advanced moments.
+        if getattr(config, "clubb_liquid_partition", False):
+            if tc.scheme != "clubb":
+                raise ValueError(
+                    f"clubb_liquid_partition=True requires turbulence='clubb', "
+                    f"got {tc.scheme!r}. The exchanged liquid is the CLUBB PDF's "
+                    f"own rcm; no other closure diagnoses one.")
+            if not getattr(config, "clubb_prognostic", False):
+                raise ValueError(
+                    "clubb_liquid_partition=True requires clubb_prognostic=True: "
+                    "the liquid handed back is the post-advance PDF closure's "
+                    "rcm, which the diagnostic path does not produce.")
+            from legoesm.atmosphere.physics.turbulence.integration import (
+                materialize_sub_config,
+            )
+            tc = materialize_sub_config(tc)
+            tc = tc._replace(clubb=tc.clubb._replace(liquid_partition=True))
         # CLUBB's upper domain limit (CAM ``trop_cloud_top_press``), same
         # threading and the same refusal as the prognostic flag.  None (default)
         # => byte-identical: the scheme's own 0.0 (off) stands.
@@ -4438,6 +4500,20 @@ def turbulence_config_for(config):
                 f"{getattr(_sub, 'prognostic', None)!r}). The override is "
                 "authoritative, so set CLUBBConfig(prognostic=True) inside it "
                 "rather than relying on the experiment-level flag.")
+    if getattr(config, "clubb_liquid_partition", False):
+        # Same refusal, and it matters more here: swallowing this one silently
+        # would run a deck that asked for the liquid exchange with the closure
+        # still throwing its liquid away, which looks exactly like the defect
+        # the lever exists to remove.
+        _sub = getattr(tc, "clubb", None)
+        if tc.scheme != "clubb" or _sub is None or not _sub.liquid_partition:
+            raise ValueError(
+                "clubb_liquid_partition=True but an explicit turbulence_override "
+                "is in force and does not select it (override "
+                f"scheme={tc.scheme!r}, liquid_partition="
+                f"{getattr(_sub, 'liquid_partition', None)!r}). The override is "
+                "authoritative, so set CLUBBConfig(liquid_partition=True) inside "
+                "it rather than relying on the experiment-level flag.")
     if getattr(config, "clubb_q_flux_scale", None) is not None:
         # Same reason as the prognostic refusal above, and the same rule as
         # validate_strict: the override is authoritative, so the

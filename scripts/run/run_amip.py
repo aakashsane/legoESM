@@ -157,6 +157,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="cam_l32 = CAM6's 32-level hybrid table (nlev must be 32)")
     parser.add_argument("--p-top", type=float, default=None)
     parser.add_argument("--stretching", type=float, default=None)
+    parser.add_argument("--transition-exponent", type=int, default=None,
+                        choices=[2, 3],
+                        help="hybrid B(eta)=eta**n exponent. 3 (default) carries "
+                             "NEGATIVE layer mass below 664 hPa, i.e. above ~3450 m "
+                             "of orography -- 0.92%% of the planet by area. 2 moves "
+                             "that to ~498 hPa / ~5870 m and covers all of ETOPO, at "
+                             "the cost of different level placement (#1029).")
     # ``mpas`` is the canonical name for the SCVT Voronoi mesh + TRiSK
     # discretization (Ringler 2010 / Thuburn 2009), matching the ocean
     # side which has always used this name.  Legacy aliases
@@ -901,6 +908,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "sub-grid variance the cloud PDF otherwise has to "
                              "guess. Requires --turbulence clubb. Default off "
                              "= the diagnostic path (byte-identical).")
+    parser.add_argument("--clubb-liquid-partition", dest="clubb_liquid_partition",
+                        action=argparse.BooleanOptionalAction, default=False,
+                        help="Let CLUBB exchange CLOUD LIQUID with the host, as "
+                             "CAM does: the closure's total water carries the "
+                             "existing cloud water in, and its own diagnosed "
+                             "liquid is written back to the condensate tracer "
+                             "instead of being returned as vapour. Without it "
+                             "the host takes its cloud FRACTION from CLUBB and "
+                             "its cloud WATER from a tracer CLUBB never wrote, "
+                             "and the two disagree. Requires --turbulence clubb "
+                             "and --clubb-prognostic. Default off = the "
+                             "historical bridge (byte-identical).")
     parser.add_argument("--cloud-p-xr", dest="cloud_p_xr", type=float, default=None,
                         help="Xu-Randall cloud-fraction RH exponent p_xr (None="
                              "default 0.25; bounds 0.05..1.0). HIGHER => cloud "
@@ -2185,6 +2204,8 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         vertical_coord=args.vertical_coord,
         p_top_Pa=args.p_top if args.p_top is not None else 200.0,
         stretching=args.stretching if args.stretching is not None else 2.0,
+        transition_exponent=(args.transition_exponent
+                             if args.transition_exponent is not None else 3),
         tropopause_refine=(args.tropopause_refine
                            if args.tropopause_refine is not None else 1.0),
         sigma_top=(args.sigma_top if args.sigma_top is not None else 0.01),
@@ -2330,6 +2351,7 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         cloud_scheme=args.clouds,
         use_clubb_cloud_fraction=args.use_clubb_cloud_fraction,
         clubb_prognostic=args.clubb_prognostic,
+        clubb_liquid_partition=args.clubb_liquid_partition,
         clubb_trop_cloud_top_press=args.clubb_trop_cloud_top_press,
         clubb_q_flux_scale=args.clubb_q_flux_scale,
         clubb_q_flux_scale_sigma_band=(tuple(args.clubb_q_flux_scale_sigma_band)

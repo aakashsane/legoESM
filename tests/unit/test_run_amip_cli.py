@@ -307,7 +307,7 @@ def test_multilayer_land_accepted_on_mpas():
     (VoronoiMesh had no lat/lat2d) is retired — setup now reads latCell."""
     parser = build_arg_parser()
     args = _postprocess_args(parser.parse_args([
-        "--dataset", "analytical",
+        "--dataset", "analytical", "--land-mask-file", "land_mask.nc",
         "--grid-type", "mpas", "--discretization", "mpas",
         "--use-multilayer-land",
     ]), parser)
@@ -618,7 +618,7 @@ def test_land_surface_scheme_flag_flows_to_config():
     # not here — single-point CLM-ML runs today via run_lmip).
     cfg_clm = build_config_from_args(_postprocess_args(parser.parse_args([
         "--dataset", "analytical", "--land-surface-scheme", "clm_ml",
-        "--use-multilayer-land",
+        "--use-multilayer-land", "--land-mask-file", "lsm.nc",
     ]), parser))
     assert cfg_clm.land_surface_scheme == "clm_ml"
     cfg_clm.validate_strict()  # must not raise
@@ -1162,7 +1162,7 @@ def test_surface_tiled_flags_flow_to_config():
     and validate together with --slab-land-active + --turbulence louis."""
     parser = build_arg_parser()
     args = parser.parse_args([
-        "--dataset", "analytical",
+        "--dataset", "analytical", "--land-mask-file", "land_mask.nc",
         "--turbulence", "louis",
         "--surface-bulk-scheme", "coare3",
         "--slab-land-active",
@@ -1211,7 +1211,7 @@ def test_surface_tiled_accepts_flux_consuming_schemes(scheme):
     CLUBB family (clubb routes it through clubb_step's kinematic interface)."""
     parser = build_arg_parser()
     args = parser.parse_args([
-        "--dataset", "analytical",
+        "--dataset", "analytical", "--land-mask-file", "land_mask.nc",
         "--turbulence", scheme,
         "--surface-bulk-scheme", "coare3",
         "--slab-land-active",
@@ -1228,7 +1228,7 @@ def test_soil_bucket_flags_flow_to_config():
     and validate together with an active land tile."""
     parser = build_arg_parser()
     args = parser.parse_args([
-        "--dataset", "analytical",
+        "--dataset", "analytical", "--land-mask-file", "land_mask.nc",
         "--turbulence", "louis",
         "--slab-land-active",
         "--land-soil-bucket",
@@ -1257,7 +1257,7 @@ def test_infiltration_params_reject_nan_and_negative():
     a bare ``x < 0`` would let NaN slip through and poison the infiltration cap)."""
     parser = build_arg_parser()
     args = _postprocess_args(parser.parse_args(
-        ["--dataset", "analytical", "--slab-land-active", "--land-soil-bucket"]),
+        ["--dataset", "analytical", "--land-mask-file", "land_mask.nc", "--slab-land-active", "--land-soil-bucket"]),
         parser)
     base = build_config_from_args(args)
     assert base.validate_strict() is None          # baseline is valid
@@ -1295,7 +1295,7 @@ def test_land_stomatal_beta_flag_flows_to_config():
     """--land-stomatal-beta round-trips and validates with the bucket on."""
     parser = build_arg_parser()
     args = parser.parse_args([
-        "--dataset", "analytical",
+        "--dataset", "analytical", "--land-mask-file", "land_mask.nc",
         "--turbulence", "louis",
         "--slab-land-active",
         "--land-soil-bucket",
@@ -2150,6 +2150,28 @@ def test_config_yaml_round_trips_authoritative_values():
     assert cfg.convective_cloud is False
     assert cfg.surface_gustiness_zi == 300.0
     assert cfg.convective_precip_efficiency == pytest.approx(0.8)
+    # User table 2026-09-24, "production now, matches CAM6", three rows set
+    # EXPLICITLY so nothing rests on a code default (the defaults are the
+    # opposite of all three): the closure's liquid handed to cloud water; the
+    # post-step supersaturation drain off (CAM clubb_do_liqsupersat=.false.);
+    # and the drain's ice-curve blend off.  Plus the two floors the partition's
+    # own guard forces to zero.  Pinned THROUGH the driver on every config the
+    # lever reaches, because a row that lands on ExperimentConfig but not on
+    # the nested scheme config would report success while changing nothing.
+    assert cfg.clubb_liquid_partition is True
+    assert cfg.hard_saturation_adjustment is False
+    assert cfg.hard_sat_ice_curve is False
+    assert cfg.cloud_q_c_diagnostic == 0.0
+    assert cfg.cloud_conv_cloud_condensate == 0.0
+    from legoesm.driver.physics_pipeline import (
+        _resolve_microphysics, turbulence_config_for,
+    )
+    from legoesm.atmosphere.physics.turbulence.integration import (
+        materialize_sub_config,
+    )
+    assert materialize_sub_config(
+        turbulence_config_for(cfg)).clubb.liquid_partition is True
+    assert _resolve_microphysics(cfg)[1].liquid_from_closure is True
 
 
 def test_sundqvist_l36_deck_still_round_trips():
@@ -2179,6 +2201,23 @@ def test_sundqvist_l36_deck_still_round_trips():
     assert cfg.surface_bulk_scheme == "coare3"
     assert cfg.cloud_rh_crit == pytest.approx(0.85)
     assert cfg.cloud_q_c_diagnostic == pytest.approx(5e-6)
+    # This deck RUNS PROGNOSTIC CLUBB, so the 2026-09-24 three-row decision
+    # could reach it -- it must not.  The campaign pair's pre-registration
+    # rests on this deck resolving to the OPPOSITE of all three rows, through
+    # the driver, on every config the lever reaches.
+    assert cfg.turbulence == "clubb" and cfg.clubb_prognostic is True
+    assert cfg.clubb_liquid_partition is False
+    assert cfg.hard_saturation_adjustment is True
+    assert cfg.hard_sat_ice_curve is True
+    from legoesm.driver.physics_pipeline import (
+        _resolve_microphysics, turbulence_config_for,
+    )
+    from legoesm.atmosphere.physics.turbulence.integration import (
+        materialize_sub_config,
+    )
+    assert materialize_sub_config(
+        turbulence_config_for(cfg)).clubb.liquid_partition is False
+    assert _resolve_microphysics(cfg)[1].liquid_from_closure is False
 
 
 def test_config_yaml_explicit_cli_flag_overrides_file():
@@ -4346,3 +4385,83 @@ def test_clubb_trop_cloud_top_press_validate_strict_bounds_and_scheme():
     with pytest.raises(ValueError, match="CLUBB field"):
         base._replace(turbulence="louis",
                       clubb_trop_cloud_top_press=15000.0).validate_strict()
+
+
+def test_clubb_liquid_partition_flag_reaches_the_turbulence_kernel():
+    """--clubb-liquid-partition must round-trip AND reach the nested config.
+
+    Same two halves as the prognostic flag: a lever that lands on
+    ``ExperimentConfig`` but never on the CLUBB sub-config would report success
+    while the closure kept throwing its liquid away.
+    """
+    from legoesm.driver.physics_pipeline import turbulence_config_for
+    from legoesm.atmosphere.physics.turbulence.integration import (
+        materialize_sub_config,
+    )
+
+    parser = build_arg_parser()
+    cfg_off = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert cfg_off.clubb_liquid_partition is False
+
+    cfg_on = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical",
+        "--turbulence", "clubb",
+        "--clubb-prognostic",
+        "--clubb-liquid-partition",
+    ]), parser))
+    assert cfg_on.clubb_liquid_partition is True
+    assert turbulence_config_for(cfg_on).clubb.liquid_partition is True
+
+    # ... and the default really is the other value on the same lane, so the
+    # assertion above cannot pass by the sub-config defaulting True.
+    cfg_plain = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--turbulence", "clubb",
+        "--clubb-prognostic",
+    ]), parser))
+    plain_tc = materialize_sub_config(turbulence_config_for(cfg_plain))
+    assert plain_tc.clubb.liquid_partition is False
+
+
+def test_clubb_liquid_partition_requires_clubb_and_the_prognostic_path():
+    """The exchanged liquid is the POST-ADVANCE PDF's rcm.
+
+    Only CLUBB diagnoses one, and only the prognostic path advances the moments
+    it is computed from, so both are hard requirements rather than hints.
+    """
+    import pytest
+    from legoesm.driver.physics_pipeline import turbulence_config_for
+
+    parser = build_arg_parser()
+    wrong_closure = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--turbulence", "louis",
+        "--clubb-liquid-partition",
+    ]), parser))
+    with pytest.raises(ValueError, match="requires turbulence='clubb'"):
+        turbulence_config_for(wrong_closure)
+
+    diagnostic = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--turbulence", "clubb",
+        "--clubb-liquid-partition",
+    ]), parser))
+    with pytest.raises(ValueError, match="requires clubb_prognostic=True"):
+        turbulence_config_for(diagnostic)
+
+
+def test_fv3_duo_kessler_reaches_the_config_and_the_wall():
+    """``--microphysics kessler`` on the duo argv reaches the config and
+    passes the lane's default-deny wall (Kessler alone is the one routed
+    scheme); a second active scheme next to it is still refused."""
+    from legoesm.driver.component_factory import _refuse_fv3_duo_non_default
+    cfg = _fv3_duo_cfg(["--microphysics", "kessler"])
+    assert cfg.microphysics == "kessler"
+    cfg.validate_strict()
+    _refuse_fv3_duo_non_default(cfg)
+    cfg = _fv3_duo_cfg(["--microphysics", "kessler", "--turbulence", "louis"])
+    _refuse_fv3_duo_non_default(cfg)          # the wall allows the field...
+    from legoesm.driver.component_factory import create_atmosphere_dycore
+    from legoesm.grids.cubed_sphere import create_cubed_sphere
+    from legoesm.grids.vertical import create_sigma_coordinate
+    with pytest.raises(ValueError, match="silently inert"):   # ...the guard does not
+        create_atmosphere_dycore(cfg, create_cubed_sphere(12),
+                                 create_sigma_coordinate(5))

@@ -604,11 +604,9 @@ def _build_mode_components_spectral(cfg, yml):
         # non-positive value is a config error, not a silent off-switch.
         # CAM macro/micro sub-cycle count (CAM6 namelist cld_macmic_num_steps,
         # 3 with mg2+clubb_sgs). 1 = the parallel accumulate, unchanged.
-        _macmic = int(_cl.get("cld_macmic_num_steps", 1))
-        if _macmic < 1:
-            raise ValueError(
-                "classical.cld_macmic_num_steps must be >= 1, got "
-                f"{_macmic!r}")
+        # Passed through RAW: make_physics refuses a bool, a non-integer and
+        # < 1, and an int() here would turn 3.9 into 3 and true into 1.
+        _macmic = _cl.get("cld_macmic_num_steps", 1)
         _clubb_top_hpa = _cl.get("clubb_top_press_hpa")
         if _clubb_top_hpa is None:
             _clubb_top = None

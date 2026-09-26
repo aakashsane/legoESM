@@ -1567,6 +1567,7 @@ def make_aimip_classical_spectral_physics(
             physics_config, model_type="spectral_pe", dt=dt,
             sfc_albedo_override=_sfc_albedo_override,
             sfc_emissivity_override=_sfc_emissivity_override,
+            cld_macmic_num_steps=cld_macmic_num_steps,
         )
 
         def combined_fn(state, grid_, sigma_coord):

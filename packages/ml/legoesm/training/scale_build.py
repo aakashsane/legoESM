@@ -431,7 +431,7 @@ def _spectral_pe_config(yml):
     )
 
 
-def _build_mode_components_spectral(cfg, yml):
+def _build_mode_components_spectral(cfg, yml, column_mesh=None):
     """Spectral (Gaussian + semi-implicit) training-core components (#817).
 
     Same 7-tuple contract as the lat-lon path, with the rollout routed through
@@ -659,7 +659,8 @@ def _build_mode_components_spectral(cfg, yml):
                 convective_rain_to_surface=bool(
                     _cl.get("convective_rain_to_surface", False)),
                 clubb_top_press=_clubb_top,
-                cld_macmic_num_steps=_macmic, **_schemes)
+                cld_macmic_num_steps=_macmic, column_mesh=column_mesh,
+                **_schemes)
         # The sample's forcing carries ERA5 skin temperature and the scene's
         # real calendar.  It used to be dropped here: the surface then sat at
         # the lowest model level's own air temperature (zero sensible heat
@@ -841,8 +842,12 @@ def check_surface_drag_confound(yml, mode, training_core):
             f"equalised comparison (#1464).")
     return None
 
-def build_mode_components(cfg, yml):
-    """Return (model, grid, sigma, params, make_run_seg, loss_config, dt) for cfg.mode."""
+def build_mode_components(cfg, yml, column_mesh=None):
+    """Return (model, grid, sigma, params, make_run_seg, loss_config, dt) for cfg.mode.
+
+    ``column_mesh`` shards the radiation solve across devices; spectral
+    classical mode only.
+    """
     import jax
 
     from legoesm.driver.model_driver import ModelDriver
@@ -857,8 +862,13 @@ def build_mode_components(cfg, yml):
     if note:
         import logging
         logging.getLogger("scale_build").warning("CONFOUNDED RUN: %s", note)
+    if column_mesh is not None and (
+            core != "spectral" or getattr(cfg, "mode", None) != "physics"):
+        raise ValueError(
+            "column sharding is wired only for training_core='spectral', "
+            f"mode='physics'; got core={core!r} mode={getattr(cfg, 'mode', None)!r}")
     if core == "spectral":
-        return _build_mode_components_spectral(cfg, yml)
+        return _build_mode_components_spectral(cfg, yml, column_mesh)
     if core != "latlon":
         raise ValueError(
             f"unknown training_core {core!r}; choose 'latlon' (explicit "

@@ -1166,6 +1166,7 @@ def make_aimip_classical_spectral_physics(
     rrtmgp_gpoint_checkpoint: bool = True,
     rrtmgp_gpoint_batch_size: int = 16,
     rrtmgp_column_chunk_size: int = 0,
+    column_mesh=None,
 ):
     """Build a SpectralPE physics function for the AIMIP classical variant.
 
@@ -1563,6 +1564,10 @@ def make_aimip_classical_spectral_physics(
     # so the caller can dispatch through the simple
     # ``spectral_rollout(state, physics_fn, ...)`` branch.
     if not split_rad:
+        if column_mesh is not None:
+            raise ValueError(
+                "column_mesh is wired only on the split-radiation path "
+                "(split_rad=True)")
         combined_raw = make_physics(
             physics_config, model_type="spectral_pe", dt=dt,
             sfc_albedo_override=_sfc_albedo_override,
@@ -1655,6 +1660,7 @@ def make_aimip_classical_spectral_physics(
         sfc_albedo_override=_sfc_albedo_override,
         sfc_emissivity_override=_sfc_emissivity_override,
         use_clubb_cloud_fraction=rad_cfg.use_clubb_cloud_fraction,
+        column_mesh=column_mesh,
     )
 
     def non_rad_fn(state, grid_, sigma_coord, phys_state=None, forcing=None):

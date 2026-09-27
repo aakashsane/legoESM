@@ -58,6 +58,9 @@ class ScaleConfig(NamedTuple):
     warmup_steps: int | None = None
     # Held-out windows scored after every epoch (0 = no validation pass).
     n_val_windows: int = 0
+    # >0: ONE sample per step, its columns split over this many GPUs (all
+    # processes of the job form one mesh). 0 = one sample per MPI rank.
+    column_devices: int = 0
 
 
 # Scenes used for the POST-TRAINING reachability report.  A subsample, not the
@@ -580,7 +583,16 @@ def build_scale_config_from_args(argv=None) -> ScaleConfig:
     p.add_argument("--resume", action="store_true")
     p.add_argument("--eval-wb2", action="store_true")
     p.add_argument("--smoke", action="store_true")
+    p.add_argument("--column-devices", type=int, default=0,
+                   dest="column_devices",
+                   help="Split each sample's columns over this many GPUs "
+                        "(one process per node, all local GPUs visible). "
+                        "Every process trains the same single sample per "
+                        "step; no MPI data parallelism. 0 (default) = one "
+                        "sample per MPI rank, as before.")
     a = p.parse_args(argv)
+    if a.column_devices < 0:
+        raise SystemExit(f"--column-devices must be >= 0, got {a.column_devices}")
     # --mode is already restricted by argparse ``choices=VALID_MODES`` (exits 2
     # on an unknown value), so no manual membership guard is needed here.
     if a.n_epochs is not None and a.n_epochs < 1:
@@ -597,6 +609,7 @@ def build_scale_config_from_args(argv=None) -> ScaleConfig:
         warmup_steps=a.warmup_steps, n_val_windows=a.n_val_windows,
         out_dir=a.out_dir, resume=a.resume, eval_wb2=a.eval_wb2, smoke=a.smoke,
         training_core=a.training_core, n_days=a.n_days,
+        column_devices=a.column_devices,
     )
 
 
@@ -620,6 +633,69 @@ def _check_resolution_matches_yaml(cfg: ScaleConfig, yml: dict) -> float:
             f"grid comes from the YAML; edit n_lat/n_lon (and nlev) there "
             f"instead of passing --resolution.")
     return cfg.resolution_deg
+
+
+def _init_column_mesh(n_devices: int):
+    """Join every process of the job into one ``n_devices`` column mesh.
+
+    Must run before JAX touches a backend.  One process per node: JAX's SLURM
+    auto-detection would otherwise give each process ONE local GPU.
+    """
+    import os
+
+    import jax
+    from legoesm.parallel.column_shard import create_column_mesh
+
+    n_proc = int(os.environ.get("SLURM_NTASKS", "1"))
+    if n_devices % n_proc:
+        raise SystemExit(f"--column-devices {n_devices} is not a multiple of "
+                         f"the {n_proc} processes")
+    if n_proc > 1:
+        jax.distributed.initialize(
+            local_device_ids=list(range(n_devices // n_proc)))
+    if jax.device_count() != n_devices:
+        raise SystemExit(f"--column-devices {n_devices} but JAX sees "
+                         f"{jax.device_count()} devices over "
+                         f"{jax.process_count()} processes")
+    return create_column_mesh(n_devices)
+
+
+def _column_placers(mesh, n_lat: int, ncol: int):
+    """``(place_sample, place_replicated, replicate_in_trace)`` for ``mesh``.
+
+    Sample leaves whose leading axis is latitude or column are split over the
+    mesh; everything else, and every parameter, is replicated.
+    """
+    import jax
+    import numpy as np
+    from jax.sharding import NamedSharding, PartitionSpec as P
+    from legoesm.parallel.mesh import multiprocess_safe_device_put
+
+    rep = NamedSharding(mesh, P())
+
+    def _spec(x):
+        shape = np.shape(x)
+        if shape and shape[0] in (n_lat, ncol):
+            return NamedSharding(mesh, P("col", *((None,) * (len(shape) - 1))))
+        return rep
+
+    def place_sample(tree):
+        return jax.tree.map(lambda x: multiprocess_safe_device_put(x, _spec(x)),
+                            tree)
+
+    def place_replicated(tree):
+        return jax.tree.map(
+            lambda x: multiprocess_safe_device_put(x, rep)
+            if isinstance(x, (jax.Array, np.ndarray)) else x, tree)
+
+    def replicate_in_trace(tree):
+        # The transpose of a sharding constraint applies it to the cotangent,
+        # so this also makes the GRADIENT come out replicated.
+        return jax.tree.map(
+            lambda x: jax.lax.with_sharding_constraint(x, rep)
+            if isinstance(x, jax.Array) else x, tree)
+
+    return place_sample, place_replicated, replicate_in_trace
 
 
 def _mpi_rank_size():
@@ -731,7 +807,17 @@ def _main(argv=None):
         mpi_data_parallel_training_loop,
     )
 
-    rank, nproc = _mpi_rank_size()
+    column_mesh = None
+    if cfg.column_devices:
+        if cfg.n_val_windows or cfg.eval_wb2:
+            raise SystemExit("--column-devices is not wired for --val-windows "
+                             "or --eval-wb2")
+        column_mesh = _init_column_mesh(cfg.column_devices)
+        # One logical trainer: every process loads the SAME samples and the
+        # SPMD program already returns the global gradient.
+        rank, nproc = jax.process_index(), 1
+    else:
+        rank, nproc = _mpi_rank_size()
     logging.basicConfig(level=logging.INFO if rank == 0 else logging.WARNING)
     log = logging.getLogger("wb_scale")
 
@@ -766,7 +852,18 @@ def _main(argv=None):
     #  (reuses the same package builders run_aimip_latlon uses; the mode differs
     #   only in the make_run_seg factory, per training_driver._build_train_step)
     from legoesm.training.scale_build import build_mode_components  # thin adapter (below)
-    model, grid, sigma, params, make_run_seg, loss_config, dt = build_mode_components(cfg, yml)
+    model, grid, sigma, params, make_run_seg, loss_config, dt = build_mode_components(
+        cfg, yml, column_mesh=column_mesh)
+    place_sample, place_rep, _in_trace_rep = True, None, None
+    if column_mesh is not None:
+        _n_lat, _n_lon = int(grid.n_lat), int(grid.n_lon)
+        if _n_lat % cfg.column_devices:
+            raise SystemExit(f"n_lat={_n_lat} is not divisible by "
+                             f"--column-devices {cfg.column_devices}")
+        place_sample, place_rep, _in_trace_rep = _column_placers(
+            column_mesh, _n_lat, _n_lat * _n_lon)
+        log.info("column sharding: %d devices over %d processes",
+                 cfg.column_devices, jax.process_count())
 
     # Warm the RRTMGP optics-table cache with a CONCRETE build, before anything
     # traced runs.  RRTMGP reads its NetCDF gas-optics tables on first use and
@@ -819,6 +916,8 @@ def _main(argv=None):
     roll_steps = int(rollout_hours(cfg, yml) * 3600.0 / dt)
 
     def _loss(trainable, sample):
+        if _in_trace_rep is not None:
+            trainable = _in_trace_rep(trainable)
         ic, target, forcing = sample
         pred = make_run_seg(trainable).raw(ic, roll_steps, forcing)
         return combined_loss(pred, target, sigma_full, grid=grid, config=loss_config)
@@ -927,6 +1026,9 @@ def _main(argv=None):
                 log.info("resume: already at the requested %d epochs -- "
                          "nothing to do", cfg.n_epochs)
 
+    if place_rep is not None:
+        params = place_rep(params)
+
     # --- NO INERT PARAMETERS: freeze what this configuration cannot reach ---
     # The trainable bundle carries a knob for every scheme family and for the
     # switched-off modes of the families that ARE selected, so a large part of
@@ -1009,7 +1111,8 @@ def _main(argv=None):
             arr, static, frozen_names = _policy_freeze(arr, static, frozen_names)
         else:
             arr, static, frozen_names, n_probe_used = freeze_unreachable(
-                params, _probe_vg, local, n_probe=None, num_processes=nproc)
+                params, _probe_vg, local, n_probe=None, num_processes=nproc,
+                device_put=place_sample)
             arr, static, frozen_names = _policy_freeze(arr, static, frozen_names)
             # Persist the measurement immediately: at T63/si_substeps=3 the
             # probe costs ~9 h, and a link killed between here and the first
@@ -1070,6 +1173,20 @@ def _main(argv=None):
         # without this is a cold restart wearing a resumed run's name.
         opt_state = eqx.tree_deserialise_leaves(
             _checkpoint_paths(cfg.out_dir, start_epoch - 1)[1], opt_state)
+    if place_rep is not None:
+        opt_state = place_rep(opt_state)
+        if jax.process_count() > 1:
+            # Every process read the checkpoint and probe files on its own;
+            # they must have reached the same decisions.
+            import zlib
+
+            import numpy as _np
+            from jax.experimental import multihost_utils
+            multihost_utils.assert_equal(
+                _np.asarray([start_epoch, len(local), len(frozen_names),
+                             zlib.crc32(",".join(sorted(frozen_names)).encode())],
+                            dtype=_np.int64),
+                "column-sharded processes disagree on resume/freeze state")
 
     import os
     os.makedirs(cfg.out_dir, exist_ok=True)
@@ -1119,6 +1236,13 @@ def _main(argv=None):
     def on_epoch(epoch, mean_loss, cur_arr, cur_opt_state):
         # Every rank runs the validation pass: it ends in a collective.
         val_loss = _validation_loss(cur_arr)
+        if column_mesh is not None:
+            # Host copies: rank 0 alone must not launch computations on
+            # arrays that span every process.
+            cur_arr, cur_opt_state = jax.device_get((cur_arr, cur_opt_state))
+            _static_h = jax.device_get(static)
+        else:
+            _static_h = static
         if rank == 0:
             if val_loss is None:
                 log.info("Epoch %4d: loss=%.6f", epoch, mean_loss)
@@ -1130,14 +1254,14 @@ def _main(argv=None):
             # without loading a checkpoint and inverting the transforms.
             _row = {"epoch": int(epoch), "train_loss": float(mean_loss),
                     "val_loss": None if val_loss is None else float(val_loss),
-                    "params": _physical_params(eqx.combine(cur_arr, static))}
+                    "params": _physical_params(eqx.combine(cur_arr, _static_h))}
             with open(_history_path, "a") as _fh:
                 _fh.write(json.dumps(_row) + "\n")
             ppath, opath, fpath = _checkpoint_paths(cfg.out_dir, epoch)
             # Parameters, optimizer state and the trainable set together --
             # any one of them missing makes the other two unresumable.
             _atomic_write(ppath, lambda t: eqx.tree_serialise_leaves(
-                t, eqx.combine(cur_arr, static)))       # CURRENT params
+                t, eqx.combine(cur_arr, _static_h)))    # CURRENT params
             _atomic_write(opath, lambda t: eqx.tree_serialise_leaves(
                 t, cur_opt_state))
             # Written LAST: it is the marker that says this epoch is
@@ -1149,7 +1273,8 @@ def _main(argv=None):
 
     arr, opt_state, history = mpi_data_parallel_training_loop(
         loss_fn, arr, opt_state, optimizer, local, cfg.n_epochs, nproc,
-        on_epoch=on_epoch, start_epoch=start_epoch)
+        on_epoch=on_epoch, start_epoch=start_epoch,
+        place=None if column_mesh is None else place_sample)
     params = eqx.combine(arr, static)
     log.info("training done: final loss=%.6f", history[-1] if history else float("nan"))
 
@@ -1166,7 +1291,8 @@ def _main(argv=None):
             _probe_vg, params,
             [local[i] for i in probe_indices(len(local),
                                              _N_REACHABILITY_REPORT)],
-            n_probe=_N_REACHABILITY_REPORT, reduce=mpi_max_reduce(nproc))
+            n_probe=_N_REACHABILITY_REPORT, reduce=mpi_max_reduce(nproc),
+            device_put=place_sample)
         _frozen = set(frozen_names)
         # Report the MAGNITUDE and every NAME, not a yes/no: a gradient of
         # 1e-30 is numerical dust, and the only non-arbitrary scale for "big

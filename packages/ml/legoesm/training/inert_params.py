@@ -128,6 +128,9 @@ def measure_leaf_reachability(value_and_grad_fn, params, samples, *,
     about CONNECTIVITY (see the loop below), which can only keep a parameter
     trainable, never freeze one.
 
+    ``device_put`` may also be a callable ``sample -> placed sample`` (a
+    sharded placement); ``True`` means ``jax.device_put``.
+
     With ``device_put`` each sample is moved to the device just before its
     evaluation and released after, exactly as the training loop stages them —
     the samples are host-resident on purpose and pre-staging the whole probe
@@ -145,9 +148,10 @@ def measure_leaf_reachability(value_and_grad_fn, params, samples, *,
     names = _leaf_names(arr)
     absmax = [0.0] * len(names)
     n_used = 0
+    place = (device_put if callable(device_put)
+             else jax.device_put if device_put else (lambda s: s))
     for sample in samples[:n_probe]:
-        loss, grad = value_and_grad_fn(
-            arr, jax.device_put(sample) if device_put else sample)
+        loss, grad = value_and_grad_fn(arr, place(sample))
         leaves = jax.tree.leaves(grad)
         finite = [bool(jnp.all(jnp.isfinite(g))) for g in leaves]
         usable = bool(jnp.isfinite(loss)) and all(finite)

@@ -331,9 +331,14 @@ def test_the_epoch_checkpoint_carries_the_frozen_parameters():
                 and isinstance(c.func, ast.Attribute)
                 and c.func.attr == "combine"
                 and [x.id for x in c.args
-                     if isinstance(x, ast.Name)] == ["cur_arr", "static"]]
+                     if isinstance(x, ast.Name)] == ["cur_arr", "_static_h"]]
     assert combines, ("the checkpoint must serialise "
-                      "eqx.combine(cur_arr, static)")
+                      "eqx.combine(cur_arr, _static_h)")
+    # ``_static_h`` must BE the frozen half (a host copy of it under column
+    # sharding, the object itself otherwise).
+    src = ast.unparse(main)
+    assert "_static_h = jax.device_get(static)" in src
+    assert "_static_h = static" in src
 
 
 def test_the_frozen_parameters_are_re_measured_after_training():

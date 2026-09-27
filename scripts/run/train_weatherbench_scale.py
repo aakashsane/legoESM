@@ -635,16 +635,16 @@ def _check_resolution_matches_yaml(cfg: ScaleConfig, yml: dict) -> float:
     return cfg.resolution_deg
 
 
-def _init_column_mesh(n_devices: int):
-    """Join every process of the job into one ``n_devices`` column mesh.
+def _init_distributed(n_devices: int) -> None:
+    """Join every process of the job; call BEFORE anything imports legoesm or
+    touches a JAX backend (both can initialise XLA).
 
-    Must run before JAX touches a backend.  One process per node: JAX's SLURM
-    auto-detection would otherwise give each process ONE local GPU.
+    One process per node: JAX's SLURM auto-detection would otherwise give each
+    process ONE local GPU.
     """
     import os
 
     import jax
-    from legoesm.parallel.column_shard import create_column_mesh
 
     n_proc = int(os.environ.get("SLURM_NTASKS", "1"))
     if n_devices % n_proc:
@@ -653,6 +653,14 @@ def _init_column_mesh(n_devices: int):
     if n_proc > 1:
         jax.distributed.initialize(
             local_device_ids=list(range(n_devices // n_proc)))
+
+
+def _init_column_mesh(n_devices: int):
+    """The ``n_devices`` column mesh over every process's GPUs (after
+    :func:`_init_distributed`)."""
+    import jax
+    from legoesm.parallel.column_shard import create_column_mesh
+
     if jax.device_count() != n_devices:
         raise SystemExit(f"--column-devices {n_devices} but JAX sees "
                          f"{jax.device_count()} devices over "
@@ -793,6 +801,8 @@ def _resolve_training_keys(cfg, yml):
 
 def _main(argv=None):
     cfg = build_scale_config_from_args(argv)
+    if cfg.column_devices:
+        _init_distributed(cfg.column_devices)
 
     # Heavy imports here so --help / the CLI test stay JAX-free.
     import logging

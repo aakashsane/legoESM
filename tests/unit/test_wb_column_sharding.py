@@ -118,3 +118,23 @@ def test_loop_and_probe_use_the_given_placement():
         jax.jit(jax.value_and_grad(lambda a, s: jnp.sum(a["w"] * s))),
         params, [np.ones(2)], n_probe=1, device_put=place)
     assert len(seen) == 1
+
+
+def test_distributed_init_precedes_every_backend_import():
+    """jax.distributed.initialize must run before legoesm/equinox are imported
+    (either can initialise XLA; job 27736774 died exactly so)."""
+    import ast
+
+    tree = ast.parse(_ENTRY.read_text())
+    main = next(n for n in tree.body
+                if isinstance(n, ast.FunctionDef) and n.name == "_main")
+    init_line = next(n.lineno for n in ast.walk(main)
+                     if isinstance(n, ast.Call)
+                     and getattr(n.func, "id", None) == "_init_distributed")
+    heavy = [n.lineno for n in ast.walk(main)
+             if isinstance(n, (ast.Import, ast.ImportFrom))
+             and any(a.name.split(".")[0] in ("equinox", "legoesm", "optax")
+                     for a in n.names)
+             or (isinstance(n, ast.ImportFrom)
+                 and (n.module or "").split(".")[0] in ("legoesm", "equinox"))]
+    assert heavy and init_line < min(heavy)

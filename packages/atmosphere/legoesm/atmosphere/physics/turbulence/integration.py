@@ -527,7 +527,7 @@ def make_turbulence_physics(
             f"{model_type!r} pipeline has its own land tile (they would be "
             "silently inert here). Drop them or use model_type='mpas'."
         )
-    if model_type not in ("mpas", "spectral_pe"):
+    if model_type != "mpas":
         _sub = getattr(materialize_sub_config(turbulence_config),
                        turbulence_config.scheme, None)
         _srf = getattr(_sub, "surface", None)
@@ -542,8 +542,10 @@ def make_turbulence_physics(
         # vapour tendency that has had that liquid removed. Only the MPAS lane
         # routes it to a tracer today; dropping it on a lane that cannot would
         # destroy exactly that much water every step, silently. Refuse instead.
-        # (The spectral_pe bridge routes it too, so it is exempt above.)
-        if _sub is not None and getattr(_sub, "liquid_partition", False):
+        # The spectral_pe bridge routes it too, so only this refusal exempts
+        # it; the saline refusal below still applies there.
+        if (model_type != "spectral_pe" and _sub is not None
+                and getattr(_sub, "liquid_partition", False)):
             raise NotImplementedError(
                 "CLUBBConfig.liquid_partition returns a cloud-liquid tendency "
                 f"(TurbulenceOutput.dq_c_dt) that the {model_type!r} turbulence "

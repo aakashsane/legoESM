@@ -337,8 +337,8 @@ def test_the_epoch_checkpoint_carries_the_frozen_parameters():
     # ``_static_h`` must BE the frozen half (a host copy of it under column
     # sharding, the object itself otherwise).
     src = ast.unparse(main)
-    assert "_static_h = jax.device_get(static)" in src
-    assert "_static_h = static" in src
+    assert ("_static_h = static if column_mesh is None "
+            "else jax.device_get(static)") in src
 
 
 def test_the_frozen_parameters_are_re_measured_after_training():

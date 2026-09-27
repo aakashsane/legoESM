@@ -59,15 +59,22 @@ def test_placement_and_replicated_gradient():
         w = place_rep(np.arange(3.0))
         print("W", w.sharding.is_fully_replicated)
 
-        def loss(w, x):
-            w = in_trace_rep(w)
-            return jnp.sum(x["lat"] * w)
-        g = jax.jit(jax.grad(loss))(w, s)
+        # A per-latitude parameter: without the in-trace constraint its
+        # gradient inherits the samples' latitude split.
+        wl = place_rep(np.ones(n_lat))
+
+        def loss(w, x, rep):
+            if rep:
+                w = in_trace_rep(w)
+            return jnp.sum(x["lat"][:, 0] * w ** 2)
+        g = jax.jit(jax.grad(loss), static_argnums=2)(wl, s, True)
+        g0 = jax.jit(jax.grad(loss), static_argnums=2)(wl, s, False)
         print("G", g.sharding.is_fully_replicated,
-              bool(np.allclose(np.asarray(g), n_lat)))
+              bool(np.allclose(np.asarray(g), 2.0)))
+        print("G0", g0.sharding.is_fully_replicated)
     """)
     for tag in ("LAT True", "COL True", "SPEC True", "SCALAR True", "W True",
-                "G True True"):
+                "G True True", "G0 False"):
         assert tag in out, out
 
 
@@ -127,7 +134,7 @@ def test_distributed_init_precedes_every_backend_import():
 
     tree = ast.parse(_ENTRY.read_text())
     main = next(n for n in tree.body
-                if isinstance(n, ast.FunctionDef) and n.name == "_main")
+                if isinstance(n, ast.FunctionDef) and n.name == "main")
     init_line = next(n.lineno for n in ast.walk(main)
                      if isinstance(n, ast.Call)
                      and getattr(n.func, "id", None) == "_init_distributed")
@@ -137,4 +144,14 @@ def test_distributed_init_precedes_every_backend_import():
                      for a in n.names)
              or (isinstance(n, ast.ImportFrom)
                  and (n.module or "").split(".")[0] in ("legoesm", "equinox"))]
+    # main() -> the training package import (initialises XLA) -> _main().
     assert heavy and init_line < min(heavy)
+
+
+def test_sample_checksum_sees_order_and_content():
+    import numpy as np
+    a, b = (np.ones(3), {"x": np.zeros(2)}), (np.full(3, 2.0), {"x": np.zeros(2)})
+    base = mod._sample_checksum([a, b])
+    assert base == mod._sample_checksum([a, b])
+    assert base != mod._sample_checksum([b, a])
+    assert base != mod._sample_checksum([a, (np.full(3, 2.5), {"x": np.zeros(2)})])

@@ -1031,8 +1031,12 @@ def _call_radiation_backend(
         # Constrain the SOLVER's column axis (after the sub-column expansion):
         # a partition placed only on the physics inputs does not propagate into
         # the solver's working arrays, which keep full width on every device.
+        from legoesm.atmosphere.physics.clouds.subcolumns import (
+            PER_COLUMN_SOLVER_KEYS,
+        )
         _cons = _column_constraint(column_mesh, _rad_kwargs["T"].shape[0])
-        _rad_kwargs = {k: _cons(v) for k, v in _rad_kwargs.items()}
+        _rad_kwargs = {k: (_cons(v) if k in PER_COLUMN_SOLVER_KEYS else v)
+                       for k, v in _rad_kwargs.items()}
     if _col_chunk and _col_chunk > 0:
         result = rrtmgp_solver.solve_columns_chunked(
             column_chunk_size=_col_chunk, **_rad_kwargs,

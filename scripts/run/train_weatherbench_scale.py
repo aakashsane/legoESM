@@ -706,6 +706,38 @@ def _column_placers(mesh, n_lat: int, ncol: int):
     return place_sample, place_replicated, replicate_in_trace
 
 
+def _crc_names(names) -> int:
+    import zlib
+    return zlib.crc32(",".join(sorted(names)).encode())
+
+
+def _sample_checksum(samples) -> int:
+    """Order- and content-sensitive fingerprint of a host sample list."""
+    import zlib
+
+    import jax
+    import numpy as np
+
+    h = 0
+    for i, s in enumerate(samples):
+        for x in jax.tree.leaves(s):
+            a = np.asarray(x, dtype=np.float64)
+            h = zlib.crc32(f"{i}:{a.shape}:{float(np.sum(a)):.17g}".encode(), h)
+    return h
+
+
+def _assert_processes_agree(values, what: str) -> None:
+    """Raise on EVERY process if the processes hold different ``values``."""
+    import jax
+    import numpy as np
+
+    if jax.process_count() > 1:
+        from jax.experimental import multihost_utils
+        multihost_utils.assert_equal(
+            np.asarray(values, dtype=np.int64),
+            f"column-sharded processes disagree on the {what}")
+
+
 def _mpi_rank_size():
     """(rank, num_processes) — shared impl in legoesm.training.data_parallel
     (one copy for both this driver and the AIMIP chunked DP loop)."""
@@ -735,6 +767,11 @@ def main(argv=None):
         print_latest_complete_signature(args[1])
         return 0
 
+    # The training package's import initialises XLA, so the processes must
+    # join before it (job 27736774 died on exactly this).
+    _cols = build_scale_config_from_args(argv).column_devices
+    if _cols:
+        _init_distributed(_cols)
     from legoesm.training.data_parallel import mpi_abort_on_uncaught
     return mpi_abort_on_uncaught(_main)(argv)
 
@@ -801,8 +838,6 @@ def _resolve_training_keys(cfg, yml):
 
 def _main(argv=None):
     cfg = build_scale_config_from_args(argv)
-    if cfg.column_devices:
-        _init_distributed(cfg.column_devices)
 
     # Heavy imports here so --help / the CLI test stay JAX-free.
     import logging
@@ -1035,6 +1070,13 @@ def _main(argv=None):
 
     if place_rep is not None:
         params = place_rep(params)
+        # Every process read the checkpoint/probe files and built its sample
+        # list on its own. Agree BEFORE the first collective (the freeze
+        # probe), or a disagreeing process would hang the others.
+        _assert_processes_agree(
+            [start_epoch, -1 if resumed_frozen is None else len(resumed_frozen),
+             _crc_names(resumed_frozen or ()), _sample_checksum(local)],
+            "resume point, restored frozen set or training samples")
 
     # --- NO INERT PARAMETERS: freeze what this configuration cannot reach ---
     # The trainable bundle carries a knob for every scheme family and for the
@@ -1182,18 +1224,8 @@ def _main(argv=None):
             _checkpoint_paths(cfg.out_dir, start_epoch - 1)[1], opt_state)
     if place_rep is not None:
         opt_state = place_rep(opt_state)
-        if jax.process_count() > 1:
-            # Every process read the checkpoint and probe files on its own;
-            # they must have reached the same decisions.
-            import zlib
-
-            import numpy as _np
-            from jax.experimental import multihost_utils
-            multihost_utils.assert_equal(
-                _np.asarray([start_epoch, len(local), len(frozen_names),
-                             zlib.crc32(",".join(sorted(frozen_names)).encode())],
-                            dtype=_np.int64),
-                "column-sharded processes disagree on resume/freeze state")
+        _assert_processes_agree([len(frozen_names), _crc_names(frozen_names)],
+                                "frozen parameter set")
 
     import os
     os.makedirs(cfg.out_dir, exist_ok=True)
@@ -1245,6 +1277,7 @@ def _main(argv=None):
         return g_total / g_count
 
     _history_path = os.path.join(cfg.out_dir, "training_history.jsonl")
+    _static_h = static if column_mesh is None else jax.device_get(static)
 
     def on_epoch(epoch, mean_loss, cur_arr, cur_opt_state):
         # Every rank runs the validation pass: it ends in a collective.
@@ -1253,9 +1286,6 @@ def _main(argv=None):
             # Host copies: rank 0 alone must not launch computations on
             # arrays that span every process.
             cur_arr, cur_opt_state = jax.device_get((cur_arr, cur_opt_state))
-            _static_h = jax.device_get(static)
-        else:
-            _static_h = static
         if rank == 0:
             if val_loss is None:
                 log.info("Epoch %4d: loss=%.6f", epoch, mean_loss)

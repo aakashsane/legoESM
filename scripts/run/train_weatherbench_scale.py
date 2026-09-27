@@ -809,9 +809,6 @@ def _main(argv=None):
 
     column_mesh = None
     if cfg.column_devices:
-        if cfg.n_val_windows or cfg.eval_wb2:
-            raise SystemExit("--column-devices is not wired for --val-windows "
-                             "or --eval-wb2")
         column_mesh = _init_column_mesh(cfg.column_devices)
         # One logical trainer: every process loads the SAME samples and the
         # SPMD program already returns the global gradient.
@@ -1211,6 +1208,12 @@ def _main(argv=None):
         log.info("validation samples: %d local/rank from eval years %s",
                  len(val_samples), yml.get("eval_years"))
 
+    # Sharded: the same placement as training, and one compiled forward (an
+    # eager rollout of this deck does not fit on the mesh).
+    _val_loss = (loss_fn if column_mesh is None
+                 else eqx.filter_jit(loss_fn))
+    _val_place = _device_sample if column_mesh is None else place_sample
+
     def _validation_loss(cur_arr):
         # EVERY rank reaches the reduction, including one whose validation
         # shard came out empty: returning early on that rank left the others
@@ -1221,7 +1224,7 @@ def _main(argv=None):
             return None
         total = 0.0
         for _s in val_samples:
-            total += float(loss_fn(cur_arr, _device_sample(_s)))
+            total += float(_val_loss(cur_arr, _val_place(_s)))
         if nproc <= 1:
             return total / len(val_samples)
         from mpi4py import MPI

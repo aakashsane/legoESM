@@ -710,7 +710,7 @@ def _column_placers(mesh, n_lat: int, ncol: int):
 
 # Each process builds its own copy of the ERA5 samples (regridded on its own
 # GPU); job 27738351 showed the copies are not bit-identical. Bound for the
-# per-leaf relative difference, pending the owner's choice (measured value is
+# per-leaf relative difference, owner-approved 2026-09-28 (measured value is
 # logged on every run).
 _SAMPLE_AGREE_RTOL = 1e-9
 

@@ -148,10 +148,30 @@ def test_distributed_init_precedes_every_backend_import():
     assert heavy and init_line < min(heavy)
 
 
-def test_sample_checksum_sees_order_and_content():
+def test_sample_fingerprint_sees_structure_order_and_content():
     import numpy as np
-    a, b = (np.ones(3), {"x": np.zeros(2)}), (np.full(3, 2.0), {"x": np.zeros(2)})
-    base = mod._sample_checksum([a, b])
-    assert base == mod._sample_checksum([a, b])
-    assert base != mod._sample_checksum([b, a])
-    assert base != mod._sample_checksum([a, (np.full(3, 2.5), {"x": np.zeros(2)})])
+    x = np.array([1.0, 2.0, 3.0, 4.0])
+    a = (x, {"y": np.zeros(2)})
+    crc, m = mod._sample_fingerprint([a])
+    # a permutation keeps the sum but moves the position-weighted sum
+    _, mp = mod._sample_fingerprint([(x[::-1].copy(), {"y": np.zeros(2)})])
+    assert m[0, 0] == mp[0, 0] and m[0, 1] != mp[0, 1]
+    # a different dtype or shape changes the structure checksum
+    assert crc != mod._sample_fingerprint([(x.astype(np.float32),
+                                            {"y": np.zeros(2)})])[0]
+    assert crc != mod._sample_fingerprint([(x, {"y": np.zeros(3)})])[0]
+    assert crc == mod._sample_fingerprint([(x.copy(), {"y": np.zeros(2)})])[0]
+    # single process: nothing to compare against
+    assert mod._assert_samples_agree([a], "samples", 1e-9) == 0.0
+
+
+def test_physical_params_runs():
+    """_physical_params used numpy without importing it (NameError at the
+    first checkpoint of every run)."""
+    from types import SimpleNamespace
+
+    import numpy as np
+    p = SimpleNamespace(classical=SimpleNamespace(
+        as_dict=lambda: {"a": np.asarray(2.0), "b": np.ones((2, 1))}))
+    assert mod._physical_params(p) == {"classical.a": 2.0,
+                                       "classical.b": [1.0, 1.0]}

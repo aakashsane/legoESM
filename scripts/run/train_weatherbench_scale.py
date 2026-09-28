@@ -332,6 +332,8 @@ def _physical_params(params) -> dict:
     so the recorded numbers are the ones the physics saw -- not raw sigmoid
     pre-images that need the bounds to interpret.
     """
+    import numpy as np
+
     out = {}
     for _attr in ("classical", "schemes"):
         _part = getattr(params, _attr, None)
@@ -706,24 +708,66 @@ def _column_placers(mesh, n_lat: int, ncol: int):
     return place_sample, place_replicated, replicate_in_trace
 
 
+# Each process builds its own copy of the ERA5 samples (regridded on its own
+# GPU); job 27738351 showed the copies are not bit-identical. Bound for the
+# per-leaf relative difference, pending the owner's choice (measured value is
+# logged on every run).
+_SAMPLE_AGREE_RTOL = 1e-9
+
+
 def _crc_names(names) -> int:
     import zlib
     return zlib.crc32(",".join(sorted(names)).encode())
 
 
-def _sample_checksum(samples) -> int:
-    """Order- and content-sensitive fingerprint of a host sample list."""
+def _sample_fingerprint(samples):
+    """``(structure_crc, moments)`` of a host sample list.
+
+    ``structure_crc`` covers count, tree structure, leaf shapes and dtypes and
+    must match exactly.  ``moments`` holds, per leaf, the sum, a
+    position-weighted sum (so a reordering shows) and the sum of magnitudes
+    (the scale the other two are compared against).
+    """
     import zlib
 
     import jax
     import numpy as np
 
-    h = 0
+    h = zlib.crc32(str(len(samples)).encode())
+    moments = []
     for i, s in enumerate(samples):
-        for x in jax.tree.leaves(s):
-            a = np.asarray(x, dtype=np.float64)
-            h = zlib.crc32(f"{i}:{a.shape}:{float(np.sum(a)):.17g}".encode(), h)
-    return h
+        leaves, treedef = jax.tree.flatten(s)
+        h = zlib.crc32(f"{i}:{treedef}".encode(), h)
+        for x in leaves:
+            a = np.asarray(x)
+            h = zlib.crc32(f"{a.shape}:{a.dtype}".encode(), h)
+            f = a.astype(np.float64).ravel()
+            w = np.arange(1, f.size + 1, dtype=np.float64) / max(f.size, 1)
+            moments.append((f.sum(), (f * w).sum(), np.abs(f).sum()))
+    return h, np.asarray(moments, dtype=np.float64).reshape(-1, 3)
+
+
+def _assert_samples_agree(samples, what: str, rtol: float) -> float:
+    """Every process must hold the same samples, to ``rtol`` of each leaf's
+    magnitude sum; returns the largest relative difference seen.  Raises on
+    every process on disagreement."""
+    import jax
+    import numpy as np
+
+    crc, mom = _sample_fingerprint(samples)
+    if jax.process_count() == 1:
+        return 0.0
+    from jax.experimental import multihost_utils
+    _assert_processes_agree([crc], f"{what} structure")
+    g = np.asarray(multihost_utils.process_allgather(mom))   # (P, n, 3)
+    scale = np.maximum(np.abs(g[0][:, 2]), np.finfo(np.float64).tiny)
+    rel = float(np.max(np.abs(g[:, :, :2] - g[0][None, :, :2])
+                       / scale[None, :, None])) if g.size else 0.0
+    if not rel <= rtol:
+        raise AssertionError(
+            f"column-sharded processes hold different {what}: largest "
+            f"relative difference {rel:.3g} > {rtol:g}")
+    return rel
 
 
 def _assert_processes_agree(values, what: str) -> None:
@@ -1075,8 +1119,12 @@ def _main(argv=None):
         # probe), or a disagreeing process would hang the others.
         _assert_processes_agree(
             [start_epoch, -1 if resumed_frozen is None else len(resumed_frozen),
-             _crc_names(resumed_frozen or ()), _sample_checksum(local)],
-            "resume point, restored frozen set or training samples")
+             _crc_names(resumed_frozen or ())],
+            "resume point or restored frozen set")
+        _rel = _assert_samples_agree(local, "training samples",
+                                     _SAMPLE_AGREE_RTOL)
+        log.info("training samples agree across processes (largest relative "
+                 "difference %.3g)", _rel)
 
     # --- NO INERT PARAMETERS: freeze what this configuration cannot reach ---
     # The trainable bundle carries a knob for every scheme family and for the
@@ -1249,6 +1297,12 @@ def _main(argv=None):
             rank=rank, nproc=nproc, host_resident=True)
         log.info("validation samples: %d local/rank from eval years %s",
                  len(val_samples), yml.get("eval_years"))
+        if column_mesh is not None:
+            # Validation runs collective forwards: the lists must match too.
+            _rel = _assert_samples_agree(val_samples, "validation samples",
+                                         _SAMPLE_AGREE_RTOL)
+            log.info("validation samples agree across processes (largest "
+                     "relative difference %.3g)", _rel)
 
     # Sharded: the same placement as training, and one compiled forward (an
     # eager rollout of this deck does not fit on the mesh).

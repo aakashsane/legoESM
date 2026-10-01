@@ -433,7 +433,9 @@ def mpi_data_parallel_training_loop(loss_fn, params, opt_state, optimizer,
     for epoch in range(start_epoch, n_epochs):
         losses = []
         n_skipped = 0
-        for sample in local_samples:
+        for i_step, sample in enumerate(local_samples):
+            import time as _time
+            _t0 = _time.perf_counter()
             # #1286 fix A: samples are kept HOST-resident (numpy leaves) so the
             # whole training set is never parked in device memory; move ONE
             # sample onto the device here and let it free at the next iteration.
@@ -451,6 +453,10 @@ def mpi_data_parallel_training_loop(loss_fn, params, opt_state, optimizer,
                 n_skipped += 1
             else:
                 losses.append(float(loss))
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "epoch %d step %d/%d loss=%.6g %.1f s", epoch, i_step + 1,
+                len(local_samples), float(loss), _time.perf_counter() - _t0)
             n_steps_done += 1
             # #1364 retrace guard: with fixed-shape samples the rollout must be
             # traced exactly once for the whole run. More than that means a

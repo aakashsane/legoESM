@@ -150,8 +150,15 @@ def measure_leaf_reachability(value_and_grad_fn, params, samples, *,
     n_used = 0
     place = (device_put if callable(device_put)
              else jax.device_put if device_put else (lambda s: s))
-    for sample in samples[:n_probe]:
+    import logging
+    import time
+    for i_s, sample in enumerate(samples[:n_probe]):
+        _t0 = time.perf_counter()
         loss, grad = value_and_grad_fn(arr, place(sample))
+        jax.block_until_ready(grad)
+        logging.getLogger(__name__).info(
+            "reachability probe scene %d/%d %.1f s", i_s + 1,
+            len(samples[:n_probe]), time.perf_counter() - _t0)
         leaves = jax.tree.leaves(grad)
         finite = [bool(jnp.all(jnp.isfinite(g))) for g in leaves]
         usable = bool(jnp.isfinite(loss)) and all(finite)

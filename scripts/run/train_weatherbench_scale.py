@@ -205,15 +205,18 @@ def print_latest_complete_signature(root):
         # _read_probe_freeze). Without this, a link that finished only the
         # probe would trip the wrapper's epoch-0 restart-loop guard and the
         # chain would stop exactly where resuming has the most to save.
+        # A partial probe (probe_progress.json, rewritten every scene) counts
+        # too, or a link that ends mid-probe would stop the chain.
         for d in [root] + [os.path.join(root, x) for x in children]:
-            try:
-                st = os.stat(_probe_freeze_path(d))
-            except OSError:
-                continue
-            cand = (st.st_mtime_ns,
-                    f"{_probe_freeze_path(d)}:{st.st_mtime_ns}:{st.st_size}")
-            if best is None or cand[0] > best[0]:
-                best = cand
+            for path in (_probe_freeze_path(d), _probe_progress_path(d)):
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                cand = (st.st_mtime_ns,
+                        f"{path}:{st.st_mtime_ns}:{st.st_size}")
+                if best is None or cand[0] > best[0]:
+                    best = cand
     if best is not None:
         print(best[1])
 
@@ -392,10 +395,16 @@ def _probe_progress_path(out_dir):
     return os.path.join(out_dir, "probe_progress.json")
 
 
-def _read_probe_progress(out_dir, expect_fp):
+def _read_probe_progress(out_dir, expect_fp, content, rtol=None):
     """``(n_done, absmax, n_used)`` of a reachability probe a previous link
-    did not finish, or None.  Fingerprint-gated like ``_read_probe_freeze``."""
+    did not finish, or None.  Fingerprint-gated like ``_read_probe_freeze``,
+    and also on ``content`` -- the ``_sample_fingerprint`` of the samples and
+    parameters probed -- since the config fingerprint sees only their count."""
     import json as _json
+
+    import numpy as np
+
+    rtol = _SAMPLE_AGREE_RTOL if rtol is None else rtol
 
     try:
         with open(_probe_progress_path(out_dir)) as fh:
@@ -406,10 +415,19 @@ def _read_probe_progress(out_dir, expect_fp):
             or obj.get("fingerprint") != expect_fp):
         return None
     try:
-        return (int(obj["n_done"]), [float(a) for a in obj["absmax"]],
-                int(obj["n_used"]))
+        crc, mom = int(obj["content_crc"]), np.asarray(obj["content_moments"],
+                                                       dtype=np.float64)
+        out = (int(obj["n_done"]), [float(a) for a in obj["absmax"]],
+               int(obj["n_used"]))
     except (KeyError, TypeError, ValueError):
         return None
+    if crc != content[0] or mom.shape != content[1].shape:
+        return None
+    scale = np.maximum(np.abs(mom[:, 2]), np.finfo(np.float64).tiny)
+    if mom.size and not (np.max(np.abs(mom[:, :2] - content[1][:, :2])
+                                / scale[:, None]) <= rtol):
+        return None
+    return out
 
 
 def _atomic_write(path, write_fn):
@@ -1141,9 +1159,13 @@ def _main(argv=None):
     # A reachability probe longer than one job link continues where the last
     # link stopped (single logical trainer only: under MPI data parallelism
     # each rank would need its own saved partial measurement).
-    _probe_fp = _run_fingerprint(cfg, yml, warmup, roll_steps,
-                                 len(local) * nproc, nproc)
-    _probe_resume = (_read_probe_progress(cfg.out_dir, _probe_fp)
+    _probe_fp = dict(_run_fingerprint(cfg, yml, warmup, roll_steps,
+                                      len(local) * nproc, nproc),
+                     column_devices=int(cfg.column_devices))
+    _probe_content = _sample_fingerprint(list(local) + [jax.device_get(
+        jax.tree.leaves(eqx.filter(params, eqx.is_inexact_array)))])
+    _probe_resume = (_read_probe_progress(cfg.out_dir, _probe_fp,
+                                          _probe_content)
                      if cfg.resume and resumed_frozen is None and nproc == 1
                      else None)
     if _probe_resume is not None:
@@ -1255,7 +1277,9 @@ def _main(argv=None):
                 _os.makedirs(cfg.out_dir, exist_ok=True)
                 _payload = json.dumps({
                     "schema": _MANIFEST_SCHEMA, "fingerprint": _probe_fp,
-                    "n_done": n_done, "absmax": absmax, "n_used": n_used})
+                    "n_done": n_done, "absmax": absmax, "n_used": n_used,
+                    "content_crc": int(_probe_content[0]),
+                    "content_moments": _probe_content[1].tolist()})
                 _atomic_write(_probe_progress_path(cfg.out_dir),
                               lambda t: _pathlib.Path(t).write_text(_payload))
 

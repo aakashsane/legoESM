@@ -314,6 +314,13 @@ def test_probe_resumed_mid_way_equals_one_uninterrupted_probe():
     measure_leaf_reachability(vg, params, samples[:2], n_probe=2,
                               on_scene=lambda *a: saved.append(a))
     assert [s[0] for s in saved] == [1, 2]
+    seen = []
+
+    def counting_vg(p, s):
+        seen.append(float(np.asarray(s).sum()))
+        return vg(p, s)
+
     resumed, _, n_res = measure_leaf_reachability(
-        vg, params, samples, n_probe=4, resume_state=saved[-1])
+        counting_vg, params, samples, n_probe=4, resume_state=saved[-1])
     assert resumed == full and n_res == n_full == 4
+    assert seen == [3.0, 2.0], "resume re-evaluated scenes it had saved"

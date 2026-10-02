@@ -524,11 +524,25 @@ def test_only_the_first_argument_selects_the_signature_query():
 def test_probe_progress_round_trip_is_fingerprint_gated(tmp_path):
     import json
 
+    import numpy as np
+
     fp = {"a": 1}
+    samples = [np.arange(4.0), np.ones(3)]
+    content = mod._sample_fingerprint(samples)
     (tmp_path / "probe_progress.json").write_text(json.dumps({
         "schema": mod._MANIFEST_SCHEMA, "fingerprint": fp, "n_done": 7,
-        "absmax": [0.0, float("inf"), 2.5], "n_used": 6}))
-    got = mod._read_probe_progress(str(tmp_path), fp)
+        "absmax": [0.0, float("inf"), 2.5], "n_used": 6,
+        "content_crc": int(content[0]),
+        "content_moments": content[1].tolist()}))
+    got = mod._read_probe_progress(str(tmp_path), fp, content)
     assert got[0] == 7 and got[2] == 6 and got[1][1] == float("inf")
-    assert mod._read_probe_progress(str(tmp_path), {"a": 2}) is None
-    assert mod._read_probe_progress(str(tmp_path / "missing"), fp) is None
+    assert mod._read_probe_progress(str(tmp_path), {"a": 2}, content) is None
+    assert mod._read_probe_progress(str(tmp_path / "missing"), fp,
+                                    content) is None
+    # Same count and shapes, different values: the config fingerprint cannot
+    # see this, the content gate must.
+    other = mod._sample_fingerprint([np.arange(4.0) + 1.0, np.ones(3)])
+    assert other[0] == content[0]
+    assert mod._read_probe_progress(str(tmp_path), fp, other) is None
+    swapped = mod._sample_fingerprint([np.arange(4.0)[::-1].copy(), np.ones(3)])
+    assert mod._read_probe_progress(str(tmp_path), fp, swapped) is None

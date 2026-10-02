@@ -568,3 +568,12 @@ def test_probe_freeze_counts_as_chain_progress(tmp_path, capsys):
     mod.print_latest_complete_signature(str(tmp_path))
     out = capsys.readouterr().out
     assert "probe_freeze.json" in out
+
+
+def test_partial_probe_counts_as_chain_progress(tmp_path, capsys):
+    """A link that ends mid-probe must still chain: the next link resumes it."""
+    sub = tmp_path / "physics"
+    sub.mkdir()
+    (sub / "probe_progress.json").write_text("{}")
+    mod.print_latest_complete_signature(str(tmp_path))
+    assert "probe_progress.json" in capsys.readouterr().out

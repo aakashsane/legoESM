@@ -550,3 +550,8 @@ def test_probe_progress_round_trip_is_fingerprint_gated(tmp_path):
     b = mod._sample_fingerprint([np.asarray([2.0, -3.0, 2.0])])
     assert np.allclose(a[1][:, :2], b[1][:, :2])
     assert not mod._content_matches(mod._content_payload(a), b)
+    # Equal sum, position-weighted sum AND magnitude sum (codex r3).
+    a = mod._sample_fingerprint([np.asarray([1.0, 2.0, 3.0])])
+    b = mod._sample_fingerprint([np.asarray([2.0, 0.0, 4.0])])
+    assert np.allclose(a[1][:, :3], b[1][:, :3]) and a[0] == b[0]
+    assert not mod._content_matches(mod._content_payload(a), b)

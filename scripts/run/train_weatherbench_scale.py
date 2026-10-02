@@ -790,8 +790,11 @@ def _sample_fingerprint(samples):
 
     ``structure_crc`` covers count, tree structure, leaf shapes and dtypes and
     must match exactly.  ``moments`` holds, per leaf, the sum, a
-    position-weighted sum (so a reordering shows) and the sum of magnitudes
-    (the scale the other two are compared against).
+    position-weighted sum (so a reordering shows), the sum of magnitudes
+    (the scale the others are compared against) and a second, quadratically
+    weighted sum.  It is a tolerant sketch, not a hash: last-bit regridding
+    differences between nodes rule out exact hashing, and contrived inputs
+    can still match every moment.
     """
     import zlib
 
@@ -808,8 +811,9 @@ def _sample_fingerprint(samples):
             h = zlib.crc32(f"{a.shape}:{a.dtype}".encode(), h)
             f = a.astype(np.float64).ravel()
             w = np.arange(1, f.size + 1, dtype=np.float64) / max(f.size, 1)
-            moments.append((f.sum(), (f * w).sum(), np.abs(f).sum()))
-    return h, np.asarray(moments, dtype=np.float64).reshape(-1, 3)
+            moments.append((f.sum(), (f * w).sum(), np.abs(f).sum(),
+                            (f * w * w).sum()))
+    return h, np.asarray(moments, dtype=np.float64).reshape(-1, 4)
 
 
 def _assert_samples_agree(samples, what: str, rtol: float) -> float:

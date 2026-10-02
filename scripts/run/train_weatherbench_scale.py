@@ -386,6 +386,32 @@ def _read_probe_freeze(out_dir, expect_fp):
     return obj["frozen"]
 
 
+def _probe_progress_path(out_dir):
+    import os
+
+    return os.path.join(out_dir, "probe_progress.json")
+
+
+def _read_probe_progress(out_dir, expect_fp):
+    """``(n_done, absmax, n_used)`` of a reachability probe a previous link
+    did not finish, or None.  Fingerprint-gated like ``_read_probe_freeze``."""
+    import json as _json
+
+    try:
+        with open(_probe_progress_path(out_dir)) as fh:
+            obj = _json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(obj, dict) or obj.get("schema") != _MANIFEST_SCHEMA
+            or obj.get("fingerprint") != expect_fp):
+        return None
+    try:
+        return (int(obj["n_done"]), [float(a) for a in obj["absmax"]],
+                int(obj["n_used"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def _atomic_write(path, write_fn):
     """Write via a temporary file and rename, so a job killed mid-write leaves
     the PREVIOUS checkpoint intact rather than a truncated one that resume
@@ -1112,6 +1138,18 @@ def _main(argv=None):
                 log.info("resume: already at the requested %d epochs -- "
                          "nothing to do", cfg.n_epochs)
 
+    # A reachability probe longer than one job link continues where the last
+    # link stopped (single logical trainer only: under MPI data parallelism
+    # each rank would need its own saved partial measurement).
+    _probe_fp = _run_fingerprint(cfg, yml, warmup, roll_steps,
+                                 len(local) * nproc, nproc)
+    _probe_resume = (_read_probe_progress(cfg.out_dir, _probe_fp)
+                     if cfg.resume and resumed_frozen is None and nproc == 1
+                     else None)
+    if _probe_resume is not None:
+        log.info("resume: reachability probe continues after %d of %d scenes",
+                 _probe_resume[0], len(local))
+
     if place_rep is not None:
         params = place_rep(params)
         # Every process read the checkpoint/probe files and built its sample
@@ -1119,8 +1157,9 @@ def _main(argv=None):
         # probe), or a disagreeing process would hang the others.
         _assert_processes_agree(
             [start_epoch, -1 if resumed_frozen is None else len(resumed_frozen),
-             _crc_names(resumed_frozen or ())],
-            "resume point or restored frozen set")
+             _crc_names(resumed_frozen or ()),
+             -1 if _probe_resume is None else _probe_resume[0]],
+            "resume point, restored frozen set or probe progress")
         _rel = _assert_samples_agree(local, "training samples",
                                      _SAMPLE_AGREE_RTOL)
         log.info("training samples agree across processes (largest relative "
@@ -1207,9 +1246,23 @@ def _main(argv=None):
             n_probe_used = None          # nothing was probed; it was restored
             arr, static, frozen_names = _policy_freeze(arr, static, frozen_names)
         else:
+            def _save_probe_progress(n_done, absmax, n_used):
+                if rank != 0 or nproc != 1:
+                    return
+                import os as _os
+                import pathlib as _pathlib
+
+                _os.makedirs(cfg.out_dir, exist_ok=True)
+                _payload = json.dumps({
+                    "schema": _MANIFEST_SCHEMA, "fingerprint": _probe_fp,
+                    "n_done": n_done, "absmax": absmax, "n_used": n_used})
+                _atomic_write(_probe_progress_path(cfg.out_dir),
+                              lambda t: _pathlib.Path(t).write_text(_payload))
+
             arr, static, frozen_names, n_probe_used = freeze_unreachable(
                 params, _probe_vg, local, n_probe=None, num_processes=nproc,
-                device_put=place_sample)
+                device_put=place_sample, resume_state=_probe_resume,
+                on_scene=_save_probe_progress)
             arr, static, frozen_names = _policy_freeze(arr, static, frozen_names)
             # Persist the measurement immediately: at T63/si_substeps=3 the
             # probe costs ~9 h, and a link killed between here and the first

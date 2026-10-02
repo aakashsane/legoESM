@@ -116,7 +116,8 @@ def apply_forced_freeze(params, frozen_names, forced_names):
 
 
 def measure_leaf_reachability(value_and_grad_fn, params, samples, *,
-                              n_probe=4, reduce=None, device_put=True):
+                              n_probe=4, reduce=None, device_put=True,
+                              resume_state=None, on_scene=None):
     """Largest |gradient| each leaf reaches over ``n_probe`` samples.
 
     ``value_and_grad_fn(arr, sample) -> (loss, grad)`` for one sample, with
@@ -142,17 +143,32 @@ def measure_leaf_reachability(value_and_grad_fn, params, samples, *,
     below — a collective that some ranks skip on their way to a rank-local
     raise hangs the job instead of failing it.
 
+    ``resume_state=(n_done, absmax, n_used)`` skips the first ``n_done``
+    samples and continues from their saved per-process measurement;
+    ``on_scene(n_done, absmax, n_used)`` is called after every sample so a
+    caller can persist that state (a probe longer than one job link).
+
     Returns ``(absmax, names, n_used)``.
     """
     arr, _static = eqx.partition(params, eqx.is_inexact_array)
     names = _leaf_names(arr)
     absmax = [0.0] * len(names)
     n_used = 0
+    n_done = 0
+    if resume_state is not None:
+        n_done, absmax, n_used = resume_state
+        absmax = [float(a) for a in absmax]
+        if len(absmax) != len(names):
+            raise ValueError(
+                f"reachability probe: saved progress has {len(absmax)} leaves, "
+                f"this parameter tree has {len(names)}")
     place = (device_put if callable(device_put)
              else jax.device_put if device_put else (lambda s: s))
     import logging
     import time
     for i_s, sample in enumerate(samples[:n_probe]):
+        if i_s < n_done:
+            continue
         _t0 = time.perf_counter()
         loss, grad = value_and_grad_fn(arr, place(sample))
         jax.block_until_ready(grad)
@@ -187,8 +203,10 @@ def measure_leaf_reachability(value_and_grad_fn, params, samples, *,
                 "about the scene, not the parameters); %d leaf/leaves were "
                 "non-finite on it and are kept as REACHABLE",
                 sum(1 for f in finite if not f))
-            continue
-        n_used += 1
+        else:
+            n_used += 1
+        if on_scene is not None:
+            on_scene(i_s + 1, list(absmax), n_used)
     if reduce is not None:
         absmax, n_used = reduce(absmax, n_used)
     if n_used == 0:
@@ -297,7 +315,8 @@ def probe_indices(n_samples, n_probe):
 
 
 def freeze_unreachable(params, value_and_grad_fn, samples, *, n_probe=None,
-                       num_processes=1, comm=None, device_put=True):
+                       num_processes=1, comm=None, device_put=True,
+                       resume_state=None, on_scene=None):
     """Split ``params`` into (trainable, frozen) by measured reachability.
 
     The probe samples are spread across ``samples`` (see :func:`probe_indices`)
@@ -326,7 +345,8 @@ def freeze_unreachable(params, value_and_grad_fn, samples, *, n_probe=None,
     probe = [samples[i] for i in probe_indices(len(samples), n_probe)]
     absmax, names, n_used = measure_leaf_reachability(
         value_and_grad_fn, params, probe, n_probe=len(probe),
-        reduce=mpi_max_reduce(num_processes, comm), device_put=device_put)
+        reduce=mpi_max_reduce(num_processes, comm), device_put=device_put,
+        resume_state=resume_state, on_scene=on_scene)
     spec = trainable_filter_spec(params, absmax, names)
     trainable, frozen = eqx.partition(params, spec)
     frozen_names = [nm for nm, m in zip(names, absmax) if not m > 0.0]

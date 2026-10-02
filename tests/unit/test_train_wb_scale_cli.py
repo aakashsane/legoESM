@@ -519,3 +519,16 @@ def test_only_the_first_argument_selects_the_signature_query():
         # this invocation; the old scan printed a signature and returned 0.
         mod.main(["--config", tok, "--mode", "bogus"])
     assert e.value.code != 0
+
+
+def test_probe_progress_round_trip_is_fingerprint_gated(tmp_path):
+    import json
+
+    fp = {"a": 1}
+    (tmp_path / "probe_progress.json").write_text(json.dumps({
+        "schema": mod._MANIFEST_SCHEMA, "fingerprint": fp, "n_done": 7,
+        "absmax": [0.0, float("inf"), 2.5], "n_used": 6}))
+    got = mod._read_probe_progress(str(tmp_path), fp)
+    assert got[0] == 7 and got[2] == 6 and got[1][1] == float("inf")
+    assert mod._read_probe_progress(str(tmp_path), {"a": 2}) is None
+    assert mod._read_probe_progress(str(tmp_path / "missing"), fp) is None

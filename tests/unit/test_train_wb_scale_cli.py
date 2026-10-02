@@ -532,8 +532,7 @@ def test_probe_progress_round_trip_is_fingerprint_gated(tmp_path):
     (tmp_path / "probe_progress.json").write_text(json.dumps({
         "schema": mod._MANIFEST_SCHEMA, "fingerprint": fp, "n_done": 7,
         "absmax": [0.0, float("inf"), 2.5], "n_used": 6,
-        "content_crc": int(content[0]),
-        "content_moments": content[1].tolist()}))
+        **mod._content_payload(content)}))
     got = mod._read_probe_progress(str(tmp_path), fp, content)
     assert got[0] == 7 and got[2] == 6 and got[1][1] == float("inf")
     assert mod._read_probe_progress(str(tmp_path), {"a": 2}, content) is None
@@ -546,3 +545,8 @@ def test_probe_progress_round_trip_is_fingerprint_gated(tmp_path):
     assert mod._read_probe_progress(str(tmp_path), fp, other) is None
     swapped = mod._sample_fingerprint([np.arange(4.0)[::-1].copy(), np.ones(3)])
     assert mod._read_probe_progress(str(tmp_path), fp, swapped) is None
+    # Equal sum and position-weighted sum, different magnitudes (codex r2).
+    a = mod._sample_fingerprint([np.asarray([1.0, -1.0, 1.0])])
+    b = mod._sample_fingerprint([np.asarray([2.0, -3.0, 2.0])])
+    assert np.allclose(a[1][:, :2], b[1][:, :2])
+    assert not mod._content_matches(mod._content_payload(a), b)

@@ -363,7 +363,32 @@ def _probe_freeze_path(out_dir):
     return os.path.join(out_dir, "probe_freeze.json")
 
 
-def _read_probe_freeze(out_dir, expect_fp):
+def _content_matches(obj, content, rtol=None):
+    """True when a saved probe payload was measured on ``content`` -- the
+    ``_sample_fingerprint`` of the probed samples and parameters (crc exact,
+    every moment to ``rtol`` of the leaf's magnitude sum)."""
+    import numpy as np
+
+    rtol = _SAMPLE_AGREE_RTOL if rtol is None else rtol
+    try:
+        crc = int(obj["content_crc"])
+        mom = np.asarray(obj["content_moments"], dtype=np.float64)
+    except (KeyError, TypeError, ValueError):
+        return False
+    if crc != content[0] or mom.shape != content[1].shape:
+        return False
+    if not mom.size:
+        return True
+    scale = np.maximum(np.abs(mom[:, 2]), np.finfo(np.float64).tiny)
+    return bool(np.max(np.abs(mom - content[1]) / scale[:, None]) <= rtol)
+
+
+def _content_payload(content):
+    return {"content_crc": int(content[0]),
+            "content_moments": content[1].tolist()}
+
+
+def _read_probe_freeze(out_dir, expect_fp, content):
     """The persisted reachability-probe result, or None.
 
     Honoured only when its fingerprint matches the CURRENT run exactly — the
@@ -386,6 +411,8 @@ def _read_probe_freeze(out_dir, expect_fp):
         return None
     if not all(isinstance(x, str) for x in obj["frozen"]):
         return None
+    if not _content_matches(obj, content):
+        return None
     return obj["frozen"]
 
 
@@ -395,16 +422,12 @@ def _probe_progress_path(out_dir):
     return os.path.join(out_dir, "probe_progress.json")
 
 
-def _read_probe_progress(out_dir, expect_fp, content, rtol=None):
+def _read_probe_progress(out_dir, expect_fp, content):
     """``(n_done, absmax, n_used)`` of a reachability probe a previous link
-    did not finish, or None.  Fingerprint-gated like ``_read_probe_freeze``,
-    and also on ``content`` -- the ``_sample_fingerprint`` of the samples and
-    parameters probed -- since the config fingerprint sees only their count."""
+    did not finish, or None.  Gated on the config fingerprint and on
+    ``content`` (see ``_content_matches``): the fingerprint sees only the
+    sample count."""
     import json as _json
-
-    import numpy as np
-
-    rtol = _SAMPLE_AGREE_RTOL if rtol is None else rtol
 
     try:
         with open(_probe_progress_path(out_dir)) as fh:
@@ -412,22 +435,20 @@ def _read_probe_progress(out_dir, expect_fp, content, rtol=None):
     except (OSError, ValueError):
         return None
     if (not isinstance(obj, dict) or obj.get("schema") != _MANIFEST_SCHEMA
-            or obj.get("fingerprint") != expect_fp):
+            or obj.get("fingerprint") != expect_fp
+            or not _content_matches(obj, content)):
+        if isinstance(obj, dict):
+            import logging
+            logging.getLogger(__name__).warning(
+                "reachability probe: %s exists but was measured on "
+                "different config or inputs -- probing from scratch",
+                _probe_progress_path(out_dir))
         return None
     try:
-        crc, mom = int(obj["content_crc"]), np.asarray(obj["content_moments"],
-                                                       dtype=np.float64)
-        out = (int(obj["n_done"]), [float(a) for a in obj["absmax"]],
-               int(obj["n_used"]))
+        return (int(obj["n_done"]), [float(a) for a in obj["absmax"]],
+                int(obj["n_used"]))
     except (KeyError, TypeError, ValueError):
         return None
-    if crc != content[0] or mom.shape != content[1].shape:
-        return None
-    scale = np.maximum(np.abs(mom[:, 2]), np.finfo(np.float64).tiny)
-    if mom.size and not (np.max(np.abs(mom[:, :2] - content[1][:, :2])
-                                / scale[:, None]) <= rtol):
-        return None
-    return out
 
 
 def _atomic_write(path, write_fn):
@@ -1077,6 +1098,10 @@ def _main(argv=None):
     # optimizer state that was built for it, and skips the probe's cost.)
     import json
 
+    # Probe results are measurements on these exact samples and initial
+    # parameters; saved ones are honoured only if these still match.
+    _probe_content = _sample_fingerprint(list(local) + [jax.device_get(
+        jax.tree.leaves(eqx.filter(params, eqx.is_inexact_array)))])
     start_epoch, resumed_frozen = 0, None
     if cfg.resume:
         _ep = _latest_complete_checkpoint(cfg.out_dir)
@@ -1099,12 +1124,9 @@ def _main(argv=None):
             # rank reads the file, another hits an OSError and re-probes)
             # would leave ranks in different collectives and hang (codex).
             # Multi-rank WB training re-probes until a root-read + broadcast
-            # exists. NOTE (codex, deferred): the fingerprint identifies the
-            # shard by sample COUNT, not content — CLI --n-days is not in it;
-            # the campaign path never passes --n-days, and adding the key
-            # would orphan payloads already written under the current key
-            # set. Add it at the next fingerprint schema change.
-            _pf = (_read_probe_freeze(cfg.out_dir, _now_fp)
+            # exists. The fingerprint sees the sample COUNT; the content gate
+            # sees the samples and initial parameters themselves.
+            _pf = (_read_probe_freeze(cfg.out_dir, _now_fp, _probe_content)
                    if nproc == 1 else None)
             if _pf is not None:
                 resumed_frozen = set(_pf)
@@ -1162,8 +1184,6 @@ def _main(argv=None):
     _probe_fp = dict(_run_fingerprint(cfg, yml, warmup, roll_steps,
                                       len(local) * nproc, nproc),
                      column_devices=int(cfg.column_devices))
-    _probe_content = _sample_fingerprint(list(local) + [jax.device_get(
-        jax.tree.leaves(eqx.filter(params, eqx.is_inexact_array)))])
     _probe_resume = (_read_probe_progress(cfg.out_dir, _probe_fp,
                                           _probe_content)
                      if cfg.resume and resumed_frozen is None and nproc == 1
@@ -1278,8 +1298,7 @@ def _main(argv=None):
                 _payload = json.dumps({
                     "schema": _MANIFEST_SCHEMA, "fingerprint": _probe_fp,
                     "n_done": n_done, "absmax": absmax, "n_used": n_used,
-                    "content_crc": int(_probe_content[0]),
-                    "content_moments": _probe_content[1].tolist()})
+                    **_content_payload(_probe_content)})
                 _atomic_write(_probe_progress_path(cfg.out_dir),
                               lambda t: _pathlib.Path(t).write_text(_payload))
 
@@ -1302,6 +1321,7 @@ def _main(argv=None):
                         cfg, yml, warmup, roll_steps, len(local) * nproc,
                         nproc),
                     "frozen": sorted(frozen_names),
+                    **_content_payload(_probe_content),
                 }
                 import pathlib as _pathlib
 

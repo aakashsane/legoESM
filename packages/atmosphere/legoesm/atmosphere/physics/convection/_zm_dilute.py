@@ -73,6 +73,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
+from legoesm.core.nonlinear import attach_implicit_gradient
 from legoesm.thermo import saturation_mixing_ratio
 from legoesm.atmosphere.physics.thermodynamics import latent_heat_vaporization
 from legoesm.atmosphere.physics.convection._triggers import (
@@ -214,11 +215,14 @@ def invert_entropy(
     """Newton inversion: solve ``moist_entropy(T, p, qt) = s_target`` for T.
 
     Fixed ``_NEWTON_ITERS`` iterations with a centered finite-difference
-    derivative (the entropy has a ``min(qtot, qs)`` kink that a closed-
-    form derivative would have to special-case; the centered difference
-    is smooth-enough for AD and converges in < 10 iterations in
-    practice).  ``T`` is clipped to a physical range each step to keep
-    the iteration bounded.
+    derivative (converges in < 10 iterations in practice); ``T`` is clipped
+    to a physical range each step to keep the iteration bounded.  The loop
+    is not differentiated: the gradient is the exact implicit-function one,
+    attached at the root (``core.nonlinear.attach_implicit_gradient``), so
+    reverse mode costs one entropy evaluation instead of replaying the
+    iterations, and nothing flows to ``T_first_guess``.  At the
+    ``min(qtot, qs)`` kink the slope is the one-sided derivative of the
+    active branch (owner decision 2026-10-03).
     """
     dT = 0.01  # coeff-ok: FD temperature perturbation [K]
     _dtype = T_first_guess.dtype
@@ -242,7 +246,10 @@ def invert_entropy(
         # Pin to input precision (fori_loop carry dtype invariant).
         return jnp.clip(T_new, 120.0, 360.0).astype(_dtype)  # coeff-ok: physical T clip [K]
 
-    return jax.lax.fori_loop(0, _NEWTON_ITERS, body, T_first_guess)
+    T_root = jax.lax.fori_loop(0, _NEWTON_ITERS, body, T_first_guess)
+    return attach_implicit_gradient(
+        T_root, lambda T: moist_entropy(T, p_pa, qtot) - s_target,
+        lo=120.0, hi=360.0)  # coeff-ok: same physical T clip [K] as the loop
 
 
 def dilute_parcel_cape(

@@ -8,6 +8,37 @@ import jax
 import jax.numpy as jnp
 
 
+def attach_implicit_gradient(
+    x_root: jax.Array,
+    residual_fn: Callable,
+    *,
+    lo: float | None = None,
+    hi: float | None = None,
+    slope_floor: float = 1.0e-6,
+) -> jax.Array:
+    """Exact implicit-function gradient for an elementwise scalar root.
+
+    ``x_root`` comes from any forward iteration (Newton, bisection, ...); it is
+    detached and replaced by one Newton correction at the root with the slope
+    held constant, ``x = x* - f(x*) / sg(f'(x*))``.  The value moves only by
+    the residual left at ``x*``; the gradient w.r.t. everything ``residual_fn``
+    closes over is ``-(df/dtheta)/(df/dx)``, and reverse mode never replays
+    the forward iteration.  ``f'`` comes from a jvp, so at a kink it is the
+    one-sided derivative of the active branch.  ``slope_floor`` keeps the
+    division finite (|f'| below it is replaced by +floor, as the Newton loops
+    it replaces did).  ``lo``/``hi`` re-apply a clip of the forward iteration:
+    a clipped value is not a root, and the clip gives it a zero gradient.
+    """
+    x0 = jax.lax.stop_gradient(x_root)
+    f, slope = jax.jvp(residual_fn, (x0,), (jnp.ones_like(x0),))
+    slope = jax.lax.stop_gradient(
+        jnp.where(jnp.abs(slope) > slope_floor, slope, slope_floor))
+    x = x0 - f / slope
+    if lo is not None or hi is not None:
+        x = jnp.clip(x, lo, hi)
+    return x.astype(x_root.dtype)
+
+
 def make_implicit_newton_solver(
     residual_fn: Callable,
     *,

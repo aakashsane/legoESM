@@ -239,10 +239,12 @@ _GRAD_GOLDEN_NPZ = (Path(__file__).resolve().parent / "clubb_fixtures"
 def test_values_and_gradients_match_the_sequential_reference():
     """Values AND gradients against a reference recorded from the sequential
     (scan-over-launch-levels) implementation, on inputs where both the upward
-    and the downward smoothing bind (scripts/tmp/_gen_lscale_grad_golden.py
-    asserts that when it records the fixture)."""
+    and the downward smoothing change the answer (deleting either one fails
+    this test)."""
     ref = np.load(_GRAD_GOLDEN_NPZ)
-    kw = dict(_golden_inputs(), em=jnp.asarray(ref["em"]))
+    thv = jnp.asarray(ref["thvm"])
+    kw = dict(_golden_inputs(), em=jnp.asarray(ref["em"]), thvm=thv, thlm=thv,
+              thv_ds=thv)
     w_up, w_dn = jnp.asarray(ref["w_up"]), jnp.asarray(ref["w_dn"])
     names = ("thvm", "thlm", "rtm", "em", "mu")
 

@@ -252,8 +252,8 @@ def test_values_and_gradients_match_the_sequential_reference():
     vals = compute_mixing_length(**kw)
     for name, v in zip(("Lscale", "Lscale_up", "Lscale_down"), vals):
         # Not bit-identical: batching lets XLA fuse/contract the same algebra
-        # differently (measured <= 4.2e-16 relative); same tolerance as the
-        # oracle golden above.
+        # differently (measured <= 4.2e-16 relative); atol scales with the
+        # field for smoothed near-cancellation entries.
         np.testing.assert_allclose(np.asarray(v), ref[name], rtol=1e-13,
                                    atol=1e-13 * float(np.max(np.abs(ref[name]))),
                                    err_msg=name)

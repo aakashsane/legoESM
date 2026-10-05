@@ -3,8 +3,23 @@
 Records compute_mixing_length values + gradients from the SEQUENTIAL
 implementation: put clubb.py as of 91962c34d in place first
 (git show 91962c34d:packages/atmosphere/legoesm/atmosphere/physics/turbulence/clubb.py
-> that file), run this, restore.  Asserts the upward smoothing binds; the
-downward one was confirmed by deleting it (the test then fails)."""
+> that file), run this, restore; the script refuses any other clubb.py.
+That both smoothing branches change the answer is checked by deleting
+each one in clubb.py (the test then fails), not here: comparing adjacent
+levels for equality miscounts boundary cells."""
+import subprocess as _sp
+
+_CLUBB = "packages/atmosphere/legoesm/atmosphere/physics/turbulence/clubb.py"
+_PIN = "91962c34d"
+
+
+def _git(*a):
+    return _sp.run(["git", "-c", "safe.directory=*", *a], capture_output=True,
+                   text=True, check=True).stdout.strip()
+
+
+if _git("hash-object", _CLUBB) != _git("rev-parse", f"{_PIN}:{_CLUBB}"):
+    raise SystemExit(f"{_CLUBB} is not the sequential version at {_PIN}")
 import subprocess, sys
 import jax, jax.numpy as jnp, numpy as np
 jax.config.update("jax_enable_x64", True)
@@ -16,7 +31,6 @@ kw = t._golden_inputs()
 ng, nzm = kw["em"].shape
 rng = np.random.default_rng(0)
 # Non-uniform TKE so the up/down smoothing (running max/min) actually binds.
-_osc = 0.6 * (1.0 + 0.8 * np.sin(np.linspace(0, 7, nzm)))
 _ramp = 0.05 * np.exp(np.linspace(0.0, 5.0, nzm))    # TKE growing with height
 # Column 1: weak stability + TKE growing steeply with height, where removing
 # the DOWNWARD smoothing changes ~38 cells by up to ~350 m (searched with the
@@ -41,15 +55,10 @@ def loss(*xs):
 
 vals = compute_mixing_length(**kw)
 grads = jax.grad(loss, argnums=tuple(range(len(names))))(*(kw[n] for n in names))
-sha = subprocess.run(["git", "-c", "safe.directory=*", "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()
-np.savez("tests/unit/clubb_fixtures/clubb_lscale_grad_golden.npz", git=sha,
+sha = _PIN
+np.savez(sys.argv[1] if len(sys.argv) > 1 else "tests/unit/clubb_fixtures/clubb_lscale_grad_golden.npz", git=sha,
          em=np.asarray(em), thvm=np.asarray(thv), w_up=np.asarray(w_up), w_dn=np.asarray(w_dn),
          Lscale=np.asarray(vals[0]), Lscale_up=np.asarray(vals[1]), Lscale_down=np.asarray(vals[2]),
          **{f"grad_{n}": np.asarray(g) for n, g in zip(names, grads)})
-zt = np.asarray(kw["gr"].zt)
-up = zt + np.asarray(vals[1]); dn = zt - np.asarray(vals[2])
-n_up = int(np.isclose(up[:, 1:-2], up[:, :-3], rtol=1e-12, atol=1e-9).sum()); n_dn = int(np.isclose(dn[:, 1:], dn[:, :-1], rtol=1e-12, atol=1e-9).sum())
-print("smoothing binds: up", n_up, "down", n_dn)
-assert n_up, "fixture does not exercise the upward smoothing"
 print("sha", sha, "finite", all(bool(jnp.all(jnp.isfinite(g))) for g in grads))
 for n, g in zip(names, grads): print(n, float(jnp.max(jnp.abs(g))))

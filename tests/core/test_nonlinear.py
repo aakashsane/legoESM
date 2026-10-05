@@ -203,3 +203,28 @@ def test_attach_implicit_gradient_clip_gives_zero_gradient(x64):
     assert jnp.allclose(root(a), jnp.array([2.0, 5.0]))
     g = jax.vmap(jax.grad(root))(a)
     assert g[1] == 0.0 and g[0] > 0.0
+
+
+def test_attach_implicit_gradient_bound_and_nan(x64):
+    a = jnp.array([125.0, 8.0])
+
+    def root(a):
+        # x0 exactly AT the bound (5.0): zero gradient, not clip's half.
+        return attach_implicit_gradient(
+            jnp.clip(_cube_root_newton(a), 0.0, 5.0), lambda x: x ** 3 - a,
+            lo=0.0, hi=5.0)
+
+    g = jax.vmap(jax.grad(root))(a)
+    assert g[0] == 0.0 and g[1] > 0.0
+    # A NaN slope with a finite residual must give NaN, not a value moved by
+    # residual / floor.
+    @jax.custom_jvp
+    def resid(x):
+        return x - 0.5
+
+    @resid.defjvp
+    def _resid_jvp(primals, tangents):
+        return resid(primals[0]), tangents[0] * jnp.nan
+
+    x = attach_implicit_gradient(jnp.array([1.0]), resid)
+    assert jnp.isnan(x).all()

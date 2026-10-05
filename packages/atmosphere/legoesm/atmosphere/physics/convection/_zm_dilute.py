@@ -186,7 +186,9 @@ def moist_entropy(T: jax.Array, p_pa: jax.Array, qtot: jax.Array) -> jax.Array:
     is identical).
     """
     q_sat = saturation_mixing_ratio(T, p_pa)
-    qv = jnp.minimum(qtot, q_sat)
+    # Saturated branch owns the exact tie, so the slope there is one-sided
+    # (jnp.minimum's derivative would average the two branches).
+    qv = jnp.where(qtot < q_sat, qtot, q_sat)
     # Numerical floor so ln(qv/qs) is finite for a bone-dry parcel.
     qv_safe = jnp.maximum(qv, 1.0e-12)
     # Kirchhoff L(T) via the shared helper (thermodynamics module).

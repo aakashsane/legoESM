@@ -118,6 +118,24 @@ def test_entropy_inversion_gradient_is_implicit_and_skips_the_loop():
     assert "while" not in str(jax.make_jaxpr(lin)(s))
 
 
+def test_entropy_slope_is_one_sided_at_saturation():
+    """Owner decision 2026-10-03: at qtot == qs exactly the entropy slope the
+    inversion's gradient uses is the saturated branch's, not the average of
+    the two branches that a jnp.minimum derivative would give.  (Whether the
+    inversion's ROOT lands on the tie is decided by its last bit, so the
+    deterministic check is on the slope at an exact tie.)"""
+    from legoesm.thermo import saturation_mixing_ratio
+    T = jnp.array([290.0]); p = jnp.array([9.0e4])
+    qt = saturation_mixing_ratio(T, p)
+
+    def slope(q):
+        return jax.jvp(lambda t: moist_entropy(t, p, q), (T,), (jnp.ones_like(T),))[1][0]
+
+    sat, unsat = slope(qt * (1 + 1e-12)), slope(qt * (1 - 1e-12))
+    assert abs(sat - unsat) > 0.5 * abs(sat)            # the kink is real
+    assert jnp.allclose(slope(qt), sat, rtol=1e-9)
+
+
 def test_dilute_cape_less_than_undilute():
     """Entrainment of dry air reduces CAPE below the undilute moist
     adiabat — the defining ZM dilute-parcel property."""

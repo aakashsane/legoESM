@@ -24,18 +24,26 @@ def attach_implicit_gradient(
     the residual left at ``x*``; the gradient w.r.t. everything ``residual_fn``
     closes over is ``-(df/dtheta)/(df/dx)``, and reverse mode never replays
     the forward iteration.  ``f'`` comes from a jvp, so at a kink it is the
-    one-sided derivative of the active branch.  ``slope_floor`` keeps the
-    division finite (|f'| below it is replaced by +floor, as the Newton loops
-    it replaces did).  ``lo``/``hi`` re-apply a clip of the forward iteration:
-    a clipped value is not a root, and the clip gives it a zero gradient.
+    one-sided derivative of the active branch (``residual_fn`` decides which
+    branch owns an exact tie).  ``slope_floor`` keeps the division finite
+    (|f'| below it is replaced by +floor, as the Newton loops it replaces did);
+    a NaN slope stays NaN.  ``lo``/``hi`` re-apply a clip of the forward
+    iteration: a value at or beyond a bound is not a root and gets a zero
+    gradient (``jnp.clip`` alone would pass half of it at the bound).
     """
     x0 = jax.lax.stop_gradient(x_root)
     f, slope = jax.jvp(residual_fn, (x0,), (jnp.ones_like(x0),))
-    slope = jax.lax.stop_gradient(
-        jnp.where(jnp.abs(slope) > slope_floor, slope, slope_floor))
+    slope = jax.lax.stop_gradient(jnp.where(
+        jnp.isnan(slope) | (jnp.abs(slope) > slope_floor), slope, slope_floor))
     x = x0 - f / slope
     if lo is not None or hi is not None:
         x = jnp.clip(x, lo, hi)
+        pinned = jnp.zeros(x0.shape, dtype=bool)
+        if lo is not None:
+            pinned = pinned | (x0 <= lo)
+        if hi is not None:
+            pinned = pinned | (x0 >= hi)
+        x = jnp.where(pinned, jax.lax.stop_gradient(x), x)
     return x.astype(x_root.dtype)
 
 

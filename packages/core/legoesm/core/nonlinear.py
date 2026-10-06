@@ -28,8 +28,9 @@ def attach_implicit_gradient(
     branch owns an exact tie).  ``slope_floor`` keeps the division finite
     (|f'| below it is replaced by +floor, as the Newton loops it replaces did);
     a NaN slope stays NaN.  ``lo``/``hi`` re-apply a clip of the forward
-    iteration: a value at or beyond a bound is not a root and gets a zero
-    gradient (``jnp.clip`` alone would pass half of it at the bound).
+    iteration: a forward value at or beyond a bound is not a root; it is
+    returned unchanged with a zero gradient (``jnp.clip`` alone would pass
+    half of it at the bound).
     """
     x0 = jax.lax.stop_gradient(x_root)
     f, slope = jax.jvp(residual_fn, (x0,), (jnp.ones_like(x0),))
@@ -43,7 +44,7 @@ def attach_implicit_gradient(
             pinned = pinned | (x0 <= lo)
         if hi is not None:
             pinned = pinned | (x0 >= hi)
-        x = jnp.where(pinned, jax.lax.stop_gradient(x), x)
+        x = jnp.where(pinned, x0, x)        # the forward value, no gradient
     return x.astype(x_root.dtype)
 
 

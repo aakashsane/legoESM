@@ -216,6 +216,10 @@ def test_attach_implicit_gradient_bound_and_nan(x64):
 
     g = jax.vmap(jax.grad(root))(a)
     assert g[0] == 0.0 and g[1] > 0.0
+    # A pinned value keeps its forward value even if the step points inward.
+    x = attach_implicit_gradient(jnp.array([5.0]), lambda x: x ** 3 - 100.0,
+                                 lo=0.0, hi=5.0)
+    assert x[0] == 5.0
     # A NaN slope with a finite residual must give NaN, not a value moved by
     # residual / floor.
     @jax.custom_jvp

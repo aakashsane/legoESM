@@ -134,6 +134,9 @@ def test_entropy_slope_is_one_sided_at_saturation():
     sat, unsat = slope(qt * (1 + 1e-12)), slope(qt * (1 - 1e-12))
     assert abs(sat - unsat) > 0.5 * abs(sat)            # the kink is real
     assert jnp.allclose(slope(qt), sat, rtol=1e-9)
+    # NaN in either humidity input still propagates (as through jnp.minimum).
+    assert jnp.isnan(moist_entropy(T, p, jnp.array([jnp.nan]))).all()
+    assert jnp.isnan(moist_entropy(jnp.array([jnp.nan]), p, qt)).all()
 
 
 def test_dilute_cape_less_than_undilute():

@@ -20,7 +20,7 @@ def _git(*a):
 
 if _git("hash-object", _CLUBB) != _git("rev-parse", f"{_PIN}:{_CLUBB}"):
     raise SystemExit(f"{_CLUBB} is not the sequential version at {_PIN}")
-import subprocess, sys
+import sys
 import jax, jax.numpy as jnp, numpy as np
 jax.config.update("jax_enable_x64", True)
 sys.path.insert(0, "tests/unit")

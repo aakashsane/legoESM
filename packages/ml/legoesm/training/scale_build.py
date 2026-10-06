@@ -259,7 +259,7 @@ _WB_SPECTRAL_KEYS = frozenset({
 # ``nn_hiden`` silently fell back to the default -- the inert-key defect class).
 _WB_CLASSICAL_KEYS = frozenset({
     "cld_macmic_num_steps",
-    "cloud", "clubb_top_press_hpa", "convection", "gwd", "microphysics",
+    "cloud", "clubb_liquid_partition", "clubb_top_press_hpa", "convection", "gwd", "microphysics",
     "convective_rain_to_surface", "orbital_insolation",
     "param_fixed", "param_init",
     "rad_update_interval_steps", "rrtmgp_column_chunk_size",
@@ -555,6 +555,7 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
         if _tier:
             from legoesm.training.aimip_params import (
                 AIMIPTrainableBundle,
+                aimip_inactive_fields,
                 aimip_legacy_owned_fields,
                 aimip_scheme_keys_for,
             )
@@ -587,6 +588,8 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
                 exclude=tuple(sorted(
                     set(aimip_legacy_owned_fields(
                         cloud_scheme=_schemes["cloud_scheme"]))
+                    | aimip_inactive_fields(
+                        cloud_scheme=_schemes["cloud_scheme"])
                     | _pinned_trainable_names(_param_fixed))),
             )
             params = AIMIPTrainableBundle(
@@ -607,6 +610,11 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
         # Passed through RAW: make_physics refuses a bool, a non-integer and
         # < 1, and an int() here would turn 3.9 into 3 and true into 1.
         _macmic = _cl.get("cld_macmic_num_steps", 1)
+        _liq_part = _cl.get("clubb_liquid_partition", False)
+        if not isinstance(_liq_part, bool):
+            raise ValueError(
+                "classical.clubb_liquid_partition must be true or false, got "
+                f"{_liq_part!r}")
         _clubb_top_hpa = _cl.get("clubb_top_press_hpa")
         if _clubb_top_hpa is None:
             _clubb_top = None
@@ -657,6 +665,7 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
                 convective_rain_to_surface=bool(
                     _cl.get("convective_rain_to_surface", False)),
                 clubb_top_press=_clubb_top,
+                clubb_liquid_partition=_liq_part,
                 cld_macmic_num_steps=_macmic, column_mesh=column_mesh,
                 **_schemes)
         # The sample's forcing carries ERA5 skin temperature and the scene's
@@ -897,10 +906,21 @@ def build_mode_components(cfg, yml, column_mesh=None):
         params = TrainablePhysicsParams.from_defaults()
         step_unified = physics_pipeline.build_step_unified()
 
+        # The configured physics, exactly as the production compiled segment
+        # passes it; the builder's defaults (no microphysics -> an extra
+        # saturation adjustment, no fixers, radiation every step) would tune a
+        # different model from the configured one.
+        _configured = dict(
+            microphysics=config.microphysics,
+            fix_moisture=config.fix_moisture,
+            fix_mass=config.dycore.fix_mass,
+            rad_update_steps=int(config.rad_update_steps),
+        )
+
         def make_run_seg(trainable):
             return build_training_segment(
                 model, step_unified, grid, sigma, dt, fric_decay=fric_decay,
-                **trainable.to_segment_kwargs())
+                **{**_configured, **trainable.to_segment_kwargs()})
 
     elif cfg.mode == "neural_gcm":
         from legoesm.atmosphere.physics.neural_physics import (

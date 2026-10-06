@@ -805,6 +805,7 @@ def _call_radiation_backend(
     conv_precip: jnp.ndarray | None = None,
     conv_mass_flux_up: jnp.ndarray | None = None,
     conv_icwmr: jnp.ndarray | None = None,
+    clear_sky_toa: bool = False,
     column_mesh=None,
 ):
     """Call configured radiation backend with a unified integration interface.
@@ -847,7 +848,14 @@ def _call_radiation_backend(
     solar_spectral_fraction : jnp.ndarray or None
         Per-g-point solar weights for spectral solar-cycle forcing,
         passed through to ``solve_columns``.
+    clear_sky_toa : bool
+        RRTMGP only: also return the clear-sky TOA upward fluxes from the
+        same solve (``RadiationOutput.*_flux_up_toa_clr``).
     """
+    if clear_sky_toa and radiation_config.scheme in ("simple_lw", "gray"):
+        raise ValueError(
+            f"clear_sky_toa is an RRTMGP option; scheme "
+            f"{radiation_config.scheme!r} has no clear-sky solve")
     if radiation_config.scheme == "simple_lw":
         return _simple_lw_radiation(
             T=T, p_half=p_half, q_v=q_v, q_cloud=q_cloud, q_ice=q_ice,
@@ -983,6 +991,8 @@ def _call_radiation_backend(
         solar_spectral_fraction=solar_spectral_fraction,
         **cloud_kwargs,
     )
+    if clear_sky_toa:
+        _rad_kwargs["clear_sky"] = True
     # Maximum-random-overlap SUBCOLUMNS (opt-in).  The default path hands
     # every layer's GRID-MEAN water path to ONE homogeneous column, so cloud
     # spread thinly over many partly cloudy layers is solved as one deep
@@ -1009,12 +1019,21 @@ def _call_radiation_backend(
         _rad_kwargs = _sub.expand_kwargs(_rad_kwargs, _n_sub, _ncol)
         _rad_kwargs["cloud_path_liq"] = _lwp
         _rad_kwargs["cloud_path_ice"] = _iwp
+    elif _ov == "mcica":
+        # CAM6 McICA: the same maximum-random generator, but ONE subcolumn per
+        # g-point (drawn inside the solver) instead of n full solves.  The
+        # solver takes IN-CLOUD paths (same floor as subcolumn_paths).
+        from legoesm.atmosphere.physics.clouds import subcolumns as _sub
+        (_rad_kwargs["cloud_path_liq"],
+         _rad_kwargs["cloud_path_ice"]) = _sub.in_cloud_paths(
+            cloud_props.cloud_fraction, cloud_props.lwp, cloud_props.iwp)
+        _rad_kwargs["mcica_cloud_fraction"] = cloud_props.cloud_fraction
     elif _ov != "none":
         # Dispatch hardening: a typo must never silently run the legacy
         # single-column path (validated on the static config value).
         raise ValueError(
             f"unknown cloud_vertical_overlap_optics {_ov!r}; "
-            "expected 'none' or 'max_random'"
+            "expected 'none', 'max_random' or 'mcica'"
         )
 
     # Column-chunk the rrtmgp solve when configured: the per-block body
@@ -1062,6 +1081,9 @@ def _call_radiation_backend(
             heating_rate=result.lw_heating_rate + result.sw_heating_rate * s,
             lw_heating_rate=result.lw_heating_rate,
             sw_heating_rate=result.sw_heating_rate * s,
+            lw_flux_up_toa_clr=result.lw_flux_up_toa_clr,
+            sw_flux_up_toa_clr=(None if result.sw_flux_up_toa_clr is None
+                                else result.sw_flux_up_toa_clr * _sw_scale),
         )
 
     # Carry the prescribed TOA insolation (this scope's per-column
@@ -1211,18 +1233,21 @@ def make_radiation_physics(
 
     # Load heavy/static RRTMGP optics once outside model JIT traces. mc3d also
     # needs the RRTMGP optics tables (Phase 2b: 3D-MC shortwave uses RRTMGP
-    # per-g-point optics; falls back to gray optics if the tables are absent).
+    # per-g-point optics).  Missing tables are an error for both schemes:
+    # mc3d used to fall back silently to gray optics, which also hid config
+    # typos and genuine bugs behind a bare ``except Exception``.
     rrtmgp_solver = None
     if radiation_config.scheme in ("rrtmgp", "mc3d"):
         from legoesm.atmosphere.physics.radiation.rrtmgp.rrtmgp import RRTMGP
         try:
             RRTMGP.preload(radiation_config.rrtmgp)
             rrtmgp_solver = RRTMGP.from_legoesm_config(radiation_config.rrtmgp)
-        except Exception:
-            if radiation_config.scheme == "rrtmgp":
-                raise
-            # mc3d: gray-optics fallback when RRTMGP data is unavailable.
-            rrtmgp_solver = None
+        except FileNotFoundError as e:
+            raise FileNotFoundError(
+                f"RadiationConfig.scheme={radiation_config.scheme!r} needs the "
+                f"RRTMGP optics tables; {e.filename!r} was not found. Point "
+                "RRTMGPConfig's lw/sw gas and cloud file fields at the tables."
+            ) from e
 
     # Load ML ozone ridge weights once (outside JIT).  Gray radiation
     # ignores ozone, so skip the (potentially large) NetCDF load when
@@ -1368,6 +1393,10 @@ def _make_hydrostatic_radiation(
     _clr_sky_cfg = (
         radiation_config._replace(cloud_scheme="none", cloud_config=None)
         if radiation_config.clear_sky_diag else None)
+    # RRTMGP computes the clear-sky fluxes inside the all-sky solve instead of
+    # a second solve; gray/simple_lw keep the second pass.
+    _clr_sky_fused = (_clr_sky_cfg is not None
+                      and radiation_config.scheme not in ("gray", "simple_lw"))
 
     def physics_fn(state, grid_or_mesh, sigma_coord,
                    forcing=None, phys_state=None) -> HydrostaticTendencies:
@@ -1675,6 +1704,7 @@ def _make_hydrostatic_radiation(
             conv_mass_flux_up=_conv_mf_col,
             conv_icwmr=_conv_icwmr_col,
             solar_spectral_fraction=_ssf_ext,
+            clear_sky_toa=_clr_sky_fused,
         )
 
         # #843 lean-lane clear-sky second pass: SAME column state and
@@ -1687,7 +1717,12 @@ def _make_hydrostatic_radiation(
         # (the held/no-rad sub-cycle variant contains no radiation at all).
         sw_up_toa_clr = None
         lw_up_toa_clr = None
-        if _clr_sky_cfg is not None:
+        if _clr_sky_fused:
+            # RRTMGP: the clear-sky fluxes came out of the all-sky solve
+            # above, sharing its gas optics (~90% of the radiation cost).
+            sw_up_toa_clr = rad_out.sw_flux_up_toa_clr
+            lw_up_toa_clr = rad_out.lw_flux_up_toa_clr
+        elif _clr_sky_cfg is not None:
             rad_out_clr = _call_radiation_backend(
                 radiation_config=_clr_sky_cfg,
                 eccf=eccf,

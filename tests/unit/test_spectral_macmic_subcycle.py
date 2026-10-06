@@ -50,8 +50,8 @@ def _cfg(partition=False, macmic=1):
         radiation=type(PhysicsConfig().radiation)(scheme="none"),
         convection=type(PhysicsConfig().convection)(scheme="none"),
         turbulence=TurbulenceConfig(
-            scheme="clubb", clubb=CLUBBConfig(
-                prognostic=partition, liquid_partition=partition)),
+            scheme="clubb", liquid_partition=partition,
+            clubb=CLUBBConfig(prognostic=partition)),
         microphysics=MicrophysicsConfig(
             scheme="morrison",
             morrison=MorrisonConfig(liquid_from_closure=partition)),
@@ -376,9 +376,9 @@ def test_the_partition_refuses_the_diagnostic_closure(setup):
     grid, sigma, _ = setup
     cfg, _ = _cfg(partition=True)
     cfg = cfg._replace(turbulence=TurbulenceConfig(
-        scheme="clubb", clubb=CLUBBConfig(prognostic=False,
-                                          liquid_partition=True)))
-    with pytest.raises(ValueError, match="needs the PROGNOSTIC CLUBB"):
+        scheme="clubb", liquid_partition=True,
+        clubb=CLUBBConfig(prognostic=False)))
+    with pytest.raises(ValueError, match=r"(?i)needs (the )?prognostic CLUBB"):
         make_physics(cfg, model_type="spectral_pe", dt=_DT,
                      cld_macmic_num_steps=3)
 

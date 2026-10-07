@@ -147,3 +147,20 @@ def test_unknown_tracer_name_raises():
     with pytest.raises(ValueError, match="not tracers"):
         mpas_hydrostatic_tendencies(
             state, mesh, coord, cfg._replace(vert4_flux_form_tracers=("q_x",)), None, 0.0)
+
+
+@pytest.mark.parametrize("dp", [
+    [1.0, 1e-6, 1.0, 1.0],
+    [1.0, 1.0, 1e5],
+    list(np.geomspace(1e-3, 1e4, 12)),
+    [1.0, 100.0] * 8,
+])
+def test_spectral_radius_bounded_for_any_layer_masses(dp):
+    """Explicit stability must not depend on the layer-mass ratio: the operator
+    (tendency / -nu) has spectral radius <= 16, the uniform-grid value."""
+    import jax
+    dp = jnp.asarray(dp)
+    op = jax.jacfwd(lambda q: vertical_del4_tracer_tendency_flux(q, 1.0, dp) * -1.0)(
+        jnp.ones(dp.shape[0]))
+    lam = np.linalg.eigvals(np.asarray(op))
+    assert np.max(np.abs(lam)) <= 16.0 + 1e-9

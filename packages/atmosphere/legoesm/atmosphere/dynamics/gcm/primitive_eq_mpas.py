@@ -364,7 +364,7 @@ def vertical_del4_tracer_tendency_flux(
     and bottom::
 
         L_k = (w_{k+1/2} (g_{k+1} - g_k) - w_{k-1/2} (g_k - g_{k-1})) / dp_k,
-        w_{k+1/2} = (dp_k + dp_{k+1}) / 2,   w_{1/2} = w_{nlev+1/2} = 0
+        w_{k+1/2} = min(dp_k, dp_{k+1}),   w_{1/2} = w_{nlev+1/2} = 0
 
     so ``sum_k L_k dp_k == 0`` by telescoping, column by column, with NO
     projection.  The projected form removes the column's index-space
@@ -376,11 +376,9 @@ def vertical_del4_tracer_tendency_flux(
     ``w/dp == 1`` and this equals the projected form (whose projection is then
     zero) to round-off.
 
-    Stability: the spectral radius grows with the adjacent-layer mass ratio
-    (unbounded as a layer thins to zero, codex review).  MEASURED on the CAM
-    L32 table at p_s = 1000/700/500 hPa (adjacent ratios 0.46-1.85): 16.0-16.3
-    against 15.9 for the projected form, i.e. nu*dt*lambda = 3.7e-3 at
-    nu = 2e-6, dt = 112.5 s -- far inside explicit stability.
+    Stability: spectral radius <= 16 for any positive layer masses (the
+    uniform-grid value; see the interface weight below), so nu*dt*lambda
+    <= 3.6e-3 at nu = 2e-6, dt = 112.5 s.
 
     Parameters
     ----------
@@ -394,12 +392,15 @@ def vertical_del4_tracer_tendency_flux(
     qp = jnp.concatenate([ghost_top, q_3d, ghost_bot], axis=-1)
     lap = qp[..., :-2] - 2.0 * qp[..., 1:-1] + qp[..., 2:]
     dp = jnp.broadcast_to(layer_mass.astype(q_3d.dtype), q_3d.shape)
-    w = 0.5 * (dp[..., 1:] + dp[..., :-1])                       # interior interfaces
-    # A non-positive layer mass (broken hybrid layer under very high terrain)
-    # is isolated: no flux through either of its interfaces and zero tendency,
-    # so every column still conserves exactly (codex review).
+    # Interface weight = the THINNER adjacent layer's mass (>= 0).  Then
+    # w/dp_k <= 1 on every row, so by Gershgorin the operator's spectral radius
+    # is bounded by the uniform-grid value (16) for ANY layer masses -- the
+    # arithmetic mean was unbounded as a layer thins (codex + GLM review).  A
+    # non-positive layer (broken hybrid layer under very high terrain) gets
+    # w = 0 on both interfaces and zero tendency, so every column still
+    # conserves exactly by telescoping.
     live = dp > 0
-    w = jnp.where(live[..., 1:] & live[..., :-1], w, 0.0)
+    w = jnp.maximum(jnp.minimum(dp[..., 1:], dp[..., :-1]), 0.0)
     flux = w * (lap[..., 1:] - lap[..., :-1])                    # (..., nlev-1)
     flux = jnp.pad(flux, (*pad_axes, (1, 1)))                    # no-flux top/bottom
     div = flux[..., 1:] - flux[..., :-1]

@@ -448,6 +448,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="MPAS vertical biharmonic hyperdiffusion of T "
                              "[1/s] — #930 2Δσ vertical-checkerboard cure "
                              "(0 disables)")
+    parser.add_argument("--mpas-vert4-flux-form-tracers", nargs="*",
+                        default=list(_DYCORE_DEFAULTS.mpas_vert4_flux_form_tracers),
+                        help="tracer names (e.g. q_v) whose MPAS vertical del4 "
+                             "filter uses the mass-weighted flux form instead "
+                             "of the projected form (none = all projected)")
     parser.add_argument("--mpas-conservative-tracer-clamp",
                         action=argparse.BooleanOptionalAction, default=True,
                         help="MPAS floors: borrow the clipped negative tracer "
@@ -2555,6 +2560,7 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         div_damp_scale=args.div_damp_scale,
         moisture_flux_form=args.moisture_flux_form,
         mpas_nu_vert4_T=args.mpas_nu_vert4_t,
+        mpas_vert4_flux_form_tracers=tuple(args.mpas_vert4_flux_form_tracers or ()),
         mpas_conservative_tracer_clamp=args.mpas_conservative_tracer_clamp,
         mpas_vert_advection_scheme=args.mpas_vert_advection_scheme,
         mpas_sponge_del2_top_layers=(args.mpas_sponge_del2_top_layers

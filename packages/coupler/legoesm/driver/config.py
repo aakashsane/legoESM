@@ -278,6 +278,13 @@ class DycoreConfig(NamedTuple):
     # (``component_factory``).  Set 0.0 to reproduce the pre-#930 dycore exactly.
     # Appended last to preserve positional ABI.
     mpas_nu_vert4_T: float = 2.0e-6
+    # Tracer names whose vertical del4 filter uses the mass-weighted FLUX form
+    # instead of the projected form (``vertical_del4_tracer_tendency_flux``).
+    # The projected form subtracts the column-mean tendency as a uniform
+    # mixing-ratio offset, which drains stratospheric water vapour (measured
+    # -0.4 ppmv/day at 45-70N, -3 ppmv/day in the tropics on e12_year).
+    # Empty = all tracers projected (pre-2026-10 behaviour, bit-identical).
+    mpas_vert4_flux_form_tracers: tuple = ()
     # Column-CONSERVING tracer positivity clamp in the MPAS floors stage.
     # The plain ``max(q, 0)`` is NOT mass-neutral: with no limiter in
     # ``tracer_transport_mpas``, horizontal advection undershoot alone made it
@@ -3667,6 +3674,18 @@ class ExperimentConfig(NamedTuple):
                 "dycore.mpas_div_damp4_scale is wired into the hydrostatic MPAS dycore "
                 f"only; on discretization={d.discretization!r}/model_type={d.model_type!r} "
                 "it would be silently inert")
+        _v4f = tuple(getattr(d, "mpas_vert4_flux_form_tracers", ()) or ())
+        if _v4f:
+            from legoesm.core.conservation import is_borrow_eligible_tracer
+            _bad = [n for n in _v4f if not is_borrow_eligible_tracer(n)]
+            if _bad:
+                errors.append(
+                    f"dycore.mpas_vert4_flux_form_tracers has unknown tracer names {_bad} "
+                    "(expected per-mass water/number tracers such as q_v)")
+            if d.discretization != "mpas" or d.mpas_nu_vert4_T <= 0.0:
+                errors.append(
+                    "dycore.mpas_vert4_flux_form_tracers is inert unless "
+                    "discretization='mpas' and mpas_nu_vert4_T > 0")
         if d.mpas_vert_advection_scheme not in _vert_adv_options:
             errors.append(
                 f"dycore.mpas_vert_advection_scheme must be one of "

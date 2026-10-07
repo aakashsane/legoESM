@@ -173,6 +173,10 @@ class MPASPrimitiveEquationConfig(NamedTuple):
     # ``nu_del4`` "off by default, set in production" convention); the
     # coupled/AMIP path sets a small value.
     nu_vert4_T: float = 0.0
+    # Tracer names whose vertical del4 filter uses the mass-weighted FLUX form
+    # (``vertical_del4_tracer_tendency_flux``) instead of the projected form.
+    # Empty = every tracer projected (pre-2026-10 behaviour, bit-identical).
+    vert4_flux_form_tracers: tuple = ()
     # Vertical advection scheme for the SIGMA lane (``vertical_coord="sigma"``),
     # applied to the θ thermodynamic transport, the tracers and the edge winds
     # — one selector for the one shared operator they all call.
@@ -347,6 +351,51 @@ def vertical_del4_T_tendency(
     _w = layer_mass.astype(tend.dtype)
     return tend - ((tend * _w).sum(axis=-1, keepdims=True)
                    / _w.sum(axis=-1, keepdims=True))
+
+
+def vertical_del4_tracer_tendency_flux(
+    q_3d: jax.Array, nu_vert4: float, layer_mass: jax.Array,
+) -> jax.Array:
+    """Vertical biharmonic filter of a mixing ratio in MASS-WEIGHTED FLUX form.
+
+    Same inner operator as :func:`vertical_del4_T_tendency` (index-space
+    Laplacian with linearly extrapolated ghosts, so a linear profile gives zero),
+    but the OUTER Laplacian is a mass-weighted flux divergence with no-flux top
+    and bottom::
+
+        L_k = (w_{k+1/2} (g_{k+1} - g_k) - w_{k-1/2} (g_k - g_{k-1})) / dp_k,
+        w_{k+1/2} = (dp_k + dp_{k+1}) / 2,   w_{1/2} = w_{nlev+1/2} = 0
+
+    so ``sum_k L_k dp_k == 0`` by telescoping, column by column, with NO
+    projection.  The projected form removes the column's index-space
+    non-conservation as a UNIFORM mixing-ratio offset at every level; for water
+    vapour (four decades between surface and stratosphere) that offset is a
+    -0.4 ppmv/day (45-70N) to -3 ppmv/day (tropics) sink in the stratosphere
+    (measured on e12_year, 2026-10-07), which dried it to ~1 ppmv.  Here the
+    redistribution is between ADJACENT layers only.  On a uniform grid
+    ``w/dp == 1`` and this equals the projected form (whose projection is then
+    zero) to round-off.
+
+    Parameters
+    ----------
+    q_3d : (..., nlev) mixing ratio.
+    nu_vert4 : filter rate [1/s] (``nu_vert4_T``).
+    layer_mass : (..., nlev) or (nlev,) positive layer mass (``dp``).
+    """
+    pad_axes = ((0, 0),) * (q_3d.ndim - 1)
+    ghost_top = 2.0 * q_3d[..., 0:1] - q_3d[..., 1:2]
+    ghost_bot = 2.0 * q_3d[..., -1:] - q_3d[..., -2:-1]
+    qp = jnp.concatenate([ghost_top, q_3d, ghost_bot], axis=-1)
+    lap = qp[..., :-2] - 2.0 * qp[..., 1:-1] + qp[..., 2:]
+    dp = jnp.broadcast_to(layer_mass.astype(q_3d.dtype), q_3d.shape)
+    w = 0.5 * (dp[..., 1:] + dp[..., :-1])                       # interior interfaces
+    flux = w * (lap[..., 1:] - lap[..., :-1])                    # (..., nlev-1)
+    flux = jnp.pad(flux, (*pad_axes, (1, 1)))                    # no-flux top/bottom
+    # A non-positive layer mass (broken hybrid layer under very high terrain)
+    # gets zero tendency rather than a division by <= 0 (its interfaces still
+    # carry flux, so that column is then conservative only up to that layer).
+    div = flux[..., 1:] - flux[..., :-1]
+    return -nu_vert4 * jnp.where(dp > 0, div / jnp.where(dp > 0, dp, 1.0), 0.0)
 
 
 def sponge_del2_profile(nlev: int, n_layers: int, factor) -> jnp.ndarray:
@@ -832,10 +881,28 @@ def mpas_hydrostatic_tendencies(
         # tropopause-refined σ grids too, not just on a uniform grid.
         # Zero when nu_vert4_T == 0 (bit-identical).
         if config.nu_vert4_T > 0.0 and q.shape[-2] > 2:
-            dq = dq + jax.vmap(
-                lambda qk: vertical_del4_T_tendency(
-                    qk, config.nu_vert4_T, _filter_weight),
-                in_axes=-1, out_axes=-1)(q)
+            # Per-tracer form: names in ``vert4_flux_form_tracers`` get the
+            # mass-weighted flux form (no projection); the rest keep the
+            # projected form.  Static Python selection on the tracer names.
+            _flux_set = tuple(config.vert4_flux_form_tracers)
+            _unknown = [n for n in _flux_set if n not in _tnames]
+            if _unknown:
+                raise ValueError(
+                    f"vert4_flux_form_tracers names {_unknown} are not tracers "
+                    f"of this state (have {_tnames})")
+            if not _flux_set:
+                dq = dq + jax.vmap(
+                    lambda qk: vertical_del4_T_tendency(
+                        qk, config.nu_vert4_T, _filter_weight),
+                    in_axes=-1, out_axes=-1)(q)
+            else:
+                dq = dq + jnp.stack([
+                    (vertical_del4_tracer_tendency_flux(
+                        q[..., _i], config.nu_vert4_T, _filter_weight)
+                     if _n in _flux_set else
+                     vertical_del4_T_tendency(
+                         q[..., _i], config.nu_vert4_T, _filter_weight))
+                    for _i, _n in enumerate(_tnames)], axis=-1)
         _phys_tt = (physics_tendency.tracer_tendencies
                     if physics_tendency is not None else None)
         for _i, k in enumerate(_tnames):

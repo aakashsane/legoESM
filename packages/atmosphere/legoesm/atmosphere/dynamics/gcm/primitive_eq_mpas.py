@@ -376,6 +376,12 @@ def vertical_del4_tracer_tendency_flux(
     ``w/dp == 1`` and this equals the projected form (whose projection is then
     zero) to round-off.
 
+    Stability: the spectral radius grows with the adjacent-layer mass ratio
+    (unbounded as a layer thins to zero, codex review).  MEASURED on the CAM
+    L32 table at p_s = 1000/700/500 hPa (adjacent ratios 0.46-1.85): 16.0-16.3
+    against 15.9 for the projected form, i.e. nu*dt*lambda = 3.7e-3 at
+    nu = 2e-6, dt = 112.5 s -- far inside explicit stability.
+
     Parameters
     ----------
     q_3d : (..., nlev) mixing ratio.
@@ -389,13 +395,15 @@ def vertical_del4_tracer_tendency_flux(
     lap = qp[..., :-2] - 2.0 * qp[..., 1:-1] + qp[..., 2:]
     dp = jnp.broadcast_to(layer_mass.astype(q_3d.dtype), q_3d.shape)
     w = 0.5 * (dp[..., 1:] + dp[..., :-1])                       # interior interfaces
+    # A non-positive layer mass (broken hybrid layer under very high terrain)
+    # is isolated: no flux through either of its interfaces and zero tendency,
+    # so every column still conserves exactly (codex review).
+    live = dp > 0
+    w = jnp.where(live[..., 1:] & live[..., :-1], w, 0.0)
     flux = w * (lap[..., 1:] - lap[..., :-1])                    # (..., nlev-1)
     flux = jnp.pad(flux, (*pad_axes, (1, 1)))                    # no-flux top/bottom
-    # A non-positive layer mass (broken hybrid layer under very high terrain)
-    # gets zero tendency rather than a division by <= 0 (its interfaces still
-    # carry flux, so that column is then conservative only up to that layer).
     div = flux[..., 1:] - flux[..., :-1]
-    return -nu_vert4 * jnp.where(dp > 0, div / jnp.where(dp > 0, dp, 1.0), 0.0)
+    return -nu_vert4 * jnp.where(live, div / jnp.where(live, dp, 1.0), 0.0)
 
 
 def sponge_del2_profile(nlev: int, n_layers: int, factor) -> jnp.ndarray:

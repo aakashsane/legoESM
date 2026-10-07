@@ -3675,13 +3675,9 @@ class ExperimentConfig(NamedTuple):
                 f"only; on discretization={d.discretization!r}/model_type={d.model_type!r} "
                 "it would be silently inert")
         _v4f = tuple(getattr(d, "mpas_vert4_flux_form_tracers", ()) or ())
+        # Tracer names are checked by the dycore against the state's actual
+        # tracers (it raises on an unknown name); here only inertness.
         if _v4f:
-            from legoesm.core.conservation import is_borrow_eligible_tracer
-            _bad = [n for n in _v4f if not is_borrow_eligible_tracer(n)]
-            if _bad:
-                errors.append(
-                    f"dycore.mpas_vert4_flux_form_tracers has unknown tracer names {_bad} "
-                    "(expected per-mass water/number tracers such as q_v)")
             if d.discretization != "mpas" or d.mpas_nu_vert4_T <= 0.0:
                 errors.append(
                     "dycore.mpas_vert4_flux_form_tracers is inert unless "

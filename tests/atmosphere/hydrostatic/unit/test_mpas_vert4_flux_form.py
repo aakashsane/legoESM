@@ -88,11 +88,17 @@ def test_linear_profile_and_checkerboard():
     assert bool(jnp.all(t[2:-2] * (cb[2:-2] - 1e-3) < 0))
 
 
-def test_nonpositive_layer_mass_gives_zero_not_inf():
+def test_nonpositive_layer_mass_is_isolated_and_column_still_conserves():
     q = jnp.asarray(np.linspace(1e-5, 1e-2, 8))
     dp = jnp.asarray([500.0, 800.0, 1200.0, 0.0, 1500.0, 2000.0, 2500.0, 3000.0])
     t = vertical_del4_tracer_tendency_flux(q ** 2, NU, dp)
     assert bool(jnp.all(jnp.isfinite(t))) and float(t[3]) == 0.0
+    assert abs(float((t * dp).sum())) <= 1e-13 * float((jnp.abs(t) * dp).sum())
+    assert float(jnp.max(jnp.abs(t))) > 0.0
+    # codex's case: dp = (1, 0, 1), q = (1, 0, 0)
+    t3 = vertical_del4_tracer_tendency_flux(jnp.asarray([1.0, 0.0, 0.0]), NU,
+                                            jnp.asarray([1.0, 0.0, 1.0]))
+    assert abs(float((t3 * jnp.asarray([1.0, 0.0, 1.0])).sum())) < 1e-20
 
 
 def _tracer_state():

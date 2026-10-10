@@ -135,6 +135,7 @@ def test_zm_publishes_its_convective_snow_flux():
     prec = np.asarray(jnp.sum(out.dq_r_conv_dt * (p_half[:, 1:] - p_half[:, :-1]),
                               axis=-1) / constants.g)
     assert snow.shape == (ncol,)
+    assert float(snow.max()) > 0.0, snow                # non-vacuous: ZM snows here
     assert np.all(snow >= 0.0) and np.all(snow <= np.maximum(prec, 0.0) + 1e-12)
 
 

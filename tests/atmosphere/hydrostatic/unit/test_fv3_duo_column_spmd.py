@@ -463,4 +463,7 @@ def test_driver_terrain_rewrap_keeps_the_layout_and_the_knobs(tmp_path):
     assert new.conservative_tracer_clamp == old.conservative_tracer_clamp
     assert (new.energy_consistent_moisture_clip
             == old.energy_consistent_moisture_clip)
+    # the energy fixer (F15): on by the driver default, off on the raw model,
+    # so a dropped carry reads False
+    assert old.energy_fixer is True and new.energy_fixer is True
     assert drv.grid is new.mesh

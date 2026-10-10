@@ -506,8 +506,8 @@ def land_snowfall_from_sfc_diag(sfc_diag, precip):
         "interactive land: the physics publishes surface precipitation but "
         "not its frozen part (precip_frozen), so the land cannot take the "
         "atmosphere's own rain/snow partition (F29). Use a microphysics/"
-        "convection scheme that publishes it (morrison, thompson, p3, the "
-        "warm-rain schemes, zhang_mcfarlane).")
+        "convection scheme that publishes it (every physical scheme does; "
+        "the ML microphysics emulators and neural physics do not).")
 
 
 def _sed_substeps_slot() -> int:
@@ -10384,7 +10384,8 @@ class ModelDriver:
             fv3_duo_dynamics_for_layout(self.config, grid, old.dyn.config),
             tracer_names=old.tracer_names,
             conservative_tracer_clamp=old.conservative_tracer_clamp,
-            energy_consistent_moisture_clip=old.energy_consistent_moisture_clip)
+            energy_consistent_moisture_clip=old.energy_consistent_moisture_clip,
+            energy_fixer=old.energy_fixer)
         # a rebuild changes terrain only: the geometry every setup-time
         # regrid was placed on must be unchanged (asserted, not assumed)
         for k in ("latCell", "lonCell", "areaCell"):

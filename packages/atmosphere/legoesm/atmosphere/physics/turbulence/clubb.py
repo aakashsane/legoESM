@@ -127,6 +127,7 @@ from legoesm.atmosphere.physics._shared import (
     buoyancy_coefficient,
     exner_function,
     half_to_full,
+    ke_dissipation_heating,
     virtual_temperature,
 )
 from legoesm.atmosphere.physics.turbulence.config import SurfaceLayerConfig
@@ -727,6 +728,14 @@ class CLUBBConfig(NamedTuple):
     q_flux_scale: float = 1.0
     q_flux_scale_sigma_lo: float = 0.0
     q_flux_scale_sigma_hi: float = 1.0
+    # Return the kinetic energy the closure's momentum mixing removes --
+    # including the surface stress it applies as the lower BC -- as local
+    # heating (``_shared.ke_dissipation_heating``), the role CAM6's
+    # ``clubb_do_energyfix`` (default .true., clubb_intr.F90:125) plays.
+    # Without it every CLUBB lane has a systematic total-energy sink (review
+    # 2026-10-10 F14).  Default True = the fix; a static feature gate (Python
+    # ``if``), not traced.  False exists only for controlled A/B audits.
+    ke_heating: bool = True
 
 
 # Derived parameters (recomputed from base config, never stored as magic
@@ -6169,10 +6178,16 @@ def clubb_turbulence(
 
     h_pbl = diagnose_pbl_height(T, q_v, u, v, p_full, z_full)
 
+    du_dt = (u_new - u) / dt
+    dv_dt = (v_new - v) / dt
+    dT_dt = (T_new - T) / dt
+    if config.ke_heating:
+        # KE removed by the eddy diffusion + surface stress -> heat [K/s].
+        dT_dt = dT_dt + ke_dissipation_heating(u, v, du_dt, dv_dt, dt)
     output = TurbulenceOutput(
-        du_dt=(u_new - u) / dt,
-        dv_dt=(v_new - v) / dt,
-        dT_dt=(T_new - T) / dt,
+        du_dt=du_dt,
+        dv_dt=dv_dt,
+        dT_dt=dT_dt,
         dq_v_dt=(q_new - q_v) / dt,
         Km=Km_full,
         Kh=Kh_full,
@@ -6472,6 +6487,10 @@ def clubb_step(
         T_new = flip_vertical(new_state.thlm) * exner  # thl ~ theta, no liquid
         q_new = flip_vertical(new_state.rtm)
     dT_dt = (T_new - T) / dt
+    if config.ke_heating:
+        # KE removed by the momentum mixing + surface stress -> heat [K/s,
+        # +warming]; exact per sub-step, so a sub-cycle's net is exact too.
+        dT_dt = dT_dt + ke_dissipation_heating(u, v, du_dt, dv_dt, dt)
     dq_v_dt = (q_new - q_v) / dt
     diags = dict(diags, ustar=ustar, shflx=shflx, lhflx=lhflx)
     return du_dt, dv_dt, dT_dt, dq_v_dt, new_state, diags

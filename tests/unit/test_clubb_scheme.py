@@ -126,7 +126,13 @@ def test_diagnostic_clubb_conserves_column_with_no_sfc_flux():
     mass = np.asarray(kw["rho"]) * dz
     exner = (np.asarray(kw["p_full"]) / constants.p_ref) ** constants.kappa
     dq = np.asarray(out.dq_v_dt)
-    dth = np.asarray(out.dT_dt) / exner
+    # theta TRANSPORT invariant: the KE-dissipation heating (F14, a separate
+    # closure pinned in test_clubb_ke_heating.py) is a genuine source, so it
+    # is taken out before testing that the diffusion only redistributes.
+    from legoesm.atmosphere.physics._shared import ke_dissipation_heating
+    ke_heat = np.asarray(ke_dissipation_heating(
+        kw["u"], kw["v"], out.du_dt, out.dv_dt, dt))
+    dth = (np.asarray(out.dT_dt) - ke_heat) / exner
     col_dq = np.sum(mass * dq, axis=1)
     col_q = np.sum(mass * np.asarray(kw["q_v"]), axis=1)
     col_dth = np.sum(mass * dth, axis=1)
@@ -601,7 +607,13 @@ def test_prognostic_clubb_conserves_column_heat_no_sfc_flux():
     dz = np.abs(np.asarray(kw["z_half"])[:, :-1] - np.asarray(kw["z_half"])[:, 1:])
     mass = np.asarray(rho) * dz
     exner = np.asarray(exner_function(kw["p_full"]))
-    dthl = np.asarray(out.dT_dt) / exner                 # dθl/dt [K/s]
+    # θl TRANSPORT invariant: remove the KE-dissipation heating (F14; its own
+    # closure is pinned in test_clubb_ke_heating.py).  dt=150 < clubb_dt, so
+    # one sub-step and the heating is exactly this expression.
+    from legoesm.atmosphere.physics._shared import ke_dissipation_heating
+    ke_heat = np.asarray(ke_dissipation_heating(
+        u_f, v_f, out.du_dt, out.dv_dt, 150.0))
+    dthl = (np.asarray(out.dT_dt) - ke_heat) / exner     # dθl/dt [K/s]
     col_dthl = np.sum(mass * dthl, axis=1)               # (kg/m^2) K/s
     col_thl = np.sum(mass * np.asarray(T_f) / exner, axis=1)
     # (a) Nontrivial heat redistribution (~3e-4 K/step here; rest state ~1e-9 K).

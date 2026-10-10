@@ -376,6 +376,15 @@ class DycoreConfig(NamedTuple):
     # damp balanced flow together with the divergent mode; this term does not.
     # Appended at the tuple END: preserves POSITIONAL CONSTRUCTION.
     mpas_div_damp4_scale: float = 0.0
+    # CAM-style dycore total-energy fixer (check_energy_fix, review 2026-10-10
+    # F15, choice by vote): every step the energy the dynamics window loses --
+    # the KE the del2 sponge / del4 / div4 (MPAS) and the d_con=0 damping
+    # (duo) remove, plus numerical dissipation -- is returned as a uniform
+    # heating dT = (E_before - E_after) / (c_pd * M), E = sum((c_pd*T + KE)
+    # dp/g) + phis*p_s/g, before physics.  Default True = the fix.  Wired on
+    # the MPAS (serial + MPI) and FV3-duo column lanes; the other lanes do
+    # not run it yet (the driver refuses True there, never silently).
+    energy_fixer: bool = True
 
 
 class EvaluationConfig(NamedTuple):

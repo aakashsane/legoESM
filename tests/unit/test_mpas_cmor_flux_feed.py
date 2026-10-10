@@ -201,7 +201,10 @@ _EXTRA_ORDER = ("lw_up_toa", "sw_up_toa", "sw_down_toa",
                 "sed_substeps_required",
                 # slot 13: the water flux the column received (turbulence
                 # evap_sfc) -- CMOR evspsbl / moisture closure, never hfls/L_v.
-                "evap_sfc")
+                "evap_sfc",
+                # slot 14 (2026-10-10, F29): the frozen part of the precip,
+                # the interactive land's snowfall.
+                "precip_frozen")
 
 
 class TestSfcDiagContract:

@@ -137,14 +137,18 @@ CMIP6_FORCING_FLAGS+=( --rrtmgp-overhead-layer )
 # the twin's recorded 3.6 m (the residual is the source, our ETOPO regridded to
 # 1 deg vs their etopo_1deg_clean), i.e. 1.21x in drag where the previous file
 # was 2.31x.
-# _seamfix (review 2026-10-10 F33): the SAME product as the Levante twin, the
-# recipe above rebuilt after the regridder seam fix (#1712); the pre-fix file
-# carries a fake 0-m strip at 358-360E.  Stage it beside the old file.
+# _seamfix (review 2026-10-10 F33): the SAME product name as the Levante twin,
+# the recipe above rebuilt with the current (post-#1712) regridder.  Staged
+# 2026-10-10 (md5 1a735e4987c9588a1154d5018c448d6b): its values equal the older
+# Ginsburg file sso_stdh_2deg_from1deg.nc in every column (SO 40-60S mean sgh
+# 3.611 m both), so switching name changes no Ginsburg run.
 : "${AMIP_SSO:=/burg-archive/glab/users/pg2328/legoESM_chunk/data_pg/amip/sso_stdh_2deg_from1deg_seamfix.nc}"
 # Land-sea mask (sftlf) built from the CLM surfdata by
 # scripts/data/build_sftlf_from_surfdata.py, as the Levante twin.  Without it
 # f_land comes from ETOPO elevation>0, which turns the Caspian and Aral (below
 # sea level) into ocean with prescribed SST (review 2026-10-10 F33).
+# Staged 2026-10-10 beside pg2328 data/clm/ surfdata (md5 7bcc2bf1fd37cc830fc72726ac44213c;
+# Caspian/Aral 1.0, open ocean 0.0).
 : "${AMIP_LAND_MASK:=${CLM_SURFDATA%/*}/sftlf_clm_1.9x2.5.nc}"
 
 # --- machine-specific PATH flags (everything else is in the YAML) -------------

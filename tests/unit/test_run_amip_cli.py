@@ -2455,6 +2455,10 @@ def test_sundqvist_l36_deck_still_round_trips():
     # what makes this deck the neither-lever baseline.
     assert cfg.dycore.mpas_div_damp4_scale == 0.0
     assert cfg.convection == "bechtold"
+    # F22: the default turned CMT ON everywhere; this deck pins the OFF its
+    # results were produced with (resolved, not just the deck key).
+    from legoesm.driver.physics_pipeline import convection_config_for
+    assert convection_config_for(cfg).bechtold.enable_cmt is False
     assert cfg.cloud_scheme == "sundqvist"
     assert cfg.gravity_wave_drag == "mcfarlane+e3sm_cam"
     assert cfg.surface_bulk_scheme == "coare3"

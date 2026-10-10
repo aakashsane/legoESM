@@ -1162,6 +1162,79 @@ _ICE_SEED_RHO_FLOOR = 0.1        # [kg/m^3]
 # layer (last valid magnitude, valid mask, value-from-latest-solve mask).
 _LAND_STRESS_CKPT_KEYS = ("land_taumag", "land_taumag_valid", "land_taumag_fresh")
 _LAND_ML_CACHE_FIELDS = ("canopy_x",)
+# Restart-exactness payload of the column loop (R-ex): the land boundary
+# outputs the loop keeps as locals between land steps (skin T, albedo,
+# solved humidity/fluxes, held drag, partial cadence sums) and the model's
+# held surface/TOA flux slots (``model._sfc_diag``).  Both are re-seeded on
+# a cold start; a checkpoint written before they were persisted still
+# restarts (cold seed, logged), one carrying them resumes bitwise.
+_LAND_IO_CKPT_PREFIX = "landio_"
+_SFC_DIAG_CKPT_PREFIX = "sfcdiag_"
+_SFC_DIAG_CKPT_META = "sfcdiag_meta"
+
+
+def _sfc_diag_to_ckpt(sfc_diag, gather=None) -> dict:
+    """``{sfcdiag_<i>: array, sfcdiag_meta: json}`` of the non-None slots of
+    the model's held ``_sfc_diag`` tuple; ``gather`` maps a rank-local cell
+    array to the global one under MPI."""
+    import json
+    if not sfc_diag:
+        return {}
+    out, meta = {}, []
+    for i, slot in enumerate(sfc_diag):
+        if slot is None:
+            meta.append(None)
+            continue
+        from legoesm.core.field import Field
+        if isinstance(slot, Field):
+            meta.append([slot.name, list(slot.dims), slot.units,
+                         slot.long_name, slot.staggering])
+            arr = slot.data
+        else:
+            meta.append("raw")
+            arr = slot
+        arr = jnp.asarray(arr)
+        if gather is not None:
+            arr = gather(arr)
+        out[f"{_SFC_DIAG_CKPT_PREFIX}{i}"] = np.asarray(arr)
+    out[_SFC_DIAG_CKPT_META] = np.asarray(json.dumps(meta))
+    return out
+
+
+def _sfc_diag_from_ckpt(staged: dict, n_cells: int | None = None) -> tuple | None:
+    """Rebuild the held ``_sfc_diag`` tuple from the staged ``sfcdiag_*``
+    entries (``staged`` is consumed), or None when nothing was staged.
+    ``n_cells`` (when given) is the cell count every cell slot must have."""
+    import json
+    meta = staged.pop(_SFC_DIAG_CKPT_META, None)
+    if meta is None:
+        if staged:
+            raise ValueError(
+                f"checkpoint sfcdiag_* slots {sorted(staged)} without "
+                f"{_SFC_DIAG_CKPT_META}: corrupt payload.")
+        return None
+    from legoesm.core.field import Field
+    meta = json.loads(str(meta))
+    slots = []
+    for i, m in enumerate(meta):
+        if m is None:
+            slots.append(None)
+            continue
+        arr = jnp.asarray(staged.pop(f"{_SFC_DIAG_CKPT_PREFIX}{i}"))
+        if n_cells is not None and arr.ndim >= 1 and arr.shape[0] != n_cells:
+            raise ValueError(
+                f"checkpoint sfcdiag_{i} shape {tuple(arr.shape)} != "
+                f"(nCells={n_cells},) -- mesh mismatch.")
+        if m == "raw":
+            slots.append(arr)
+        else:
+            name, dims, units, long_name, stag = m
+            slots.append(Field(arr, name=name, dims=tuple(dims), units=units,
+                               long_name=long_name, staggering=stag))
+    if staged:
+        raise ValueError(
+            f"checkpoint carries unexpected sfcdiag entries {sorted(staged)}")
+    return tuple(slots)
 
 
 def _seed_nucleated_ice_number(N_i, dq_i, ice_nuc_mass, n_i_nuc_max, p_full, T):
@@ -1587,6 +1660,31 @@ class ModelDriver:
             return tuple(ck[k] for k in _LAND_STRESS_CKPT_KEYS)
         return None
 
+    def _land_io_for_checkpoint(self) -> dict:
+        """The column loop's land boundary outputs to persist (R-ex): the
+        snapshot the loop took at the checkpoint step, or -- before any run
+        has adopted a loaded checkpoint (load -> save with no step) -- the
+        staged payload, so a no-step re-save cannot strip it."""
+        snap = getattr(self, "_land_io_ckpt", None)
+        if snap is not None:
+            return dict(snap)
+        ck = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        return {k[len(_LAND_IO_CKPT_PREFIX):]: v for k, v in ck.items()
+                if k.startswith(_LAND_IO_CKPT_PREFIX)}
+
+    def _sfc_diag_for_checkpoint(self):
+        """The model's held ``_sfc_diag`` tuple to persist (R-ex), or the
+        staged slots of a loaded-but-not-yet-run checkpoint."""
+        sd = getattr(getattr(self, "model", None), "_sfc_diag", None)
+        if sd is not None:
+            return sd
+        ck = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        staged = {k: v for k, v in ck.items()
+                  if k.startswith(_SFC_DIAG_CKPT_PREFIX)}
+        if not staged:
+            return None
+        return _sfc_diag_from_ckpt(staged)
+
     def _checkpoint_carry_aux(self) -> dict | None:
         """``self._carry_aux`` augmented with the evolved double-moment tracers
         (namespaced ``dmtr_*``) so a checkpoint persists them — otherwise a
@@ -1630,9 +1728,12 @@ class ModelDriver:
                 # Optional fields (TgC, surface_water) may be None — np.asarray
                 # would pickle a 0-d object array into the npz and crash the
                 # load-side jnp.asarray. Skip; restore only replaces saved keys.
-                # Cache fields (the canopy warm start) are skipped too: they
-                # carry no physics and an older reader would refuse the key.
-                if _v is not None and _f not in _LAND_ML_CACHE_FIELDS:
+                # The canopy warm start (``canopy_x``) is written too: the
+                # next solve starts from it and the result is seed-dependent,
+                # so a restart without it is not bitwise.  Readers treat it
+                # as optional (``_LAND_ML_CACHE_FIELDS``), so a checkpoint
+                # from before it was written still restarts.
+                if _v is not None:
                     base[f"land_ml_{_f}"] = np.asarray(_v)
         return base if base else None
 
@@ -6654,10 +6755,27 @@ class ModelDriver:
                         gather_voronoi_field(jnp.asarray(_a).reshape(-1),
                                              part, "cell")
                         for _a in _ls_save)
+                # R-ex payload: rank-local cell arrays, gathered HERE with
+                # the other collectives (every rank holds the same key set:
+                # the land steps on all ranks together and the model
+                # publishes ``_sfc_diag`` on every rank after step one).
+                _nloc_rex = int(part.n_local_cells)
+
+                def _g_rex(x, _n=_nloc_rex, _p=part):
+                    x = jnp.asarray(x)
+                    if x.ndim >= 1 and int(x.shape[0]) == _n:
+                        return gather_voronoi_field(x, _p, "cell")
+                    return x
+                _lio_save = {k: _g_rex(v)
+                             for k, v in self._land_io_for_checkpoint().items()}
+                _sd_save = _sfc_diag_to_ckpt(
+                    self._sfc_diag_for_checkpoint(), gather=_g_rex)
                 if self._mpi_rank != 0:
                     return
             else:
                 _ls_save = self._land_stress_for_checkpoint()
+                _lio_save = self._land_io_for_checkpoint()
+                _sd_save = _sfc_diag_to_ckpt(self._sfc_diag_for_checkpoint())
                 u_d, T_d, ps_d, phis_d = (
                     s.u.data, s.T.data, s.p_s.data, s.phis.data)
                 trc_d = (None if s.tracers is None
@@ -6784,6 +6902,13 @@ class ModelDriver:
                 _save["land_taumag"] = np.asarray(_ls_save[0])
                 _save["land_taumag_valid"] = np.asarray(_ls_save[1], dtype=bool)
                 _save["land_taumag_fresh"] = np.asarray(_ls_save[2], dtype=bool)
+            # R-ex: the land boundary outputs the loop holds between land
+            # steps and the model's held surface/TOA flux slots, so the
+            # resumed link forces its first step exactly as the unbroken run
+            # would (no bootstrap land step, no re-solved radiation phase).
+            for _k, _v in _lio_save.items():
+                _save[f"{_LAND_IO_CKPT_PREFIX}{_k}"] = np.asarray(_v)
+            _save.update(_sd_save)
             # #1353 (codex-2 finding 2): within-interval CMOR flux sums —
             # so a mid-interval (wallclock / off-cadence) restart resumes
             # the interval mean instead of dropping the pre-checkpoint
@@ -7683,6 +7808,30 @@ class ModelDriver:
                         _a = np.asarray(scatter_to_local(
                             jnp.asarray(_a), part, "cell"))
                     self._carry_aux[_k] = _a
+            # R-ex: land boundary outputs + held flux slots.  Same
+            # stale-persistence rule; absent keys = a checkpoint written
+            # before they were persisted (the loop cold-seeds, and logs it).
+            # Cell arrays scatter to this rank's band under MPI.
+            for _stale in [k for k in self._carry_aux
+                           if k.startswith((_LAND_IO_CKPT_PREFIX,
+                                            _SFC_DIAG_CKPT_PREFIX))]:
+                del self._carry_aux[_stale]
+            self._land_io_ckpt = None
+            if getattr(self, "model", None) is not None:
+                self.model._sfc_diag = None
+            for _k in d.files:
+                if not _k.startswith((_LAND_IO_CKPT_PREFIX,
+                                      _SFC_DIAG_CKPT_PREFIX)):
+                    continue
+                _a = d[_k]
+                if _a.dtype.kind in "US":
+                    self._carry_aux[_k] = str(_a)
+                    continue
+                _a = np.asarray(_a)
+                if _mpi and _a.ndim >= 1 and _a.shape[0] == part.nCells_global:
+                    _a = np.asarray(scatter_to_local(
+                        jnp.asarray(_a), part, "cell"))
+                self._carry_aux[_k] = _a
             # #1353 partial-interval CMOR flux sums: same stale-persistence
             # rule — drop prior staging, then stage this checkpoint's
             # payload for the _run_column accumulator restore.  WHITELISTED
@@ -11781,6 +11930,9 @@ class ModelDriver:
                             "checkpoint ice_T_skin has non-finite values — "
                             "refusing to resume from a corrupt skin.")
                     self._ice_T_skin = _skin
+                    # Adopted: the staged copy would otherwise ride carry_aux
+                    # for the rest of the run (a continuous run holds none).
+                    self._carry_aux.pop("ice_T_skin", None)
                     logger.info(
                         "  MPAS ice skin: resumed from checkpoint "
                         f"(min {float(jnp.min(_skin)):.1f} K)")
@@ -12846,6 +12998,11 @@ class ModelDriver:
                     "  Restored physics state from checkpoint: %s",
                     sorted(_restored_ps),
                 )
+            # Adopted into the save channel below: drop the staging so the
+            # resumed run's carry_aux matches a continuous run's (R-ex).
+            for _k in [k for k in self._carry_aux
+                       if k.startswith("physstate_")]:
+                del self._carry_aux[_k]
         # Latest carry for save_checkpoint (#413) — updated every step.
         self._mpas_phys_state = _phys_state
 
@@ -12985,6 +13142,83 @@ class ModelDriver:
                         jnp.asarray(a, dtype=_q_air0.dtype).reshape(-1)
                         for a in static_land_roughness(
                             _lml_params, _lml_cfg, int(_q_air0.size)))
+        # R-ex: resume the land boundary outputs and the model's held flux
+        # slots exactly where the writer left them, so the first resumed
+        # step is forced as the unbroken run's would be (no bootstrap land
+        # step, no skipped land step waiting for a radiation solve).
+        _ck_rex = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        _lio = {k[len(_LAND_IO_CKPT_PREFIX):]: _ck_rex.pop(k)
+                for k in list(_ck_rex) if k.startswith(_LAND_IO_CKPT_PREFIX)}
+        _sdk = {k: _ck_rex.pop(k) for k in list(_ck_rex)
+                if k.startswith(_SFC_DIAG_CKPT_PREFIX)}
+        _ncell_rex = int(self.state.T.data.shape[0])
+        if _sdk:
+            self.model._sfc_diag = _sfc_diag_from_ckpt(_sdk, _ncell_rex)
+            logger.info("  Held surface flux slots: resumed from checkpoint")
+        if _lio:
+            if not _land_ml_on:
+                raise ValueError(
+                    "checkpoint carries land boundary outputs (landio_*) but "
+                    "this run has no interactive multilayer land.")
+
+            def _cell_rex(k):
+                v = _lio.pop(k, None)
+                if v is None:
+                    return None
+                v = jnp.asarray(v).reshape(-1)
+                if v.shape != (_ncell_rex,):
+                    raise ValueError(
+                        f"checkpoint landio_{k} shape {tuple(v.shape)} != "
+                        f"(nCells={_ncell_rex},) -- mesh mismatch.")
+                return v
+            _land_T_skin = _cell_rex("T_skin")
+            _land_albedo_cells = _cell_rex("albedo_cells")
+            _land_qsfc_cells = _cell_rex("qsfc_cells")
+            _land_shflx_cells = _cell_rex("shflx_cells")
+            _land_lhflx_cells = _cell_rex("lhflx_cells")
+            _land_evap_cells = _cell_rex("evap_cells")
+            _land_beta_cells = _cell_rex("beta_cells")
+            if "a2s_n" in _lio:
+                _land_a2s_n = int(_lio.pop("a2s_n"))
+                _land_cz_wsum = _cell_rex("cz_wsum")
+                _land_w_sum = _cell_rex("w_sum")
+                from legoesm.core.coupling_fields import AtmToSurface as _A2S
+                _land_a2s_sum = _A2S(**{
+                    f: _cell_rex(f"a2s_{f}") for f in _A2S._fields
+                    if f"a2s_{f}" in _lio})
+            if _lio:
+                raise ValueError(
+                    f"checkpoint carries unexpected landio entries "
+                    f"{sorted(_lio)}")
+            logger.info("  Land boundary outputs: resumed from checkpoint")
+        elif _land_ml_on and getattr(self, "_loaded_checkpoint_step_day",
+                                     None) is not None:
+            logger.warning(
+                "  Land boundary outputs: the checkpoint carries none "
+                "(written before they were persisted); the first land step "
+                "is a bootstrap step. This restart is not bit-identical to "
+                "an unbroken run.")
+
+        def _land_io_snapshot() -> dict:
+            """The land loop-locals to checkpoint, as they stand now."""
+            out = {}
+            for k, v in (("T_skin", _land_T_skin),
+                         ("albedo_cells", _land_albedo_cells),
+                         ("qsfc_cells", _land_qsfc_cells),
+                         ("shflx_cells", _land_shflx_cells),
+                         ("lhflx_cells", _land_lhflx_cells),
+                         ("evap_cells", _land_evap_cells),
+                         ("beta_cells", _land_beta_cells)):
+                if v is not None:
+                    out[k] = v
+            if _land_a2s_n > 0 and _land_a2s_sum is not None:
+                out["a2s_n"] = np.int64(_land_a2s_n)
+                out["cz_wsum"] = _land_cz_wsum
+                out["w_sum"] = _land_w_sum
+                for f, v in _land_a2s_sum._asdict().items():
+                    if v is not None:
+                        out[f"a2s_{f}"] = v
+            return out
         # Current forcing day's SST/SIC, cached at each daily boundary for the
         # per-step ice-skin advance AND per-step T_sfc re-anchor (None until
         # the first boundary / when the skin feature is off).
@@ -13325,13 +13559,16 @@ class ModelDriver:
                     _ls_reused_win = _ls_reused_win + jnp.sum(
                         _land_stress_landcell & _land_taumag_valid
                         & ~_land_taumag_fresh, dtype=jnp.int32)
-            # Radiation sub-cycle: solve RRTMGP on step 0 (cache warm-up,
-            # always) and every RAD_UPDATE_STEPS-th step; reuse the held
-            # heating (PhysicsState.rad_heating) in between.  ``step`` is
-            # job-local, so the first step of every job/restart link re-solves
-            # radiation and repopulates the cache before any held step reads
-            # it.  When subcycling is off, every step is a full step.
-            _use_rad = (not _subcycle_rad) or (step % RAD_UPDATE_STEPS == 0)
+            # Radiation sub-cycle: solve RRTMGP every RAD_UPDATE_STEPS-th
+            # ABSOLUTE step and reuse the held heating
+            # (PhysicsState.rad_heating, persisted as physstate_*) in
+            # between -- so a restart link keeps the unbroken run's radiation
+            # phase (R-ex).  The held heating and the held surface flux
+            # slots are restored before this loop; a fresh run (start_step
+            # 0) solves on its step 0 as before.  When subcycling is off,
+            # every step is a full step.
+            _use_rad = (not _subcycle_rad) or (
+                (start_step + step) % RAD_UPDATE_STEPS == 0)
             # Physics cadence: step 0 of every job is a physics step (the
             # cache is per-job, never persisted), then every
             # PHYS_UPDATE_STEPS-th; the held variant re-applies the cache in
@@ -14074,6 +14311,7 @@ class ModelDriver:
                     break
                 _ckpt_day = START_DAY + (step + 1) * DT / 86400.0
                 _ckpt = getattr(self, "_checkpoint_callback", None) or self.save_checkpoint
+                self._land_io_ckpt = _land_io_snapshot()
                 _ckpt(start_step + step + 1, _ckpt_day)
                 # Wallclock-aware clean exit for long HPC dependency chains --
                 # only on a physics-window boundary (see the restart guard).
@@ -14116,6 +14354,7 @@ class ModelDriver:
         if (CHECKPOINT_INTERVAL > 0 and run_status == "COMPLETED"
                 and n_steps_total % CHECKPOINT_INTERVAL != 0):
             _final_day = START_DAY + n_steps_total * DT / 86400.0
+            self._land_io_ckpt = _land_io_snapshot()
             self.save_checkpoint(start_step + n_steps_total, _final_day)
 
         elapsed = time.time() - t_start

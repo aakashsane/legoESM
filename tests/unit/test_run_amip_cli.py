@@ -4753,7 +4753,8 @@ def test_fv3_duo_kessler_reaches_the_config_and_the_wall():
     assert cfg.microphysics == "kessler"
     cfg.validate_strict()
     _refuse_fv3_duo_non_default(cfg)
-    cfg = _fv3_duo_cfg(["--microphysics", "kessler", "--turbulence", "louis"])
+    cfg = _fv3_duo_cfg(["--microphysics", "kessler", "--turbulence", "louis",
+                       "--no-energy-fixer"])   # closed lane: opt out (F15)
     _refuse_fv3_duo_non_default(cfg)          # the wall allows the field...
     from legoesm.driver.component_factory import create_atmosphere_dycore
     from legoesm.grids.cubed_sphere import create_cubed_sphere

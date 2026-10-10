@@ -46,6 +46,7 @@ def _make_config(
             nlev=nlev,
         ),
         dycore=DycoreConfig(
+            energy_fixer=False,  # unwired lane opts out (F15 V8-A)
             model_type=model_type,
             discretization=discretization,
             dt=dt,
@@ -117,7 +118,7 @@ class TestCDGridResolution:
         for knob in ("hyperdiff_scale", "a_h_scale", "div_damp_scale"):
             config = ExperimentConfig(
                 grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
-                dycore=DycoreConfig(model_type="shallow_water",
+                dycore=DycoreConfig(energy_fixer=False, model_type="shallow_water",
                                     discretization="centered", dt=300.0,
                                     **{knob: 2.0}),
                 days=1)
@@ -225,7 +226,7 @@ class TestDiffusionCoeffs:
         with pytest.raises(ValueError, match="k_h_scale"):
             ExperimentConfig(
                 grid=GridConfig(grid_type="cubed_sphere"),
-                dycore=DycoreConfig(k_h_scale=0.25),
+                dycore=DycoreConfig(energy_fixer=False, k_h_scale=0.25),
             ).validate_strict()
 
     def test_zero_scale_gives_zero(self):
@@ -553,10 +554,15 @@ class TestDefaultBehavior:
     """DycoreConfig defaults produce the same model as before the refactor."""
 
     def test_default_config_creates_hydrostatic_cdgrid(self):
-        """Default ExperimentConfig should create hydrostatic PE on cubed_sphere."""
+        """Default ExperimentConfig should create hydrostatic PE on cubed_sphere
+        once it opts out of the energy fixer, which this lane does not run
+        (F15 V8-A: the bare default refuses rather than leave the sink open)."""
         config = ExperimentConfig()
         grid = _make_cubed_sphere_grid(config.grid.resolution)
         sigma = _make_sigma(config.grid.nlev)
+        with pytest.raises(ValueError, match="energy_fixer"):
+            create_atmosphere_dycore(config, grid, sigma)
+        config = config._replace(dycore=config.dycore._replace(energy_fixer=False))
         model = create_atmosphere_dycore(config, grid, sigma)
 
         from legoesm.atmosphere.dynamics.gcm.primitive_eq_cdgrid import CDGridPrimitiveEquationModel
@@ -578,6 +584,7 @@ class TestLatLonConservationFixer:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
                 conservation_fixer=False,
@@ -597,6 +604,7 @@ class TestLatLonConservationFixer:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
                 fix_mass=True,
@@ -616,6 +624,7 @@ class TestLatLonConservationFixer:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
                 conservation_fixer=False,
@@ -651,6 +660,7 @@ class TestLatLonUnsupportedKnobs:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
                 hyperdiff_scale=2.0,
@@ -666,6 +676,7 @@ class TestLatLonUnsupportedKnobs:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
                 div_damp_scale=2.0,
@@ -682,6 +693,7 @@ class TestLatLonUnsupportedKnobs:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
             ),
@@ -697,6 +709,7 @@ class TestLatLonUnsupportedKnobs:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
                 hyperdiff_scale=0.0,
@@ -718,6 +731,7 @@ class TestLatLonPoleCFL:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
                 dt=600.0,
@@ -738,6 +752,7 @@ class TestLatLonPoleCFL:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
                 dt=600.0,
@@ -759,6 +774,7 @@ class TestLatLonPoleCFL:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="finite_volume",
                 dt=600.0,
@@ -892,6 +908,7 @@ class TestTimeIntegratorAutoDefault:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic",
                 discretization="centered",
                 dt=300.0,
@@ -918,6 +935,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="nonhydrostatic", discretization="centered",
                 dt=300.0, fix_mass=flag,
             ),
@@ -938,6 +956,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="gaussian", resolution=21, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic", discretization="spectral",
                 dt=300.0, fix_mass=flag,
             ),
@@ -957,6 +976,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="gaussian", resolution=21, nlev=2),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="nonhydrostatic", discretization="spectral",
                 dt=300.0, fix_mass=flag,
             ),
@@ -972,6 +992,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="mpas", resolution=1, nlev=2),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="nonhydrostatic", discretization="mpas",
                 dt=300.0, fix_mass=flag,
             ),
@@ -987,6 +1008,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="nonhydrostatic", discretization="centered",
                 dt=300.0, fix_mass=True, conservation_fixer=False,
             ),
@@ -1006,6 +1028,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="gaussian", resolution=21, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic", discretization="spectral",
                 dt=300.0, fix_mass=True, conservation_fixer=False,
             ),
@@ -1024,6 +1047,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="gaussian", resolution=21, nlev=2),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="nonhydrostatic", discretization="spectral",
                 dt=300.0, fix_mass=True, conservation_fixer=False,
             ),
@@ -1038,6 +1062,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="mpas", resolution=1, nlev=2),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="nonhydrostatic", discretization="mpas",
                 dt=300.0, fix_mass=True, conservation_fixer=False,
             ),
@@ -1054,6 +1079,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="mpas", resolution=1, nlev=2),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="hydrostatic", discretization="mpas",
                 dt=300.0, fix_mass=True, conservation_fixer=False,
             ),
@@ -1067,6 +1093,7 @@ class TestFixMassForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="plane", resolution=8, nlev=6),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="nonhydrostatic", discretization="plane",
                 dt=1.0, fix_mass=True, conservation_fixer=False,
             ),
@@ -1097,6 +1124,7 @@ class TestLatLonSWPolarFilterForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="shallow_water", discretization="finite_volume",
                 dt=600.0,
                 use_polar_filter=True,
@@ -1118,6 +1146,7 @@ class TestLatLonSWPolarFilterForwarding:
         config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
             dycore=DycoreConfig(
+                energy_fixer=False,  # unwired lane opts out (F15 V8-A)
                 model_type="shallow_water", discretization="finite_volume",
                 dt=600.0,
             ),

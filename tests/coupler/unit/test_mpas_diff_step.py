@@ -156,3 +156,15 @@ def test_segment_gradient_reaches_the_physics_carry(runs):
         return sum(jnp.sum(x) for x in _fields(s))
     g = jax.grad(loss)(ps0.tke)
     assert bool(jnp.all(jnp.isfinite(g))) and float(jnp.abs(g).max()) > 0.0
+
+
+def test_qv_smoother_floor_reverse_pass_finite_on_a_dry_level():
+    """The post-step smoother's water-mass floor (restore_level_mass) is in
+    the differentiated segment: a level whose filtered field is entirely
+    non-positive must not NaN the reverse pass (merge review, GLM)."""
+    from legoesm.core.conservation import restore_level_mass
+    q_new = jnp.asarray([[1e-3, -1e-6], [2e-3, -2e-6], [5e-4, 0.0]])
+    dp = jnp.full((3, 2), 5.0e3)
+    g = jax.grad(lambda q: jnp.sum(restore_level_mass(
+        q, q_new, dp, jnp.ones(3), clip=True)))(q_new)
+    assert bool(jnp.all(jnp.isfinite(g)))

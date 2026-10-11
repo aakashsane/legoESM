@@ -1167,10 +1167,26 @@ _LAND_ML_CACHE_FIELDS = ("canopy_x",)
 # solved humidity/fluxes, held drag, partial cadence sums).  Re-seeded on
 # a cold start; a checkpoint written before they were persisted still
 # restarts (cold seed, logged), one carrying them resumes bitwise.  The
-# held surface/TOA flux slots are NOT persisted: a checkpoint sits on a
+# held RADIATION slots are NOT persisted (D-REX-1): a checkpoint sits on a
 # radiation boundary (validate_strict + the restart guard), so the first
-# resumed step re-solves radiation as the unbroken run does.
+# resumed step re-solves radiation as the unbroken run does.  The two
+# TURBULENT surface fluxes ARE persisted (D-REX-2): the CAPE-diurnal
+# forcing reads the previous step's shflx/lhflx BEFORE the step, so a cold
+# start hands it zeros where the unbroken run had the last step's fluxes.
 _LAND_IO_CKPT_PREFIX = "landio_"
+_SFC_FLUX_LAG_CKPT_KEYS = ("sfc_lag_shflx", "sfc_lag_lhflx")
+
+
+def _sfc_flux_lag_slots() -> tuple[int, int]:
+    """``_sfc_diag`` slots of (shflx_sfc, lhflx_sfc), from the shared slot
+    contract like ``_evap_sfc_slot`` -- never hand-counted."""
+    from legoesm.core.state import (
+        MPAS_SFC_DIAG_BASE_KEYS,
+        MPAS_SFC_DIAG_EXTRA_KEYS,
+    )
+    n = len(MPAS_SFC_DIAG_BASE_KEYS)
+    return (n + MPAS_SFC_DIAG_EXTRA_KEYS.index("shflx_sfc"),
+            n + MPAS_SFC_DIAG_EXTRA_KEYS.index("lhflx_sfc"))
 
 
 def _seed_nucleated_ice_number(N_i, dq_i, ice_nuc_mass, n_i_nuc_max, p_full, T):
@@ -1607,6 +1623,23 @@ class ModelDriver:
         ck = self._carry_aux if isinstance(self._carry_aux, dict) else {}
         return {k[len(_LAND_IO_CKPT_PREFIX):]: v for k, v in ck.items()
                 if k.startswith(_LAND_IO_CKPT_PREFIX)}
+
+    def _sfc_flux_lag_for_checkpoint(self) -> dict:
+        """``{sfc_lag_shflx, sfc_lag_lhflx}`` to persist (D-REX-2): the
+        model's held turbulent surface fluxes, or -- before any run has
+        adopted a loaded checkpoint -- the staged payload.  Empty when the
+        lane has not published them (no step yet, or a lane without the
+        slots)."""
+        sd = getattr(getattr(self, "model", None), "_sfc_diag", None)
+        if sd is not None:
+            out = {}
+            for key, slot in zip(_SFC_FLUX_LAG_CKPT_KEYS, _sfc_flux_lag_slots()):
+                if len(sd) > slot and sd[slot] is not None:
+                    out[key] = getattr(sd[slot], "data", sd[slot])
+            if len(out) == len(_SFC_FLUX_LAG_CKPT_KEYS):
+                return out
+        ck = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        return {k: ck[k] for k in _SFC_FLUX_LAG_CKPT_KEYS if k in ck}
 
     def _checkpoint_carry_aux(self) -> dict | None:
         """``self._carry_aux`` augmented with the evolved double-moment tracers
@@ -6690,11 +6723,14 @@ class ModelDriver:
                     return x
                 _lio_save = {k: _g_rex(v)
                              for k, v in self._land_io_for_checkpoint().items()}
+                _sfl_save = {k: _g_rex(v) for k, v in
+                             self._sfc_flux_lag_for_checkpoint().items()}
                 if self._mpi_rank != 0:
                     return
             else:
                 _ls_save = self._land_stress_for_checkpoint()
                 _lio_save = self._land_io_for_checkpoint()
+                _sfl_save = self._sfc_flux_lag_for_checkpoint()
                 u_d, T_d, ps_d, phis_d = (
                     s.u.data, s.T.data, s.p_s.data, s.phis.data)
                 trc_d = (None if s.tracers is None
@@ -6826,6 +6862,10 @@ class ModelDriver:
             # unbroken run would (no bootstrap land step).
             for _k, _v in _lio_save.items():
                 _save[f"{_LAND_IO_CKPT_PREFIX}{_k}"] = np.asarray(_v)
+            # D-REX-2: the previous step's turbulent surface fluxes the
+            # CAPE-diurnal forcing reads before the first resumed step.
+            for _k, _v in _sfl_save.items():
+                _save[_k] = np.asarray(_v)
             # #1353 (codex-2 finding 2): within-interval CMOR flux sums —
             # so a mid-interval (wallclock / off-cadence) restart resumes
             # the interval mean instead of dropping the pre-checkpoint
@@ -7730,11 +7770,13 @@ class ModelDriver:
             # (the loop cold-seeds, and logs it).  Cell arrays scatter to
             # this rank's band under MPI.
             for _stale in [k for k in self._carry_aux
-                           if k.startswith(_LAND_IO_CKPT_PREFIX)]:
+                           if k.startswith(_LAND_IO_CKPT_PREFIX)
+                           or k in _SFC_FLUX_LAG_CKPT_KEYS]:
                 del self._carry_aux[_stale]
             self._land_io_ckpt = None
             for _k in d.files:
-                if not _k.startswith(_LAND_IO_CKPT_PREFIX):
+                if not (_k.startswith(_LAND_IO_CKPT_PREFIX)
+                        or _k in _SFC_FLUX_LAG_CKPT_KEYS):
                     continue
                 _a = np.asarray(d[_k])
                 if _mpi and _a.ndim >= 1 and _a.shape[0] == part.nCells_global:
@@ -13126,6 +13168,43 @@ class ModelDriver:
                 "(written before they were persisted); the first land step "
                 "is a bootstrap step. This restart is not bit-identical to "
                 "an unbroken run.")
+
+        # D-REX-2: the held turbulent surface fluxes of the step before the
+        # checkpoint.  Seeded into the model's slot tuple; the first resumed
+        # step's forcing reads them, and the step's own publication then
+        # replaces them slot-wise, exactly as in the unbroken run.
+        _sfl = {k: _ck_rex.pop(k) for k in _SFC_FLUX_LAG_CKPT_KEYS
+                if k in _ck_rex}
+        if _sfl:
+            if set(_sfl) != set(_SFC_FLUX_LAG_CKPT_KEYS):
+                raise ValueError(
+                    f"checkpoint carries a partial turbulent-flux payload "
+                    f"{sorted(_sfl)}; expected {_SFC_FLUX_LAG_CKPT_KEYS}")
+            from legoesm.core.field import Field as _SfcField
+            _slots = _sfc_flux_lag_slots()
+            _seeded = [None] * (max(_slots) + 1)
+            for _k, _slot, _nm in zip(_SFC_FLUX_LAG_CKPT_KEYS, _slots,
+                                      ("shflx_sfc", "lhflx_sfc")):
+                _v = jnp.asarray(_sfl[_k]).reshape(-1)
+                if _v.shape != (_ncell_rex,):
+                    raise ValueError(
+                        f"checkpoint {_k} shape {tuple(_v.shape)} != "
+                        f"(nCells={_ncell_rex},) -- mesh mismatch.")
+                if not bool(jnp.all(jnp.isfinite(_v))):
+                    raise ValueError(
+                        f"checkpoint {_k} has non-finite values -- refusing "
+                        "to resume from a corrupt surface flux.")
+                _seeded[_slot] = _SfcField(_v, name=_nm, dims=("cell",),
+                                           units="W/m2")
+            self.model._sfc_diag = tuple(_seeded)
+            logger.info("  Surface turbulent fluxes (shflx/lhflx): resumed "
+                        "from checkpoint")
+        elif getattr(self, "_loaded_checkpoint_step_day", None) is not None:
+            logger.warning(
+                "  Surface turbulent fluxes: the checkpoint carries none "
+                "(written before they were persisted); the first resumed "
+                "step's CAPE-diurnal forcing sees zero shflx/lhflx. This "
+                "restart is not bit-identical to an unbroken run.")
 
         def _land_io_snapshot() -> dict:
             """The land loop-locals to checkpoint, as they stand now."""

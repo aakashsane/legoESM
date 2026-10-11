@@ -472,6 +472,13 @@ def _compute_omega_gaussian(sigma_dot, p_s, dp_s_dt, sigma_coord):
     return omega
 
 
+def _tracer_global_mass(q, dp, area_w):
+    """``sum_cells area * sum_k dp_k q_k`` in the budget accumulator: a
+    tracer's global mass (times g) on the grid layer masses ``dp``."""
+    acc = area_w.dtype
+    return jnp.sum(area_w * q.astype(acc) * dp.astype(acc))
+
+
 def _tracer_advection_gaussian(
     q_grid: jnp.ndarray,
     u_cos: jnp.ndarray,
@@ -1060,6 +1067,37 @@ def spectral_pe_tendencies(
         tracers_tend = None
     else:
         is_hybrid = isinstance(sigma_coord, HybridSigmaPressureCoordinate)
+        # Transport mass fixer (review 2026-10-10 F21).  The tracer transport
+        # below is in ADVECTIVE form (pseudo-spectral -v.grad q, upwind
+        # sigma-dot dq/dsigma), which does not telescope: its tendency does
+        # not conserve a tracer's mass sum A sum_k dp_k q_k.  Per tracer and
+        # per stage, subtract lambda*q from the TRANSPORT tendency so that
+        #   sum A sum_k ( dq_k/dt dp_k + q_k d(dp_k)/dt ) = 0,
+        # with d(dp_k)/dt = b_k dp_s/dt the model's EFFECTIVE pressure update
+        # (dynamics lnps tendency, dealiased; b = dB on hybrid, dsigma on
+        # sigma).  With the mass anchor on, the anchor rescales p_s
+        # multiplicatively after the step, so its share
+        # (sum A dp_s/dt / sum A p_s) * p_s is removed here too -- then a
+        # uniform q has lambda = 0 and stays uniform.  Without the anchor the
+        # raw tendency is the update (codex review 2026-10-10).
+        # Proportional, so positivity is untouched; physics tendencies are
+        # added after and are not corrected.  The residual is the time
+        # integrator's error on this bilinear invariant.
+        from legoesm.core.conservation import conservation_accumulator
+        _acc = conservation_accumulator()
+        _w_tr = grid.grid_area.astype(_acc)[..., None]
+        _dp_tr = sigma_coord.layer_thickness_dp(p_s).astype(_acc)
+        _b_tr = (sigma_coord.dB if is_hybrid else sigma_coord.dsigma)
+        _dlnps_dyn = (_dlnps_hat_pre if _dealias is None
+                      else _dlnps_hat_pre * _dealias)
+        _dps_dt = (p_s.astype(_acc)
+                   * sh_synthesis(grid, _dlnps_dyn).astype(_acc))
+        if config.fix_mass and config.anchor_mass_to_initial:
+            _ps_acc = p_s.astype(_acc)
+            _dps_dt = _dps_dt - _ps_acc * (
+                jnp.sum(_w_tr[..., 0] * _dps_dt)
+                / jnp.sum(_w_tr[..., 0] * _ps_acc))
+        _ddp_dt_tr = jnp.asarray(_b_tr, dtype=_acc) * _dps_dt[..., None]
         tracers_tend = {}
         for name, value in state.tracers.items():
             q_grid = value.data if hasattr(value, "data") else value
@@ -1079,6 +1117,13 @@ def spectral_pe_tendencies(
                     q_grid, mass_flux, p_s, sigma_coord
                 )
                 dq_dt_grid = dq_dt_grid + vert_adv_q
+            # F21 transport mass fixer (see above).
+            _num = (_tracer_global_mass(dq_dt_grid, _dp_tr, _w_tr)
+                    + _tracer_global_mass(q_grid, _ddp_dt_tr, _w_tr))
+            _mass = _tracer_global_mass(q_grid, _dp_tr, _w_tr)
+            _live = jnp.abs(_mass) > jnp.finfo(_acc).tiny
+            _lam = jnp.where(_live, _num / jnp.where(_live, _mass, 1.0), 0.0)
+            dq_dt_grid = dq_dt_grid - (_lam * q_grid).astype(dq_dt_grid.dtype)
             # Add physics tendency for this tracer when the bridge
             # provided one.
             if (
@@ -1718,29 +1763,54 @@ class SpectralPrimitiveEquationModel:
         """
         if state.tracers is None:
             return state
+        dp = self._tracer_layer_mass(state)
         if self._tracer_filter is not None:
-            state = state._replace(
-                tracers=apply_filter_to_tracers(
-                    state.tracers, self._tracer_filter, self.grid,
-                )
-            )
-        return self._apply_tracer_positivity(state)
+            filtered = apply_filter_to_tracers(
+                state.tracers, self._tracer_filter, self.grid)
+            # F21: the SH filter keeps each level's AREA mean of q, not the
+            # tracer MASS (p_s varies), so restore each tracer's global mass
+            # to its pre-filter value with one multiplicative factor (a
+            # global factor, not per level: sparse condensate levels make a
+            # per-level ratio ill-conditioned).
+            from legoesm.core.conservation import conservation_accumulator
+            _acc = conservation_accumulator()
+            _w = self.grid.grid_area.astype(_acc)[..., None]
+            out = {}
+            for name, f in filtered.items():
+                q_new = f.data if hasattr(f, "replace") else f
+                o = state.tracers[name]
+                q_old = o.data if hasattr(o, "replace") else o
+                m_new = _tracer_global_mass(q_new, dp, _w)
+                live = m_new > jnp.finfo(_acc).tiny
+                fac = jnp.where(live, jnp.maximum(
+                    _tracer_global_mass(q_old, dp, _w)
+                    / jnp.where(live, m_new, 1.0), 0.0), 1.0)
+                q_new = q_new * fac.astype(q_new.dtype)
+                out[name] = (f.replace(data=q_new) if hasattr(f, "replace")
+                             else q_new)
+            state = state._replace(tracers=out)
+        return self._apply_tracer_positivity(state, dp)
 
-    def _apply_tracer_positivity(self, state):
-        """Shared tracer positivity for the spectral lane (borrow / plain)."""
+    def _tracer_layer_mass(self, state):
+        """Grid-space layer mass ``dp`` from lnps (one SH synthesis), with the
+        positive-weight contract ``max(dp, 0)`` on hybrid levels.  On pure
+        sigma the per-column p_s cancels in the borrow rescale, but real dp is
+        correct on hybrid too."""
+        coord = self.sigma_coord
+        p_s = jnp.exp(sh_synthesis(self.grid, state.lnps_hat.data))
+        if isinstance(coord, HybridSigmaPressureCoordinate):
+            return jnp.maximum(dp_from_hybrid(coord, p_s), 0.0)
+        return p_s[..., None] * coord.dsigma.astype(p_s.dtype)
+
+    def _apply_tracer_positivity(self, state, dp=None):
+        """Shared tracer positivity for the spectral lane (borrow / plain).
+        With the Gaussian cell area the borrow keeps the global
+        net-negative-column residual mass-weighted."""
         if state.tracers is None:
             return state
         from legoesm.core.conservation import apply_water_positivity
-        coord = self.sigma_coord
-        # Grid-space layer mass dp from lnps (one SH synthesis).  On pure sigma
-        # the per-column p_s cancels in the borrow rescale, but real dp is
-        # correct on hybrid too; with the Gaussian cell area it keeps the
-        # global net-negative-column residual mass-weighted.
-        p_s = jnp.exp(sh_synthesis(self.grid, state.lnps_hat.data))
-        if isinstance(coord, HybridSigmaPressureCoordinate):
-            dp = jnp.maximum(dp_from_hybrid(coord, p_s), 0.0)  # +weight contract
-        else:
-            dp = p_s[..., None] * coord.dsigma.astype(p_s.dtype)
+        if dp is None:
+            dp = self._tracer_layer_mass(state)
         tracers_out, _ = apply_water_positivity(
             state.tracers, None, dp,
             conservative=self.config.conservative_tracer_clamp,

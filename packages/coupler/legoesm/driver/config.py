@@ -1176,7 +1176,17 @@ class ExperimentConfig(NamedTuple):
     # Issue #323: make the per-step ``max(q_v, 0)`` floor on the physics
     # tracer update moist-static-energy-conserving (remove the latent heat
     # of the clipped vapour sink).  Opt-in for the kessler+sbm wind blow-up;
-    # default off => bit-identical.
+    # default off => bit-identical.  LANE-DEPENDENT (review 2026-10-10 F10):
+    # on the cube / lat-lon pipeline lanes (per-step, compiled, tiled, SPMD,
+    # training segments) True replaces the column-conserving vapour borrow
+    # with a hard floor that ADDS the clipped vapour (sum max(-q,0) dp/g per
+    # column, every step; nothing later removes it unless fix_moisture
+    # rescales globally).  In the dycores' own positivity stage (MPAS, duo
+    # column, cube C-D, lat-lon C-grid) the conserving borrow (dycore
+    # mpas_conservative_tracer_clamp, default True) takes precedence in
+    # core.conservation.apply_water_positivity, so the key does not create
+    # water there.  "True on all lanes" is therefore NOT the MPAS behaviour;
+    # False is the MPAS-equivalent setting on the pipeline lanes.
     energy_consistent_moisture_clip: bool = False
     # Resolved-wind moisture advection (issue #771): attach q_v/q_c/q_r/q_i/
     # q_s/q_g (+ the per-mass ice number N_i) to the dycore state each step so
@@ -1752,20 +1762,16 @@ class ExperimentConfig(NamedTuple):
     # lanes smooth q_v every step in their step factories) — the confirmed
     # missing third suspect behind the cell-scale CWV recharge/discharge
     # speckle (2026-07-23).  Applied post-step as an UNWEIGHTED SCVT del2 (∇²)
-    # + a q>=0 floor: monotone / positivity-preserving under the setup-time
-    # CFL guard (the floor is then a no-op, to roundoff), and it conserves the per-level
-    # mixing-ratio area integral sum_c A_c q_c (exact in exact arithmetic; to
-    # floating-point roundoff — ~1e-7 relative in fp32).  It is NOT column-
-    # water-vapour (CWV = sum_c A_c dp_c q_c/g) conserving: across a surface-
-    # pressure gradient an unweighted del2 redistributes a little water mass
-    # (bias set by the humidity–terrain correlation), so this is an explicitly
-    # NON-conservative grid-scale filter — monitor the water budget if used in
-    # long runs.  Unweighted (not dp-weighted) is REQUIRED: the default hybrid
+    # (monotone under the setup-time CFL guard), followed by a floor that
+    # restores each level's WATER MASS sum_c A_c max(dp_c,0) q_c to its
+    # pre-smoothing value (review 2026-10-10 F12: the unweighted operator
+    # alone conserves only sum_c A_c q_c, so across a surface-pressure gradient
+    # it created/destroyed water after the step's fixers had run).  The
+    # operator stays unweighted (not dp-weighted): the default hybrid
     # coordinate's surface-layer dp goes <= 0 for p_s below ~2/3 p_ref over
-    # high terrain, which a dp-weighted form would divide by (Inf/NaN).  It is
-    # a del2 (∇²), not the FV lanes' scale-selective del4 (∇⁴): del2 is
-    # monotone under the explicit guard (hence the exact per-level integral)
-    # but damps resolved gradients more broadly — use a gentle coefficient.
+    # high terrain, which a dp-weighted operator would divide by (Inf/NaN).  It is
+    # a del2 (∇²), not the FV lanes' scale-selective del4 (∇⁴): del2 damps
+    # resolved gradients more broadly — use a gentle coefficient.
     # MPAS-only: refused on other discretizations (validate_strict).
     mpas_qv_smooth_del2_m2s: float = 0.0   # del2 diffusivity [m^2/s]; ~1e5-1e6 typical at 240 km
     # Scale-SELECTIVE companion to the del2 above, added 2026-09-11 after the
@@ -1778,10 +1784,10 @@ class ExperimentConfig(NamedTuple):
     # on every mesh mode, so its damping ratio between any two scales is the
     # del2's squared: measured on the subdivision-6 mesh, 2.47x between 240 and
     # 479 km becomes 6.08x.  (The continuum figures 4 and 16 do not apply to
-    # the discrete operator.)  It is NOT monotone, so the q>=0 floor is
-    # load-bearing when it is on and the per-level integral is conserved only
-    # up to what that floor clips; the driver enforces nu4*dt*g_max^2 <= 0.5 at
-    # setup.  MPAS-only, same as the del2.  Default 0.0 pending the controlled
+    # the discrete operator.)  It is NOT monotone, so the floor's clip is
+    # load-bearing when it is on; the same water-mass-restoring floor as the
+    # del2 (F12) removes what the clip creates.  The driver enforces
+    # nu4*dt*g_max^2 <= 0.5 at setup.  MPAS-only, same as the del2.  Default 0.0 pending the controlled
     # pair that picks the coefficient — see the arm before changing it.
     mpas_qv_smooth_del4_m4s: float = 0.0   # del4 diffusivity [m^4/s]
     # Prognostic sea-ice skin temperature on the MPAS lane (Semtner 1976

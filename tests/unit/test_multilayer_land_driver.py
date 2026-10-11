@@ -1233,3 +1233,43 @@ def test_canopy_smoothing_widths_survive_the_calibration(monkeypatch, tmp_path):
     drv.setup()
     ss = drv.physics.land_ml_cfg.surface_scheme
     assert (ss.rh_cap_smoothing_width, ss.zeta_cap_smoothing_width, ss.most_n_iters) == (0.02, 0.03, 7)
+
+
+def test_pipeline_land_tile_gets_moist_lowest_level_density(monkeypatch, tmp_path):
+    """F28 (review 2026-10-10): the PhysicsPipeline land tile forces the land
+    with the canonical extractor's air -- the coordinate's lowest FULL-level
+    pressure and the moist density there, ``p_lowest / (R_d T_v)`` -- not the
+    surface-pressure dry form ``p_s / (R_d T)`` with ``p_lowest = 0.99 p_s``.
+    The old form is ~1-2 % denser, so the 1e-12 check fails on a revert."""
+    import legoesm.land.multilayer_land as _mll
+    from legoesm import constants
+    _patch_land_loaders(monkeypatch)
+    driver = ModelDriver(_small_cfg(), output_dir=tmp_path)
+    driver.setup()
+    seen = {}
+    real = _mll.step_multilayer_land
+
+    def _capture(land, forcing, *a, **k):
+        seen["f"] = forcing
+        return real(land, forcing, *a, **k)
+
+    monkeypatch.setattr(_mll, "step_multilayer_land", _capture)
+    ncol = int(driver._land_ml_state.T_soil.shape[0])
+    rng = np.random.default_rng(0)
+    T = driver.state.T.data
+    q_v = jnp.asarray(rng.uniform(0.002, 0.018, size=T.shape))
+    driver.physics._step_multilayer_land_tile(
+        driver._land_ml_state, jnp.full(ncol, 400.0), jnp.full(ncol, 350.0),
+        T, driver.state.p_s.data, q_v, driver.state.u.data,
+        driver.state.v.data, None, 600.0)
+    f = seen["f"]
+    ps = np.asarray(f.p_surface)
+    want_p = np.asarray(driver.physics.sigma_coord.pressure_at_full(
+        jnp.asarray(ps)))[..., -1]
+    np.testing.assert_allclose(np.asarray(f.p_lowest), want_p, rtol=1e-12)
+    T_v = np.asarray(f.T_lowest) * (
+        1.0 + (1.0 / constants.epsilon - 1.0) * np.asarray(f.q_lowest))
+    np.testing.assert_allclose(np.asarray(f.rho_lowest),
+                               want_p / (constants.R_d * T_v), rtol=1e-12)
+    # the moisture really is in the forcing (q varies), so T_v != T matters
+    assert float(np.max(np.asarray(f.q_lowest))) > 0.01

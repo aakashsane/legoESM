@@ -30,7 +30,7 @@ def _make_driver(preset="aquaplanet", days=1, resolution=8, nlev=5, dt=600.0,
 
     atm_config = ExperimentConfig(
         grid=GridConfig(grid_type="cubed_sphere", resolution=resolution, nlev=nlev),
-        dycore=DycoreConfig(dt=dt, model_type="hydrostatic"),
+        dycore=DycoreConfig(energy_fixer=False, dt=dt, model_type="hydrostatic"),
         output=OutputConfig(diag_days=max(days, 1)),
         radiation="gray",
         days=days,
@@ -133,7 +133,7 @@ class TestMixedGridCoupling(unittest.TestCase):
 
         atm_config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=atm_nlat, nlev=5),
-            dycore=DycoreConfig(dt=600.0, model_type="hydrostatic",
+            dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic",
                                 discretization="finite_volume"),
             output=OutputConfig(diag_days=max(days, 1)),
             radiation="gray", days=days,
@@ -318,7 +318,7 @@ class TestUnfusedRadiation(unittest.TestCase):
         from legoesm.driver.coupled_esm_driver import CoupledESMDriver
         atm = ExperimentConfig(
             grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
-            dycore=DycoreConfig(dt=600.0, model_type="hydrostatic"),
+            dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic"),
             output=OutputConfig(diag_days=days),
             radiation="gray", days=days,
             rad_update_steps=rad_update_steps,
@@ -580,7 +580,7 @@ class TestLandModeDispatch(unittest.TestCase):
 
         atm_config = ExperimentConfig(
             grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
-            dycore=DycoreConfig(dt=600.0, model_type="hydrostatic"),
+            dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic"),
             output=OutputConfig(diag_days=1),
             radiation="gray",
             days=1,

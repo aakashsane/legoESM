@@ -321,7 +321,7 @@ def _cube_driver(days=2, diurnal=False, couple_surface_fluxes=False,
     from legoesm.driver.coupled_config import PRESETS
     atm = ExperimentConfig(
         grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
-        dycore=DycoreConfig(dt=600.0, model_type="hydrostatic"),
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic"),
         output=OutputConfig(diag_days=1), radiation="gray", days=days,
         diurnal_cycle=diurnal, land_mask_path=land_mask_path,
         slab_land_active=slab_land_active)

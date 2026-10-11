@@ -23,7 +23,7 @@ import argparse, time
 import numpy as np
 import jax, jax.numpy as jnp
 from legoesm.driver.config import (
-    ExperimentConfig, GridConfig, load_experiment_config,
+    DycoreConfig, ExperimentConfig, GridConfig, load_experiment_config,
 )
 from legoesm.driver.component_factory import create_atmosphere_dycore
 from legoesm.grids.cubed_sphere import create_cubed_sphere
@@ -59,6 +59,7 @@ def main():
         # Self-contained default: no site paths, no external files.
         cfg = ExperimentConfig(
             grid=GridConfig(grid_type="cubed_sphere", resolution=args.n),
+            dycore=DycoreConfig(energy_fixer=False),  # not wired here (F15, vote V11-C)
         )
     else:
         # strict=True: a dropped key here would silently run a DIFFERENT

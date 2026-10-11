@@ -258,6 +258,24 @@ def virtual_temperature(T, q_v):
     return T * (1.0 + coeff * q_v)
 
 
+def ke_dissipation_heating(u, v, du_dt, dv_dt, dt):
+    """Heating [K/s] that returns as heat the kinetic energy a momentum
+    tendency removes (frictional / dissipative heating), per level.
+
+        dT/dt = -(du*(u + dt/2*du) + dv*(v + dt/2*dv)) / c_pd
+
+    Discretely exact for the host update ``u += dt*du, v += dt*dv,
+    T += dt*dT``: ``c_pd*dt*dT = -[(u+dt*du)^2 - u^2 + (v+dt*dv)^2 - v^2]/2``
+    per unit mass, so the momentum tendency leaves the column
+    ``sum((c_pd*T + KE) dp/g)`` unchanged level by level.  Sign: positive
+    (warming) where the tendency removes kinetic energy.  The same closure as
+    the orographic GWD port (``e3sm_cam.py``, ``use_discrete_ke_heating``) and
+    CAM's ``diffusion_solver`` ``dtk``/``clubb_do_energyfix`` intent.
+    """
+    return -(du_dt * (u + 0.5 * dt * du_dt)
+             + dv_dt * (v + 0.5 * dt * dv_dt)) / constants.c_pd
+
+
 def broadcast_column_param(value, like):
     """Broadcast a config coefficient over a column field's vertical dimension.
 

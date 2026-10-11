@@ -1808,6 +1808,80 @@ def compute_conservation_diagnostics(
 
 
 # ==============================================================================
+# Grid-agnostic dycore total-energy fixer (CAM ``check_energy_fix`` analogue)
+# ==============================================================================
+
+def dycore_column_energy(T, ke, dp, phis, p_s) -> jax.Array:
+    """Column total energy [J/m^2] the dycore energy fixer conserves.
+
+        E = sum_k (c_pd*T_k + KE_k) * dp_k / g  +  phis * p_s / g
+
+    CAM's ``check_energy`` ``te`` (enthalpy + kinetic energy + surface
+    geopotential, the quantity a hydrostatic constant-``p_top`` column
+    conserves) WITHOUT the latent water terms: a dycore water error belongs to
+    the water fixers and must not be turned into heat (vote 2026-10-10, F15).
+    ``ke`` is the lane's own per-level kinetic energy [J/kg] (TRiSK cell KE on
+    the Voronoi lane, ``0.5*(u^2+v^2)`` of the cell-centre winds elsewhere);
+    ``dp`` the layer mass [Pa] (level axis last).  fp64 budget accumulator.
+    """
+    acc = conservation_accumulator()
+    c_pd = jnp.asarray(constants.c_pd, dtype=acc)
+    col = jnp.sum((c_pd * T.astype(acc) + ke.astype(acc)) * dp.astype(acc),
+                  axis=-1)
+    return (col + phis.astype(acc) * p_s.astype(acc)) / constants.g
+
+
+def energy_fixer_dT(e_before, e_after, mass) -> jax.Array:
+    """Uniform temperature increment [K] that returns a dynamics window's
+    global total-energy change as heat (CAM ``check_energy_fix``).
+
+    ``e_before``/``e_after`` are the GLOBAL area integrals [J] of
+    :func:`dycore_column_energy` at the start and end of the window and
+    ``mass`` the global air mass [kg] (``sum(dp)/g * area``) of the state the
+    increment is added to.  ``T += dT`` on every level of every column raises
+    that state's energy by exactly ``c_pd*dT*mass`` (``dp`` does not depend on
+    ``T``), so ``E(after + dT) == E(before)``.  Positive (warming) when the
+    dynamics lost energy, e.g. to damping.  Linear, so ``jax.grad`` is exact;
+    a lane under MPI reduces the three integrals with ``global_sum_mpi``.
+    """
+    return (e_before - e_after) / (constants.c_pd * mass)
+
+
+def voronoi_energy_fixer_dT(state_pre, state_post, mesh, sigma_coord, area,
+                            sum_fn=None) -> jax.Array:
+    """:func:`energy_fixer_dT` for the MPAS hydrostatic lane (serial + MPI).
+
+    Column energy with the TRiSK cell kinetic energy the dycore itself
+    conserves (``kinetic_energy_cell_3d`` of the edge-normal ``u``).  ``area``
+    is the per-cell weight (owned-cell area under MPI, zero on halo cells) and
+    ``sum_fn`` the cross-rank reduction of the three local integrals
+    (``global_sum_mpi`` on the MPI lane, ``None`` serial).  Every weighted
+    cell's edges must hold valid winds (exchange the halo first under MPI).
+    """
+    from legoesm.core.operators_voronoi import kinetic_energy_cell_3d
+    if state_pre.v is not None or state_post.v is not None:
+        raise ValueError(
+            "voronoi_energy_fixer_dT: the MPAS hydrostatic state carries "
+            "edge-normal u only (v=None); got a cell-wind state")
+    acc = conservation_accumulator()
+
+    def _col(s):
+        ph = sigma_coord.pressure_at_half(s.p_s.data)
+        dp = ph[..., 1:] - ph[..., :-1]
+        e = dycore_column_energy(s.T.data, kinetic_energy_cell_3d(s.u.data, mesh),
+                                 dp, s.phis.data, s.p_s.data)
+        return e, jnp.sum(dp.astype(acc), axis=-1) / constants.g
+
+    e0, _ = _col(state_pre)
+    e1, m1 = _col(state_post)
+    w = area.astype(acc)
+    tot = jnp.stack([jnp.sum(e0 * w), jnp.sum(e1 * w), jnp.sum(m1 * w)])
+    if sum_fn is not None:
+        tot = sum_fn(tot)
+    return energy_fixer_dT(tot[0], tot[1], tot[2])
+
+
+# ==============================================================================
 # Voronoi mesh conservation
 # ==============================================================================
 

@@ -34,7 +34,7 @@ def _make_driver(preset="aquaplanet", days=10, output_dir=None, **kwargs):
     # identical between a straight run and a restarted run.
     atm_config = ExperimentConfig(
         grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
-        dycore=DycoreConfig(dt=600.0, model_type="hydrostatic"),
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic"),
         output=OutputConfig(diag_days=1, checkpoint_days=0),
         radiation="gray",
         days=days,
@@ -241,7 +241,7 @@ def _make_dynamic_driver(days=4, output_dir=None, nlev=4):
         # runtime — straight and restarted runs then share an identical step
         # schedule (steps_per_day below stays exact).
         grid=GridConfig(grid_type="latlon", resolution=16, nlev=5),
-        dycore=DycoreConfig(dt=150.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=150.0, model_type="hydrostatic",
                             discretization="latlon_cgrid"),
         output=OutputConfig(diag_days=1, checkpoint_days=0),
         radiation="gray", convection="none", days=days,

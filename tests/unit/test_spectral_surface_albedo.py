@@ -44,7 +44,7 @@ def test_blended_albedo_reaches_spectral_radiation(monkeypatch, tmp_path):
     cfg = ExperimentConfig(
         grid=GridConfig(grid_type="gaussian", resolution=RES, nlev=NLEV),
         dycore=DycoreConfig(model_type="hydrostatic", discretization="spectral",
-                            dt=DT),
+                            dt=DT, energy_fixer=False),
         output=OutputConfig(output_dir="", diag_days=0, checkpoint_days=0),
         days=FOUR_STEPS_DAYS, dataset="analytical", radiation="gray",
         convection="none", turbulence="louis", precision="fp64",
@@ -62,7 +62,7 @@ def test_dynamic_albedo_refused_on_spectral(tmp_path):
     cfg = ExperimentConfig(
         grid=GridConfig(grid_type="gaussian", resolution=RES, nlev=NLEV),
         dycore=DycoreConfig(model_type="hydrostatic", discretization="spectral",
-                            dt=DT),
+                            dt=DT, energy_fixer=False),
         output=OutputConfig(output_dir="", diag_days=0, checkpoint_days=0),
         days=FOUR_STEPS_DAYS, dataset="analytical", radiation="gray",
         convection="none", turbulence="louis", precision="fp64",

@@ -54,6 +54,7 @@ def _make_config(precision: str, output_dir: str) -> ExperimentConfig:
             nlev=5,
         ),
         dycore=DycoreConfig(
+            energy_fixer=False,  # unwired lane opts out (F15)
             model_type="hydrostatic",
             discretization="cdgrid",
             dt=600.0,

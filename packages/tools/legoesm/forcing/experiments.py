@@ -517,6 +517,10 @@ def create_experiment_config(
         if gt in _GRID_DEFAULT_MODEL:
             dycore_ov["model_type"] = _GRID_DEFAULT_MODEL[gt]
 
+    # The dycore energy fixer (F15) runs only on the MPAS lane among these
+    # templates; elsewhere the template records the open sink explicitly
+    # (vote V11-C).  A caller may still override it.
+    dycore_ov.setdefault("energy_fixer", grid.grid_type == "mpas")
     dycore = DycoreConfig(**{**DycoreConfig()._asdict(), **dycore_ov})
     output = OutputConfig(**{**OutputConfig()._asdict(), **output_ov})
 

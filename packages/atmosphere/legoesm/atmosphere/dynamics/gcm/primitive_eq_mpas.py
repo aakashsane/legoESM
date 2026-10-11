@@ -32,6 +32,7 @@ from legoesm.core.conservation import (
     conservative_positive_clip,
     conservative_positive_clip_global,
     is_borrow_eligible_tracer,
+    voronoi_energy_fixer_dT,
 )
 from legoesm.core.precision import cast_pytree, finalize_to_storage
 
@@ -212,6 +213,14 @@ class MPASPrimitiveEquationConfig(NamedTuple):
     # 0.0 = off, byte-identical.  Appended at the tuple END: preserves
     # POSITIONAL CONSTRUCTION by existing callers.
     nu_div4: float = 0.0
+    # CAM-style global total-energy fixer (``check_energy_fix``): the energy
+    # the dynamics window loses -- the KE removed by the del2 sponge / del4 /
+    # div4 damping and any numerical dissipation -- is returned each step as a
+    # uniform heating (``core.conservation.voronoi_energy_fixer_dT``), before
+    # physics.  False on the raw dycore (idealized dycore tests unchanged); the
+    # driver sets it from ``DycoreConfig.energy_fixer`` (default True, review
+    # 2026-10-10 F15).
+    energy_fixer: bool = False
 
 
 # ============================================================================
@@ -1136,6 +1145,16 @@ class MPASPrimitiveEquationModel(IntegrationMixin):
         state_new = dispatch_integrator(
             state, dyn_tendency_fn, dt, self.config.time_integrator,
         )
+        if self.config.energy_fixer:
+            # --- 1b. Dycore energy fixer (CAM check_energy_fix, F15): the
+            # energy the dynamics window lost (damping KE, numerics) comes
+            # back as a uniform heating BEFORE physics [K, +warming].
+            _dT_fix = voronoi_energy_fixer_dT(
+                state, state_new, self.mesh, self.sigma_coord,
+                self.mesh.areaCell)
+            state_new = state_new._replace(T=state_new.T.replace(
+                data=state_new.T.data
+                + _dT_fix.astype(state_new.T.data.dtype)))
 
         # --- 2. Operator-split physics: evaluate ONCE on the post-dynamics
         #        state, apply forward over dt.  ``state += dt * tendency``

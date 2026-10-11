@@ -1074,6 +1074,13 @@ def build_parser():
                              "hybrid lat-lon C-grid lane (#1029; no effect on "
                              "other grids/coordinates). Default ON; "
                              "--no-sb81-omega-conversion = legacy form.")
+    parser.add_argument("--energy-fixer",
+                        action=argparse.BooleanOptionalAction, default=True,
+                        help="CAM-style dycore total-energy fixer (DycoreConfig."
+                             "energy_fixer). ON by default; wired on the MPAS "
+                             "(voronoi) atmosphere only, refused on lat-lon/"
+                             "cube/gaussian: pass --no-energy-fixer there to "
+                             "accept the open energy sink explicitly.")
     parser.add_argument("--ocean-nlev", type=int, default=20,
                         help="3D ocean vertical levels (--ocean dynamic)")
     parser.add_argument("--ocean-dt", type=float, default=300.0,
@@ -1431,6 +1438,7 @@ def main():
             # #1029 ω-side SB81 conversion (hybrid latlon lane only; the
             # factory threads it, other dycores ignore it). Default OFF.
             sb81_omega_conversion=args.sb81_omega_conversion,
+            energy_fixer=args.energy_fixer,
         ),
         output=OutputConfig(
             diag_days=args.diag_days,

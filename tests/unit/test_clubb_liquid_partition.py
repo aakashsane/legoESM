@@ -110,7 +110,13 @@ def test_off_path_is_bit_identical_to_the_historical_bridge():
     q_ref = (flip_vertical(st.rtm) - col["q_v"]) / dt
     T_ref = (flip_vertical(st.thlm) * exner - col["T"]) / dt
     np.testing.assert_array_equal(np.asarray(out.dq_v_dt), np.asarray(q_ref))
-    np.testing.assert_array_equal(np.asarray(out.dT_dt), np.asarray(T_ref))
+    # plus the KE-dissipation heating of the momentum update (F14), which is
+    # not part of the partition; compared to fp64 round-off (jit fusion)
+    from legoesm.atmosphere.physics._shared import ke_dissipation_heating
+    T_ref = T_ref + ke_dissipation_heating(
+        jnp.asarray(col["u"]), jnp.asarray(col["v"]), out.du_dt, out.dv_dt, dt)
+    np.testing.assert_allclose(np.asarray(out.dT_dt), np.asarray(T_ref),
+                               rtol=1e-12, atol=1e-18)
 
 
 def test_total_water_is_conserved_by_the_partition():

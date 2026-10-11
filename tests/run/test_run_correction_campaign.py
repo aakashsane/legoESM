@@ -1203,7 +1203,7 @@ def _base_config():
     from legoesm.driver.config import DycoreConfig, ExperimentConfig, GridConfig
     return ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=8, nlev=5),
-        dycore=DycoreConfig(dt=600.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic",
                             discretization="finite_volume"),
         radiation="gray", turbulence="clubb_lite")
 
@@ -1334,7 +1334,7 @@ def test_maybe_apply_local_era5_forcing_builds_and_injects_only_when_flagged(mon
 
     base_cfg = ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=8, nlev=5),
-        dycore=DycoreConfig(dt=600.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic",
                             discretization="finite_volume"),
         output=OutputConfig(diag_days=1), radiation="gray", days=2,
         dataset="analytical")
@@ -1987,7 +1987,7 @@ def _mpas_base_config(nlev=5):
     from legoesm.driver.config import DycoreConfig, ExperimentConfig, GridConfig
     return ExperimentConfig(
         grid=GridConfig(grid_type="mpas", resolution=2, nlev=nlev),
-        dycore=DycoreConfig(dt=600.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic",
                             discretization="mpas"),
         radiation="gray", turbulence="clubb_lite")
 
@@ -2719,7 +2719,7 @@ def test_make_base_driver_builder_amip_builds_real_driver():
     build_amip, _ = make_base_driver_builder("amip")
     cfg = ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=8, nlev=5),
-        dycore=DycoreConfig(dt=600.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic",
                             discretization="finite_volume"),
         radiation="gray", turbulence="clubb_lite")
     driver = build_amip(cfg)
@@ -2753,7 +2753,7 @@ def test_make_base_driver_builder_cmip_builds_real_driver():
         scheme="clubb_lite", clubb_lite=CLUBBLiteConfig(C_K=jnp.full((8, 16), 0.77)))
     cfg = ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=8, nlev=5),
-        dycore=DycoreConfig(dt=600.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic",
                             discretization="finite_volume"),
         radiation="gray", turbulence="clubb_lite", turbulence_override=override)
     driver = build_cmip(cfg)

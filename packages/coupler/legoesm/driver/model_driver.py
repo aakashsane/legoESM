@@ -481,6 +481,37 @@ def _evap_sfc_slot() -> int:
             + MPAS_SFC_DIAG_EXTRA_KEYS.index("evap_sfc"))
 
 
+def land_snowfall_from_sfc_diag(sfc_diag, precip):
+    """The interactive land's snowfall [kg/m2/s] from the MPAS ``_sfc_diag``
+    tuple: the atmosphere's OWN frozen surface flux (``precip_frozen`` slot:
+    microphysics ice+snow+graupel + convective snow, whose fusion heat the
+    atmosphere already booked), bounded by the total ``precip`` (review
+    2026-10-10 F29; it replaces a hard 0 C re-split of the total that
+    discarded the phase and left L_f unclosed at the interface).
+
+    No precipitation published (slot 2 empty) -> zeros.  Precipitation
+    published WITHOUT its frozen part (a scheme that does not publish it)
+    -> ValueError: never a temperature re-split.
+    """
+    from legoesm.core.state import (
+        MPAS_SFC_DIAG_BASE_KEYS,
+        MPAS_SFC_DIAG_EXTRA_KEYS,
+    )
+    slot = (len(MPAS_SFC_DIAG_BASE_KEYS)
+            + MPAS_SFC_DIAG_EXTRA_KEYS.index("precip_frozen"))
+    frozen = sfc_diag[slot] if len(sfc_diag) > slot else None
+    if frozen is not None:
+        return jnp.clip(jnp.asarray(frozen.data).reshape(-1), 0.0, precip)
+    if sfc_diag[2] is None:
+        return jnp.zeros_like(precip)
+    raise ValueError(
+        "interactive land: the physics publishes surface precipitation but "
+        "not its frozen part (precip_frozen), so the land cannot take the "
+        "atmosphere's own rain/snow partition (F29). Use a microphysics/"
+        "convection scheme that publishes it (every physical scheme does; "
+        "the ML microphysics emulators and neural physics do not).")
+
+
 def _sed_substeps_slot() -> int:
     """Index of ``sed_substeps_required`` in the MPAS ``_sfc_diag`` tuple.
 
@@ -10560,7 +10591,8 @@ class ModelDriver:
             fv3_duo_dynamics_for_layout(self.config, grid, old.dyn.config),
             tracer_names=old.tracer_names,
             conservative_tracer_clamp=old.conservative_tracer_clamp,
-            energy_consistent_moisture_clip=old.energy_consistent_moisture_clip)
+            energy_consistent_moisture_clip=old.energy_consistent_moisture_clip,
+            energy_fixer=old.energy_fixer)
         # a rebuild changes terrain only: the geometry every setup-time
         # regrid was placed on must be unchanged (asserted, not assumed)
         for k in ("latCell", "lonCell", "areaCell"):
@@ -12634,6 +12666,8 @@ class ModelDriver:
                 lw_down = jnp.asarray(_sd[9].data).reshape(-1)
                 precip = (jnp.asarray(_sd[2].data).reshape(-1)
                           if _sd[2] is not None else jnp.zeros_like(sw_down))
+                # the atmosphere's own rain/snow partition (F29)
+                precip_snow = land_snowfall_from_sfc_diag(_sd, precip)
                 T_air = self.state.T.data[:, -1]
                 _qv_tr = (self.state.tracers or {}).get("q_v")
                 q_air = (_qv_tr.data[:, -1] if _qv_tr is not None
@@ -12648,7 +12682,7 @@ class ModelDriver:
                 # surface_exchange) and the coupled tile: the coordinate's
                 # lowest full-level pressure and the MOIST density there,
                 # rho = p_lowest / (R_d T_v) (F28: was p_s / (R_d T), ~1-2 %
-                # high); snow split at T_freeze.
+                # high).
                 # The zenith is the REAL per-cell sun (same doy/seconds the
                 # radiation uses this step): it was a fixed 0.5 when only the
                 # bulk scheme ran here (which never reads it), but the two-leaf
@@ -12666,8 +12700,7 @@ class ModelDriver:
                     z_lowest=z_lowest,
                     sw_down=sw_down, lw_down=lw_down,
                     precip_total=precip,
-                    precip_snow=jnp.where(
-                        T_air < constants.T_freeze, precip, 0.0),
+                    precip_snow=precip_snow,
                     T_lowest=T_air, q_lowest=q_air,
                     u_lowest=u_c, v_lowest=v_c,
                     p_lowest=p_lowest, p_surface=p_s,

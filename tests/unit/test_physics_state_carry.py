@@ -393,7 +393,7 @@ def _stateful_driver_config(**overrides):
     # MPAS memory test), which would mask a dropped carry.
     kwargs = dict(
         grid=GridConfig(resolution=8, nlev=5),
-        dycore=DycoreConfig(dt=1.0),
+        dycore=DycoreConfig(energy_fixer=False, dt=1.0),
         output=OutputConfig(diag_days=1),
         days=6.0 / 86400.0,             # 6 steps at dt=1
         dataset="analytical",

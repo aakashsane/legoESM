@@ -448,7 +448,10 @@ def _fv3_duo_config(**over):
     grid = GridConfig(grid_type="cubed_sphere", resolution=N, nlev=KM)
     dycore = DycoreConfig(model_type=over.pop("model_type", "hydrostatic"),
                           discretization="fv3_duo",
-                          dt=over.pop("dt", 1920.0))
+                          dt=over.pop("dt", 1920.0),
+                          # closed lane: the energy fixer is not wired here,
+                          # so the deck opts out explicitly (F15 V8-A)
+                          energy_fixer=over.pop("energy_fixer", False))
     base = dict(
         grid=grid, dycore=dycore, days=1,
         radiation="none", convection="none", microphysics="none",
@@ -1288,7 +1291,7 @@ def test_wall_default_surface_is_frozen():
 #   hines_launch_p 0.0 -> 70000.0: read only when gravity_wave_drag selects
 #     Hines; both duo decks run mcfarlane and already pin 70000.0.
 # The allow-list is unchanged.
-_WALL_SURFACE_SHA256 = "079cecd3d8ff8ece17c4d675b28493e1754b416137cc2f1da03bd3fc3bfacf15"
+_WALL_SURFACE_SHA256 = "fde7a80d327a47ca383c3dae7d7d76236e3b5745cdd2d319aed4b16461f3d808"
 
 
 def test_wall_leaf_types_are_scalar():

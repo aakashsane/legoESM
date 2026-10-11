@@ -22,7 +22,7 @@ def _coupled_driver(insolation_start_doy):
 
     atm = ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=4, nlev=4),
-        dycore=DycoreConfig(dt=600.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic",
                             discretization="latlon_cgrid"),
         radiation="gray", convection="none", turbulence="none", days=1,
         insolation_start_doy=insolation_start_doy)
@@ -83,7 +83,7 @@ def _earth_system_driver(insolation_start_doy, tmp_path):
 
     cfg = ExperimentConfig(
         grid=GridConfig(resolution=8, nlev=4),
-        dycore=DycoreConfig(dt=600.0),
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0),
         output=OutputConfig(diag_days=1), days=1, dataset="analytical", precision="fp64",
         insolation_start_doy=insolation_start_doy)
     drv = EarthSystemDriver(cfg, output_dir=tmp_path)

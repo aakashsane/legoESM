@@ -5,7 +5,9 @@ as its lower boundary condition remove resolved kinetic energy that was never
 returned as heat, a systematic total-energy sink on every CLUBB lane.  CAM6
 closes it with ``clubb_do_energyfix`` (default .true.).  The port is the local
 discrete closure ``_shared.ke_dissipation_heating`` applied inside the kernel
-(``CLUBBConfig.ke_heating``, default True).
+(always on, like CAM's default; no switch: CLUBB's flags are the fixed CAM
+defaults).  The heating-off reference below patches the helper to zero in the
+clubb module, so both arms run the same code.
 
 Invariant pinned here (x64): with the heating on, the column
 ``sum((c_pd*T + KE) dp/g)`` change attributable to the momentum tendency is
@@ -23,6 +25,7 @@ jax.config.update("jax_enable_x64", True)
 
 from legoesm import constants  # noqa: E402
 from legoesm.atmosphere.physics._shared import ke_dissipation_heating  # noqa: E402
+from legoesm.atmosphere.physics.turbulence import clubb as clubb_mod  # noqa: E402
 from legoesm.atmosphere.physics.turbulence.clubb import (  # noqa: E402
     CLUBBConfig,
     clubb_turbulence,
@@ -66,7 +69,16 @@ def _column_ke_rate(kw, du, dv, dt):
     return np.sum((ke1 - ke0) * _dp(kw), axis=1) / (constants.g * dt)
 
 
-def _run(kw, cfg, dt):
+def _run(kw, cfg, dt, heating=True, monkeypatch=None):
+    if not heating:              # the same kernel with the KE heating zeroed
+        monkeypatch.setattr(clubb_mod, "ke_dissipation_heating",
+                            lambda u, v, du, dv, dt: jnp.zeros_like(u))
+        jax.clear_caches()
+        try:
+            return _run(kw, cfg, dt)
+        finally:
+            monkeypatch.undo()
+            jax.clear_caches()
     if cfg.prognostic:
         ncol, nlev = kw["T"].shape
         carry = pack_clubb_moments(init_clubb_moments(ncol, nlev, cfg))
@@ -80,11 +92,6 @@ def _run(kw, cfg, dt):
         jnp.full(kw["T"].shape, 0.4), kw["p_full"], kw["p_half"], kw["z_full"],
         kw["z_half"], kw["T_sfc"], kw["q_sfc"], kw["rho"], dt, cfg)
     return out
-
-
-def test_default_is_the_fix():
-    """RULE 3: the default returns the KE (CAM clubb_do_energyfix=.true.)."""
-    assert CLUBBConfig().ke_heating is True
 
 
 def test_helper_is_discretely_exact():
@@ -104,7 +111,7 @@ def test_helper_is_discretely_exact():
 
 
 @pytest.mark.parametrize("prognostic", [False, True])
-def test_clubb_returns_its_ke_loss_as_heat(prognostic):
+def test_clubb_returns_its_ke_loss_as_heat(prognostic, monkeypatch):
     """The extra heating equals the KE the step removes (drag + mixing).
 
     dt <= clubb_dt keeps the prognostic path at one sub-step, so the momentum
@@ -114,7 +121,7 @@ def test_clubb_returns_its_ke_loss_as_heat(prognostic):
     dt = 150.0
     cfg_on = CLUBBConfig(prognostic=prognostic, clubb_dt=300.0)
     on = _run(kw, cfg_on, dt)
-    off = _run(kw, cfg_on._replace(ke_heating=False), dt)
+    off = _run(kw, cfg_on, dt, heating=False, monkeypatch=monkeypatch)
     np.testing.assert_array_equal(np.asarray(on.du_dt), np.asarray(off.du_dt))
     np.testing.assert_array_equal(np.asarray(on.dv_dt), np.asarray(off.dv_dt))
     dke = _column_ke_rate(kw, on.du_dt, on.dv_dt, dt)        # W/m^2
@@ -126,18 +133,18 @@ def test_clubb_returns_its_ke_loss_as_heat(prognostic):
 
 
 @pytest.mark.parametrize("prognostic", [False, True])
-def test_ke_heating_is_differentiable(prognostic):
+def test_ke_heating_is_differentiable(prognostic, monkeypatch):
     """jax.grad through the new heating is finite and the heating carries
     gradient (d/du of the column heating differs from the heating-off path)."""
     kw = _column(ncol=2, nlev=16)
     dt = 150.0
     cfg = CLUBBConfig(prognostic=prognostic, clubb_dt=300.0)
 
-    def loss(u, c):
-        out = _run(dict(kw, u=u), c, dt)
+    def loss(u, heating):
+        out = _run(dict(kw, u=u), cfg, dt, heating, monkeypatch)
         return jnp.sum(out.dT_dt * jnp.asarray(_dp(kw)))
 
-    g_on = jax.grad(loss)(kw["u"], cfg)
-    g_off = jax.grad(loss)(kw["u"], cfg._replace(ke_heating=False))
+    g_on = jax.grad(loss)(kw["u"], True)
+    g_off = jax.grad(loss)(kw["u"], False)
     assert np.all(np.isfinite(np.asarray(g_on)))
     assert float(np.max(np.abs(np.asarray(g_on - g_off)))) > 0.0

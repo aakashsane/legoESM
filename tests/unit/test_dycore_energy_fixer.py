@@ -65,12 +65,24 @@ NLEV, DT = 8, 600.0
 
 @pytest.fixture(scope="module")
 def mpas():
+    """fp64 state under the fp64 policy: the production deck's precision.  In
+    fp32 storage the per-step increment (~1e-5 K) is resolved only to T's ulp
+    (1.5e-5 K at 250 K), like every other small increment there."""
+    from legoesm.core.precision import PrecisionPolicy, get_policy, set_policy
     from legoesm.grids.vertical import create_sigma_coordinate
     from legoesm.grids.voronoi import create_voronoi_mesh
     from tests.test_cases.baroclinic_wave import baroclinic_wave_init_mpas
+    prev = get_policy()
+    set_policy(PrecisionPolicy.fp64())
     mesh = create_voronoi_mesh(subdivision_level=2, lloyd_iterations=5)
     sigma = create_sigma_coordinate(NLEV)
-    return mesh, sigma, baroclinic_wave_init_mpas(mesh, sigma, perturbed=True)
+    s0 = jax.tree_util.tree_map(
+        lambda x: x.astype(jnp.float64)
+        if isinstance(x, jax.Array) and jnp.issubdtype(x.dtype, jnp.floating) else x,
+        baroclinic_wave_init_mpas(mesh, sigma, perturbed=True))
+    assert s0.T.data.dtype == jnp.float64
+    yield mesh, sigma, s0
+    set_policy(prev)
 
 
 def _mpas_model(mesh, sigma, fixer):
@@ -101,6 +113,7 @@ def test_mpas_step_conserves_total_energy_with_the_fixer(mpas):
     on = _mpas_model(mesh, sigma, True).step(s0, DT)
     rel_off = (_mpas_energy(off, mesh, sigma) - e0) / e0
     rel_on = (_mpas_energy(on, mesh, sigma) - e0) / e0
+    assert on.T.data.dtype == jnp.float64, on.T.data.dtype
     # non-vacuous: the damped dynamics LOSES energy without the fixer...
     assert rel_off < -1e-10, rel_off
     # ...and the fixer returns it to round-off

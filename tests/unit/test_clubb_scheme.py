@@ -1855,8 +1855,12 @@ def test_prognostic_clubb_prescribed_heat_flux_closes_column_budget():
         u_f, v_f, T_f, q_f, carry, kw["p_full"], kw["p_half"], kw["z_full"],
         kw["z_half"], T_f[:, -1], q_f[:, -1], rho, 150.0, cfg, whl, zero, None, None)
 
-    # Mass-weighted column potential-temperature tendency (dT_dt/Pi = d(thlm)/dt).
-    col_dtheta = np.sum(mass * (np.asarray(out.dT_dt) / exner), axis=1)
+    # Mass-weighted column potential-temperature tendency (dT_dt/Pi = d(thlm)/dt),
+    # TRANSPORT part only: the KE-dissipation heating (F14) is a separate source.
+    from legoesm.atmosphere.physics._shared import ke_dissipation_heating
+    dT_tr = np.asarray(out.dT_dt - ke_dissipation_heating(
+        u_f, v_f, out.du_dt, out.dv_dt, 150.0))
+    col_dtheta = np.sum(mass * (dT_tr / exner), axis=1)
     expected = np.asarray(rho)[:, -1] * W                       # rho_sfc * w'thl'_sfc
     # (1) Non-vacuous: the prescribed flux genuinely warms the column.
     assert np.all(col_dtheta > 1e-3) and np.all(expected > 1e-3)

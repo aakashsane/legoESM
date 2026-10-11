@@ -8,49 +8,49 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 6822)
+Table of contents (sections, in order; flag reference table at line 6843)
 -----------------------------------------------------------------------------
-  1. [line  345] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
-  2. [line  466] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
+  1. [line  347] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
+  2. [line  468] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
       model flags fixed at CAM defaults — reference table at file end)
-  3. [line  768] Staggered CLUBB grid (``CLUBBGrid`` / zm-zt operators /
+  3. [line  770] Staggered CLUBB grid (``CLUBBGrid`` / zm-zt operators /
       ``make_clubb_grid[_from_levels]`` / ``flip_vertical``)
-  4. [line  1099] Flatau saturation adapters (``sat_mixrat_liq``/``sat_mixrat_ice`` over
+  4. [line  1101] Flatau saturation adapters (``sat_mixrat_liq``/``sat_mixrat_ice`` over
       the canonical ``legoesm.thermo`` curves)
-  5. [line  1153] Closure helpers (``safe_sqrt`` / ``compute_sigma_sqd_w`` /
+  5. [line  1155] Closure helpers (``safe_sqrt`` / ``compute_sigma_sqd_w`` /
       ``calc_brunt_vaisala_freq_sqd``)
-  6. [line  1327] Parcel buoyant-sorting mixing length (``compute_mixing_length`` /
+  6. [line  1329] Parcel buoyant-sorting mixing length (``compute_mixing_length`` /
       ``set_Lscale_max``)
-  7. [line  1775] Implicit band solvers (``tridiag_solve`` / ``penta_solve``)
-  8. [line  1903] Mass-conserving hole filling (``fill_holes_vertical`` /
+  7. [line  1777] Implicit band solvers (``tridiag_solve`` / ``penta_solve``)
+  8. [line  1905] Mass-conserving hole filling (``fill_holes_vertical`` /
       ``fill_holes_wp2_from_horz_tke``)
-  9. [line  2084] Skewness diagnostics (``Skx_func`` / ``compute_gamma_Skw`` / LG05 /
+  9. [line  2086] Skewness diagnostics (``Skx_func`` / ``compute_gamma_Skw`` / LG05 /
       ``compute_skewness_diagnostics``)
-  10. [line  2270] Dissipation time-scale family (``compute_tke`` / ``compute_tau_family``)
-  11. [line  2351] ADG1 assumed-PDF parameter closure (``ADG1_pdf_driver`` + the liquid
+  10. [line  2272] Dissipation time-scale family (``compute_tke`` / ``compute_tau_family``)
+  11. [line  2353] ADG1 assumed-PDF parameter closure (``ADG1_pdf_driver`` + the liquid
       cloud-fraction closure)
-  12. [line  2673] ADG1 PDF moment integrals + buoyancy-flux assembly
+  12. [line  2675] ADG1 PDF moment integrals + buoyancy-flux assembly
       (``calc_pdf_higher_order_moments`` / ``calc_pdf_xprcp_fluxes`` /
       ``calc_xpthvp_terms``) + the two-level-set reconciliation
       (``calc_trapezoid_zt`` / ``calc_trapezoid_zm`` / ``clip_rcm`` /
       ``compute_cloud_cover``). Every routine in this section is
       grid-agnostic: CAM evaluates the closure once per level set, so all
       regridding is the caller's.
-  13. [line  3034] Moment-advance building blocks + the xp2_xpyp / windm advances
+  13. [line  3036] Moment-advance building blocks + the xp2_xpyp / windm advances
       (diffusion/mean-advection LHS builders, Cauchy-Schwarz clips,
       ``advance_xp2_xpyp`` / ``advance_windm_edsclrm``)
-  14. [line  3920] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
+  14. [line  3922] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
       ``damp_coefficient`` / ``compute_C6_C7_Skw_fnc``)
-  15. [line  3981] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
+  15. [line  3983] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
       ``clip_skewness``)
-  16. [line  4651] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
+  16. [line  4653] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
       ``calc_turb_adv_range``)
-  17. [line  4931] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
+  17. [line  4933] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
       coupling + ``solve_xm_wpxp_with_single_lhs``)
-  18. [line  5305] Core orchestration (``compute_clubb_diagnostics`` /
+  18. [line  5307] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  5960] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  5962] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 
@@ -728,14 +728,6 @@ class CLUBBConfig(NamedTuple):
     q_flux_scale: float = 1.0
     q_flux_scale_sigma_lo: float = 0.0
     q_flux_scale_sigma_hi: float = 1.0
-    # Return the kinetic energy the closure's momentum mixing removes --
-    # including the surface stress it applies as the lower BC -- as local
-    # heating (``_shared.ke_dissipation_heating``), the role CAM6's
-    # ``clubb_do_energyfix`` (default .true., clubb_intr.F90:125) plays.
-    # Without it every CLUBB lane has a systematic total-energy sink (review
-    # 2026-10-10 F14).  Default True = the fix; a static feature gate (Python
-    # ``if``), not traced.  False exists only for controlled A/B audits.
-    ke_heating: bool = True
 
 
 # Derived parameters (recomputed from base config, never stored as magic
@@ -6180,10 +6172,10 @@ def clubb_turbulence(
 
     du_dt = (u_new - u) / dt
     dv_dt = (v_new - v) / dt
-    dT_dt = (T_new - T) / dt
-    if config.ke_heating:
-        # KE removed by the eddy diffusion + surface stress -> heat [K/s].
-        dT_dt = dT_dt + ke_dissipation_heating(u, v, du_dt, dv_dt, dt)
+    # KE removed by the eddy diffusion + surface stress -> heat [K/s,
+    # +warming] (review 2026-10-10 F14; CAM6 clubb_do_energyfix=.true.,
+    # always on: CLUBB's flags are the fixed CAM defaults).
+    dT_dt = (T_new - T) / dt + ke_dissipation_heating(u, v, du_dt, dv_dt, dt)
     output = TurbulenceOutput(
         du_dt=du_dt,
         dv_dt=dv_dt,
@@ -6486,11 +6478,10 @@ def clubb_step(
     else:
         T_new = flip_vertical(new_state.thlm) * exner  # thl ~ theta, no liquid
         q_new = flip_vertical(new_state.rtm)
-    dT_dt = (T_new - T) / dt
-    if config.ke_heating:
-        # KE removed by the momentum mixing + surface stress -> heat [K/s,
-        # +warming]; exact per sub-step, so a sub-cycle's net is exact too.
-        dT_dt = dT_dt + ke_dissipation_heating(u, v, du_dt, dv_dt, dt)
+    # KE removed by the momentum mixing + surface stress -> heat [K/s,
+    # +warming] (review 2026-10-10 F14; CAM6 clubb_do_energyfix=.true.):
+    # exact for the host update u += dt*du, T += dt*dT of this call.
+    dT_dt = (T_new - T) / dt + ke_dissipation_heating(u, v, du_dt, dv_dt, dt)
     dq_v_dt = (q_new - q_v) / dt
     diags = dict(diags, ustar=ustar, shflx=shflx, lhflx=lhflx)
     return du_dt, dv_dt, dT_dt, dq_v_dt, new_state, diags

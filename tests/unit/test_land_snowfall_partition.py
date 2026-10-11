@@ -55,7 +55,7 @@ def test_land_takes_the_published_frozen_flux_not_a_temperature_split():
         land_snowfall_from_sfc_diag(_sfc_diag(precip, None), precip)
 
 
-def _column(T_sfc, *, snow=0.0, rain=0.0, ncol=3, nlev=20):
+def _column(T_sfc, *, snow=0.0, rain=0.0, rh=0.7, ncol=3, nlev=20):
     from legoesm.atmosphere.physics.microphysics.output import HydrometeorState
     p_s = 1.0e5
     sh = jnp.linspace(0.0, 1.0, nlev + 1)
@@ -67,7 +67,7 @@ def _column(T_sfc, *, snow=0.0, rain=0.0, ncol=3, nlev=20):
     rho = p_full / (constants.R_d * T)
     dp = p_half[:, 1:] - p_half[:, :-1]
     dz = jnp.abs(constants.R_d * T * dp / (constants.g * jnp.clip(p_full, 1.0, None)))
-    q_v = 0.7 * saturation_specific_humidity(T, p_full)
+    q_v = rh * saturation_specific_humidity(T, p_full)
     z = jnp.zeros((ncol, nlev))
     lo = lambda v: z.at[:, -6:].set(v)  # noqa: E731
     hydro = HydrometeorState(q_c=z, q_r=lo(rain), q_i=z, q_s=lo(snow), q_g=z,
@@ -101,7 +101,8 @@ def test_ice_schemes_publish_their_frozen_fall(name):
     assert float(cold.precipitation.min()) > 0.0        # non-vacuous
     np.testing.assert_allclose(np.asarray(cold.precip_frozen),
                                np.asarray(cold.precipitation), rtol=1e-10)
-    warm = _run(name, _column(295.0, rain=1e-3))
+    # saturated: Thompson caps sedimentation by the evaporation sink
+    warm = _run(name, _column(295.0, rain=1e-3, rh=1.0))
     assert float(warm.precipitation.min()) > 0.0
     np.testing.assert_array_equal(np.asarray(warm.precip_frozen), 0.0)
 

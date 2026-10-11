@@ -620,69 +620,64 @@ def _mpas_zenith_ocean_albedo(lat, day, orbit=None):
 
 
 
-def _qv_level_conserving_floor(q_new, area, owned_mask=None):
-    """Positivity floor that conserves the per-level area integral.
+def _qv_level_conserving_floor(q_new, q_ref, area, dp, owned_mask=None):
+    """Positivity floor that restores each level's WATER MASS.
 
-    The biharmonic branch of the smoother has no maximum principle, so a bare
-    ``max(q, 0)`` CREATES water wherever it clips (measured: it seeded the
-    cold-start ice explosion, 2026-09-15).  Clip the negatives, then rescale
-    the positive cells of each level by
+    Thin wrapper over the shared :func:`legoesm.core.conservation.
+    restore_level_mass` (clip, then rescale the level's positives by
+    ``sum A max(dp,0) q_ref / sum A max(dp,0) max(q_new,0)``), with the MPI
+    reduction wired in: OWNED-masked partial sums combined by the
+    differentiable allreduce, so every rank scales by the same factor.
 
-        factor_l = sum_c A_c q_l / sum_c A_c max(q_l, 0)   in [0, 1]
-
-    so ``sum_c A_c q_out`` equals ``sum_c A_c q_new`` per level to roundoff;
-    clipping only adds mass, so the factor removes exactly what it added.
-    Under MPI the partial sums are OWNED-masked (halo cells are duplicates)
-    and combined with a differentiable allreduce, so every rank scales by the
-    same factor; halo cells are clipped and scaled pointwise like the rest.
-    Pure jnp: no Python branch on a traced value, and the tiny-denominator
-    guard divides a sanitised denominator so neither pass sees NaN.
-    (Drafted by GLM-5.2, 2026-09-16.)
+    ``q_ref`` is the field BEFORE the smoother.  The smoother itself
+    conserves only ``sum_c A_c q_c`` per level, so over terrain (layer mass
+    ``dp`` varying across cells) it moves water between thin and thick
+    columns; restoring the dp-weighted mass against the pre-smoothing field
+    undoes that AND the clip, so the post-step filter -- which runs after
+    the step's dry-mass fixer and positivity borrow -- neither creates nor
+    destroys water, and (p_s untouched) leaves the global dry mass alone
+    (review 2026-10-10 F12).  The bare ``max(q, 0)`` this replaced first
+    seeded the cold-start ice explosion (2026-09-15); its area-weighted
+    successor conserved the wrong integral.
     """
+    from legoesm.core.conservation import restore_level_mass
     from legoesm.parallel.reductions import global_sum_if_distributed
-    area = jnp.asarray(area)
-    w = area if owned_mask is None else jnp.where(owned_mask, area, 0.0)
-    q_clip = jnp.maximum(q_new, 0.0)
-    num = global_sum_if_distributed(jnp.sum(w[:, None] * q_new, axis=0))
-    den = global_sum_if_distributed(jnp.sum(w[:, None] * q_clip, axis=0))
-    tiny = jnp.finfo(q_new.dtype).tiny
-    safe_den = jnp.where(den > tiny, den, jnp.ones_like(den))
-    factor = jnp.where(den > tiny, jnp.clip(num / safe_den, 0.0, 1.0), 0.0)
-    return q_clip * factor[None, :]
+    return restore_level_mass(q_new, q_ref, dp, area, clip=True,
+                              owned_mask=owned_mask,
+                              reduce=global_sum_if_distributed)
 
 
-def _mpas_qv_smooth_step(q_v, mesh, nu, dt, nu4=0.0, mid_refresh=None,
+def _mpas_qv_smooth_step(q_v, mesh, nu, dt, dp, nu4=0.0, mid_refresh=None,
                          owned_mask=None):
     """MPAS post-step horizontal q_v smoothing (array-level, testable).
 
-    UNWEIGHTED SCVT del2 (``scalar_del2_cell_3d``) + a q>=0 floor, mirroring
-    the FV lane's module-scope ``_apply_qv_smoothing`` so the exact driver
-    code is unit-tested directly (not just a replicated expression).  Plain
-    (no dp weighting) is deliberate: the default hybrid coordinate's surface
-    dp can be <= 0 over high terrain, which a mass-weighted form would divide
-    by (Inf/NaN).  Monotone under the setup-time CFL guard
-    ``nu*dt*scalar_del2_cell_cfl_factor(mesh) <= 1`` (the driver enforces
-    <= 0.5), so the floor is then a no-op (to roundoff) and the per-level
-    ``sum_c A_c q_c`` integral is conserved (in exact arithmetic; to roundoff —
-    ~1e-7 relative in fp32).  The floor only sanitises finite negatives from a
-    violated bound, NOT pre-existing NaN/Inf in ``q_v`` (max(NaN,0)=NaN).
+    UNWEIGHTED SCVT del2 (``scalar_del2_cell_3d``) and/or del4, then the
+    water-mass-restoring floor ``_qv_level_conserving_floor`` against the
+    INPUT field.  The operators stay unweighted on purpose: the default
+    hybrid coordinate's surface dp can be <= 0 over high terrain, which a
+    mass-weighted operator would divide by (Inf/NaN).  They conserve the
+    per-level ``sum_c A_c q_c``, NOT the water mass ``sum_c A_c dp_c q_c``;
+    the floor restores the latter per level (weights ``max(dp, 0)``, the
+    borrow's contract), so this post-step filter neither creates nor
+    destroys water and leaves the dry mass alone (review 2026-10-10 F12).
+    The floor does not sanitise pre-existing NaN/Inf (max(NaN,0)=NaN).
 
     Parameters
     ----------
-    q_v : jax.Array, shape (nCells, nlev) — vapour mixing ratio [kg/kg].
+    q_v : jax.Array, shape (nCells, nlev) — specific humidity [kg/kg].
     mesh : VoronoiMesh
     nu : float — del2 diffusivity [m^2/s].
     dt : float — step [s].
+    dp : jax.Array, shape (nCells, nlev) — layer pressure thickness [Pa] of
+        the state being smoothed (the water-mass weight; REQUIRED -- there is
+        no area-only fallback).
     nu4 : float — del4 (biharmonic) diffusivity [m^4/s]; 0 disables the term.
         The biharmonic is SCALE-SELECTIVE: it separates two-cell from four-cell
         structure by a factor sixteen where the Laplacian separates them by
         four, so it can hold grid-scale noise down without flattening the
         resolved humidity gradients.  It has NO maximum principle, so with it
-        on the positivity floor is load-bearing; it is the per-level
-        conserving borrow ``_qv_level_conserving_floor`` (clip, then rescale
-        the level's positives), so ``sum_c A_c q_c`` is conserved to roundoff
-        and no water is created.  The driver's setup guard enforces
-        ``nu4*dt*g_max^2 <= 0.5``.
+        on the floor's clip is load-bearing.  The driver's setup guard
+        enforces ``nu4*dt*g_max^2 <= 0.5``.
     mid_refresh : Callable(array) -> array, optional — distributed-only halo
         refresh for the biharmonic's intermediate Laplacian.
 
@@ -690,39 +685,48 @@ def _mpas_qv_smooth_step(q_v, mesh, nu, dt, nu4=0.0, mid_refresh=None,
     -------
     jax.Array, shape (nCells, nlev) — smoothed, floored q_v (q_v dtype).
     """
+    q_raw = _mpas_qv_smooth_raw(q_v, mesh, nu, dt, nu4=nu4,
+                                mid_refresh=mid_refresh)
+    return _qv_level_conserving_floor(q_raw, q_v, mesh.areaCell, dp,
+                                      owned_mask=owned_mask)
+
+
+def _mpas_qv_smooth_raw(q_v, mesh, nu, dt, nu4=0.0, mid_refresh=None):
+    """The smoother's local stencil ``q + dt*(nu*del2 + nu4*del4)`` before
+    the floor -- the halo-dependent part, tested rank-locally on its own
+    (the floor is pointwise times one global per-level factor)."""
     from legoesm.core.operators_voronoi import (
         scalar_del2_cell_3d,
         scalar_del4_cell_3d,
     )
     lap = scalar_del2_cell_3d(q_v, mesh)
     if nu4 <= 0.0:
-        # BIT-IDENTICAL to the pre-biharmonic path, including the association
-        # order of ``dt * nu * lap`` -- the existing bit-exactness test holds
-        # the del2-only lane to equality, not to a tolerance.
-        return jnp.maximum(q_v + dt * nu * lap.astype(q_v.dtype), 0.0)
+        return q_v + dt * nu * lap.astype(q_v.dtype)
     del4 = scalar_del4_cell_3d(q_v, mesh, mid_refresh=mid_refresh)
-    tend = (nu * lap + nu4 * del4).astype(q_v.dtype)
-    return _qv_level_conserving_floor(q_v + dt * tend, mesh.areaCell,
-                                      owned_mask=owned_mask)
+    return q_v + dt * (nu * lap + nu4 * del4).astype(q_v.dtype)
 
 
-def make_mpas_qv_smooth_fn(mesh, nu, dt, nu4=0.0, halo_refresh=None,
-                           owned_mask=None):
-    """Build the per-step MPAS q_v smoother as ONE compiled call.
+def make_mpas_qv_smooth_fn(mesh, nu, dt, sigma_coord, nu4=0.0,
+                           halo_refresh=None, owned_mask=None):
+    """Build the per-step MPAS q_v smoother as ONE compiled call
+    ``smooth(q, p_s)``.
 
     Halo refresh (MPI lane: boundary-owned stencils read owner values, #1321)
-    then :func:`_mpas_qv_smooth_step`.  Built once, before the time loop.
-    Called eagerly instead, every mpi4jax halo/allreduce inside was re-lowered
-    and recompiled on each call -- mpi4jax wraps the comm in a fresh object
-    with no ``__eq__``, so JAX's eager dispatch cache misses every time
-    (~45% of the 4-GPU AMIP step, 2026-09-27 profile).
+    then :func:`_mpas_qv_smooth_step` with the layer masses
+    ``sigma_coord.layer_thickness_dp(p_s)`` of the state being smoothed.
+    Built once, before the time loop.  Called eagerly instead, every mpi4jax
+    halo/allreduce inside was re-lowered and recompiled on each call --
+    mpi4jax wraps the comm in a fresh object with no ``__eq__``, so JAX's
+    eager dispatch cache misses every time (~45% of the 4-GPU AMIP step,
+    2026-09-27 profile).
     """
     @jax.jit
-    def smooth(q):
+    def smooth(q, p_s):
         if halo_refresh is not None:
             q = halo_refresh(q)
-        return _mpas_qv_smooth_step(q, mesh, nu, dt, nu4=nu4,
-                                    mid_refresh=halo_refresh,
+        return _mpas_qv_smooth_step(q, mesh, nu, dt,
+                                    sigma_coord.layer_thickness_dp(p_s),
+                                    nu4=nu4, mid_refresh=halo_refresh,
                                     owned_mask=owned_mask)
     return smooth
 
@@ -1193,6 +1197,89 @@ _ICE_SEED_RHO_FLOOR = 0.1        # [kg/m^3]
 # layer (last valid magnitude, valid mask, value-from-latest-solve mask).
 _LAND_STRESS_CKPT_KEYS = ("land_taumag", "land_taumag_valid", "land_taumag_fresh")
 _LAND_ML_CACHE_FIELDS = ("canopy_x",)
+# MPAS checkpoint keys of the land CADENCE state (review 2026-10-10 F31): the
+# pending window's forcing sum / sample count / SW-weighted zenith sums, and
+# the land outputs the surface blend holds between land calls.  Without them
+# every restart dropped the pending samples (precipitation and radiation the
+# land never received) and re-ran the one-step bootstrap.
+_LAND_WIN_PREFIXES = ("land_win_", "land_held_")
+_LAND_HELD_NAMES = ("T_skin", "albedo", "qsfc_last", "qsfc", "shflx", "lhflx",
+                    "evap")
+
+
+def land_window_checkpoint_payload(a2s_sum, n, cz_wsum, w_sum, held):
+    """Flat ``{key: array}`` of the MPAS land cadence state to checkpoint.
+
+    ``a2s_sum``: the pending window's summed ``AtmToSurface`` (``None`` when
+    ``n == 0``); ``n``: samples in it; ``cz_wsum``/``w_sum``: the SW-weighted
+    cos-zenith numerator/denominator; ``held``: the land outputs in
+    ``_LAND_HELD_NAMES`` order (entries may be ``None``).  Per-cell values are
+    returned as given (device arrays) so the MPI writer can gather them; the
+    count is a host scalar.
+    """
+    out = {"land_win_n": np.asarray(int(n), dtype=np.int64)}
+    if n > 0:
+        for f, v in a2s_sum._asdict().items():
+            if v is not None:
+                out[f"land_win_sum_{f}"] = v
+        out["land_win_cz_wsum"] = cz_wsum
+        out["land_win_w_sum"] = w_sum
+    for name, v in zip(_LAND_HELD_NAMES, held):
+        if v is not None:
+            out[f"land_held_{name}"] = v
+    return out
+
+
+def land_window_from_checkpoint(payload, land_k, n_cells):
+    """Inverse of :func:`land_window_checkpoint_payload`.
+
+    Returns ``(a2s_sum, n, cz_wsum, w_sum, held)``.  Refuses a window that
+    the current cadence cannot close (``n >= land_k``: the land interval
+    changed across the restart, so the pending samples would be meaned over
+    the wrong span), pending samples without the held ``T_skin``/``albedo``,
+    and any per-cell array not shaped ``(n_cells,)``.
+    """
+    from legoesm.core.coupling_fields import AtmToSurface
+    for k, v in payload.items():
+        if k != "land_win_n" and np.shape(v) != (n_cells,):
+            raise ValueError(
+                f"checkpoint {k} shape {np.shape(v)} != (nCells={n_cells},) "
+                "-- mesh mismatch.")
+    n = int(payload.get("land_win_n", 0))
+    if not 0 <= n < land_k:
+        raise ValueError(
+            f"checkpoint land window holds {n} pending samples but the land "
+            f"is now stepped every {land_k} step(s): the land interval "
+            "changed across the restart; refusing to mean the pending "
+            "forcing over the wrong span.")
+    a2s_sum = cz_wsum = w_sum = None
+    if n > 0:
+        fields = {f: jnp.asarray(payload[f"land_win_sum_{f}"])
+                  for f in AtmToSurface._fields
+                  if f"land_win_sum_{f}" in payload}
+        missing = [f for f in AtmToSurface._fields
+                   if f not in fields
+                   and f not in AtmToSurface._field_defaults]
+        if missing:
+            raise ValueError(
+                f"checkpoint land window is missing fields {missing}")
+        a2s_sum = AtmToSurface(**fields)
+        cz_wsum = jnp.asarray(payload["land_win_cz_wsum"])
+        w_sum = jnp.asarray(payload["land_win_w_sum"])
+        # Pending samples without the held land outputs would send the
+        # window through the one-step bootstrap, which advances the land
+        # by one step on several steps' forcing (codex 2026-10-10).
+        absent = [nm for nm in ("T_skin", "albedo")
+                  if f"land_held_{nm}" not in payload]
+        if absent:
+            raise ValueError(
+                f"checkpoint land window holds {n} pending samples but no "
+                f"held land outputs {absent}: incomplete land cadence state.")
+    held = tuple(
+        None if f"land_held_{nm}" not in payload
+        else jnp.asarray(payload[f"land_held_{nm}"])
+        for nm in _LAND_HELD_NAMES)
+    return a2s_sum, n, cz_wsum, w_sum, held
 
 
 def _seed_nucleated_ice_number(N_i, dq_i, ice_nuc_mass, n_i_nuc_max, p_full, T):
@@ -1555,6 +1642,19 @@ class ModelDriver:
         return {k: self.tracers[k] for k in self._DOUBLE_MOMENT_TRACERS
                 if self.tracers.get(k) is not None}
 
+    def _segment_dry_mass_target(self, dsigma, owned_mask=None):
+        """Anchor of the segment lanes' DRY-mass fixer (review 2026-10-10
+        F13): ``∫ dry p_s dA`` of the current driver state over the water
+        species the segment carry holds (q_v/q_c/q_r + the double-moment
+        water species), on the lanes' ``p_s * dsigma`` layer masses -- the
+        same integral ``compiled_segments.fix_segment_dry_mass`` holds."""
+        from legoesm.driver.compiled_segments import segment_dry_mass
+        moist = {"q_v": self.q_v, "q_c": self.q_c, "q_r": self.q_r}
+        if isinstance(self.tracers, dict):
+            moist.update({k: self.tracers.get(k) for k in ("q_i", "q_s", "q_g")})
+        return segment_dry_mass(self.state.p_s.data, moist, self.grid,
+                                dsigma, owned_mask=owned_mask)
+
     def _conserving_floor(self, field, dp=None):
         """Column-conserving non-negativity for a per-mass field
         ``(..., nlev)``: clip negatives, rescale the column's positives so
@@ -1617,6 +1717,22 @@ class ModelDriver:
         if "land_taumag" in ck:
             return tuple(ck[k] for k in _LAND_STRESS_CKPT_KEYS)
         return None
+
+    def _land_window_for_checkpoint(self):
+        """The MPAS land cadence state to persist (F31) or ``None``.
+
+        ``_run_mpas`` publishes it after every land block; before any run has
+        adopted a loaded checkpoint (load -> save with no step) the STAGED
+        payload is forwarded, so a no-step re-save cannot strip it (same rule
+        as the land stress).  Rank-local under MPI; the caller gathers.
+        """
+        win = getattr(self, "_land_window", None)
+        if win is not None:
+            return win
+        ck = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        staged = {k: v for k, v in ck.items()
+                  if k.startswith(_LAND_WIN_PREFIXES)}
+        return staged or None
 
     def _checkpoint_carry_aux(self) -> dict | None:
         """``self._carry_aux`` augmented with the evolved double-moment tracers
@@ -6660,10 +6776,21 @@ class ModelDriver:
                         gather_voronoi_field(jnp.asarray(_a).reshape(-1),
                                              part, "cell")
                         for _a in _ls_save)
+                # Land cadence window (F31): per-cell entries gather like the
+                # stress; the same keys exist on every rank (same loop, same
+                # cadence), iterated SORTED so the collectives line up.
+                _lw_save = self._land_window_for_checkpoint()
+                if _lw_save is not None:
+                    _lw_save = {
+                        _k: (_v if _k == "land_win_n" else
+                             gather_voronoi_field(jnp.asarray(_v).reshape(-1),
+                                                  part, "cell"))
+                        for _k, _v in sorted(_lw_save.items())}
                 if self._mpi_rank != 0:
                     return
             else:
                 _ls_save = self._land_stress_for_checkpoint()
+                _lw_save = self._land_window_for_checkpoint()
                 u_d, T_d, ps_d, phis_d = (
                     s.u.data, s.T.data, s.p_s.data, s.phis.data)
                 trc_d = (None if s.tracers is None
@@ -6790,6 +6917,11 @@ class ModelDriver:
                 _save["land_taumag"] = np.asarray(_ls_save[0])
                 _save["land_taumag_valid"] = np.asarray(_ls_save[1], dtype=bool)
                 _save["land_taumag_fresh"] = np.asarray(_ls_save[2], dtype=bool)
+            # Land cadence window + held land outputs (F31): the pending
+            # samples' forcing reaches the land on the next link instead of
+            # being dropped, and the resumed link needs no bootstrap step.
+            if _lw_save is not None:
+                _save.update({_k: np.asarray(_v) for _k, _v in _lw_save.items()})
             # #1353 (codex-2 finding 2): within-interval CMOR flux sums —
             # so a mid-interval (wallclock / off-cadence) restart resumes
             # the interval mean instead of dropping the pre-checkpoint
@@ -7689,6 +7821,29 @@ class ModelDriver:
                         _a = np.asarray(scatter_to_local(
                             jnp.asarray(_a), part, "cell"))
                     self._carry_aux[_k] = _a
+            # Land cadence window + held land outputs (F31): same
+            # stale-persistence rule; _run_mpas validates and adopts them.  A
+            # checkpoint without them restarts the window empty (the pending
+            # samples of the previous link are lost, as before) and re-runs
+            # the bootstrap land step.
+            for _stale in [k for k in self._carry_aux
+                           if k.startswith(_LAND_WIN_PREFIXES)]:
+                del self._carry_aux[_stale]
+            self._land_window = None
+            for _k in d.files:
+                if not _k.startswith(_LAND_WIN_PREFIXES):
+                    continue
+                _a = np.asarray(d[_k])
+                if _mpi and _k != "land_win_n":
+                    if _a.shape != (part.nCells_global,):
+                        raise ValueError(
+                            f"MPAS checkpoint {path.name} {_k} shape "
+                            f"{_a.shape} != global mesh "
+                            f"({part.nCells_global},); rebuild with the "
+                            "same --resolution.")
+                    _a = np.asarray(scatter_to_local(
+                        jnp.asarray(_a), part, "cell"))
+                self._carry_aux[_k] = _a
             # #1353 partial-interval CMOR flux sums: same stale-persistence
             # rule — drop prior staging, then stage this checkpoint's
             # payload for the _run_mpas accumulator restore.  WHITELISTED
@@ -12443,8 +12598,11 @@ class ModelDriver:
                 u_c, v_c = (_cell_winds(self.state, self.grid, level=-1)
                             if self.state.v is not None
                             else _recon_cell_velocity_jit(self.state.u.data[:, -1]))
-                # Same conventions as the coupled tile: p_lowest ~ 0.99 p_s,
-                # ideal-gas rho at the lowest level, snow split at T_freeze.
+                # Same conventions as the canonical extractor (coupler
+                # surface_exchange) and the coupled tile: the coordinate's
+                # lowest full-level pressure and the MOIST density there,
+                # rho = p_lowest / (R_d T_v) (F28: was p_s / (R_d T), ~1-2 %
+                # high); snow split at T_freeze.
                 # The zenith is the REAL per-cell sun (same doy/seconds the
                 # radiation uses this step): it was a fixed 0.5 when only the
                 # bulk scheme ran here (which never reads it), but the two-leaf
@@ -12452,9 +12610,11 @@ class ModelDriver:
                 # is zenith-driven -- a fixed sun would give the canopy neither
                 # a diurnal cycle nor night.
                 from legoesm.core.coupling_fields import lowest_level_height
+                from legoesm.thermo import moist_air_density
+                _p_full = self.sigma.pressure_at_full(p_s)
+                p_lowest = _p_full[..., -1]
                 z_lowest = lowest_level_height(
-                    T_air, self.sigma.pressure_at_half(p_s),
-                    self.sigma.pressure_at_full(p_s))
+                    T_air, self.sigma.pressure_at_half(p_s), _p_full)
                 return AtmToSurface(
                     z_lowest=z_lowest,
                     sw_down=sw_down, lw_down=lw_down,
@@ -12462,8 +12622,8 @@ class ModelDriver:
                     precip_snow=precip_snow,
                     T_lowest=T_air, q_lowest=q_air,
                     u_lowest=u_c, v_lowest=v_c,
-                    p_lowest=0.99 * p_s, p_surface=p_s,
-                    rho_lowest=p_s / (constants.R_d * T_air),
+                    p_lowest=p_lowest, p_surface=p_s,
+                    rho_lowest=moist_air_density(T_air, p_lowest, q_air),
                     cos_zenith=_cos_zen_fn(
                         jnp.asarray(_doy, dtype=jnp.float64),
                         jnp.asarray(_sod, dtype=jnp.float64) / 3600.0),
@@ -12990,6 +13150,40 @@ class ModelDriver:
                         jnp.asarray(a, dtype=_q_air0.dtype).reshape(-1)
                         for a in static_land_roughness(
                             _lml_params, _lml_cfg, int(_q_air0.size)))
+        # Land cadence window + held land outputs from the checkpoint (F31):
+        # the previous link's pending samples are summed into this link's
+        # first window, and the held outputs feed the surface blend from the
+        # first step, so no bootstrap land step runs and no forcing is lost.
+        self._land_window = None
+        _lw_ck = ({k: self._carry_aux.pop(k) for k in list(self._carry_aux)
+                   if k.startswith(_LAND_WIN_PREFIXES)}
+                  if isinstance(self._carry_aux, dict) else {})
+        if _land_ml_on and _lw_ck:
+            (_land_a2s_sum, _land_a2s_n, _land_cz_wsum, _land_w_sum,
+             (_lw_T, _lw_alb, _lw_qlast, _lw_qs, _lw_sh, _lw_lh,
+              _lw_ev)) = land_window_from_checkpoint(
+                _lw_ck, _LAND_K,
+                int(jnp.asarray(self.state.p_s.data).reshape(-1).shape[0]))
+            if _lw_T is not None:
+                _land_T_skin = self._land_T_skin_last = _lw_T
+                _land_albedo_cells = _lw_alb
+                self._land_qsfc_last = _lw_qlast
+            # The flux channel exists only with the land beta handoff; its
+            # seeds above are replaced by the held solved values when the
+            # checkpoint carries them.
+            if _land_qsfc_cells is not None and _lw_qs is not None:
+                _land_qsfc_cells, _land_shflx_cells = _lw_qs, _lw_sh
+                _land_lhflx_cells, _land_evap_cells = _lw_lh, _lw_ev
+            logger.info(
+                "  MPAS land window: resumed from checkpoint (%d pending "
+                "sample(s) of %d; held land outputs %s)", _land_a2s_n,
+                _LAND_K, "restored" if _lw_T is not None else "absent")
+        elif _land_ml_on and start_step > 0:
+            logger.warning(
+                "  MPAS land window: the checkpoint carries no land cadence "
+                "state (written before it was persisted); the pending "
+                "samples of the previous link are lost and the first land "
+                "step is the one-step bootstrap.")
         # Current forcing day's SST/SIC, cached at each daily boundary for the
         # per-step ice-skin advance AND per-step T_sfc re-anchor (None until
         # the first boundary / when the skin feature is off).
@@ -13007,7 +13201,7 @@ class ModelDriver:
         _sed_req_window = None
         from legoesm.forcing.time_utils import daily_forcing_bucket
         _qv_smooth_jit = make_mpas_qv_smooth_fn(
-            self.grid, _qv_smooth_nu, DT, nu4=_qv_smooth_nu4,
+            self.grid, _qv_smooth_nu, DT, self.sigma, nu4=_qv_smooth_nu4,
             halo_refresh=_qv_halo_refresh,
             owned_mask=(None if self._voronoi_layout is None
                         else self._voronoi_layout.owned_mask_cells))
@@ -13536,6 +13730,16 @@ class ModelDriver:
                         # Root-zone beta only until the humidity channel is
                         # live (or when the scheme solves none).
                         _land_beta_cells = _land_beta_fn(self._land_ml_state)
+                # Publish the cadence state for the checkpoint writer (F31):
+                # Python references only, no device work.
+                self._land_window = land_window_checkpoint_payload(
+                    _land_a2s_sum, _land_a2s_n,
+                    _land_cz_wsum if _land_a2s_n else None,
+                    _land_w_sum if _land_a2s_n else None,
+                    (_land_T_skin, _land_albedo_cells,
+                     getattr(self, "_land_qsfc_last", None),
+                     _land_qsfc_cells, _land_shflx_cells,
+                     _land_lhflx_cells, _land_evap_cells))
                 if (step % _HARD_SAT_LOG_CADENCE_STEPS) == 0:
                     if _ls_seed_win is not None:
                         self._flush_land_stress_counts(
@@ -13617,13 +13821,15 @@ class ModelDriver:
             # (smoothing spreads a grid-scale supersaturation spike across
             # neighbours; the drain then removes what remains).  Module-scope
             # _mpas_qv_smooth_step (the exact code the unit test exercises):
-            # UNWEIGHTED SCVT del2 + q>=0 floor.  Conserves (to fp roundoff)
-            # the per-level sum_c A_c q_c integral, NOT column water vapour —
-            # an explicitly non-conservative filter (see the config field note).
-            # Compiled once before the loop (_qv_smooth_jit).
+            # UNWEIGHTED SCVT del2/del4, then a floor that restores each
+            # level's WATER MASS (dp-weighted) to its pre-smoothing value, so
+            # this filter -- which runs after the step's fixers -- neither
+            # creates nor destroys water (F12).  Columns still exchange water
+            # (the filter's purpose).  Compiled once before the loop.
             if _qv_smooth_nu > 0.0 or _qv_smooth_nu4 > 0.0:
                 _trc_sm = self.state.tracers
-                _qv_new_sm = _qv_smooth_jit(_trc_sm["q_v"].data)
+                _qv_new_sm = _qv_smooth_jit(_trc_sm["q_v"].data,
+                                            self.state.p_s.data)
                 _new_trc_sm = dict(_trc_sm)
                 _new_trc_sm["q_v"] = _trc_sm["q_v"].replace(data=_qv_new_sm)
                 self.state = self.state._replace(tracers=_new_trc_sm)
@@ -15285,9 +15491,7 @@ class ModelDriver:
             build_tile_step_unified, make_tiled_operator_split_step,
             shard_tiled_split_carry, unpack_carry_tiled,
         )
-        from legoesm.core.conservation import (
-            compute_global_moisture, global_area_sum,
-        )
+        from legoesm.core.conservation import compute_global_moisture
 
         cfg = self.config
         n = int(self.grid.n)
@@ -15344,9 +15548,11 @@ class ModelDriver:
         if cfg.fix_moisture and float(_target_moisture) == 0.0:
             _target_moisture = compute_global_moisture(
                 self.q_v, self.state.p_s.data, dsigma, self.grid)
-        _target_mass = _carry_aux.get("target_mass", jnp.asarray(0.0))
+        # DRY-mass anchor (F13); an old checkpoint's TOTAL-mass
+        # ``target_mass`` is never reused (different integral).
+        _target_mass = _carry_aux.get("target_dry_mass", jnp.asarray(0.0))
         if cfg.dycore.fix_mass and float(_target_mass) == 0.0:
-            _target_mass = global_area_sum(self.state.p_s.data, self.grid)
+            _target_mass = self._segment_dry_mass_target(dsigma)
 
         statics = build_operator_split_statics(
             step_unified=tile_su, forcing=None,
@@ -15811,9 +16017,7 @@ class ModelDriver:
         from legoesm.atmosphere.dynamics.gcm.sharded_atm_latlon_step import (
             build_band_grids_atm,
         )
-        from legoesm.core.conservation import (
-            compute_global_moisture, global_area_sum,
-        )
+        from legoesm.core.conservation import compute_global_moisture
         from legoesm.parallel.latlon_spmd import replicate_leaf
 
         cfg = self.config
@@ -15926,9 +16130,11 @@ class ModelDriver:
         if cfg.fix_moisture and float(_target_moisture) == 0.0:
             _target_moisture = compute_global_moisture(
                 self.q_v, self.state.p_s.data, dsigma, self.grid)
-        _target_mass = _carry_aux.get("target_mass", jnp.asarray(0.0))
+        # DRY-mass anchor (F13); an old checkpoint's TOTAL-mass
+        # ``target_mass`` is never reused (different integral).
+        _target_mass = _carry_aux.get("target_dry_mass", jnp.asarray(0.0))
         if cfg.dycore.fix_mass and float(_target_mass) == 0.0:
-            _target_mass = global_area_sum(self.state.p_s.data, self.grid)
+            _target_mass = self._segment_dry_mass_target(dsigma)
 
         # --- Global operator-split statics (band step_unified; grid/lat/lon/
         # forcing are swapped per band inside the sharded step; ghg_vmr_override
@@ -16718,10 +16924,8 @@ class ModelDriver:
         # Conservation-fixer targets MUST come from the IC, not zero: fix_mass is on
         # by default, so a zero dry-mass target would drain the atmosphere to NaN
         # (mirrors the targets _run_compiled computes before the segment loop).
-        from legoesm.core.conservation import (
-            compute_global_moisture, global_area_sum,
-        )
-        target_mass = (global_area_sum(self.state.p_s.data, self.grid)
+        from legoesm.core.conservation import compute_global_moisture
+        target_mass = (self._segment_dry_mass_target(ctx["dsigma"])
                        if cfg.dycore.fix_mass else jnp.asarray(0.0))
         target_moisture = (
             compute_global_moisture(self.q_v, self.state.p_s.data,
@@ -16897,7 +17101,7 @@ class ModelDriver:
         # restore from checkpoint if available, else compute from IC.
         # At initialization (step 0) all ranks have identical state, so
         # owned_mask is not strictly needed, but we include it for consistency.
-        from legoesm.core.conservation import compute_global_moisture, global_area_sum
+        from legoesm.core.conservation import compute_global_moisture
         _carry_aux = self._carry_aux
         _owned_mask = None
         if self._owned_face_ids is not None:
@@ -16912,13 +17116,14 @@ class ModelDriver:
             )
             logger.info(f"  Moisture target: {float(_target_moisture):.6e} kg")
 
-        # Compute fixed dry mass target for target-anchored conservation
-        _target_mass = _carry_aux.get("target_mass", jnp.asarray(0.0))
+        # Fixed DRY-mass target for target-anchored conservation (F13: the
+        # dry integral; an old checkpoint's TOTAL-mass ``target_mass`` is a
+        # different integral and is never reused -- the anchor re-derives).
+        _target_mass = _carry_aux.get("target_dry_mass", jnp.asarray(0.0))
         if cfg.dycore.fix_mass and float(_target_mass) == 0.0:
-            _target_mass = global_area_sum(
-                self.state.p_s.data, self.grid, owned_mask=_owned_mask,
-            )
-            logger.info(f"  Mass target: {float(_target_mass):.6e} Pa·m²")
+            _target_mass = self._segment_dry_mass_target(
+                dsigma, owned_mask=_owned_mask)
+            logger.info(f"  Dry-mass target: {float(_target_mass):.6e} Pa·m²")
 
         run_status = "COMPLETED"
 
@@ -17376,7 +17581,7 @@ class ModelDriver:
                 "held_lw_up_toa_clr": held_lw_up_toa_clr,
                 "conv_prog": conv_prog,
                 "target_moisture": _target_moisture,
-                "target_mass": _target_mass,
+                "target_dry_mass": _target_mass,
                 # UNITS: the coupler contract (AtmToSurface.precip_total,
                 # packages/core/legoesm/core/coupling_fields.py:18) is a RATE
                 # [kg/m2/s], positive-downward (into the surface) -- the same

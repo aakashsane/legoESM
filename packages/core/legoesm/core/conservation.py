@@ -11,6 +11,8 @@ References
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 
@@ -385,6 +387,59 @@ def conservative_positive_clip_global(q, weight, axis=-1, eps=1e-30,
     factor = jnp.where(live, 1.0 - resid / safe_total,
                        jnp.where(pos_total > 0.0, 1.0, 0.0))
     return q_col * jnp.clip(factor, 0.0, 1.0).astype(q.dtype), created
+
+
+def restore_level_mass(q_new, q_ref, dp, area, *, clip, owned_mask=None,
+                       reduce=None):
+    """Per-level multiplicative restore of a tracer's global MASS after a
+    horizontal filter.
+
+    A horizontal filter on the mixing ratio (SCVT del2/del4, a spectral
+    hyperdiffusion) conserves ``sum_c A_c q_c`` per level, not the tracer
+    mass ``sum_c A_c dp_c q_c``: wherever the layer mass ``dp`` varies
+    (terrain, any p_s gradient) it moves mass between thin and thick
+    columns and so creates or destroys it.  This rescales each level ``l``
+    of ``q_new`` (optionally clipped to ``q >= 0`` first) by::
+
+        factor_l = sum_c A_c dp_c,l q_ref_c,l / sum_c A_c dp_c,l q_new_c,l
+
+    so the level's mass equals the PRE-filter ``q_ref`` mass to roundoff.
+    The layer masses do not change across the filter, so restoring every
+    level restores the global tracer mass and leaves the global dry mass
+    (``p_s`` untouched) unchanged.  ``dp`` enters as ``max(dp, 0)``: the
+    same positive-weight contract as the positivity borrow (a hybrid
+    coordinate's surface layer can go non-positive over high terrain).
+
+    ``q_new``/``q_ref``/``dp``: ``(n, nlev)``; ``area``: ``(n,)`` -- pass a
+    dimensionless ratio (area / a GLOBAL reference) when the tracer is
+    large (number concentrations), so the fp32 quotient VJP cannot
+    overflow.  ``owned_mask`` (``(n,)`` bool) drops MPI halo duplicates
+    from the sums; ``reduce`` combines the per-level partial sums across
+    ranks (an allreduce-SUM, the AD-safe collective); ``None`` = serial.
+    Sums in the budget accumulator; the factor is cast back to ``q_new``'s
+    dtype.  ``clip=True``: ``max(q_new, 0)`` first, which only adds mass,
+    so the factor also removes exactly what the clip created.  A level
+    whose filtered field is entirely non-positive (``den <= tiny``) cannot
+    be restored and comes back as ``max(q_new, 0)`` (clip) or unchanged.
+    Pure jnp, no Python branch on traced values; differentiable.
+    """
+    acc = conservation_accumulator()
+    w = jnp.asarray(area)[:, None] * jnp.maximum(dp, 0.0)
+    if owned_mask is not None:
+        w = jnp.where(jnp.asarray(owned_mask)[:, None], w, 0.0)
+    w = w.astype(acc)
+    q_out = jnp.maximum(q_new, 0.0) if clip else q_new
+    num = jnp.sum(w * q_ref.astype(acc), axis=0)
+    den = jnp.sum(w * q_out.astype(acc), axis=0)
+    if reduce is not None:
+        num, den = reduce(num), reduce(den)
+    tiny = jnp.finfo(acc).tiny
+    live = den > tiny
+    # max(., 0): a level whose reference mass is non-positive is floored at
+    # zero rather than sign-flipped (nothing exists to restore there).
+    factor = jnp.where(
+        live, jnp.maximum(num / jnp.where(live, den, 1.0), 0.0), 1.0)
+    return q_out * factor.astype(q_new.dtype)[None, :]
 
 
 def _accumulation_dtype():
@@ -1305,6 +1360,55 @@ def shift_ps_keep_tracer_mass(p_s, tracers, sigma_coord, correction):
         q_new = (q * ratio).astype(q.dtype)
         out[name] = tr.replace(data=q_new) if hasattr(tr, "replace") else q_new
     return p_s_new, out
+
+
+class SigmaLayers(NamedTuple):
+    """Pure-sigma layer masses ``dp_k = p_s * dsigma_k`` as the minimal
+    vertical coordinate the water/dry-mass helpers above need
+    (``layer_thickness_dp`` and the top-interface pressure).  The compiled
+    cube / lat-lon column lanes carry only ``dsigma`` and use exactly these
+    layer masses for every other water budget (moisture fixer, borrow,
+    ledger), so the dry-mass convention there is built on the same ones.
+    The top interface is ``p_s * (1 - sum(dsigma))`` so ``p_top + sum dp ==
+    p_s`` holds as on every coordinate."""
+    dsigma: jax.Array
+
+    def layer_thickness_dp(self, p_s):
+        return p_s[..., None] * self.dsigma
+
+    def pressure_at_half(self, p_s):
+        top = 1.0 - jnp.sum(self.dsigma)
+        half = jnp.concatenate([top[None], top + jnp.cumsum(self.dsigma)])
+        return p_s[..., None] * half
+
+
+def global_dry_mass(p_s, tracers, sigma_coord, grid, owned_mask=None):
+    """``∫ dry surface pressure dA`` [Pa m^2] (fp64 accumulator): the
+    integral the dry-mass fixers anchor (water species per
+    :data:`WATER_MASS_SPECIES`; ``tracers=None`` is a dry run)."""
+    return global_area_sum(dry_surface_pressure(p_s, tracers, sigma_coord),
+                           grid, owned_mask=owned_mask)
+
+
+def fix_ps_dry_mass_target(p_s, tracers, target_dry_mass, grid, sigma_coord,
+                           owned_mask=None):
+    """Target-anchored DRY-mass fixer on raw arrays: the dry twin of
+    :func:`fix_ps_mass_target` (user decision 2026-09-28, the FV3/IFS/CAM
+    convention; review 2026-10-10 F13 for the compiled/training lanes).
+
+    One uniform ``p_s`` correction returns ``∫ dry_surface_pressure dA`` to
+    ``target_dry_mass``; every tracer is re-weighted onto the new layer
+    masses (:func:`shift_ps_keep_tracer_mass`) so the added or removed mass
+    is dry air and each tracer's column mass is untouched.  A fixer on the
+    TOTAL ``p_s`` instead puts precipitated water straight back as dry air.
+    Returns ``(p_s_new, tracers_new)``.  ``owned_mask`` as in
+    :func:`global_area_sum`; the reduction's VJP allreduces the cotangent
+    (the correction is broadcast to every cell)."""
+    mass_now = global_area_sum(
+        dry_surface_pressure(p_s, tracers, sigma_coord), grid,
+        owned_mask=owned_mask, differentiable_broadcast=True)
+    correction = (target_dry_mass - mass_now) / _total_area(grid)
+    return shift_ps_keep_tracer_mass(p_s, tracers, sigma_coord, correction)
 
 
 def fix_total_water(

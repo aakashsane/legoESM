@@ -898,12 +898,17 @@ class PhysicsPipeline:
         Deferred land imports avoid a core->land top-level cross-package cycle."""
         from legoesm.core.coupling_fields import AtmToSurface, lowest_level_height
         from legoesm.land.multilayer_land import step_multilayer_land
-        from legoesm.thermo import saturation_mixing_ratio
+        from legoesm.thermo import moist_air_density, saturation_mixing_ratio
         ad = self.adapter
         f2 = lambda g: ad.flatten_2d(g)
         T_air = f2(T[..., -1]); q_air = f2(q_v[..., -1])
         u_low = f2(u[..., -1]); v_low = f2(v[..., -1]); p_s_col = f2(p_s)
-        rho = p_s_col / (constants.R_d * T_air)
+        # Canonical extractor convention (coupler surface_exchange): the
+        # coordinate's lowest full-level pressure and the MOIST density there
+        # (F28: was p_s / (R_d T) with p_lowest = 0.99 p_s).
+        p_full_col = self.sigma_coord.pressure_at_full(p_s_col)
+        p_low = p_full_col[..., -1]
+        rho = moist_air_density(T_air, p_low, q_air)
         precip = precip_col if precip_col is not None else jnp.zeros_like(p_s_col)
         ones = jnp.ones_like(p_s_col)
         # Solar zenith: CLM-ML consumes cos_zenith as its beam-extinction geometry
@@ -914,12 +919,11 @@ class PhysicsPipeline:
         _cosz = cos_zenith_col if cos_zenith_col is not None else 0.5 * ones
         forcing = AtmToSurface(
             z_lowest=lowest_level_height(
-                T_air, self.sigma_coord.pressure_at_half(p_s_col),
-                self.sigma_coord.pressure_at_full(p_s_col)),
+                T_air, self.sigma_coord.pressure_at_half(p_s_col), p_full_col),
             sw_down=sw_down_col, lw_down=lw_down_col, precip_total=precip,
             precip_snow=jnp.where(T_air < constants.T_freeze, precip, 0.0),
             T_lowest=T_air, q_lowest=q_air, u_lowest=u_low, v_lowest=v_low,
-            p_lowest=0.99 * p_s_col, p_surface=p_s_col, rho_lowest=rho,
+            p_lowest=p_low, p_surface=p_s_col, rho_lowest=rho,
             cos_zenith=_cosz, co2_ppmv=_CO2_PPMV_DEFAULT * ones,
             has_radiation=ones, has_precipitation=ones)
         dt_rad = dt * self.rad_update_steps

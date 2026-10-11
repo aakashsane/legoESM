@@ -15411,6 +15411,8 @@ class ModelDriver:
         # sub-lane above DOES stash them and returned already, so the refusal
         # sits here rather than at the run() dispatch (which cannot distinguish
         # the two).
+        self._reject_unconsumed_flux_override(
+            "the stateless lat-band SPMD sub-lane")
         self._reject_coupled_lane(
             "enable_latlon_spmd (stateless lat-band SPMD)",
             "a dynamics-only / Held-Suarez envelope with no radiation or "
@@ -15866,6 +15868,8 @@ class ModelDriver:
         if self._tiled_cube_unified_active():
             return self._run_operator_split_tiled_cube(
                 start_step, start_day, mesh, kt)
+        self._reject_unconsumed_flux_override(
+            "the simple blocked-loop tiled-cube sub-lane")
 
         column_physics_fn = self._tiled_cube_column_physics_fn()
         DT = cfg.dycore.dt

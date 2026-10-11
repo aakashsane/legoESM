@@ -41,6 +41,7 @@ from legoesm.driver.physics_pipeline import (
     validate_microphysics_tracer_slots,
 )
 from legoesm.driver.diagnostics import DiagnosticCollector
+from legoesm.driver.mpas_diff_step import mpas_cadence, pick_physics_fn
 from legoesm.driver.restart import save_restart, load_restart
 
 logger = logging.getLogger("legoesm.driver")
@@ -1444,6 +1445,9 @@ class ModelDriver:
         # and fail to reproduce.  NamedTuple._replace rebinds self.config to new
         # objects, so this reference stays the original input.
         self._input_config = config
+        # export_mpas_step's hand-off dict; None = a normal run (review F9).
+        self._mpas_step_export = None
+        self._mpas_step_exported = False   # export consumes the driver
         self.grid = None
         self.sigma = None
         self.model = None
@@ -8305,6 +8309,10 @@ class ModelDriver:
         str
             Run status ("COMPLETED" or "BLOWUP at day ...").
         """
+        if self._mpas_step_exported:
+            raise RuntimeError(
+                "run(): this driver was consumed by export_mpas_step (its "
+                "setup popped the restart side data); build a fresh ModelDriver.")
         refuse_cap_floor_on_fv(self.config)
         # SW is not runnable via ModelDriver — reject at the public entry even
         # if a caller reached run() without setup() (codex M2 review).
@@ -11035,6 +11043,41 @@ class ModelDriver:
         self._loaded_checkpoint_step_day = (step, day)
         return step, day
 
+    def export_mpas_step(self, start_step: int = 0,
+                         start_day: float | None = None) -> dict:
+        """The production MPAS step as pure closures (review F9).
+
+        Runs ``_run_mpas``'s own setup (physics construction, forcing, carry
+        seed, post-step edits) and returns at step 0, before anything is
+        advanced, with the dict that ``legoesm.driver.mpas_diff_step`` turns
+        into a differentiable step / segment.  Serial MPAS only.
+        """
+        if self.config.grid.grid_type != "mpas" or (
+                self.config.dycore.discretization == "fv3_duo"):
+            raise NotImplementedError(
+                "export_mpas_step: MPAS lane only (the FV3-duo column lane "
+                "keeps stateful column objects; see composable design D3).")
+        if self._mpas_step_exported:
+            raise RuntimeError(
+                "export_mpas_step: this driver was consumed by an earlier "
+                "export; build a fresh ModelDriver.")
+        # The state run() sets before dispatching to _run_mpas.
+        self._segment_callback = None
+        self._checkpoint_callback = None
+        self._run_wallclock_start = time.time()
+        self._mpas_step_export = {}
+        self._mpas_step_exported = True
+        try:
+            status = self._run_mpas(start_step, start_day)
+            out = self._mpas_step_export
+        finally:
+            self._mpas_step_export = None
+        if status != "EXPORTED":
+            raise RuntimeError(
+                f"export_mpas_step: the run loop ended with {status!r} before "
+                "its first step (zero-length run?)")
+        return out
+
     def _run_mpas(self, start_step: int = 0, start_day: float | None = None) -> str:
         """Run MPAS model with the unified physics pipeline.
 
@@ -11647,18 +11690,24 @@ class ModelDriver:
                 f"{cfg.cld_macmic_num_steps} x at "
                 f"{DT_PHYS / cfg.cld_macmic_num_steps:.1f} s inside each "
                 "physics step, after the convective increment")
-        physics_fn = make_physics(phys_cfg, model_type="mpas", dt=DT_PHYS,
-                                  budget_ledger_level_weight=_ledger_weight,
-                                  column_mesh=_column_mesh,
-                                  f_land=(_f_land_cells
-                                          if (_land_beta != 1.0
-                                              or _land_beta_soil_on)
-                                          else None),
-                                  land_beta=_land_beta,
-                                  budget_ledger=_budget_ledger_on,
-                                  physics_cadence=_phys_cadence_write,
-                                  physics_cadence_steps=PHYS_UPDATE_STEPS,
-                                  cld_macmic_num_steps=cfg.cld_macmic_num_steps)
+        def _build_physics(_cfg, need_rad=True):
+            """The lane's make_physics call (one copy for the full and the
+            held-radiation variants; exported to mpas_diff_step so a caller
+            can rebuild the SAME physics from a config with traced params)."""
+            return make_physics(_cfg, model_type="mpas", dt=DT_PHYS,
+                                budget_ledger_level_weight=_ledger_weight,
+                                column_mesh=_column_mesh, need_rad=need_rad,
+                                f_land=(_f_land_cells
+                                        if (_land_beta != 1.0
+                                            or _land_beta_soil_on)
+                                        else None),
+                                land_beta=_land_beta,
+                                budget_ledger=_budget_ledger_on,
+                                physics_cadence=_phys_cadence_write,
+                                physics_cadence_steps=PHYS_UPDATE_STEPS,
+                                cld_macmic_num_steps=cfg.cld_macmic_num_steps)
+
+        physics_fn = _build_physics(phys_cfg)
         if _hold_phys:
             from legoesm.atmosphere.physics.combined import held_physics_variant
             physics_fn_held = held_physics_variant(physics_fn)
@@ -11690,21 +11739,8 @@ class ModelDriver:
         # ``model.step`` the first time it is used.
         RAD_UPDATE_STEPS = max(1, int(cfg.rad_update_steps))
         _subcycle_rad = RAD_UPDATE_STEPS > 1 and cfg.radiation != "none"
-        physics_fn_norad = (
-            make_physics(phys_cfg, model_type="mpas", dt=DT_PHYS,
-                         column_mesh=_column_mesh, need_rad=False,
-                         f_land=(_f_land_cells
-                                 if (_land_beta != 1.0
-                                     or _land_beta_soil_on)
-                                 else None),
-                         land_beta=_land_beta,
-                         budget_ledger=_budget_ledger_on,
-                         budget_ledger_level_weight=_ledger_weight,
-                         physics_cadence=_phys_cadence_write,
-                         physics_cadence_steps=PHYS_UPDATE_STEPS,
-                         cld_macmic_num_steps=cfg.cld_macmic_num_steps)
-            if _subcycle_rad else None
-        )
+        physics_fn_norad = (_build_physics(phys_cfg, need_rad=False)
+                            if _subcycle_rad else None)
         if _subcycle_rad:
             logger.info(
                 "  Radiation sub-cycle: RRTMGP solved every "
@@ -13206,6 +13242,26 @@ class ModelDriver:
             owned_mask=(None if self._voronoi_layout is None
                         else self._voronoi_layout.owned_mask_cells))
 
+        def _poststep_state(state):
+            """Post-step dycore edits on the end-of-step state, shared by the
+            eager loop and the differentiable segment (mpas_diff_step).
+            Top sponge (#836): Rayleigh decay of the edge winds toward rest
+            above sigma_top (pure elementwise multiply).  q_v smoothing:
+            _mpas_qv_smooth_step, UNWEIGHTED SCVT del2/del4, then a floor that
+            restores each level's dp-weighted WATER MASS to its pre-smoothing
+            value, so this filter (after the step's fixers) neither creates
+            nor destroys water (F12)."""
+            if _sponge_decay is not None:
+                state = state._replace(
+                    u=state.u.replace(data=state.u.data * _sponge_decay))
+            if _qv_smooth_nu > 0.0 or _qv_smooth_nu4 > 0.0:
+                _trc_sm = state.tracers
+                _new_trc_sm = dict(_trc_sm)
+                _new_trc_sm["q_v"] = _trc_sm["q_v"].replace(
+                    data=_qv_smooth_jit(_trc_sm["q_v"].data, state.p_s.data))
+                state = state._replace(tracers=_new_trc_sm)
+            return state
+
         # Profiling window, off unless LEGOESM_TRACE_STEPS="first:count:dir"
         # (loop-step indices; each rank writes dir/rank<N>).  Blocks on the
         # state at both ends so the trace holds exactly those steps; a window
@@ -13527,12 +13583,15 @@ class ModelDriver:
             # job-local, so the first step of every job/restart link re-solves
             # radiation and repopulates the cache before any held step reads
             # it.  When subcycling is off, every step is a full step.
-            _use_rad = (not _subcycle_rad) or (step % RAD_UPDATE_STEPS == 0)
             # Physics cadence: step 0 of every job is a physics step (the
             # cache is per-job, never persisted), then every
             # PHYS_UPDATE_STEPS-th; the held variant re-applies the cache in
             # between.  Radiation steps are always physics steps (validated).
-            _is_phys_step = (not _hold_phys) or (step % PHYS_UPDATE_STEPS == 0)
+            # One rule, shared with the differentiable segment (mpas_diff_step).
+            _use_rad, _is_phys_step = mpas_cadence(
+                step, subcycle_rad=_subcycle_rad,
+                rad_update_steps=RAD_UPDATE_STEPS, hold_phys=_hold_phys,
+                phys_update_steps=PHYS_UPDATE_STEPS)
             # Seed ONLY on step 0 (a physics step, so the zero seed is never
             # applied); any other empty-cache step is refused by the held
             # variant instead of silently applying zeros.
@@ -13546,14 +13605,45 @@ class ModelDriver:
                         (self._voronoi_layout.local_mesh
                          if self._voronoi_layout is not None else self.model.mesh),
                         self.model.sigma_coord, _phys_state, _forcing))
+            if self._mpas_step_export is not None:
+                # Differentiable-step export (review F9): hand the production
+                # closures built above to mpas_diff_step and stop BEFORE the
+                # first step; the driver state is untouched.
+                if (_mpi_step is not None or _hard_sat_on
+                        or _budget_ledger_on or cfg.held_suarez_forcing
+                        or not hasattr(self.model, "step_pure")):
+                    raise NotImplementedError(
+                        "export_mpas_step: the cell-partition MPI step, the "
+                        "post-step hard-saturation drain (eager, host-synced), "
+                        "the budget ledger, the Held-Suarez wrapper and the "
+                        "non-hydrostatic MPAS model are not part of the "
+                        "differentiable segment; run serial hydrostatic "
+                        "without them.")
+                self._mpas_step_export.update(
+                    model=self.model, dt=DT, state=self.state,
+                    phys_state=_phys_state, forcing=_forcing,
+                    physics_fn=physics_fn, physics_fn_norad=physics_fn_norad,
+                    physics_fn_held=physics_fn_held,
+                    phys_cfg=phys_cfg, build_physics=_build_physics,
+                    subcycle_rad=_subcycle_rad,
+                    rad_update_steps=RAD_UPDATE_STEPS, hold_phys=_hold_phys,
+                    phys_update_steps=PHYS_UPDATE_STEPS,
+                    poststep=_poststep_state,
+                    calendar=lambda k: self._calendar_for_radiation(
+                        START_DAY + k * DT / 86400.0),
+                    land_step=_land_step_fn if _land_ml_on else None,
+                    land_state=self._land_ml_state if _land_ml_on else None,
+                    marshal_land=_marshal_land_forcing if _land_ml_on else None,
+                    land_k=_LAND_K if _land_ml_on else None)
+                return "EXPORTED"
             if _mpi_step is not None:
                 _mstep = ((_mpi_step if _use_rad else _mpi_step_norad)
                           if _is_phys_step else _mpi_step_held)
                 self.state, _phys_state = _mstep(
                     self.state, DT, _forcing, _phys_state)
             else:
-                _pfn = ((physics_fn if _use_rad else physics_fn_norad)
-                        if _is_phys_step else physics_fn_held)
+                _pfn = pick_physics_fn(_use_rad, _is_phys_step, physics_fn,
+                                       physics_fn_norad, physics_fn_held)
                 _pt0 = time.perf_counter() if _PHASE_TIMERS else 0.0
                 self.state = self.model.step(
                     self.state, DT, physics_fn=_pfn, forcing=_forcing,
@@ -13812,27 +13902,12 @@ class ModelDriver:
             # Top sponge (#836): per-step Rayleigh decay of the edge winds
             # toward rest above sigma_top (see profile construction above).
             # Pure device elementwise multiply — no host sync, no retrace.
-            if _sponge_decay is not None:
-                self.state = self.state._replace(
-                    u=self.state.u.replace(
-                        data=self.state.u.data * _sponge_decay))
             # Post-step horizontal q_v smoothing (opt-in).  Placed BEFORE the
             # hard-saturation drain so the drain acts on the smoothed field
             # (smoothing spreads a grid-scale supersaturation spike across
-            # neighbours; the drain then removes what remains).  Module-scope
-            # _mpas_qv_smooth_step (the exact code the unit test exercises):
-            # UNWEIGHTED SCVT del2/del4, then a floor that restores each
-            # level's WATER MASS (dp-weighted) to its pre-smoothing value, so
-            # this filter -- which runs after the step's fixers -- neither
-            # creates nor destroys water (F12).  Columns still exchange water
-            # (the filter's purpose).  Compiled once before the loop.
-            if _qv_smooth_nu > 0.0 or _qv_smooth_nu4 > 0.0:
-                _trc_sm = self.state.tracers
-                _qv_new_sm = _qv_smooth_jit(_trc_sm["q_v"].data,
-                                            self.state.p_s.data)
-                _new_trc_sm = dict(_trc_sm)
-                _new_trc_sm["q_v"] = _trc_sm["q_v"].replace(data=_qv_new_sm)
-                self.state = self.state._replace(tracers=_new_trc_sm)
+            # neighbours; the drain then removes what remains).  Both edits
+            # live in _poststep_state (shared with the differentiable segment).
+            self.state = _poststep_state(self.state)
             # Post-step HARD SATURATION ADJUSTMENT (opt-in), applied on the FINAL
             # state AFTER the dycore's vertical vapour transport has acted this
             # step -- the load-bearing placement (in-scheme leaves the transport

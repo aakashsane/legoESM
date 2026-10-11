@@ -170,9 +170,11 @@ class SegmentCarry(NamedTuple):
         Scalar float — fixed global moisture target for the fixer,
         computed once at initialization to prevent cross-step drift.
     target_mass : jax.Array
-        Scalar float — fixed global dry mass target (∫ p_s * dA at t=0),
-        used for target-anchored mass conservation in long runs.
-        Zero disables the fixer.
+        Scalar float — fixed global DRY-mass target, ``∫ dry p_s dA`` of the
+        segment's initial state (:func:`segment_dry_mass`; review 2026-10-10
+        F13 -- it was the TOTAL ``∫ p_s dA``, which put precipitated water
+        back as dry air), used for target-anchored mass conservation in long
+        runs.  The driver persists it as ``target_dry_mass``.
     max_cfl : jax.Array
         Scalar float — maximum CFL number observed during the segment.
         Monitored at segment boundaries for adaptive dt.
@@ -1232,6 +1234,77 @@ class _SplitStepLocals(NamedTuple):
 _MOIST_FIELDS = ("q_v", "q_c", "q_r", "q_i", "q_s", "q_g", "N_c", "N_r", "N_i")
 
 
+def carry_moist(carry):
+    """``{name: array | None}`` of a carry's moisture fields (``_MOIST_FIELDS``)."""
+    return {_nm: getattr(carry, _nm) for _nm in _MOIST_FIELDS}
+
+
+def segment_physics_water(moist, phys_out, p_s, dt, dsigma):
+    """Physics increments of the moisture fields WITH their mass (review
+    2026-10-10 F13): the shared :func:`legoesm.core.conservation.
+    apply_physics_water_mass` on the segment lanes' ``p_s * dsigma`` layer
+    masses.  Precipitation lowers ``p_s`` and evaporation raises it; every
+    field (water species and per-mass numbers) is re-weighted onto the new
+    layer masses, so column water changes by exactly the physics' water
+    tendency and the column DRY mass is untouched.  ``q += dt*dq`` at fixed
+    ``p_s`` (the previous form) left the precipitated water behind as dry
+    air, which the total-mass fixer then kept.
+
+    ``moist``: ``{name: array | None}`` over ``_MOIST_FIELDS``; the tendency
+    of a present field is ``phys_out.d<name>_dt``.  Returns
+    ``(moist_raw, p_s_new)`` with ``None`` fields kept ``None``; the
+    increments are NOT yet floored (the caller's column borrow conserves the
+    re-weighted column masses)."""
+    from legoesm.core.conservation import SigmaLayers, apply_physics_water_mass
+    tr = {k: v for k, v in moist.items() if v is not None}
+    tend = {k: getattr(phys_out, f"d{k}_dt") for k in tr}
+    tr_new, p_s_new = apply_physics_water_mass(
+        tr, tend, p_s, SigmaLayers(dsigma), dt)
+    return {k: tr_new.get(k) for k in moist}, p_s_new
+
+
+def _moist_change_with_mass(old, new, p_s, dsigma, dt):
+    """Replace the moisture fields ``old`` by ``new`` WITH the change's mass
+    (F13): the increment ``new - old`` goes through the shared
+    :func:`legoesm.core.conservation.apply_physics_water_mass` on the
+    ``p_s * dsigma`` layers, so ``p_s`` moves by the column water change and
+    every field is re-weighted; the column DRY mass is untouched.  A
+    column-conserving borrow moves ``p_s`` by roundoff only.  ``old``/``new``
+    are ``{name: array | None}`` with the same keys; returns
+    ``(moist, p_s)``."""
+    from legoesm.core.conservation import SigmaLayers, apply_physics_water_mass
+    tr = {k: v for k, v in old.items() if v is not None}
+    tr, p_s = apply_physics_water_mass(
+        tr, {k: (new[k] - tr[k]) / dt for k in tr}, p_s,
+        SigmaLayers(dsigma), dt)
+    return {k: tr.get(k) for k in old}, p_s
+
+
+def fix_segment_dry_mass(p_s, moist, target_dry_mass, grid, dsigma,
+                         owned_mask=None):
+    """The segment lanes' target-anchored DRY-mass fixer (F13): the shared
+    :func:`legoesm.core.conservation.fix_ps_dry_mass_target` over the
+    moisture fields present in ``moist`` (``None`` entries pass through) on
+    the ``p_s * dsigma`` layer masses.  ``target_dry_mass`` must be the
+    same integral (see ``segment_dry_mass``).  Returns ``(p_s, moist)``."""
+    from legoesm.core.conservation import SigmaLayers, fix_ps_dry_mass_target
+    tr = {k: v for k, v in moist.items() if v is not None}
+    p_s, tr = fix_ps_dry_mass_target(
+        p_s, tr, target_dry_mass, grid, SigmaLayers(dsigma),
+        owned_mask=owned_mask)
+    return p_s, {k: tr.get(k) for k in moist}
+
+
+def segment_dry_mass(p_s, moist, grid, dsigma, owned_mask=None):
+    """``∫ dry p_s dA`` of a segment state -- the anchor the dry-mass fixer
+    holds (``moist`` as in :func:`fix_segment_dry_mass`, so the target and
+    the fixer see the same water species)."""
+    from legoesm.core.conservation import SigmaLayers, global_dry_mass
+    tr = {k: v for k, v in moist.items() if v is not None}
+    return global_dry_mass(p_s, tr, SigmaLayers(dsigma), grid,
+                           owned_mask=owned_mask)
+
+
 def _clear_sky_toa_pass(clear_sky_fresh, need_rad,
                         held_sw_up_toa_clr, held_lw_up_toa_clr,
                         compute_fresh):
@@ -1428,7 +1501,11 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
         _phys_dT_dt = _phys_dT_dt + statics.hs_newtonian_relax(
             T_new, p_s_new, statics.lat)
     T_upd = T_new + statics.dt * _phys_dT_dt
-    _qv_raw = moist["q_v"] + statics.dt * phys_out.dq_v_dt
+    # Physics water carries its MASS (F13, dry-mass convention): p_s moves by
+    # the column water change and every moisture field is re-weighted.
+    _raw, p_s_phys = segment_physics_water(
+        moist, phys_out, p_s_new, statics.dt, statics.dsigma)
+    _qv_raw = _raw["q_v"]
     if statics.energy_consistent_moisture_clip:
         # Issue #323: keep the q_v floor moist-static-energy neutral by
         # removing the latent heat of the clipped (un-removed) vapour sink.
@@ -1443,22 +1520,18 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
         # cancels in the rescale.
         q_v_upd = conservative_positive_clip(
             _qv_raw, statics.dsigma, axis=-1)[0]
-    q_c_upd = conservative_positive_clip(
-        moist["q_c"] + statics.dt * phys_out.dq_c_dt, statics.dsigma,
-        axis=-1)[0]
-    q_r_upd = conservative_positive_clip(
-        moist["q_r"] + statics.dt * phys_out.dq_r_dt, statics.dsigma,
-        axis=-1)[0]
-    def _dm_upd(fld, tend):
-        return (None if fld is None
+    def _dm_upd(name):
+        return (None if _raw[name] is None
                 else conservative_positive_clip(
-                    fld + statics.dt * tend, statics.dsigma, axis=-1)[0])
-    q_i_upd = _dm_upd(moist["q_i"], phys_out.dq_i_dt)
-    q_s_upd = _dm_upd(moist["q_s"], phys_out.dq_s_dt)
-    q_g_upd = _dm_upd(moist["q_g"], phys_out.dq_g_dt)
-    N_c_upd = _dm_upd(moist["N_c"], phys_out.dN_c_dt)
-    N_r_upd = _dm_upd(moist["N_r"], phys_out.dN_r_dt)
-    N_i_upd = _dm_upd(moist["N_i"], phys_out.dN_i_dt)
+                    _raw[name], statics.dsigma, axis=-1)[0])
+    _floored = {"q_v": q_v_upd, **{k: _dm_upd(k) for k in _MOIST_FIELDS[1:]}}
+    # The floors' water change carries its mass too (F13, codex r2): the
+    # borrow moves none except in net-negative columns, the opt-in hard
+    # vapour floor creates it.
+    _floored, p_s_phys = _moist_change_with_mass(
+        _raw, _floored, p_s_phys, statics.dsigma, statics.dt)
+    (q_v_upd, q_c_upd, q_r_upd, q_i_upd, q_s_upd, q_g_upd,
+     N_c_upd, N_r_upd, N_i_upd) = (_floored[k] for k in _MOIST_FIELDS)
     conv_prog_upd = phys_out.conv_prog
 
     # --- Budget ledger: CLIPS row (state-update part) + assembly ----------
@@ -1480,7 +1553,7 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
         _led_T_raw = T_new + statics.dt * _phys_dT_dt
         _led_raw = column_store_snapshot(
             p_s_new, statics.dsigma, _led_T_raw,
-            _qv_raw,
+            moist["q_v"] + statics.dt * phys_out.dq_v_dt,
             moist["q_c"] + statics.dt * phys_out.dq_c_dt,
             moist["q_r"] + statics.dt * phys_out.dq_r_dt,
             None if moist["q_i"] is None
@@ -1490,8 +1563,12 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
             None if moist["q_g"] is None
             else moist["q_g"] + statics.dt * phys_out.dq_g_dt,
             area=statics.grid.grid_area)
+        # Post-floor store at the POST-physics layer masses (F13): water
+        # matches the raw Euler store above exactly (the mass rides p_s), so
+        # CLIPS water is the floors' effect alone; its energy also books the
+        # enthalpy of the layer mass the physics water carried in or out.
         _led_clipped = column_store_snapshot(
-            p_s_new, statics.dsigma, T_upd,
+            p_s_phys, statics.dsigma, T_upd,
             q_v_upd, q_c_upd, q_r_upd, q_i_upd, q_s_upd, q_g_upd,
             area=statics.grid.grid_area)
         _led_clips = (_led_clipped - _led_raw) / statics.dt
@@ -1531,7 +1608,7 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
     lw_up_toa_clr_accum = carry.lw_up_toa_clr_accum + held_new[7] * statics.dt
 
     return _SplitStepLocals(
-        u_new=u_new, v_new=v_new, p_s_new=p_s_new,
+        u_new=u_new, v_new=v_new, p_s_new=p_s_phys,
         T_upd=T_upd, q_v_upd=q_v_upd, q_c_upd=q_c_upd, q_r_upd=q_r_upd,
         q_i_upd=q_i_upd, q_s_upd=q_s_upd, q_g_upd=q_g_upd,
         N_c_upd=N_c_upd, N_r_upd=N_r_upd, N_i_upd=N_i_upd,
@@ -1582,6 +1659,9 @@ def finalize_split_step(carry, lz, statics):
     T_upd = lz.T_upd
     q_v_upd = lz.q_v_upd
     p_s_new = lz.p_s_new
+    _other = {"q_c": lz.q_c_upd, "q_r": lz.q_r_upd, "q_i": lz.q_i_upd,
+              "q_s": lz.q_s_upd, "q_g": lz.q_g_upd, "N_c": lz.N_c_upd,
+              "N_r": lz.N_r_upd, "N_i": lz.N_i_upd}
 
     # Budget ledger: snapshot the tail's entry (T, q_v) store so the tail's
     # water/enthalpy changes (saturation adjustment, moisture fixer, q_v
@@ -1593,13 +1673,29 @@ def finalize_split_step(carry, lz, statics):
             area=statics.grid.grid_area)
 
     # --- Saturation adjustment ---
+    precip_accum = lz.precip_accum
     if statics.do_sat_adjust:
         p_full = p_s_new[..., None] * statics.sigma_full
         q_sat = saturation_mixing_ratio(T_upd, p_full)
         excess = jnp.maximum(q_v_upd - q_sat, 0.0)
-        q_v_upd = q_v_upd - excess
         T_upd = T_upd + constants.L_v * excess / constants.c_pd
+        # The condensed excess rains out WITH its mass (F13): p_s falls by
+        # the column's excess and every moisture field is re-weighted, so
+        # the dry mass is untouched (removing it at fixed p_s left the rain
+        # behind as dry air).  The rain [kg/m2] reaches the surface: book it
+        # in precip_accum so column water change + precipitation closes
+        # (owned faces only on the MPI-owned-face branch, like the physics
+        # precip).
+        _rain = p_s_new * jnp.sum(statics.dsigma * excess, axis=-1) / constants.g
+        if statics.owned_mask is not None:
+            _rain = _rain * statics.owned_mask[:, None, None]
+        precip_accum = precip_accum + _rain
+        _other, p_s_new = _moist_change_with_mass(
+            {"q_v": q_v_upd, **_other}, {"q_v": q_v_upd - excess, **_other},
+            p_s_new, statics.dsigma, statics.dt)
+        q_v_upd = _other.pop("q_v")
 
+    _q_v_tail0 = q_v_upd
     # --- Moisture fixer (uses fixed target from initialization) ---
     if statics.fix_moisture:
         q_v_upd = fix_moisture_hydrostatic(
@@ -1610,6 +1706,13 @@ def finalize_split_step(carry, lz, statics):
 
     # --- Moisture smoothing (static-gated ∇⁴ + positivity floor) ---
     q_v_upd = _apply_qv_smoothing(q_v_upd, statics)
+    # The fixer's / smoother's / floor's vapour change carries its mass too
+    # (F13): at fixed p_s it would be booked as dry air, which the next
+    # step's dry-mass fixer then removes.
+    _other, p_s_new = _moist_change_with_mass(
+        {"q_v": _q_v_tail0, **_other}, {"q_v": q_v_upd, **_other},
+        p_s_new, statics.dsigma, statics.dt)
+    q_v_upd = _other.pop("q_v")
 
     # Budget ledger: book the tail delta into CLIPS, then time-integrate the
     # per-step ledger into the carry accumulator (rate·dt, like precip_accum).
@@ -1645,8 +1748,8 @@ def finalize_split_step(carry, lz, statics):
         p_s=_match_dtype(p_s_new, carry.p_s),
         phis=carry.phis,
         q_v=_match_dtype(q_v_upd, carry.q_v),
-        q_c=_match_dtype(lz.q_c_upd, carry.q_c),
-        q_r=_match_dtype(lz.q_r_upd, carry.q_r),
+        q_c=_match_dtype(_other["q_c"], carry.q_c),
+        q_r=_match_dtype(_other["q_r"], carry.q_r),
         conv_prog=_match_dtype(lz.conv_prog_upd, carry.conv_prog),
         held_dT_rad=_match_dtype(lz.held_new[0], carry.held_dT_rad),
         held_sw_net_sfc=_match_dtype(lz.held_new[1], carry.held_sw_net_sfc),
@@ -1662,7 +1765,7 @@ def finalize_split_step(carry, lz, statics):
         target_moisture=carry.target_moisture,
         target_mass=carry.target_mass,
         max_cfl=max_cfl,
-        precip_accum=_match_dtype(lz.precip_accum, carry.precip_accum),
+        precip_accum=_match_dtype(precip_accum, carry.precip_accum),
         shflx_accum=_match_dtype(lz.shflx_accum, carry.shflx_accum),
         lhflx_accum=_match_dtype(lz.lhflx_accum, carry.lhflx_accum),
         evap_accum=_match_dtype(lz.evap_accum, carry.evap_accum),
@@ -1684,17 +1787,17 @@ def finalize_split_step(carry, lz, statics):
         T_land=(None if carry.T_land is None
                 else _match_dtype(lz.T_land_new, carry.T_land)),
         q_i=(None if carry.q_i is None
-             else _match_dtype(lz.q_i_upd, carry.q_i)),
+             else _match_dtype(_other["q_i"], carry.q_i)),
         q_s=(None if carry.q_s is None
-             else _match_dtype(lz.q_s_upd, carry.q_s)),
+             else _match_dtype(_other["q_s"], carry.q_s)),
         q_g=(None if carry.q_g is None
-             else _match_dtype(lz.q_g_upd, carry.q_g)),
+             else _match_dtype(_other["q_g"], carry.q_g)),
         N_c=(None if carry.N_c is None
-             else _match_dtype(lz.N_c_upd, carry.N_c)),
+             else _match_dtype(_other["N_c"], carry.N_c)),
         N_r=(None if carry.N_r is None
-             else _match_dtype(lz.N_r_upd, carry.N_r)),
+             else _match_dtype(_other["N_r"], carry.N_r)),
         N_i=(None if carry.N_i is None
-             else _match_dtype(lz.N_i_upd, carry.N_i)),
+             else _match_dtype(_other["N_i"], carry.N_i)),
         tke=(None if carry.tke is None
              else _match_dtype(
                  lz.phys_tke if lz.phys_tke is not None
@@ -1915,7 +2018,7 @@ def build_segment_fn(
                 "construction (tiled_step_adapter), so the round trip this "
                 "flag removes would still happen every step.")
     from legoesm.core.conservation import (
-        fix_moisture_hydrostatic, fix_ps_mass_target,
+        fix_moisture_hydrostatic,
         energy_consistent_moisture_floor,
     )
     from legoesm.core.cfl import estimate_min_dx_cubed_sphere
@@ -1982,7 +2085,7 @@ def build_segment_fn(
                 "extend the MPI owned-face branch first.")
 
     # Iter 8: when the segment driver applies a target-anchored
-    # ``fix_ps_mass_target`` immediately after the dycore step, the
+    # dry-mass fixer (``fix_segment_dry_mass``) right after the dycore step, the
     # dycore's *own* end-step mass fixer is redundant — both reduce
     # mass globally over the same surface-pressure field, and the
     # segment fixer overwrites whatever the dycore fixer produced.
@@ -2157,11 +2260,24 @@ def build_segment_fn(
                 q_i_dyn, q_s_dyn, q_g_dyn = carry.q_i, carry.q_s, carry.q_g
                 N_c_dyn, N_r_dyn, N_i_dyn = carry.N_c, carry.N_r, carry.N_i
 
-            # --- Dry mass fixer (target-anchored) ---
+            # --- Dry mass fixer (target-anchored, DRY integral: F13) ---
+            # The added/removed mass is dry air: every moisture field is
+            # re-weighted so its column mass is untouched.  The target is
+            # the segment's initial dry mass (``segment_dry_mass``).
             if fix_mass:
-                p_s_new = fix_ps_mass_target(
-                    p_s_new, carry.target_mass, grid, owned_mask=_owned_mask,
-                )
+                _fx = fix_segment_dry_mass(
+                    p_s_new,
+                    {"q_v": q_v_dyn, "q_c": q_c_dyn, "q_r": q_r_dyn,
+                     "q_i": q_i_dyn, "q_s": q_s_dyn, "q_g": q_g_dyn,
+                     "N_c": N_c_dyn, "N_r": N_r_dyn, "N_i": N_i_dyn},
+                    carry.target_mass, grid, dsigma, owned_mask=_owned_mask)
+                p_s_new, _fxm = _fx
+                q_v_dyn, q_c_dyn, q_r_dyn = (
+                    _fxm["q_v"], _fxm["q_c"], _fxm["q_r"])
+                q_i_dyn, q_s_dyn, q_g_dyn = (
+                    _fxm["q_i"], _fxm["q_s"], _fxm["q_g"])
+                N_c_dyn, N_r_dyn, N_i_dyn = (
+                    _fxm["N_c"], _fxm["N_r"], _fxm["N_i"])
 
             # --- Physics with radiation sub-cycling ---
             # ``rad_update_steps`` is a Python ``int`` captured in this
@@ -2317,7 +2433,15 @@ def build_segment_fn(
                     _phys_dT = _phys_dT + hs_newtonian_relax(
                         T_new[_ofi], p_s_new[_ofi], lat[_ofi])
                 _T_owned = T_new[_ofi] + _dt * _phys_dT
-                _qv_raw = q_v_dyn[_ofi] + _dt * phys_out.dq_v_dt
+                # Physics water carries its MASS on the owned columns (F13).
+                _moist_dyn = {"q_v": q_v_dyn, "q_c": q_c_dyn, "q_r": q_r_dyn,
+                              "q_i": q_i_dyn, "q_s": q_s_dyn, "q_g": q_g_dyn,
+                              "N_c": N_c_dyn, "N_r": N_r_dyn, "N_i": N_i_dyn}
+                _raw_owned, _ps_owned = segment_physics_water(
+                    {k: (None if v is None else v[_ofi])
+                     for k, v in _moist_dyn.items()},
+                    phys_out, p_s_new[_ofi], _dt, dsigma)
+                _qv_raw = _raw_owned["q_v"]
                 if energy_consistent_moisture_clip:
                     # Issue #323: keep the q_v floor moist-static-energy
                     # neutral (remove the latent heat of the clipped vapour
@@ -2332,29 +2456,32 @@ def build_segment_fn(
                     # columns, so the borrow is rank-local and MPI-safe).
                     _qv_owned = conservative_positive_clip(
                         _qv_raw, dsigma, axis=-1)[0]
+                # Every other moisture field: the conserving borrow on the
+                # mass-carrying increment; the floors' water change then
+                # carries its mass too (F13).
+                _fl_owned = {"q_v": _qv_owned, **{
+                    k: (None if _raw_owned[k] is None
+                        else conservative_positive_clip(
+                            _raw_owned[k], dsigma, axis=-1)[0])
+                    for k in _MOIST_FIELDS[1:]}}
+                _fl_owned, _ps_owned = _moist_change_with_mass(
+                    _raw_owned, _fl_owned, _ps_owned, dsigma, _dt)
                 T_upd = T_new.at[_ofi].set(_T_owned)
-                q_v_upd = q_v_dyn.at[_ofi].set(_qv_owned)
-                q_c_upd = q_c_dyn.at[_ofi].set(conservative_positive_clip(
-                    q_c_dyn[_ofi] + _dt * phys_out.dq_c_dt, dsigma,
-                    axis=-1)[0])
-                q_r_upd = q_r_dyn.at[_ofi].set(conservative_positive_clip(
-                    q_r_dyn[_ofi] + _dt * phys_out.dq_r_dt, dsigma,
-                    axis=-1)[0])
-                # Double-moment tracers (None unless populated): evolve at owned
-                # indices from the matching microphysics tendencies, floored by
-                # the conserving borrow like q_c/q_r.  Base = the (possibly
-                # advected) _dyn alias so non-owned faces keep dynamics-only
-                # values.
-                def _dm_upd_owned(fld, tend):
-                    return (None if fld is None else fld.at[_ofi].set(
-                        conservative_positive_clip(
-                            fld[_ofi] + _dt * tend, dsigma, axis=-1)[0]))
-                q_i_upd = _dm_upd_owned(q_i_dyn, phys_out.dq_i_dt)
-                q_s_upd = _dm_upd_owned(q_s_dyn, phys_out.dq_s_dt)
-                q_g_upd = _dm_upd_owned(q_g_dyn, phys_out.dq_g_dt)
-                N_c_upd = _dm_upd_owned(N_c_dyn, phys_out.dN_c_dt)
-                N_r_upd = _dm_upd_owned(N_r_dyn, phys_out.dN_r_dt)
-                N_i_upd = _dm_upd_owned(N_i_dyn, phys_out.dN_i_dt)
+                q_v_upd = q_v_dyn.at[_ofi].set(_fl_owned["q_v"])
+                # Base = the (possibly advected) _dyn alias so non-owned
+                # faces keep dynamics-only values; None fields stay None.
+                def _dm_upd_owned(name):
+                    fld = _moist_dyn[name]
+                    return (None if fld is None
+                            else fld.at[_ofi].set(_fl_owned[name]))
+                q_c_upd, q_r_upd = _dm_upd_owned("q_c"), _dm_upd_owned("q_r")
+                q_i_upd = _dm_upd_owned("q_i")
+                q_s_upd = _dm_upd_owned("q_s")
+                q_g_upd = _dm_upd_owned("q_g")
+                N_c_upd = _dm_upd_owned("N_c")
+                N_r_upd = _dm_upd_owned("N_r")
+                N_i_upd = _dm_upd_owned("N_i")
+                p_s_new = p_s_new.at[_ofi].set(_ps_owned)
                 conv_prog_upd = phys_out.conv_prog
 
                 # Held radiation: update at owned indices.  Positions 6/7 =

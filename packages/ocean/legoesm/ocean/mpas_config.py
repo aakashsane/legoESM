@@ -412,7 +412,11 @@ class MPASOceanConfig(NamedTuple):
     # 60.0/59.7 (deep Jacobi CG x 30) -> 47.8/48.3; 1 node 268.8/267.6 ->
     # 269.4/269.5.  True relative residual fresh/spun 2e-10/3.6e-11 -> 8e-12/
     # 5.6e-12; 1-day trajectory vs a 200-iteration reference 7e-9 -> 1.6e-10.
-    # Measured on the flat 4000 m test ocean only; MPI-per-rank lane and GPU
+    # Measured on the flat 4000 m test ocean.  Realistic seafloor (ETOPO 1 deg,
+    # run_comparison_mpas settings, 118256 wet cells, 11-5500 m): CG x 30
+    # 3.9e-9/8.5e-10, x 40 2.4e-10/6.1e-11 (misses 1e-10 fresh), x 50 1.3e-12/
+    # 3.5e-13; 1-day trajectory 2.7e-7 / 1.3e-8 / 7.6e-11.  So the CPU default
+    # runs 50 since 2026-10-11 (owner decision).  MPI-per-rank lane and GPU
     # never measured.
     barotropic_implicit_pcg_variant: str | None = None  # per backend, see fixed_iters
     # Distributed-only preconditioner for the fixed-iteration PCG
@@ -675,14 +679,15 @@ class MPASSimpleOceanConfig(NamedTuple):
 #: with only these flags changed: 8 nodes gpoly x15 standard 67.7 vs deep-halo
 #: jacobi x30 61.0; 2 nodes 152.3 vs 144.4; 1 node 290.7 vs 280.5.  CPU since
 #: 2026-10-10 (owner decision): deep-halo Jacobi-Chebyshev x40, 8 nodes 48 vs
-#: 60 ms/step, 1 node 269 vs 268 (see barotropic_implicit_pcg_variant).  GPU:
+#: 60 ms/step, 1 node 269 vs 268; raised to x50 2026-10-11 (owner decision)
+#: after the realistic-seafloor check (see barotropic_implicit_pcg_variant).  GPU:
 #: gpoly standard at 20 iterations (owner decision 2026-10-05; x15 failed the
 #: L10 / dt=600 s check, see barotropic_implicit_pcg_fixed_iters); deep-halo
 #: was never measured on GPU.
 MPAS_BAROTROPIC_PCG_DEFAULTS = {
     "cpu": dict(barotropic_implicit_pcg_variant="chebyshev_deep",
                 barotropic_implicit_pcg_precond="jacobi",
-                barotropic_implicit_pcg_fixed_iters=40),
+                barotropic_implicit_pcg_fixed_iters=50),
     "gpu": dict(barotropic_implicit_pcg_variant="standard",
                 barotropic_implicit_pcg_precond="gpoly",
                 barotropic_implicit_pcg_fixed_iters=20),

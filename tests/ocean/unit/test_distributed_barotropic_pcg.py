@@ -825,7 +825,7 @@ class TestSingleReducePCG:
         cpu = resolve_barotropic_pcg_defaults(cfg, "cpu")
         gpu = resolve_barotropic_pcg_defaults(cfg, "gpu")
         assert (cpu.barotropic_implicit_pcg_variant, cpu.barotropic_implicit_pcg_precond,
-                cpu.barotropic_implicit_pcg_fixed_iters) == ("chebyshev_deep", "jacobi", 40)
+                cpu.barotropic_implicit_pcg_fixed_iters) == ("chebyshev_deep", "jacobi", 50)
         assert (gpu.barotropic_implicit_pcg_variant, gpu.barotropic_implicit_pcg_precond,
                 gpu.barotropic_implicit_pcg_fixed_iters) == ("standard", "gpoly", 20)
         assert cfg.barotropic_implicit_pcg_poly_sweeps == 4

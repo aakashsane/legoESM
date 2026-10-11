@@ -137,6 +137,22 @@ def test_mpas_fixer_is_differentiable(mpas):
     assert np.all(np.isfinite(np.asarray(g)))
 
 
+def test_voronoi_fixer_gradient_matches_finite_differences(mpas):
+    """The fixer's dT is linear in the energy integrals; its reverse-mode
+    gradient w.r.t. the post-dynamics T and u passes check_grads (fp64)."""
+    from jax.test_util import check_grads
+    from legoesm.core.conservation import voronoi_energy_fixer_dT
+    mesh, sigma, s0 = mpas
+    s1 = _mpas_model(mesh, sigma, False).step(s0, DT)
+
+    def f(T, u):
+        post = s1._replace(T=s1.T.replace(data=T), u=s1.u.replace(data=u))
+        return voronoi_energy_fixer_dT(s0, post, mesh, sigma, mesh.areaCell)
+
+    check_grads(f, (s1.T.data, s1.u.data), order=1, modes=["rev"],
+                eps=1e-3, atol=1e-10, rtol=1e-6)
+
+
 def test_voronoi_helper_matches_serial_weights_under_a_split_area(mpas):
     """The MPI form (owned-area weight + a cross-rank sum of the three local
     integrals) is the serial result: two disjoint halves summed == whole."""

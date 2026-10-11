@@ -5,8 +5,8 @@ boundary.  The instrument is validated first: the digest writer sees a
 change in each part and nothing else; two continuous runs of one config
 agree; a planted 1e-12 K change of one soil leaf is seen.
 
-Preconditions raise ``RuntimeError`` so the strict xfail (restart exactness
-pending) can only absorb the final digest equality."""
+Preconditions raise ``RuntimeError`` so only the final digest equality can
+fail as an ``AssertionError``."""
 import os
 import types
 
@@ -169,16 +169,6 @@ def test_two_continuous_runs_agree_and_a_soil_nudge_is_seen(
     assert _parts(c3[2])["state"] != _parts(c1[2])["state"]
 
 
-_REX = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason=(
-        "R-ex pending (composable physics design): a column-loop restart "
-        "re-seeds the land boundary outputs and the held radiation slots "
-        "and keeps checkpoint-only carry leaves, so every digest part "
-        "differs from the first resumed step on MPAS and the duo "
-        "(measured 2026-10-10, jobs 10315955/10315961)"))
-
-
-@_REX
 def test_mpas_restart_matches_the_continuous_digest(tmp_path, monkeypatch):
     """MPAS, land stress on, gray radiation: resume from the step-2
     checkpoint; step 3 digests equal the continuous run's."""
@@ -198,12 +188,12 @@ def test_mpas_restart_matches_the_continuous_digest(tmp_path, monkeypatch):
 
 
 @pytest.mark.slow
-@_REX
 def test_duo_column_lane_restart_matches_the_continuous_digest(
         tmp_path, monkeypatch):
-    """FV3-duo column lane, RRTMGP every 5 steps, land on: the day-1
-    checkpoint (step 144 at the CFL-clamped 600 s, not a radiation step)
-    resumes bitwise over the remaining 144 steps."""
+    """FV3-duo column lane, RRTMGP every 4 steps, land on: the day-1
+    checkpoint (step 144 at the CFL-clamped 600 s; a radiation boundary, as
+    D-REX-1 requires of every checkpoint) resumes bitwise over the remaining
+    144 steps -- 108 of them held-radiation steps."""
     from legoesm.driver.model_driver import ModelDriver
     monkeypatch.setenv("LEGOESM_DIGEST_EVERY_STEPS", "1")
 
@@ -211,7 +201,7 @@ def test_duo_column_lane_restart_matches_the_continuous_digest(
         d = tmp_path / name
         d.mkdir()
         cfg = _land_stress_cfg(d, monkeypatch, stress=None, days=days,
-                               dt=600.0, rad_update_steps=5)
+                               dt=600.0, rad_update_steps=4)
         cfg = cfg._replace(output=cfg.output._replace(checkpoint_days=1))
         drv = ModelDriver(cfg, output_dir=d)
         _drive(drv.setup)

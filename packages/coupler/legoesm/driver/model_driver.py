@@ -1164,77 +1164,13 @@ _LAND_STRESS_CKPT_KEYS = ("land_taumag", "land_taumag_valid", "land_taumag_fresh
 _LAND_ML_CACHE_FIELDS = ("canopy_x",)
 # Restart-exactness payload of the column loop (R-ex): the land boundary
 # outputs the loop keeps as locals between land steps (skin T, albedo,
-# solved humidity/fluxes, held drag, partial cadence sums) and the model's
-# held surface/TOA flux slots (``model._sfc_diag``).  Both are re-seeded on
+# solved humidity/fluxes, held drag, partial cadence sums).  Re-seeded on
 # a cold start; a checkpoint written before they were persisted still
-# restarts (cold seed, logged), one carrying them resumes bitwise.
+# restarts (cold seed, logged), one carrying them resumes bitwise.  The
+# held surface/TOA flux slots are NOT persisted: a checkpoint sits on a
+# radiation boundary (validate_strict + the restart guard), so the first
+# resumed step re-solves radiation as the unbroken run does.
 _LAND_IO_CKPT_PREFIX = "landio_"
-_SFC_DIAG_CKPT_PREFIX = "sfcdiag_"
-_SFC_DIAG_CKPT_META = "sfcdiag_meta"
-
-
-def _sfc_diag_to_ckpt(sfc_diag, gather=None) -> dict:
-    """``{sfcdiag_<i>: array, sfcdiag_meta: json}`` of the non-None slots of
-    the model's held ``_sfc_diag`` tuple; ``gather`` maps a rank-local cell
-    array to the global one under MPI."""
-    import json
-    if not sfc_diag:
-        return {}
-    out, meta = {}, []
-    for i, slot in enumerate(sfc_diag):
-        if slot is None:
-            meta.append(None)
-            continue
-        from legoesm.core.field import Field
-        if isinstance(slot, Field):
-            meta.append([slot.name, list(slot.dims), slot.units,
-                         slot.long_name, slot.staggering])
-            arr = slot.data
-        else:
-            meta.append("raw")
-            arr = slot
-        arr = jnp.asarray(arr)
-        if gather is not None:
-            arr = gather(arr)
-        out[f"{_SFC_DIAG_CKPT_PREFIX}{i}"] = np.asarray(arr)
-    out[_SFC_DIAG_CKPT_META] = np.asarray(json.dumps(meta))
-    return out
-
-
-def _sfc_diag_from_ckpt(staged: dict, n_cells: int | None = None) -> tuple | None:
-    """Rebuild the held ``_sfc_diag`` tuple from the staged ``sfcdiag_*``
-    entries (``staged`` is consumed), or None when nothing was staged.
-    ``n_cells`` (when given) is the cell count every cell slot must have."""
-    import json
-    meta = staged.pop(_SFC_DIAG_CKPT_META, None)
-    if meta is None:
-        if staged:
-            raise ValueError(
-                f"checkpoint sfcdiag_* slots {sorted(staged)} without "
-                f"{_SFC_DIAG_CKPT_META}: corrupt payload.")
-        return None
-    from legoesm.core.field import Field
-    meta = json.loads(str(meta))
-    slots = []
-    for i, m in enumerate(meta):
-        if m is None:
-            slots.append(None)
-            continue
-        arr = jnp.asarray(staged.pop(f"{_SFC_DIAG_CKPT_PREFIX}{i}"))
-        if n_cells is not None and arr.ndim >= 1 and arr.shape[0] != n_cells:
-            raise ValueError(
-                f"checkpoint sfcdiag_{i} shape {tuple(arr.shape)} != "
-                f"(nCells={n_cells},) -- mesh mismatch.")
-        if m == "raw":
-            slots.append(arr)
-        else:
-            name, dims, units, long_name, stag = m
-            slots.append(Field(arr, name=name, dims=tuple(dims), units=units,
-                               long_name=long_name, staggering=stag))
-    if staged:
-        raise ValueError(
-            f"checkpoint carries unexpected sfcdiag entries {sorted(staged)}")
-    return tuple(slots)
 
 
 def _seed_nucleated_ice_number(N_i, dq_i, ice_nuc_mass, n_i_nuc_max, p_full, T):
@@ -1671,19 +1607,6 @@ class ModelDriver:
         ck = self._carry_aux if isinstance(self._carry_aux, dict) else {}
         return {k[len(_LAND_IO_CKPT_PREFIX):]: v for k, v in ck.items()
                 if k.startswith(_LAND_IO_CKPT_PREFIX)}
-
-    def _sfc_diag_for_checkpoint(self):
-        """The model's held ``_sfc_diag`` tuple to persist (R-ex), or the
-        staged slots of a loaded-but-not-yet-run checkpoint."""
-        sd = getattr(getattr(self, "model", None), "_sfc_diag", None)
-        if sd is not None:
-            return sd
-        ck = self._carry_aux if isinstance(self._carry_aux, dict) else {}
-        staged = {k: v for k, v in ck.items()
-                  if k.startswith(_SFC_DIAG_CKPT_PREFIX)}
-        if not staged:
-            return None
-        return _sfc_diag_from_ckpt(staged)
 
     def _checkpoint_carry_aux(self) -> dict | None:
         """``self._carry_aux`` augmented with the evolved double-moment tracers
@@ -6757,8 +6680,7 @@ class ModelDriver:
                         for _a in _ls_save)
                 # R-ex payload: rank-local cell arrays, gathered HERE with
                 # the other collectives (every rank holds the same key set:
-                # the land steps on all ranks together and the model
-                # publishes ``_sfc_diag`` on every rank after step one).
+                # the land steps on all ranks together).
                 _nloc_rex = int(part.n_local_cells)
 
                 def _g_rex(x, _n=_nloc_rex, _p=part):
@@ -6768,14 +6690,11 @@ class ModelDriver:
                     return x
                 _lio_save = {k: _g_rex(v)
                              for k, v in self._land_io_for_checkpoint().items()}
-                _sd_save = _sfc_diag_to_ckpt(
-                    self._sfc_diag_for_checkpoint(), gather=_g_rex)
                 if self._mpi_rank != 0:
                     return
             else:
                 _ls_save = self._land_stress_for_checkpoint()
                 _lio_save = self._land_io_for_checkpoint()
-                _sd_save = _sfc_diag_to_ckpt(self._sfc_diag_for_checkpoint())
                 u_d, T_d, ps_d, phis_d = (
                     s.u.data, s.T.data, s.p_s.data, s.phis.data)
                 trc_d = (None if s.tracers is None
@@ -6903,12 +6822,10 @@ class ModelDriver:
                 _save["land_taumag_valid"] = np.asarray(_ls_save[1], dtype=bool)
                 _save["land_taumag_fresh"] = np.asarray(_ls_save[2], dtype=bool)
             # R-ex: the land boundary outputs the loop holds between land
-            # steps and the model's held surface/TOA flux slots, so the
-            # resumed link forces its first step exactly as the unbroken run
-            # would (no bootstrap land step, no re-solved radiation phase).
+            # steps, so the resumed link forces its first step exactly as the
+            # unbroken run would (no bootstrap land step).
             for _k, _v in _lio_save.items():
                 _save[f"{_LAND_IO_CKPT_PREFIX}{_k}"] = np.asarray(_v)
-            _save.update(_sd_save)
             # #1353 (codex-2 finding 2): within-interval CMOR flux sums —
             # so a mid-interval (wallclock / off-cadence) restart resumes
             # the interval mean instead of dropping the pre-checkpoint
@@ -7808,26 +7725,18 @@ class ModelDriver:
                         _a = np.asarray(scatter_to_local(
                             jnp.asarray(_a), part, "cell"))
                     self._carry_aux[_k] = _a
-            # R-ex: land boundary outputs + held flux slots.  Same
-            # stale-persistence rule; absent keys = a checkpoint written
-            # before they were persisted (the loop cold-seeds, and logs it).
-            # Cell arrays scatter to this rank's band under MPI.
+            # R-ex: land boundary outputs.  Same stale-persistence rule;
+            # absent keys = a checkpoint written before they were persisted
+            # (the loop cold-seeds, and logs it).  Cell arrays scatter to
+            # this rank's band under MPI.
             for _stale in [k for k in self._carry_aux
-                           if k.startswith((_LAND_IO_CKPT_PREFIX,
-                                            _SFC_DIAG_CKPT_PREFIX))]:
+                           if k.startswith(_LAND_IO_CKPT_PREFIX)]:
                 del self._carry_aux[_stale]
             self._land_io_ckpt = None
-            if getattr(self, "model", None) is not None:
-                self.model._sfc_diag = None
             for _k in d.files:
-                if not _k.startswith((_LAND_IO_CKPT_PREFIX,
-                                      _SFC_DIAG_CKPT_PREFIX)):
+                if not _k.startswith(_LAND_IO_CKPT_PREFIX):
                     continue
-                _a = d[_k]
-                if _a.dtype.kind in "US":
-                    self._carry_aux[_k] = str(_a)
-                    continue
-                _a = np.asarray(_a)
+                _a = np.asarray(d[_k])
                 if _mpi and _a.ndim >= 1 and _a.shape[0] == part.nCells_global:
                     _a = np.asarray(scatter_to_local(
                         jnp.asarray(_a), part, "cell"))
@@ -11680,6 +11589,31 @@ class ModelDriver:
         # ``model.step`` the first time it is used.
         RAD_UPDATE_STEPS = max(1, int(cfg.rad_update_steps))
         _subcycle_rad = RAD_UPDATE_STEPS > 1 and cfg.radiation != "none"
+        # Radiation phase (R-ex): the held surface/TOA flux slots are not
+        # persisted, so a resumed link must start on a radiation boundary
+        # (its first step then re-solves radiation exactly as the unbroken
+        # run does), and no checkpoint may be written anywhere else.  Same
+        # shape as the physics-window guard above.
+        if _subcycle_rad and start_step % RAD_UPDATE_STEPS != 0:
+            raise ValueError(
+                f"rad_update_steps={RAD_UPDATE_STEPS}: restart step "
+                f"{start_step} is not on a radiation boundary (the held "
+                "radiation fluxes are not persisted); restart from a "
+                "checkpoint whose absolute step is a multiple of the cadence")
+        if _subcycle_rad and (n_steps_total % RAD_UPDATE_STEPS != 0
+                              or (CHECKPOINT_INTERVAL > 0
+                                  and CHECKPOINT_INTERVAL % RAD_UPDATE_STEPS
+                                  != 0)):
+            raise ValueError(
+                f"rad_update_steps={RAD_UPDATE_STEPS}: the run length "
+                f"({n_steps_total} steps) and the checkpoint interval "
+                f"({CHECKPOINT_INTERVAL} steps) must both be multiples of the "
+                "radiation cadence so every checkpoint is a resumable "
+                "radiation boundary")
+        # Day-0 origin of the forcing clock (see ``_force_day`` below).
+        _DAY_ORIGIN = START_DAY - start_step * DT / 86400.0
+        if abs(_DAY_ORIGIN - float(cfg.start_day)) < 1e-6:
+            _DAY_ORIGIN = float(cfg.start_day)
         physics_fn_norad = (
             make_physics(phys_cfg, model_type="mpas", dt=DT_PHYS,
                          column_mesh=_column_mesh, need_rad=False,
@@ -13142,19 +13076,13 @@ class ModelDriver:
                         jnp.asarray(a, dtype=_q_air0.dtype).reshape(-1)
                         for a in static_land_roughness(
                             _lml_params, _lml_cfg, int(_q_air0.size)))
-        # R-ex: resume the land boundary outputs and the model's held flux
-        # slots exactly where the writer left them, so the first resumed
-        # step is forced as the unbroken run's would be (no bootstrap land
-        # step, no skipped land step waiting for a radiation solve).
+        # R-ex: resume the land boundary outputs exactly where the writer
+        # left them, so the first resumed step is forced as the unbroken
+        # run's would be (no bootstrap land step).
         _ck_rex = self._carry_aux if isinstance(self._carry_aux, dict) else {}
         _lio = {k[len(_LAND_IO_CKPT_PREFIX):]: _ck_rex.pop(k)
                 for k in list(_ck_rex) if k.startswith(_LAND_IO_CKPT_PREFIX)}
-        _sdk = {k: _ck_rex.pop(k) for k in list(_ck_rex)
-                if k.startswith(_SFC_DIAG_CKPT_PREFIX)}
         _ncell_rex = int(self.state.T.data.shape[0])
-        if _sdk:
-            self.model._sfc_diag = _sfc_diag_from_ckpt(_sdk, _ncell_rex)
-            logger.info("  Held surface flux slots: resumed from checkpoint")
         if _lio:
             if not _land_ml_on:
                 raise ValueError(
@@ -13316,7 +13244,14 @@ class ModelDriver:
             # silently freeze. SST re-sampling below stays gated on _sst_forcing.
             if (_sst_forcing or _ext_forcing or _solar_ext
                     or self._segment_callback is not None):
-                _force_day = START_DAY + step * DT / 86400.0
+                # Anchored on the ABSOLUTE step from the run's day-0 origin:
+                # ``START_DAY + step*DT`` rounds differently from the unbroken
+                # run's ``0 + (start_step+step)*DT`` (1 ulp at step 219 of a
+                # 600 s day, measured), and that ulp reaches the solar zenith
+                # and the forcing interpolation -- a bitwise restart needs
+                # the same float.  ``_DAY_ORIGIN`` snaps to cfg.start_day
+                # when START_DAY is that origin advanced by start_step steps.
+                _force_day = _DAY_ORIGIN + (start_step + step) * DT / 86400.0
                 # floor, not int() — see daily_forcing_bucket (negative
                 # fractional days land in the wrong bucket under
                 # truncation; day_to_calendar already handles negative

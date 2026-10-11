@@ -4220,9 +4220,9 @@ CITATION_MAP = {
     'ocean_model_latlon_cgrid.py:12934-12939': [
         'if _tke_coeff_new is not None:',
         'tke_avt=Field(data=_tke_coeff_new.K_H', 6],
-    'ocean_model_latlon_cgrid.py:13139-13154': [
+    'ocean_model_latlon_cgrid.py:13139-13151': [
         '# ``step`` is the production-compiled entry point even when a caller',
-        ('_nemo_stage1_zad_eta_after_override))', 1), 16],
+        ('_nemo_stage1_zad_eta_after_override))', 1), 13],
     'state.py:597-601': [
         '# NEMO TKE-closure coefficient memory (avm_k/avt_k). These are the',
         'tke_avt: object = None', 5],

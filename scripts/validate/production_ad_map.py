@@ -198,6 +198,8 @@ def main(argv=None):
                     default="both", help="perturb T, q_v or both")
     ap.add_argument("--rad-fp64", action="store_true",
                     help="RRTMGP solve in fp64 (diagnostic: FD vs fp32 roundoff)")
+    ap.add_argument("--per-knob", action="store_true",
+                    help="params stage: AD vs FD per knob instead of one direction")
     ap.add_argument("--only", default="",
                     help="components stage: comma list of modules to check")
     ap.add_argument("rest", nargs=argparse.REMAINDER)
@@ -284,7 +286,9 @@ def main(argv=None):
                   f"finite={bool(np.all(np.isfinite(gk)))}", flush=True)
         dv = {k: jnp.asarray(0.1 * np.random.default_rng(5).standard_normal(
             np.shape(x))) for k, x in raw0.items()}
-        grad_check(f, raw0, dv, 1e-3, "physics_wrt_core_params")
+        if not a.per_knob:
+            grad_check(f, raw0, dv, 1e-3, "physics_wrt_core_params")
+            return 0
         fj = jax.jit(f)
         for k in sorted(raw0):   # per knob: AD vs central FD at h = 1e-3
             hk = 1e-3

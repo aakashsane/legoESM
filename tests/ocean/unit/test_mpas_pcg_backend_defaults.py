@@ -32,7 +32,7 @@ def test_pinned_bundle_is_kept_on_any_backend():
 def test_pinning_the_backend_preconditioner_fills_the_rest():
     cfg = resolve_barotropic_pcg_defaults(
         MPASOceanConfig(barotropic_implicit_pcg_precond="jacobi"), "cpu")
-    assert cfg.barotropic_implicit_pcg_fixed_iters == 40
+    assert cfg.barotropic_implicit_pcg_fixed_iters == 50
     assert cfg.barotropic_implicit_pcg_variant == "chebyshev_deep"
 
 

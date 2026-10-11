@@ -120,7 +120,7 @@ def test_mpas_step_conserves_total_energy_with_the_fixer(mpas):
     assert abs(rel_on) < 1e-13, rel_on
     # the fix is a uniform warming, nothing else moves
     dT = np.asarray(on.T.data - off.T.data)
-    assert np.all(dT > 0.0) and np.ptp(dT) < 1e-9 * dT.max()
+    assert np.all(dT > 0.0) and np.ptp(dT) < 1e-12   # K: T round-off only
     np.testing.assert_array_equal(np.asarray(on.u.data), np.asarray(off.u.data))
 
 

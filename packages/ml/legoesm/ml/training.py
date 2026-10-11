@@ -440,6 +440,11 @@ def save_checkpoint(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+    # A module may supply its on-disk view (AIMIP frozen knobs: see
+    # AIMIPClassicalParams.for_checkpoint).
+    model = jax.tree_util.tree_map(
+        lambda x: x.for_checkpoint() if hasattr(x, "for_checkpoint") else x,
+        model, is_leaf=lambda x: hasattr(x, "for_checkpoint"))
     try:
         eqx.tree_serialise_leaves(str(tmp), model)
         os.replace(tmp, path)

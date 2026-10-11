@@ -137,11 +137,6 @@ def measure() -> dict:
     """Run the registered one-step T-only reverse row with boundary taps."""
     gate = _load_gradient_gate()
     context = gate.build_context()
-    zero = jnp.zeros_like(context.initial_state.T.data)
-    truth = gate.production_rollout(context, zero, 1)
-    jax.block_until_ready(truth)
-    reference = gate.build_reference(context, truth)
-    base, direction = gate.perturbations(context)
     events = []
 
     def recorder(label, shape, bad_count, first_bad):
@@ -154,7 +149,15 @@ def measure() -> dict:
             ),
         })
 
+    # Install before the first call to _step_jitted.  That call traces and
+    # caches the production executable; installing afterward would leave the
+    # taps outside the cached graph and produce a vacuous empty event list.
     originals = install_boundary_taps(context, recorder)
+    zero = jnp.zeros_like(context.initial_state.T.data)
+    truth = gate.production_rollout(context, zero, 1)
+    jax.block_until_ready(truth)
+    reference = gate.build_reference(context, truth)
+    base, direction = gate.perturbations(context)
     try:
         def loss(d_t0):
             candidate = gate._score_state(gate.gradient_rollout(context, d_t0, 1))

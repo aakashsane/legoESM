@@ -4623,7 +4623,6 @@ class ModelDriver:
         from legoesm.forcing.external import (
             get_ozone_at_time, get_aerosol_at_time, get_aerosol_lw_at_time,
             get_aerosol_sw_volcanic_at_time,
-            get_ghg_at_time, ghg_concentrations_to_vmr,
         )
         from legoesm.forcing.surface_utils import (
             distribute_column_aod_to_layers,
@@ -4761,6 +4760,14 @@ class ModelDriver:
                 ).astype(p_s.dtype)
         self._aerosol_lw_od = aerosol_lw_od
 
+        ghg_vmr = self.radiation_ghg_vmr(day)
+        return o3_vmr, aerosol_od, ghg_vmr
+
+    def radiation_ghg_vmr(self, day):
+        """GHG mole fractions radiation uses on ``day`` (None = fixed config gases)."""
+        from legoesm.forcing.external import (
+            get_ghg_at_time, ghg_concentrations_to_vmr,
+        )
         # GHG VMR override (None for gray radiation / constant forcing)
         ghg_vmr = None
         if self._ghg_active:
@@ -4797,8 +4804,7 @@ class ModelDriver:
         if (co2_vmr_override is not None
                 and cfg.radiation in ("rrtmg", "rrtmgp")):
             ghg_vmr = {**(ghg_vmr or {}), "co2": co2_vmr_override}
-
-        return o3_vmr, aerosol_od, ghg_vmr
+        return ghg_vmr
 
     def _create_diagnostics(self) -> None:
         """Set up diagnostic collection."""

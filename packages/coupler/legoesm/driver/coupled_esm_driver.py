@@ -1883,7 +1883,10 @@ class CoupledESMDriver:
                 co2_lowest / (constants.M_CO2 / constants.M_air) * 1.0e6
             )
         else:
-            co2_ppmv = jnp.full_like(p_s, self.atm_config.co2_ppmv)
+            # Radiation's CO2 (GHG file / experiment trajectory, else config).
+            from legoesm.core.coupling_fields import land_co2_ppmv
+            co2_ppmv = jnp.full_like(p_s, land_co2_ppmv(
+                self._atm.radiation_ghg_vmr(day), self.atm_config.co2_ppmv))
 
         from legoesm.core.coupling_fields import lowest_level_height
         return AtmToSurface(

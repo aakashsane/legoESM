@@ -25,7 +25,7 @@ _SPEC.loader.exec_module(B)
 def test_vjp_taps_are_primal_identities_and_localize_poison_boundary():
     events = []
 
-    def recorder(label, shape, bad_count, first_bad):
+    def recorder(label, shape, bad_count, first_bad, _bad_mask):
         events.append((
             str(label), tuple(np.asarray(shape)), int(np.asarray(bad_count)),
             int(np.asarray(first_bad)),
@@ -46,4 +46,3 @@ def test_vjp_taps_are_primal_identities_and_localize_poison_boundary():
     by_label = {label: bad for label, _shape, bad, _first in events}
     assert by_label["unsafe.output"] == 0
     assert by_label["unsafe.input"] == 1
-

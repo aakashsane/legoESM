@@ -52,11 +52,12 @@ def make_vjp_tap(label: str, recorder):
         flat_bad = bad.reshape(-1)
         first_bad = jnp.argmax(flat_bad)
         jax.debug.callback(
-            lambda shape, bad_count, bad_index: recorder(
-                label, shape, bad_count, bad_index),
+            lambda shape, bad_count, bad_index, bad_mask: recorder(
+                label, shape, bad_count, bad_index, bad_mask),
             jnp.asarray(cotangent.shape, dtype=jnp.int32),
             jnp.sum(bad, dtype=jnp.int64),
             first_bad,
+            bad,
             ordered=True,
         )
         return (cotangent,)
@@ -67,14 +68,13 @@ def make_vjp_tap(label: str, recorder):
 
 def tap_pytree(tree, label: str, recorder):
     """Apply named identity taps to every inexact array leaf in ``tree``."""
-    leaves, treedef = jax.tree_util.tree_flatten(tree)
+    path_leaves, treedef = jax.tree_util.tree_flatten_with_path(tree)
     tapped = []
-    array_index = 0
-    for leaf in leaves:
+    for path, leaf in path_leaves:
         dtype = getattr(leaf, "dtype", None)
         if dtype is not None and jnp.issubdtype(dtype, jnp.inexact):
-            tapped.append(make_vjp_tap(f"{label}[{array_index}]", recorder)(leaf))
-            array_index += 1
+            suffix = jax.tree_util.keystr(path)
+            tapped.append(make_vjp_tap(f"{label}{suffix}", recorder)(leaf))
         else:
             tapped.append(leaf)
     return jax.tree_util.tree_unflatten(treedef, tapped)
@@ -105,6 +105,7 @@ def install_boundary_taps(context, recorder):
 
     for name in (
         "compute_frozen_geom_density",
+        "_nemo_cen2_tracer_rhs",
         "_nemo_ws_rk3_tracer_pair_step",
         "barotropic_substeps_latlon_cgrid",
     ):
@@ -139,15 +140,28 @@ def measure() -> dict:
     context = gate.build_context()
     events = []
 
-    def recorder(label, shape, bad_count, first_bad):
-        events.append({
+    def recorder(label, shape, bad_count, first_bad, bad_mask):
+        shape_values = [int(value) for value in np.asarray(shape)]
+        count = int(np.asarray(bad_count))
+        event = {
             "label": str(label),
-            "shape": [int(value) for value in np.asarray(shape)],
-            "nonfinite_count": int(np.asarray(bad_count)),
+            "shape": shape_values,
+            "nonfinite_count": count,
             "first_nonfinite_flat_index": (
-                int(np.asarray(first_bad)) if int(np.asarray(bad_count)) else None
+                int(np.asarray(first_bad)) if count else None
             ),
-        })
+        }
+        if count:
+            bad_array = np.asarray(bad_mask)
+            if bad_array.ndim == 3:
+                horizontal = np.argwhere(np.any(bad_array, axis=-1))
+                event["nonfinite_horizontal_cell_count"] = int(horizontal.shape[0])
+                event["nonfinite_horizontal_cells"] = horizontal.tolist()
+                event["nonfinite_levels"] = np.flatnonzero(
+                    np.any(bad_array, axis=(0, 1))).tolist()
+            elif bad_array.ndim == 2:
+                event["nonfinite_cells"] = np.argwhere(bad_array).tolist()
+        events.append(event)
 
     # Install before the first call to _step_jitted.  That call traces and
     # caches the production executable; installing afterward would leave the

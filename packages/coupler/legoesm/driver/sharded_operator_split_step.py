@@ -379,6 +379,8 @@ def make_sharded_operator_split_step(
             grid=band_geom, sigma_coord=sigma_coord,
             polar_mask=polar_mask, polar_mask_v=polar_mask_v,
             pole_v_bc_masks=spmd_pole_end_masks(),
+            # energy fixer window starts at the cell-centre carry (F15b)
+            energy_pre=(carry.T, carry.u, carry.v, carry.p_s, carry.phis),
         )
         hs_out = cgrid_to_hydrostatic(out_cgrid, band_geom)
         T_new, u_new = hs_out.T.data, hs_out.u.data

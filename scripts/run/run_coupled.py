@@ -1077,10 +1077,10 @@ def build_parser():
     parser.add_argument("--energy-fixer",
                         action=argparse.BooleanOptionalAction, default=True,
                         help="CAM-style dycore total-energy fixer (DycoreConfig."
-                             "energy_fixer). ON by default; wired on the MPAS "
-                             "(voronoi) atmosphere only, refused on lat-lon/"
-                             "cube/gaussian: pass --no-energy-fixer there to "
-                             "accept the open energy sink explicitly.")
+                             "energy_fixer). ON by default; wired on the "
+                             "voronoi, lat-lon and cube atmospheres, refused "
+                             "on gaussian (spectral): pass --no-energy-fixer "
+                             "there to accept the open energy sink explicitly.")
     parser.add_argument("--ocean-nlev", type=int, default=20,
                         help="3D ocean vertical levels (--ocean dynamic)")
     parser.add_argument("--ocean-dt", type=float, default=300.0,

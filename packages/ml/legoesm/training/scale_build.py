@@ -205,9 +205,6 @@ def build_latlon_config(cfg, yml):
         "--nlev", str(int(yml["nlev"])),
         "--vertical-coord", "sigma",
         "--dt", str(float(yml["dt"])),
-        # the dycore energy fixer is not wired on the lat-lon lane (review
-        # 2026-10-10 F15, vote V11-C): the open sink is recorded, not implied
-        "--no-energy-fixer",
         # WB is a campaign: rrtmgp, unless this is a --smoke wiring check. The
         # lat-lon path forwarded the raw key, so a production WB config could
         # still run gray while the spectral path was pinned (codex).

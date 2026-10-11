@@ -382,8 +382,10 @@ class DycoreConfig(NamedTuple):
     # (duo) remove, plus numerical dissipation -- is returned as a uniform
     # heating dT = (E_before - E_after) / (c_pd * M), E = sum((c_pd*T + KE)
     # dp/g) + phis*p_s/g, before physics.  Default True = the fix.  Wired on
-    # the MPAS (serial + MPI) and FV3-duo column lanes; the other lanes do
-    # not run it yet (the driver refuses True there, never silently).
+    # the MPAS (serial + MPI), FV3-duo column, lat-lon C-grid and cube C-D
+    # grid hydrostatic lanes (F15b); the other lanes (spectral, the
+    # non-hydrostatic cores, FV3-duo non-column, sub-face-tiled cube) do not
+    # run it (the driver refuses True there, never silently).
     energy_fixer: bool = True
 
 
@@ -4546,9 +4548,6 @@ class ExperimentConfig(NamedTuple):
             dt=amip_cfg.dt,
             hyperdiff_scale=getattr(amip_cfg, 'hyperdiff_scale', 1.0),
             a_h_scale=getattr(amip_cfg, 'a_h_scale', 1.0),
-            # the legacy AMIP config is the cube cdgrid lane, where the dycore
-            # energy fixer is not wired (F15, vote V11-C): explicit opt-out
-            energy_fixer=False,
         )
         output = OutputConfig(
             output_dir=getattr(amip_cfg, 'output_dir', ''),

@@ -12682,7 +12682,7 @@ class ModelDriver:
                 # surface_exchange) and the coupled tile: the coordinate's
                 # lowest full-level pressure and the MOIST density there,
                 # rho = p_lowest / (R_d T_v) (F28: was p_s / (R_d T), ~1-2 %
-                # high); snow split at T_freeze.
+                # high).
                 # The zenith is the REAL per-cell sun (same doy/seconds the
                 # radiation uses this step): it was a fixed 0.5 when only the
                 # bulk scheme ran here (which never reads it), but the two-leaf

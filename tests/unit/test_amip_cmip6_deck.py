@@ -1420,6 +1420,16 @@ class TestSpectralMpasForcingActive:
             assert "ACTIVE" in line, (
                 f"{label!r} should be ACTIVE (forcing now consumed): {line!r}")
 
+    def test_energy_fixer_opt_out_only_off_mpas(self, tmp_path):
+        """Off MPAS the deck opts out of the dycore energy fixer explicitly
+        (review F15: run_amip refuses it on unwired lanes); MPAS keeps it."""
+        (tmp_path / "g").mkdir()
+        (tmp_path / "v").mkdir()
+        assert "--no-energy-fixer" in self._run(
+            tmp_path / "g", "gaussian", "spectral", 21)
+        assert "--no-energy-fixer" not in self._run(
+            tmp_path / "v", "voronoi", "mpas", 4)
+
     def test_gaussian_spectral_rrtmg_forcing_active(self, tmp_path):
         out = self._run(tmp_path, "gaussian", "spectral", 21)
         # No silent-drop warning; spectral-solar remains inert (constant S_0).

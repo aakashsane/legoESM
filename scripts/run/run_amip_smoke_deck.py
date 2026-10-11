@@ -550,6 +550,15 @@ def main(argv: list[str] | None = None) -> int:
               f"(radiation={args.radiation!r}, "
               f"grid={args.grid_type}/{args.discretization}; needs "
               "rrtmg + cubed_sphere/latlon).")
+    # The dycore energy fixer runs on MPAS only here (F15, vote V11-C);
+    # elsewhere the open sink is accepted explicitly, as in run_rce.py.
+    # An --extra that picks the lane or the fixer decides it instead (the
+    # FV3-duo column lane runs the fixer; run_amip refuses unwired lanes).
+    _extra_keys = {a.split("=")[0] for a in (args.extra or [])}
+    if not _mpas and not _extra_keys & {
+            "--discretization", "--fv3-duo-column-lane",
+            "--energy-fixer", "--no-energy-fixer"}:
+        cmd.append("--no-energy-fixer")
     # ``volcanic_active`` requires ``aerosol_active`` (see top of main()
     # for the rationale): ModelDriver gates volcanic on
     # ``aerosol_forcing == "external"``, so passing

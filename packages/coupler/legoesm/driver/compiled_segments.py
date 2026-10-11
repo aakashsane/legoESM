@@ -332,6 +332,16 @@ class SegmentCarry(NamedTuple):
     # static ``budget_ledger`` diagnostic gate is on ⇒ byte-identical legacy
     # carry.  Read at segment boundaries (``accum / seg_duration`` = mean
     # rates) and reset to zeros at every segment start.
+    precip_frozen_prev: jax.Array = None
+    precip_frozen_accum: jax.Array = None
+    # FROZEN part of the surface precip [kg/m²/s] (review 2026-10-10 F29):
+    # ``precip_frozen_prev`` lags it one step (like ``conv_precip_prev``) for
+    # the radiation-step multilayer land tile's snowfall;
+    # ``precip_frozen_accum`` time-integrates it (like ``precip_accum``) for
+    # the coupled surface's segment-mean snowfall.  ``None`` unless the run
+    # has such a consumer (the driver seeds zeros then) => byte-identical
+    # legacy carry; a seeded carry with physics that publishes no frozen
+    # flux refuses at trace time.
 
 
 def pack_carry(state, q_v, q_c, q_r, conv_prog=None, *,
@@ -352,7 +362,8 @@ def pack_carry(state, q_v, q_c, q_r, conv_prog=None, *,
                cloud_fraction=None,
                conv_precip_prev=None,
                land_ml=None, w_land=None, snow=None,
-               conv_prog_nlev=None, budget_ledger_accum=None):
+               conv_prog_nlev=None, budget_ledger_accum=None,
+               precip_frozen_prev=None, precip_frozen_accum=None):
     """Pack driver state into a SegmentCarry for the compiled kernel.
 
     Prognostic fields are cast to at least the precision policy's storage
@@ -425,6 +436,10 @@ def pack_carry(state, q_v, q_c, q_r, conv_prog=None, *,
     # cloud feature is enabled.  Zeros at t=0 ⇒ no convective cloud on step 0.
     if conv_precip_prev is None:
         conv_precip_prev = jnp.zeros_like(state.p_s.data)
+    # Its frozen part (F29) is needed exactly when the multilayer land tile
+    # runs (it takes its snowfall from it): seed zeros with a land state.
+    if precip_frozen_prev is None and land_ml is not None:
+        precip_frozen_prev = jnp.zeros_like(conv_precip_prev)
     if conv_prog is None:
         if conv_prog_nlev is not None:
             conv_prog = jnp.zeros(
@@ -507,6 +522,11 @@ def pack_carry(state, q_v, q_c, q_r, conv_prog=None, *,
         # (identical legacy carry); the driver seeds zeros((N_LEDGER, 2)).
         budget_ledger_accum=(None if budget_ledger_accum is None
                              else _promote(budget_ledger_accum, accum)),
+        # Frozen-precip lag / accumulator (F29): None unless a consumer exists.
+        precip_frozen_prev=(None if precip_frozen_prev is None
+                            else _promote(precip_frozen_prev, storage)),
+        precip_frozen_accum=(None if precip_frozen_accum is None
+                             else _promote(precip_frozen_accum, storage)),
     )
 
 
@@ -1229,14 +1249,53 @@ class _SplitStepLocals(NamedTuple):
     # delta and accumulates ``*dt`` into the carry.  ``None`` when the
     # static gate is off.
     budget_ledger_step: object = None
+    # Frozen-precip lag / accumulator (F29), ``None`` when the carry has none.
+    precip_frozen_prev_new: object = None
+    precip_frozen_accum: object = None
 
 
-_MOIST_FIELDS = ("q_v", "q_c", "q_r", "q_i", "q_s", "q_g", "N_c", "N_r", "N_i")
+MOIST_FIELDS = ("q_v", "q_c", "q_r", "q_i", "q_s", "q_g", "N_c", "N_r", "N_i")
 
 
 def carry_moist(carry):
-    """``{name: array | None}`` of a carry's moisture fields (``_MOIST_FIELDS``)."""
-    return {_nm: getattr(carry, _nm) for _nm in _MOIST_FIELDS}
+    """``{name: array | None}`` of a carry's moisture fields (``MOIST_FIELDS``)."""
+    return {_nm: getattr(carry, _nm) for _nm in MOIST_FIELDS}
+
+
+def _layers(dsigma):
+    """The layer masses the segment water helpers work on: the lanes'
+    ``p_s * dsigma`` (``SigmaLayers``) for a ``dsigma`` array, or a vertical
+    coordinate itself (``layer_thickness_dp`` / ``pressure_at_half``; the
+    per-step lane passes its true, hybrid-correct coordinate)."""
+    if hasattr(dsigma, "layer_thickness_dp"):
+        return dsigma
+    from legoesm.core.conservation import SigmaLayers
+    return SigmaLayers(dsigma)
+
+
+def frozen_precip_update(carry, phys_out, dt, idx=None):
+    """``(precip_frozen_prev_new, precip_frozen_accum)`` for the carry (review
+    2026-10-10 F29): this step's frozen surface flux (lagged for the land
+    tile) and its time integral, each ``None`` when the carry does not hold
+    it.  ``idx`` writes the owned faces only (the MPI owned-face branch,
+    like ``precip_accum``).  A carry that holds them but physics that does
+    not publish ``precip_frozen`` refuses (trace time): the consumers take
+    the atmosphere's own phase partition, never a temperature re-split."""
+    prev, acc = carry.precip_frozen_prev, carry.precip_frozen_accum
+    if prev is None and acc is None:
+        return None, None
+    from legoesm.core.coupling_fields import require_precip_frozen
+    f = require_precip_frozen(
+        getattr(phys_out, "precip_frozen", None),
+        "the segment carry's frozen precipitation (multilayer land / "
+        "coupled surface snowfall)")
+    if idx is None:
+        prev_new = None if prev is None else f
+        acc_new = None if acc is None else acc + f * dt
+    else:
+        prev_new = None if prev is None else prev.at[idx].set(f)
+        acc_new = None if acc is None else acc.at[idx].add(f * dt)
+    return prev_new, acc_new
 
 
 def segment_physics_water(moist, phys_out, p_s, dt, dsigma):
@@ -1250,20 +1309,20 @@ def segment_physics_water(moist, phys_out, p_s, dt, dsigma):
     ``p_s`` (the previous form) left the precipitated water behind as dry
     air, which the total-mass fixer then kept.
 
-    ``moist``: ``{name: array | None}`` over ``_MOIST_FIELDS``; the tendency
+    ``moist``: ``{name: array | None}`` over ``MOIST_FIELDS``; the tendency
     of a present field is ``phys_out.d<name>_dt``.  Returns
     ``(moist_raw, p_s_new)`` with ``None`` fields kept ``None``; the
     increments are NOT yet floored (the caller's column borrow conserves the
     re-weighted column masses)."""
-    from legoesm.core.conservation import SigmaLayers, apply_physics_water_mass
+    from legoesm.core.conservation import apply_physics_water_mass
     tr = {k: v for k, v in moist.items() if v is not None}
     tend = {k: getattr(phys_out, f"d{k}_dt") for k in tr}
     tr_new, p_s_new = apply_physics_water_mass(
-        tr, tend, p_s, SigmaLayers(dsigma), dt)
+        tr, tend, p_s, _layers(dsigma), dt)
     return {k: tr_new.get(k) for k in moist}, p_s_new
 
 
-def _moist_change_with_mass(old, new, p_s, dsigma, dt):
+def moist_change_with_mass(old, new, p_s, dsigma, dt):
     """Replace the moisture fields ``old`` by ``new`` WITH the change's mass
     (F13): the increment ``new - old`` goes through the shared
     :func:`legoesm.core.conservation.apply_physics_water_mass` on the
@@ -1272,11 +1331,11 @@ def _moist_change_with_mass(old, new, p_s, dsigma, dt):
     column-conserving borrow moves ``p_s`` by roundoff only.  ``old``/``new``
     are ``{name: array | None}`` with the same keys; returns
     ``(moist, p_s)``."""
-    from legoesm.core.conservation import SigmaLayers, apply_physics_water_mass
+    from legoesm.core.conservation import apply_physics_water_mass
     tr = {k: v for k, v in old.items() if v is not None}
     tr, p_s = apply_physics_water_mass(
         tr, {k: (new[k] - tr[k]) / dt for k in tr}, p_s,
-        SigmaLayers(dsigma), dt)
+        _layers(dsigma), dt)
     return {k: tr.get(k) for k in old}, p_s
 
 
@@ -1287,21 +1346,45 @@ def fix_segment_dry_mass(p_s, moist, target_dry_mass, grid, dsigma,
     moisture fields present in ``moist`` (``None`` entries pass through) on
     the ``p_s * dsigma`` layer masses.  ``target_dry_mass`` must be the
     same integral (see ``segment_dry_mass``).  Returns ``(p_s, moist)``."""
-    from legoesm.core.conservation import SigmaLayers, fix_ps_dry_mass_target
+    from legoesm.core.conservation import fix_ps_dry_mass_target
     tr = {k: v for k, v in moist.items() if v is not None}
     p_s, tr = fix_ps_dry_mass_target(
-        p_s, tr, target_dry_mass, grid, SigmaLayers(dsigma),
+        p_s, tr, target_dry_mass, grid, _layers(dsigma),
         owned_mask=owned_mask)
     return p_s, {k: tr.get(k) for k in moist}
+
+
+def dycore_without_inner_mass_fixer(model):
+    """``model``, or a shallow copy whose config has the dycore's OWN
+    end-step mass fixer (and the per-RK-stage ``zero_mean_ps_tendency``)
+    off, for a lane that applies the target-anchored DRY-mass fixer
+    (:func:`fix_segment_dry_mass`) right after the dycore step.
+
+    The inner fixer holds TOTAL ``p_s`` (cube) or the dry mass of
+    ``state.tracers`` (lat-lon), which is the total when the lane keeps its
+    water outside the dycore state; either way it would put precipitated
+    water back as dry air (F13).  Iter 8/9: it is also one global allreduce
+    per step (plus one per RK stage for the zero-mean, whose iter-1 gating
+    only skips it while the end-step fixer is on).  Returned unchanged when
+    the config has no ``fix_mass`` or it is already off."""
+    cfg = getattr(model, "config", None)
+    if not (getattr(cfg, "fix_mass", False) and hasattr(cfg, "_replace")):
+        return model
+    out = copy.copy(model)
+    kw = {"fix_mass": False}
+    if hasattr(cfg, "zero_mean_ps_tendency"):
+        kw["zero_mean_ps_tendency"] = False
+    out.config = cfg._replace(**kw)
+    return out
 
 
 def segment_dry_mass(p_s, moist, grid, dsigma, owned_mask=None):
     """``∫ dry p_s dA`` of a segment state -- the anchor the dry-mass fixer
     holds (``moist`` as in :func:`fix_segment_dry_mass`, so the target and
     the fixer see the same water species)."""
-    from legoesm.core.conservation import SigmaLayers, global_dry_mass
+    from legoesm.core.conservation import global_dry_mass
     tr = {k: v for k, v in moist.items() if v is not None}
-    return global_dry_mass(p_s, tr, SigmaLayers(dsigma), grid,
+    return global_dry_mass(p_s, tr, _layers(dsigma), grid,
                            owned_mask=owned_mask)
 
 
@@ -1350,7 +1433,7 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
     shared finalizer consumes.
 
     ``moist`` (issue #771): the moisture fields the physics acts on — a dict
-    over ``_MOIST_FIELDS`` (q_v/q_c/q_r + the double-moment fields).  ``None``
+    over ``MOIST_FIELDS`` (q_v/q_c/q_r + the double-moment fields).  ``None``
     (the lat-band-SPMD lane + the column-locked serial path) reads them straight
     off the carry, BYTE-IDENTICAL; the ``advect_moisture`` serial path passes the
     POST-ADVECTION aliases so the physics update acts on the transported
@@ -1358,7 +1441,7 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
     always ride the carry."""
     from legoesm.core.conservation import energy_consistent_moisture_floor
     if moist is None:
-        moist = {_nm: getattr(carry, _nm) for _nm in _MOIST_FIELDS}
+        moist = {_nm: getattr(carry, _nm) for _nm in MOIST_FIELDS}
     # #1028: physics is a COLUMN closure and reads winds at cell centres.  On
     # the persistent-D cube lane the carried winds sit at D-grid corners, so
     # the caller passes a cell-centre VIEW here, while ``u_new``/``v_new`` stay
@@ -1428,6 +1511,7 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
         T_land=carry.T_land, land_ml=carry.land_ml,
         land_ml_params=statics.forcing.land_ml_params,
         conv_precip=carry.conv_precip_prev,
+        conv_precip_frozen=carry.precip_frozen_prev,
         w_land=carry.w_land, snow=carry.snow,
         **_dm_in,
     )
@@ -1480,6 +1564,7 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
                 sfc_sw_up=statics.forcing.sfc_sw_up,
                 sfc_sw_down=statics.forcing.sfc_sw_down,
                 conv_precip=carry.conv_precip_prev,
+                conv_precip_frozen=carry.precip_frozen_prev,
                 w_land=carry.w_land, snow=carry.snow,
             )
         _dt_h = carry.held_sw_up_toa_clr.dtype
@@ -1524,14 +1609,14 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
         return (None if _raw[name] is None
                 else conservative_positive_clip(
                     _raw[name], statics.dsigma, axis=-1)[0])
-    _floored = {"q_v": q_v_upd, **{k: _dm_upd(k) for k in _MOIST_FIELDS[1:]}}
+    _floored = {"q_v": q_v_upd, **{k: _dm_upd(k) for k in MOIST_FIELDS[1:]}}
     # The floors' water change carries its mass too (F13, codex r2): the
     # borrow moves none except in net-negative columns, the opt-in hard
     # vapour floor creates it.
-    _floored, p_s_phys = _moist_change_with_mass(
+    _floored, p_s_phys = moist_change_with_mass(
         _raw, _floored, p_s_phys, statics.dsigma, statics.dt)
     (q_v_upd, q_c_upd, q_r_upd, q_i_upd, q_s_upd, q_g_upd,
-     N_c_upd, N_r_upd, N_i_upd) = (_floored[k] for k in _MOIST_FIELDS)
+     N_c_upd, N_r_upd, N_i_upd) = (_floored[k] for k in MOIST_FIELDS)
     conv_prog_upd = phys_out.conv_prog
 
     # --- Budget ledger: CLIPS row (state-update part) + assembly ----------
@@ -1583,6 +1668,7 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
     precip_accum = carry.precip_accum + precip_step * statics.dt
     # Lag this step's total precip for next step's convective cloud.
     conv_precip_prev_new = precip_step
+    _pf_prev, _pf_acc = frozen_precip_update(carry, phys_out, statics.dt)
 
     # --- Accumulate surface heat fluxes ---
     _sh = phys_out.shflx if phys_out.shflx is not None else jnp.zeros_like(p_s_new)
@@ -1614,6 +1700,7 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
         N_c_upd=N_c_upd, N_r_upd=N_r_upd, N_i_upd=N_i_upd,
         conv_prog_upd=conv_prog_upd, held_new=held_new,
         precip_accum=precip_accum, conv_precip_prev_new=conv_precip_prev_new,
+        precip_frozen_prev_new=_pf_prev, precip_frozen_accum=_pf_acc,
         shflx_accum=shflx_accum, lhflx_accum=lhflx_accum,
         evap_accum=evap_accum,
         sw_net_sfc_accum=sw_net_sfc_accum, lw_net_sfc_accum=lw_net_sfc_accum,
@@ -1690,7 +1777,7 @@ def finalize_split_step(carry, lz, statics):
         if statics.owned_mask is not None:
             _rain = _rain * statics.owned_mask[:, None, None]
         precip_accum = precip_accum + _rain
-        _other, p_s_new = _moist_change_with_mass(
+        _other, p_s_new = moist_change_with_mass(
             {"q_v": q_v_upd, **_other}, {"q_v": q_v_upd - excess, **_other},
             p_s_new, statics.dsigma, statics.dt)
         q_v_upd = _other.pop("q_v")
@@ -1709,7 +1796,7 @@ def finalize_split_step(carry, lz, statics):
     # The fixer's / smoother's / floor's vapour change carries its mass too
     # (F13): at fixed p_s it would be booked as dry air, which the next
     # step's dry-mass fixer then removes.
-    _other, p_s_new = _moist_change_with_mass(
+    _other, p_s_new = moist_change_with_mass(
         {"q_v": _q_v_tail0, **_other}, {"q_v": q_v_upd, **_other},
         p_s_new, statics.dsigma, statics.dt)
     q_v_upd = _other.pop("q_v")
@@ -1827,6 +1914,12 @@ def finalize_split_step(carry, lz, statics):
         # Ledger accumulator: None (gate off) passes through unchanged so the
         # carry pytree structure is stable across scan iterations.
         budget_ledger_accum=_led_accum,
+        precip_frozen_prev=(None if carry.precip_frozen_prev is None
+                            else _match_dtype(lz.precip_frozen_prev_new,
+                                              carry.precip_frozen_prev)),
+        precip_frozen_accum=(None if carry.precip_frozen_accum is None
+                             else _match_dtype(lz.precip_frozen_accum,
+                                               carry.precip_frozen_accum)),
     )
     return new_carry
 
@@ -2095,27 +2188,7 @@ def build_segment_fn(
     # is active by working with a shallow-cloned model whose config has
     # ``fix_mass=False``.  Behaviour is unchanged because the segment
     # fixer is strictly stronger (anchored to ``carry.target_mass``).
-    _dynamics_model = model
-    _model_cfg = getattr(model, "config", None)
-    if (
-        fix_mass
-        and getattr(_model_cfg, "fix_mass", False)
-        and hasattr(_model_cfg, "_replace")
-    ):
-        # Iter 8 dropped the redundant inner-dycore mass fixer.  Iter 9
-        # follow-up: turning off ``fix_mass`` on the inner copy re-enables
-        # the per-RK-stage ``zero_mean_ps_tendency`` allreduce, because
-        # the iter-1 gating in :mod:`primitive_eq_cdgrid` was
-        # "skip per-stage zero-mean *only when* end-step fix_mass is on".
-        # Closing the loop: also disable the per-stage zero-mean on the
-        # inner copy so the segment driver sees zero RK-stage allreduces
-        # in addition to zero end-step inner allreduces.  The outer
-        # target-anchored fixer enforces conservation once per timestep.
-        _dynamics_model = copy.copy(model)
-        _replace_kwargs = {"fix_mass": False}
-        if hasattr(_model_cfg, "zero_mean_ps_tendency"):
-            _replace_kwargs["zero_mean_ps_tendency"] = False
-        _dynamics_model.config = _model_cfg._replace(**_replace_kwargs)
+    _dynamics_model = dycore_without_inner_mass_fixer(model) if fix_mass else model
 
     def _make_single_step(forcing: SegmentForcing, step_fn=None):
         """Create the scan body closed over a specific forcing pytree.
@@ -2376,6 +2449,8 @@ def build_segment_fn(
                     T_land=_T_land_in, land_ml=carry.land_ml,
                     land_ml_params=forcing.land_ml_params,
                     conv_precip=carry.conv_precip_prev[_ofi],
+                    conv_precip_frozen=(None if carry.precip_frozen_prev is None
+                                        else carry.precip_frozen_prev[_ofi]),
                     w_land=_w_land_in, snow=_snow_in,
                     **_dm_in,
                 )
@@ -2414,6 +2489,8 @@ def build_segment_fn(
                             sfc_sw_up=forcing.sfc_sw_up,
                             sfc_sw_down=forcing.sfc_sw_down,
                             conv_precip=carry.conv_precip_prev[_ofi],
+                            conv_precip_frozen=(None if carry.precip_frozen_prev is None
+                                                else carry.precip_frozen_prev[_ofi]),
                             w_land=_w_land_in, snow=_snow_in,
                         )
                     _dt_h = carry.held_sw_up_toa_clr.dtype
@@ -2463,8 +2540,8 @@ def build_segment_fn(
                     k: (None if _raw_owned[k] is None
                         else conservative_positive_clip(
                             _raw_owned[k], dsigma, axis=-1)[0])
-                    for k in _MOIST_FIELDS[1:]}}
-                _fl_owned, _ps_owned = _moist_change_with_mass(
+                    for k in MOIST_FIELDS[1:]}}
+                _fl_owned, _ps_owned = moist_change_with_mass(
                     _raw_owned, _fl_owned, _ps_owned, dsigma, _dt)
                 T_upd = T_new.at[_ofi].set(_T_owned)
                 q_v_upd = q_v_dyn.at[_ofi].set(_fl_owned["q_v"])
@@ -2504,6 +2581,8 @@ def build_segment_fn(
                 # Lag this step's total precip for next step's convective cloud.
                 conv_precip_prev_new = carry.conv_precip_prev.at[_ofi].set(
                     precip_step)
+                _pf_prev, _pf_acc = frozen_precip_update(
+                    carry, phys_out, _dt, idx=_ofi)
 
                 # Surface heat fluxes: accumulate at owned indices
                 _sh = phys_out.shflx if phys_out.shflx is not None else jnp.zeros_like(p_s_new[_ofi])
@@ -2578,6 +2657,8 @@ def build_segment_fn(
                     conv_prog_upd=conv_prog_upd, held_new=held_new,
                     precip_accum=precip_accum,
                     conv_precip_prev_new=conv_precip_prev_new,
+                    precip_frozen_prev_new=_pf_prev,
+                    precip_frozen_accum=_pf_acc,
                     shflx_accum=shflx_accum, lhflx_accum=lhflx_accum,
                     evap_accum=evap_accum,
                     sw_net_sfc_accum=sw_net_sfc_accum,
@@ -2844,6 +2925,7 @@ def build_segment_fn(
                     sfc_sw_up=forcing.sfc_sw_up,
                     sfc_sw_down=forcing.sfc_sw_down,
                     conv_precip=_own(carry.conv_precip_prev),
+                    conv_precip_frozen=_own(carry.precip_frozen_prev),
                     w_land=_w_land_in, snow=_snow_in,
                 )
             # Clear-sky second pass (#843): same owned-face state, clouds OFF.
@@ -2873,6 +2955,7 @@ def build_segment_fn(
                         sfc_sw_up=forcing.sfc_sw_up,
                         sfc_sw_down=forcing.sfc_sw_down,
                         conv_precip=_own(carry.conv_precip_prev),
+                        conv_precip_frozen=_own(carry.precip_frozen_prev),
                         w_land=_w_land_in, snow=_snow_in,
                     )
                 _held_sw_clr = carry.held_sw_up_toa_clr.at[_ofi].set(_sw_clr)
@@ -2925,6 +3008,7 @@ def build_segment_fn(
                     sfc_sw_up=forcing.sfc_sw_up,
                     sfc_sw_down=forcing.sfc_sw_down,
                     conv_precip=carry.conv_precip_prev,
+                    conv_precip_frozen=carry.precip_frozen_prev,
                     w_land=carry.w_land, snow=carry.snow,
                 )
             # Clear-sky second pass (#843): whole grid, clouds OFF.
@@ -2954,6 +3038,7 @@ def build_segment_fn(
                         sfc_sw_up=forcing.sfc_sw_up,
                         sfc_sw_down=forcing.sfc_sw_down,
                         conv_precip=carry.conv_precip_prev,
+                        conv_precip_frozen=carry.precip_frozen_prev,
                         w_land=carry.w_land, snow=carry.snow,
                     )
                 _held_sw_clr, _held_lw_clr = _sw_clr, _lw_clr

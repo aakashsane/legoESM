@@ -157,7 +157,7 @@ def _mock_step_unified_rad_counting(*args, **kwargs):
 _OPTIONAL_CARRY_FIELDS = (
     "q_i", "q_s", "q_g", "N_c", "N_r", "N_i",
     "tke", "qke", "gwd_spectrum", "cloud_fraction", "land_ml", "w_land", "snow",
-    "budget_ledger_accum",
+    "budget_ledger_accum", "precip_frozen_prev", "precip_frozen_accum",
 )
 
 

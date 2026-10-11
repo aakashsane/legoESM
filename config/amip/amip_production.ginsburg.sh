@@ -76,9 +76,11 @@ CMIP6_FORCING_FLAGS=(
   --solar-tsi-var TSI --solar-spectral-var SSI_frac --solar-spectral-band-order rrtmg_sw
   --orbital-insolation --diurnal-cycle   # as every AMIP deck (gridaudit 2026-10-09)
 )
-# REAL GHG / aerosol / volcanic (2026-10-08), same set as Levante's ICON pool
-# files.  The synthetic aerosol_amip_clim.nc (four hand-picked constants, no
-# longitude) set cloud droplets at ~768 cm-3 through aerosol_ccn.  Staging +
+# REAL GHG / aerosol / volcanic (2026-10-08).  The aerosol pair below is the
+# product set both launchers name (review 2026-10-10 F33); GHG / volcanic /
+# solar / ozone are still machine-specific preparations.  The synthetic
+# aerosol_amip_clim.nc (four hand-picked constants, no longitude) set cloud
+# droplets at ~768 cm-3 through aerosol_ccn.  Staging +
 # provenance: fv3_duo_gaps/forcing_stage/ (deck_ledgers.md 2026-10-08).
 #   GHG: input4MIPs UoM-CMIP-1-2-0 global means incl. CFC-22/CCl4/CF4.
 #   AEROSOL: Kinne MACv1 fine+coarse (radiation); AEROSOL_CCN: fine mode (CCN).
@@ -137,7 +139,19 @@ CMIP6_FORCING_FLAGS+=( --rrtmgp-overhead-layer )
 # the twin's recorded 3.6 m (the residual is the source, our ETOPO regridded to
 # 1 deg vs their etopo_1deg_clean), i.e. 1.21x in drag where the previous file
 # was 2.31x.
-: "${AMIP_SSO:=/burg-archive/glab/users/pg2328/legoESM_chunk/data_pg/amip/sso_stdh_2deg_from1deg.nc}"
+# _seamfix (review 2026-10-10 F33): the SAME product name as the Levante twin,
+# the recipe above rebuilt with the current (post-#1712) regridder.  Staged
+# 2026-10-10 (md5 1a735e4987c9588a1154d5018c448d6b): its values equal the older
+# Ginsburg file sso_stdh_2deg_from1deg.nc in every column (SO 40-60S mean sgh
+# 3.611 m both), so switching name changes no Ginsburg run.
+: "${AMIP_SSO:=/burg-archive/glab/users/pg2328/legoESM_chunk/data_pg/amip/sso_stdh_2deg_from1deg_seamfix.nc}"
+# Land-sea mask (sftlf) built from the CLM surfdata by
+# scripts/data/build_sftlf_from_surfdata.py, as the Levante twin.  Without it
+# f_land comes from ETOPO elevation>0, which turns the Caspian and Aral (below
+# sea level) into ocean with prescribed SST (review 2026-10-10 F33).
+# Staged 2026-10-10 beside pg2328 data/clm/ surfdata (md5 7bcc2bf1fd37cc830fc72726ac44213c;
+# Caspian/Aral 1.0, open ocean 0.0).
+: "${AMIP_LAND_MASK:=${CLM_SURFDATA%/*}/sftlf_clm_1.9x2.5.nc}"
 
 # --- machine-specific PATH flags (everything else is in the YAML) -------------
 AMIP_PATH_FLAGS=(
@@ -165,6 +179,9 @@ fi
 if [[ -n "${AMIP_SSO}" ]]; then
   AMIP_PATH_FLAGS+=( --subgrid-orography-file "${AMIP_SSO}" )
 fi
+if [[ -n "${AMIP_LAND_MASK}" ]]; then
+  AMIP_PATH_FLAGS+=( --land-mask-file "${AMIP_LAND_MASK}" )
+fi
 
 # Coupled CMIP decks (config/cmip/cmip_ocean_*.yaml): machine PATHS only --
 # the decks select the forcing schemes (F40).  Terrain + subgrid orography are
@@ -183,7 +200,8 @@ if [[ -n "${AMIP_SSO}" ]]; then
 fi
 
 # Warn (don't fail) on a missing local input so a Stage-0 flat-topo smoke still works.
-for _f in "${ETOPO}" "${CLM_SURFDATA}" "${AMIP_SURFDATA}" ${AMIP_SSO:+"${AMIP_SSO}"}; do
+for _f in "${ETOPO}" "${CLM_SURFDATA}" "${AMIP_SURFDATA}" ${AMIP_SSO:+"${AMIP_SSO}"} \
+          ${AMIP_LAND_MASK:+"${AMIP_LAND_MASK}"}; do
   [ -e "${_f}" ] || echo "[ginsburg] NOTE: ${_f} not found — stage it (ETOPO: " \
     "scripts/data/prep_etopo_topography.py; CLM surfdata: data/clm/; harmonized " \
     "surfdata: scripts/data/build_legoesm_surfdata.py), or run a flat-topo " \

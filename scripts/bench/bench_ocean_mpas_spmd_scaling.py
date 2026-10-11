@@ -104,13 +104,13 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["standard", "single_reduce", "single_reduce_deep",
                             "chebyshev_deep"],
                    default=None,
-                   help="unset = the backend's bundle (standard on GPU, chebyshev_deep x40 on CPU); "
+                   help="unset = the backend's bundle (standard on GPU, chebyshev_deep x50 on CPU); "
                         "single_reduce_deep runs with the jacobi preconditioner "
                         "(30 iterations for the 1e-10 residual); chebyshev_deep also needs jacobi (no global sums "
-                        "in the loop; 40 updates in the CPU bundle); poly/gpoly need "
+                        "in the loop; 50 updates in the CPU bundle); poly/gpoly need "
                         "standard or single_reduce")
     p.add_argument("--pcg-fixed-iters", type=int, default=None,
-                   help="distributed PCG iteration count (unset = the backend bundle: 20 on GPU, 40 on CPU); "
+                   help="distributed PCG iteration count (unset = the backend bundle: 20 on GPU, 50 on CPU); "
                         "a PROBE knob -- lowering it changes the solve")
     p.add_argument("--eta-clamp-iters", type=int, default=3)
     p.add_argument("--profile-dir", type=str, default=None,

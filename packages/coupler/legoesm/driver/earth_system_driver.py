@@ -272,7 +272,9 @@ class EarthSystemDriver:
         else:
             cos_zen = jnp.full_like(p_s, 0.5)
 
-        from legoesm.core.coupling_fields import lowest_level_height
+        from legoesm.core.coupling_fields import (
+            land_co2_ppmv, lowest_level_height,
+        )
         return AtmToSurface(
             z_lowest=lowest_level_height(
                 T_low, self._atm.sigma.pressure_at_half(p_s),
@@ -289,7 +291,9 @@ class EarthSystemDriver:
             p_surface=p_s,
             rho_lowest=rho_low,
             cos_zenith=cos_zen,
-            co2_ppmv=jnp.full_like(p_s, self.config.co2_ppmv),
+            # Radiation's CO2 (GHG file / experiment trajectory, else config).
+            co2_ppmv=jnp.full_like(p_s, land_co2_ppmv(
+                self._atm.radiation_ghg_vmr(day), self.config.co2_ppmv)),
             has_radiation=jnp.ones_like(p_s),
             has_precipitation=jnp.where(precip_total > 0, 1.0, 0.0),
         )

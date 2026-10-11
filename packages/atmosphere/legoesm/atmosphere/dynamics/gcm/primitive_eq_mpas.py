@@ -995,24 +995,9 @@ class MPASPrimitiveEquationModel(IntegrationMixin):
         trace; gh-417), so traced callers must thread ``phys_state``
         explicitly through their own carry.
         """
-        refuse_unthreaded_stateful_physics(
-            physics_fn, phys_state, where="MPAS step()")
-        target_mass = self._target_mass
-        if (self.config.fix_mass
-                and self.config.anchor_mass_to_initial
-                and target_mass is None):
-            target_mass = self.compute_mass(state)
-            if not isinstance(target_mass, jax.core.Tracer):
-                # Designed eager path: cache the concrete t=0 mass so
-                # later segments keep anchoring to the same constant.
-                self._target_mass = target_mass
-            # Traced path (step() inside an OUTER jit/grad/scan): NEVER
-            # cache — a tracer stored on self leaks into the next trace
-            # (UnexpectedTracerError; gh-417, same class as the
-            # primitive_eq_cdgrid A1-gate bug).  Thread the per-call
-            # pre-step mass instead (telescoping fixer semantics).
-        state_new, phys_out, sfc_diag, led_step = self._step_jit(
-            state, dt, physics_fn, target_mass, forcing, phys_state)
+        state_new, phys_out, sfc_diag, led_step = self.step_pure(
+            state, dt, physics_fn=physics_fn, forcing=forcing,
+            phys_state=phys_state, target_mass=self.mass_target(state))
         if not any(isinstance(leaf, jax.core.Tracer)
                    for leaf in jax.tree_util.tree_leaves(phys_out)):
             self._phys_state = phys_out
@@ -1045,6 +1030,36 @@ class MPASPrimitiveEquationModel(IntegrationMixin):
                 new if new is not None else old
                 for new, old in zip(sfc_diag, _prev))
         return state_new
+
+    def mass_target(self, state):
+        """Dry-mass target ``step`` anchors the fixer to (None when not
+        anchoring).  Caches only a concrete (eager) value."""
+        target_mass = self._target_mass
+        if (self.config.fix_mass
+                and self.config.anchor_mass_to_initial
+                and target_mass is None):
+            target_mass = self.compute_mass(state)
+            if not isinstance(target_mass, jax.core.Tracer):
+                # Designed eager path: cache the concrete t=0 mass so
+                # later segments keep anchoring to the same constant.
+                self._target_mass = target_mass
+            # Traced path (step() inside an OUTER jit/grad/scan): NEVER
+            # cache — a tracer stored on self leaks into the next trace
+            # (UnexpectedTracerError; gh-417, same class as the
+            # primitive_eq_cdgrid A1-gate bug).  A traced caller passes
+            # the target it wants explicitly (``step_pure``).
+        return target_mass
+
+    def step_pure(self, state, dt, physics_fn=None, forcing=None,
+                  phys_state=None, target_mass=None):
+        """The step with NO side channels: ``(state_new, phys_state_out,
+        sfc_diag, ledger)``.  ``step`` is this plus the eager stashes; a
+        differentiable caller threads ``phys_state`` and ``target_mass``
+        itself (``legoesm.driver.mpas_diff_step``)."""
+        refuse_unthreaded_stateful_physics(
+            physics_fn, phys_state, where="MPAS step_pure()")
+        return self._step_jit(state, dt, physics_fn, target_mass, forcing,
+                              phys_state)
 
     @partial(jax.jit, static_argnums=(0, 3))
     def _step_jit(

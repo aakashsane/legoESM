@@ -453,7 +453,8 @@ def _duo_driver(tmp_path, **over):
     from legoesm.driver.model_driver import ModelDriver
     cfg = ExperimentConfig(
         grid=GridConfig(grid_type="cubed_sphere", resolution=N, nlev=KM),
-        dycore=DycoreConfig(model_type="hydrostatic", discretization="fv3_duo",
+        dycore=DycoreConfig(energy_fixer=False,  # closed lane (F15)
+                            model_type="hydrostatic", discretization="fv3_duo",
                             dt=300.0, fv3_duo_windows=KT,
                             fv3_duo_window_pad=PAD),
         days=1, radiation="none", convection="none", turbulence="none",

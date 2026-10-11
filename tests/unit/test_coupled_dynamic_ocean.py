@@ -100,7 +100,7 @@ def test_init_ocean_rejects_unknown_mode():
     from legoesm.driver.config import ExperimentConfig, GridConfig, DycoreConfig
     atm = ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=8, nlev=4),
-        dycore=DycoreConfig(dt=60.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=60.0, model_type="hydrostatic",
                             discretization="latlon_cgrid"),
         radiation="gray", convection="none", days=1,
     )
@@ -119,7 +119,7 @@ def test_dynamic_ocean_requires_latlon_grid():
     from legoesm.driver.config import ExperimentConfig, GridConfig, DycoreConfig
     atm = ExperimentConfig(
         grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=4),
-        dycore=DycoreConfig(dt=60.0, model_type="hydrostatic"),
+        dycore=DycoreConfig(energy_fixer=False, dt=60.0, model_type="hydrostatic"),
         radiation="gray", convection="none", days=1,
     )
     drv = CoupledESMDriver(
@@ -156,7 +156,7 @@ def test_woa_ic_requires_paths():
     from legoesm.driver.config import ExperimentConfig, GridConfig, DycoreConfig
     atm = ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=8, nlev=4),
-        dycore=DycoreConfig(dt=60.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=60.0, model_type="hydrostatic",
                             discretization="latlon_cgrid"),
         radiation="gray", convection="none", days=1,
     )
@@ -176,7 +176,7 @@ def test_init_dynamic_ocean_rejects_unknown_ic():
     from legoesm.driver.config import ExperimentConfig, GridConfig, DycoreConfig
     atm = ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=8, nlev=4),
-        dycore=DycoreConfig(dt=60.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=60.0, model_type="hydrostatic",
                             discretization="latlon_cgrid"),
         radiation="gray", convection="none", days=1,
     )
@@ -226,7 +226,7 @@ def _make_dynamic_driver(output_dir, nlev=4):
     from legoesm.driver.config import ExperimentConfig, GridConfig, DycoreConfig
     atm = ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=8, nlev=4),
-        dycore=DycoreConfig(dt=60.0, model_type="hydrostatic",
+        dycore=DycoreConfig(energy_fixer=False, dt=60.0, model_type="hydrostatic",
                             discretization="latlon_cgrid"),
         radiation="gray", convection="none", days=1,
     )

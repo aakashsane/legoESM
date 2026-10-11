@@ -71,6 +71,7 @@ def test_gaussian_slab_coupled_runs(tmp_path):
     result = subprocess.run(
         [sys.executable, str(DRIVER), "--grid", "gaussian", "--ocean", "slab",
          "--resolution", "16", "--days", "1", "--radiation", "gray",
+         "--no-energy-fixer",   # not wired on the spectral lane (F15)
          "--output", str(tmp_path / "coupled_gauss")],
         env=env, capture_output=True, text=True, timeout=600)
     combined = result.stdout + result.stderr

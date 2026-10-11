@@ -137,6 +137,12 @@ FILES = {
         _SWG_COMPILED / "ldfdyn.f90"),
     "SWG_OMIP_L1_P3/BLD/ppsrc/nemo/dynvor.f90": (
         _SWG_P3_COMPILED / "dynvor.f90"),
+    "SWG_OMIP_L1_P3/BLD/ppsrc/nemo/dynadv.f90": (
+        _SWG_P3_COMPILED / "dynadv.f90"),
+    "SWG_OMIP_L1_P3/BLD/ppsrc/nemo/sshwzv.f90": (
+        _SWG_P3_COMPILED / "sshwzv.f90"),
+    "SWG_OMIP_L1_P3/BLD/ppsrc/nemo/domqco.f90": (
+        _SWG_P3_COMPILED / "domqco.f90"),
     "SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90": (
         _SWG_P3_COMPILED / "stprk3.f90"),
     "stprk3_stg.F90": _OCE / "stprk3_stg.F90",
@@ -6024,6 +6030,30 @@ CITATION_MAP = {
     'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:164-190': [
         ("uu(:,:,:,Nrhs) = 0._wp", 1),
         ("vv(ji,jj,jk,Naa) = vv(ji,jj,jk,Nbb) + rDt * vv(ji,jj,jk,Nrhs) * vmask(ji,jj,jk)", 1),
+        27],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:164-210': [
+        ("uu(:,:,:,Nrhs) = 0._wp", 1),
+        ("Naa = Nrhs", 1),
+        47],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:172-176': [
+        ("zrhs_u =        - grav", 1),
+        ("vv(ji,jj,jk,Nrhs) = vv(ji,jj,jk,Nrhs) + zrhs_v", 1),
+        5],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:213-215': [
+        ("RK3 2nd stage Ocean dynamics", 1),
+        ("rDt   = rn_Dt / 2._wp", 1),
+        3],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/dynadv.f90:134-138': [
+        ("SELECT CASE( n_dynadv )", 1),
+        ("CALL dyn_zad", 1),
+        5],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/sshwzv.f90:135-149': [
+        ("CALL div_hor( kt, Kbb, Kmm )", 1),
+        ("CALL lbc_lnk( 'sshwzv'", 1),
+        15],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/domqco.f90:208-234': [
+        ("pr3t(ji,jj) = pssh(ji,jj) * r1_ht_0(ji,jj)", 1),
+        ("END SUBROUTINE dom_qco_r3c", 1),
         27],
     'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:317-338': [
         "CALL dyn_ldf( kstp, Nbb, Nnn, uu, vv, Nrhs )  ! lateral mixing",

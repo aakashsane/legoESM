@@ -276,6 +276,22 @@ def ke_dissipation_heating(u, v, du_dt, dv_dt, dt):
              + dv_dt * (v + 0.5 * dt * dv_dt)) / constants.c_pd
 
 
+def column_energy_fixer_heating(residual, layer_mass, weight):
+    """Heating [K/s] that removes a column energy residual (CAM ``se_dis``).
+
+        dT/dt_k = -residual * w_k / (c_pd * sum_j layer_mass_j * w_j)
+
+    ``residual`` [W/m2, + = energy created], ``layer_mass`` [kg/m2] (dp/g),
+    ``weight`` >= 0 per level (where the fix may act; uniform per unit mass
+    where it is 1).  Exact: ``sum(c_pd * dT/dt * layer_mass) == -residual``.
+    CAM6 ``clubb_intr`` ``clubb_do_energyfix``: the imbalance spread evenly
+    per unit mass over the depth where CLUBB is active.
+    """
+    return -(residual[..., None] * weight
+             / (constants.c_pd * jnp.sum(layer_mass * weight, axis=-1,
+                                         keepdims=True)))
+
+
 def broadcast_column_param(value, like):
     """Broadcast a config coefficient over a column field's vertical dimension.
 

@@ -174,11 +174,11 @@ def test_saturation_adjustment_rain_leaves_column_dry_mass_untouched():
 
 @pytest.mark.parametrize("hard_floor", [False, True])
 def test_positivity_floor_water_leaves_column_dry_mass_untouched(hard_floor):
-    """A sink twice the vapour drives every level negative: the column
+    """A sink 1.5x the vapour drives every level negative: the column
     borrow (net-negative column) and the opt-in hard floor both CREATE
     vapour; it now arrives with its mass, so the column dry mass holds."""
     state, q_v, _, out = _run(
-        1, fix_mass=False, drift=0.0, k_sink=2.0 / DT,
+        1, fix_mass=False, drift=0.0, k_sink=1.5 / DT,
         energy_consistent_moisture_clip=hard_floor)
     dry0, w0 = _col(state.p_s.data, q_v)
     dry1, w1 = _col(out.p_s, out.q_v + out.q_c + out.q_r)

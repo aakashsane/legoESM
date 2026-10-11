@@ -327,6 +327,10 @@ _FV3_DUO_ALLOWED_NONDEFAULT: frozenset[str] = frozenset({
     # Pinned to 'fp64' by the specific guard (the ExperimentConfig default
     # is 'fp32', so every valid duo config differs here).
     "precision",
+    # The energy fixer (F15) is not wired on this closed lane, so True is
+    # refused (refuse_unwired_energy_fixer): every valid config here sets
+    # the explicit opt-out False, which differs from the default.
+    "dycore.energy_fixer",
     # The five scheme selectors are pinned to 'none' by the specific guard.
     "radiation", "convection", "microphysics", "turbulence",
     "gravity_wave_drag",

@@ -4124,7 +4124,7 @@ Round 25 landed two source associations inside NEMO's hydrostatic pressure
 gradient and showed the changed operator bit-exact given NEMO's inputs on GYRE
 only.  Rule 12 asks for that row on every card that executes it, and the
 testcase recipe pins `pgf_scheme="nemo_sco"` on all of them
-(`nemo_testcase_recipe.py:376,631,3344`).
+(`nemo_testcase_recipe.py:376,631,3602`).
 
 The lane-1 tanks have no HPG-literal dump and do not need one.  NEMO
 accumulates `dyn_hpg`, `dyn_vor` and `dyn_adv` into a zeroed `puu(Krhs)`
@@ -6355,7 +6355,7 @@ source.  Measured, not assumed: `legoesm_git_sha` is absent from all five of
 `round30_post_ldf_after.json` and `round30_zdf_calibration.json`.
 
 The repo already had the right helper and it was reused rather than rebuilt:
-`provenance.py:106`'s `git_sha` fails closed on tracked dirt for exactly this
+`provenance.py:107`'s `git_sha` fails closed on tracked dirt for exactly this
 reason.  What it could not answer is whether `HEAD` was describing this code at
 all.  `worktree_stamp` adds the branch (or `DETACHED`), whether the tree is
 clean, and, when it is not, the SHA-256 of the full `git diff HEAD`.  Detached

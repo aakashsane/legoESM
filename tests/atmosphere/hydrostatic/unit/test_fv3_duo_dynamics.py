@@ -448,7 +448,10 @@ def _fv3_duo_config(**over):
     grid = GridConfig(grid_type="cubed_sphere", resolution=N, nlev=KM)
     dycore = DycoreConfig(model_type=over.pop("model_type", "hydrostatic"),
                           discretization="fv3_duo",
-                          dt=over.pop("dt", 1920.0))
+                          dt=over.pop("dt", 1920.0),
+                          # closed lane: the energy fixer is not wired here,
+                          # so the deck opts out explicitly (F15 V8-A)
+                          energy_fixer=over.pop("energy_fixer", False))
     base = dict(
         grid=grid, dycore=dycore, days=1,
         radiation="none", convection="none", microphysics="none",

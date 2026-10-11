@@ -125,7 +125,7 @@ def test_zarr_rejects_held_radiation_carry_with_cadence(tmp_path):
     def _cfg(rad_steps, fmt):
         return ExperimentConfig(
             grid=GridConfig(grid_type="cubed_sphere", resolution=4, nlev=3),
-            dycore=DycoreConfig(dt=600.0, model_type="hydrostatic"),
+            dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic"),
             topography="flat",           # -> physics.f_land None (isolate held guard)
             radiation="gray",
             rad_update_steps=rad_steps,

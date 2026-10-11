@@ -393,7 +393,8 @@ def run_one_scheme(scheme: str, args, *, output_root: Path):
         # Lat-lon FV is registered as discretization="finite_volume"
         # (see component_factory._DRIVER_SUPPORTED).  The RCE script's
         # legacy "latlon_fv" alias is not in the dispatch table.
-        dycore=DycoreConfig(discretization="finite_volume", dt=DT),
+        dycore=DycoreConfig(discretization="finite_volume", dt=DT,
+                            energy_fixer=False),  # not wired here (F15, vote V11-C)
     )
     model = create_atmosphere_dycore(config, grid, sigma)
     HYPERDIFF = compute_diffusion(grid, config.dycore).hyperdiff

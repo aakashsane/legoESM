@@ -125,7 +125,7 @@ def _small_cfg():
         # guard checks for.
         surfdata_path="synthetic",
         grid=GridConfig(resolution=8, nlev=8),
-        dycore=DycoreConfig(dt=600.0),
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0),
         output=OutputConfig(diag_days=1),
         days=1, dataset="analytical",
         radiation="gray",
@@ -196,7 +196,7 @@ def test_the_default_land_surface_scheme_is_the_canopy():
     # And the value has to be one the driver will accept.
     ExperimentConfig(
         grid=GridConfig(resolution=8, nlev=8),
-        dycore=DycoreConfig(dt=600.0),
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0),
         output=OutputConfig(diag_days=1),
         days=1, dataset="analytical", radiation="gray",
         land_surface_scheme=default,
@@ -459,7 +459,7 @@ def test_multilayer_elevation_land_enables_tiled_flux_without_slab_or_mask(monke
                               jnp.full(grid.grid_shape_2d, 0.5)))
     cfg = ExperimentConfig(
         grid=GridConfig(resolution=8, nlev=8),
-        dycore=DycoreConfig(dt=600.0),
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0),
         output=OutputConfig(diag_days=1),
         days=1, dataset="analytical", radiation="gray",
         topography="synthetic_elevation.nc",  # file loader patched above
@@ -666,7 +666,7 @@ def test_setup_multilayer_land_on_latlon_grid(monkeypatch, tmp_path):
     _patch_land_loaders(monkeypatch)
     cfg = ExperimentConfig(
         grid=GridConfig(grid_type="latlon", resolution=8, nlev=8),
-        dycore=DycoreConfig(dt=600.0, discretization="latlon_cgrid"),
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0, discretization="latlon_cgrid"),
         output=OutputConfig(diag_days=1),
         days=1, dataset="analytical",
         radiation="gray",

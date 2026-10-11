@@ -4519,6 +4519,9 @@ class ExperimentConfig(NamedTuple):
             dt=amip_cfg.dt,
             hyperdiff_scale=getattr(amip_cfg, 'hyperdiff_scale', 1.0),
             a_h_scale=getattr(amip_cfg, 'a_h_scale', 1.0),
+            # the legacy AMIP config is the cube cdgrid lane, where the dycore
+            # energy fixer is not wired (F15, vote V11-C): explicit opt-out
+            energy_fixer=False,
         )
         output = OutputConfig(
             output_dir=getattr(amip_cfg, 'output_dir', ''),

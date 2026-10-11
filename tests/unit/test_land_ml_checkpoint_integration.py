@@ -58,7 +58,7 @@ def _patch_land_loaders(monkeypatch):
 def _small_cfg(**over):
     base = dict(
         grid=GridConfig(resolution=8, nlev=8),
-        dycore=DycoreConfig(dt=600.0),
+        dycore=DycoreConfig(energy_fixer=False, dt=600.0),
         output=OutputConfig(diag_days=1),
         days=1, dataset="analytical",
         radiation="gray",

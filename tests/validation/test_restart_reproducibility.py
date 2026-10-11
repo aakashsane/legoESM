@@ -51,6 +51,7 @@ def _make_config(
             stretching=2.0,
         ),
         dycore=DycoreConfig(
+            energy_fixer=False,  # unwired lane opts out (F15)
             model_type="hydrostatic",
             discretization="cdgrid",
             dt=600.0,

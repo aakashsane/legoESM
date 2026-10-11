@@ -898,7 +898,7 @@ class PhysicsPipeline:
         from legoesm.core.coupling_fields import (
             AtmToSurface, land_co2_ppmv, lowest_level_height)
         from legoesm.land.multilayer_land import step_multilayer_land
-        from legoesm.thermo import moist_air_density, saturation_mixing_ratio
+        from legoesm.thermo import moist_air_density
         ad = self.adapter
         f2 = lambda g: ad.flatten_2d(g)
         T_air = f2(T[..., -1]); q_air = f2(q_v[..., -1])

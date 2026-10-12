@@ -1,7 +1,7 @@
 """SPMD window comm (fv3_duo_window_spmd) on 24 virtual CPU devices.
 
 Run ALONE (the device count must be set before jax is imported):
-    XLA_FLAGS=--xla_force_host_platform_device_count=24 pytest this_file
+    XLA_FLAGS='--xla_force_host_platform_device_count=24 --xla_cpu_max_isa=AVX' pytest this_file
 
 Each test compares one SPMD firing against the certified flat impl seen
 through the single-device window bundle, bitwise, on random fields.
@@ -11,8 +11,12 @@ import os
 import numpy as np
 import pytest
 
+# --xla_cpu_max_isa=AVX (no FMA) is the condition the bitwise pins were
+# certified under (job 9961652); with FMA contraction 4-6 of them differ by
+# 1 ulp on Cascade Lake.  Both flags only bite before jax is imported.
 os.environ.setdefault("XLA_FLAGS",
-                      "--xla_force_host_platform_device_count=24")
+                      "--xla_force_host_platform_device_count=24 "
+                      "--xla_cpu_max_isa=AVX")
 jax = pytest.importorskip("jax")
 jnp = jax.numpy
 jax.config.update("jax_enable_x64", True)
@@ -159,12 +163,8 @@ def test_ext_scalar_matches_flat_impl(setup, stag):
     assert ctx.tab.window_comm is None        # certified path below
     M = N + 2 * NG + (1 if stag == "B" else 0)
     x6 = _rand((6, M, M, KM), 2)
-    # The flat impl runs under jit like the firing: eager op-by-op dispatch
-    # rounds its extrapolation sums differently (no FMA contraction), 1 ulp
-    # on 4165 cells on a Cascade Lake host (job 10330875), so an eager
-    # reference is not the bitwise twin of ANY compiled program.
-    ref = np.asarray(gather_windows(lay, jax.jit(
-        lambda a: ext_scalar_sixface_allk(a, ctx.tab, stag))(x6)))
+    ref = np.asarray(gather_windows(lay, ext_scalar_sixface_allk(
+        x6, ctx.tab, stag)))
     out = jax.jit(lambda a: comm.ext_scalar_allk(a, stag))(
         _windows(lay, comm, x6))
     out = np.asarray(out)
@@ -182,13 +182,11 @@ def test_ext_vector_matches_flat_impl(setup, grid):
     M = N + 2 * NG
     if grid == "D":
         u6, v6 = _rand((6, M, M + 1, KM), 3), _rand((6, M + 1, M, KM), 4)
-        ru, rv = jax.jit(lambda a, b: ext_vector_dgrid_sixface_allk(
-            a, b, ctx.tab))(u6, v6)          # jit: see the scalar test
+        ru, rv = ext_vector_dgrid_sixface_allk(u6, v6, ctx.tab)
         fn = comm.ext_vector_dgrid_allk
     else:
         u6, v6 = _rand((6, M + 1, M, KM), 5), _rand((6, M, M + 1, KM), 6)
-        ru, rv = jax.jit(lambda a, b: ext_vector_cgrid_sixface_allk(
-            a, b, ctx.tab))(u6, v6)
+        ru, rv = ext_vector_cgrid_sixface_allk(u6, v6, ctx.tab)
         fn = comm.ext_vector_cgrid_allk
     ou, ov = jax.jit(fn)(_windows(lay, comm, u6), _windows(lay, comm, v6))
     for o, r, nm in ((ou, ru, "u"), (ov, rv, "v")):
@@ -220,10 +218,8 @@ def test_sabotaged_arms_fail(setup):
         comm._pad_exchange = orig
     assert np.isnan(out).any(), "identity pad exchange still cleared the poison"
 
-    # jitted, as in the test it guards: an eager reference differs at the
-    # last bit on some hosts, which would make this control pass vacuously
-    ref = np.asarray(gather_windows(lay, jax.jit(
-        lambda a: ext_scalar_sixface_allk(a, ctx.tab, "A"))(x6)))
+    ref = np.asarray(gather_windows(lay, ext_scalar_sixface_allk(
+        x6, ctx.tab, "A")))
     body = comm._bodies["A"]
     comm._bodies["A"] = lambda blk: blk
     try:

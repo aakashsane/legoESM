@@ -5232,7 +5232,7 @@ def test_mpas_vert4_flux_form_tracers_flag_flows_to_dycore_config():
     ]), parser))
     assert cfg_set.dycore.mpas_vert4_flux_form_tracers == ("q_v",)
     # a typo'd tracer name is refused at validation (the dycore would skip it)
-    for typo in (("qv",), ("trc_q_v",)):
+    for typo in (("qv",), ("trc_q_v",), "q_v"):
         bad = cfg_set._replace(dycore=cfg_set.dycore._replace(
             mpas_vert4_flux_form_tracers=typo))
         with pytest.raises(ValueError, match="mpas_vert4_flux_form_tracers"):

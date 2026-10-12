@@ -3682,11 +3682,12 @@ class ExperimentConfig(NamedTuple):
         # error: the default is non-empty and, like mpas_nu_vert4_T, simply
         # unused off the MPAS lane or with the filter off.
         _v4f = getattr(d, "mpas_vert4_flux_form_tracers", ()) or ()
-        if isinstance(_v4f, str):
-            _v4f = (_v4f,)
         from legoesm.core.conservation import BORROW_ELIGIBLE_TRACERS
-        _bad = [n for n in _v4f if n not in BORROW_ELIGIBLE_TRACERS]
-        if _bad:
+        if isinstance(_v4f, str):   # builders tuple() it into characters
+            errors.append(
+                "dycore.mpas_vert4_flux_form_tracers must be a list of tracer "
+                f"names, got the string {_v4f!r}")
+        elif _bad := [n for n in _v4f if n not in BORROW_ELIGIBLE_TRACERS]:
             errors.append(
                 f"dycore.mpas_vert4_flux_form_tracers: unknown tracer names {_bad} "
                 "(expected per-mass water/number tracers such as q_v)")

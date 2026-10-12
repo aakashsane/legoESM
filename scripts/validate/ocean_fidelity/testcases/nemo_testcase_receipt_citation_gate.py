@@ -1349,6 +1349,17 @@ FILES = {
         NEMO / "tests/VORTEX_SMT3_VEC_R16_OMIP_L1_P3/BLD/ppsrc/nemo/domhgr.f90"),
     "VORTEX_SMT3_VEC_R16_OMIP_L1_P3/BLD/ppsrc/nemo/vortex_r23_ldf_terms.f90": (
         NEMO / "tests/VORTEX_SMT3_VEC_R16_OMIP_L1_P3/BLD/ppsrc/nemo/vortex_r23_ldf_terms.f90"),
+    # GYRE gradient-gate round 6 binds the active RK3 CEN2 and TKE statements
+    # to the exact compiled/configured sources cited by its receipt.
+    "cfgs/GYRE_OMIP_L2_P3_SM/WORK/traadv.F90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_SM/WORK/traadv.F90"),
+    "cfgs/GYRE_OMIP_L2_P3_SM/WORK/traadv_cen.F90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_SM/WORK/traadv_cen.F90"),
+    "cfgs/DINO/MY_SRC/zdftke.F90": (
+        NEMO / "cfgs/DINO/MY_SRC/zdftke.F90"),
+    "nemo_testcase_l2_gyre_gradient_gate.py": (
+        REPO / "scripts/validate/ocean_fidelity/testcases"
+        / "nemo_testcase_l2_gyre_gradient_gate.py"),
 }
 
 # citation -> the anchors that IDENTIFY its first and last line, plus the
@@ -1366,6 +1377,30 @@ FILES = {
 # recurring symbol is refused now, and every multi-line citation states its
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
+    # --- GYRE gradient-gate round 6: exact program and oracle statements ---
+    'nemo_testcase_recipe.py:3351': 'def build_nemo_testcase_card(',
+    'ocean_model_latlon_cgrid.py:13219': 'def _step_jitted(',
+    'nemo_testcase_l2_gyre_gradient_gate.py:143': (
+        'def build_context(*, transcendentals: str = "libm") -> GYREContext:'),
+    'nemo_testcase_l2_gyre_gradient_gate.py:194,205,214': [
+        'def gradient_rollout(context: GYREContext, d_t0, n_steps: int):',
+        'def checkpoint_after_cold_step(',
+        'def scheduled_rollout(context: GYREContext, d_t0, n_steps: int, schedule: str):',
+        3],
+    'cfgs/GYRE_OMIP_L2_P3_SM/WORK/traadv.F90:295-298': [
+        '! FCT at last stage only with RK3', ('ENDIF', 9), 4],
+    'cfgs/GYRE_OMIP_L2_P3_SM/WORK/traadv.F90:370-380': [
+        'SELECT CASE ( nadv )                      !==  compute advection trend and add it to general trend  ==!',
+        ('ENDIF', 15), 11],
+    'cfgs/GYRE_OMIP_L2_P3_SM/WORK/traadv_cen.F90:137-149,203-216': [
+        ('CASE(  2  )                         !* 2nd order centered', 1),
+        ('END_2D', 2),
+        ('CASE(  2  )                         !* 2nd order centered', 2),
+        ('&                                        / e3t(ji,jj,jk,Kmm)', 4),
+        27],
+    'cfgs/DINO/MY_SRC/zdftke.F90:832-837': [
+        'DO_2Dik( 0, 0, 1, jpkm1, 1 )   !* vertical eddy viscosity & diffivity at w-points',
+        'dissl(ji,jj,jk) = zsqen / zmxld(ji,jk)', 6],
     # --- ORCA2 round 112: executed ff_f read/fill and literal EEN consumer ---
     'ORCA2_OMIP_L4_R110EENFRAC/BLD/ppsrc/nemo/domhgr.f90:101-108': [
         ('IF( ln_read_cfg ) THEN', 1),

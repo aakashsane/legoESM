@@ -35,13 +35,10 @@ Decision-49 per-step boundary from `901cfe0d8` and the landed TKE guard from
 ## Fixed program and source identity
 
 The gate constructs only `build_nemo_testcase_card("GYRE-zco")`; the fail-closed
-card dispatch is
-`packages/ocean/legoesm/ocean/fidelity/nemo_testcase_recipe.py:3351-3361`.
-Every modeled step enters production
-`LatLonCGridOceanModel._step_jitted` at
-`packages/ocean/legoesm/ocean/dynamics/ocean_model_latlon_cgrid.py:13218-13235`.
-The harness wiring and explicit fp64 checks are in
-`scripts/validate/ocean_fidelity/testcases/nemo_testcase_l2_gyre_gradient_gate.py:143-170`.
+card dispatch begins at `nemo_testcase_recipe.py:3351`. Every modeled step
+enters production `LatLonCGridOceanModel._step_jitted` at
+`ocean_model_latlon_cgrid.py:13219`. The harness wiring and explicit fp64 checks
+begin at `nemo_testcase_l2_gyre_gradient_gate.py:143`.
 
 The compiled GYRE oracle disables FCT during RK3 stages 1 and 2 at
 `cfgs/GYRE_OMIP_L2_P3_SM/WORK/traadv.F90:295-298`, then dispatches those
@@ -56,8 +53,9 @@ The TKE dissipation statement reused from the twin finding is
 `checkpoint_after_cold_step` runs the structure-changing first production step
 outside the shared checkpoint loop, then applies `none`, `uniform`, or
 `binomial` to the fixed warm carry. Both the cold segment and every warm
-iteration call the rematerialized wrapper around production `_step_jitted`
-(`nemo_testcase_l2_gyre_gradient_gate.py:194-235`). A synthetic direct test
+iteration call the rematerialized wrapper around production `_step_jitted`;
+the three composition entry points are
+`nemo_testcase_l2_gyre_gradient_gate.py:194,205,214`. A synthetic direct test
 proves the former unsegmented structure-changing loop is rejected and all three
 segmented schedules differentiate a known scalar problem.
 

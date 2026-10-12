@@ -3,9 +3,8 @@
 Status: **assessment, not implemented** (2026-10-12). This page describes what
 legoESM records about a run today, what is lost, and what is the smallest set
 of changes that would close the gaps. Nothing here has been built yet.
-Each item that would change behaviour is listed under
-[Open decisions](#open-decisions) and needs an explicit yes or no before
-anyone implements it.
+Each item that changes behaviour is listed under [Decisions](#decisions);
+all were approved on 2026-10-12.
 
 Target principle:
 
@@ -409,10 +408,12 @@ emits v2. Old manifests keep loading.
 15. Optional: `legoesm manifest show` and `legoesm manifest diff A B`, which
     prints the science-field diff table between two runs.
 
-## Open decisions
+## Decisions
 
 These items change existing behaviour. Under the repository's
-no-unasked-choices rule each needs an explicit yes or no before it is built.
+no-unasked-choices rule each needed an explicit yes or no. **All were
+approved as proposed by the maintainer on 2026-10-12.** None is implemented
+yet.
 
 - **Manifest write failure.** Today a failed write in ocean CORE2 is a
   warning. Proposal: make it a hard error in every production driver.

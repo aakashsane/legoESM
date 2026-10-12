@@ -1126,7 +1126,7 @@ def _main(argv=None):
         if _in_trace_rep is not None:
             trainable = _in_trace_rep(trainable)
         ic, target, forcing = sample
-        # Only the spectral segment takes the kwarg (checked below).
+        # Only the spectral segment takes the kwarg (checked above).
         _kw = {"adjoint_steps": cfg.adjoint_steps} if cfg.adjoint_steps else {}
         pred = make_run_seg(trainable).raw(ic, roll_steps, forcing, **_kw)
         return combined_loss(pred, target, sigma_full, grid=grid, config=loss_config)

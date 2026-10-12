@@ -230,8 +230,9 @@ def main(argv=None):
     leaves, treedef = jax.tree_util.tree_flatten(arr)
     names = [jax.tree_util.keystr(p) for p, _ in jax.tree.leaves_with_path(arr)]
 
-    if a.adjoint_steps and not 0 < a.adjoint_steps <= roll:
-        raise SystemExit(f"--adjoint-steps must be in 1..{roll}")
+    if a.adjoint_steps and not 0 < a.adjoint_steps < roll:
+        raise SystemExit(f"--adjoint-steps must be in 1..{roll - 1}; the full "
+                         "window is the default run without the flag")
 
     def _seg(flat):
         tree = rep_in_trace(jax.tree_util.tree_unflatten(treedef, flat))

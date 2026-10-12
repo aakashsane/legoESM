@@ -167,11 +167,15 @@ def test_chaining_kwargs_refused_where_they_cannot_be_exact():
     with pytest.raises(ValueError, match="STATEFUL"):          # no radiation
         spectral_rollout(state0, fn, grid, sigma, _CFG, 600.0, 2, None, None,
                          return_phys_state=True, return_rad_tendency=True)
+    anchored = _CFG._replace(fix_mass=True, anchor_mass_to_initial=True)
+    mid, ps, rad = spectral_rollout(      # leg 1 alone anchors to the true start
+        state0, fn, grid, sigma, anchored, 600.0, 2, None, None,
+        rad_physics_fn=_rad_live, return_phys_state=True,
+        return_rad_tendency=True)
     with pytest.raises(ValueError, match="anchor"):
-        spectral_rollout(state0, fn, grid, sigma,
-                         _CFG._replace(fix_mass=True, anchor_mass_to_initial=True),
-                         600.0, 2, None, None, rad_physics_fn=_rad_live,
-                         return_phys_state=True, return_rad_tendency=True)
+        spectral_rollout(mid, fn, grid, sigma, anchored, 600.0, 2, None, None,
+                         rad_physics_fn=_rad_live, phys_state_in=ps,
+                         rad_tendency_in=rad, step_offset=2)
 
 
 def test_adjoint_steps_out_of_range_raises():

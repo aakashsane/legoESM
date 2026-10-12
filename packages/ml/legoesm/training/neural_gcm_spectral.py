@@ -1431,7 +1431,7 @@ def spectral_rollout(
                 "spectral_rollout: step_offset/rad_tendency_in/"
                 "return_rad_tendency chain the rad-gated STATEFUL branch only "
                 "(rad_physics_fn plus phys_state_in or return_phys_state).")
-        if getattr(pe_config, "fix_mass", False) and getattr(
+        if _continued and getattr(pe_config, "fix_mass", False) and getattr(
                 pe_config, "anchor_mass_to_initial", False):
             raise ValueError(
                 "spectral_rollout: segment chaining with the dry-mass anchor "

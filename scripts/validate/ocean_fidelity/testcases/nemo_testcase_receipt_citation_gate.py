@@ -89,8 +89,10 @@ _SWG_COMPILED = NEMO / "tests/SWG_OMIP_L1/BLD/ppsrc/nemo"
 _SWG_DG_COMPILED = NEMO / "tests/SWG_DG/BLD/ppsrc/nemo"
 _SWG_P3_COMPILED = NEMO / "tests/SWG_OMIP_L1_P3/BLD/ppsrc/nemo"
 _SWG_P3D_COMPILED = NEMO / "tests/SWG_OMIP_L1_P3D/BLD/ppsrc/nemo"
+_SWG_DG_P3D_COMPILED = NEMO / "tests/SWG_DG_OMIP_L1_P3D/BLD/ppsrc/nemo"
 FILES = {
     "stprk3.F90": _OCE / "stprk3.F90",
+    "phycst.F90": _OCE / "DOM/phycst.F90",
     "SWG_OMIP_L1/BLD/ppsrc/nemo/usrdef_nam.f90": (
         _SWG_COMPILED / "usrdef_nam.f90"),
     "SWG_OMIP_L1/BLD/ppsrc/nemo/usrdef_hgr.f90": (
@@ -175,6 +177,8 @@ FILES = {
         _SWG_P3D_COMPILED / "restart.f90"),
     "SWG_OMIP_L1_P3D/BLD/ppsrc/nemo/diawri.f90": (
         _SWG_P3D_COMPILED / "diawri.f90"),
+    "SWG_DG_OMIP_L1_P3D/BLD/ppsrc/nemo/stprk3.f90": (
+        _SWG_DG_P3D_COMPILED / "stprk3.f90"),
     # SWG survey authorities.  Keep their qualified names: several basenames
     # also exist in OCE, SWE, compiled P3, and other testcase MY_SRC trees.
     "src/OCE/DYN/dynspg.F90": _DYN / "dynspg.F90",
@@ -1502,6 +1506,7 @@ FILES = {
 # recurring symbol is refused now, and every multi-line citation states its
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
+    'phycst.F90:29': 'rday     = 24.*60.*60.',
     # --- SWG lane round 1 (survey + card + geometry + acquisition) ---
     'SWG_OMIP_L1/BLD/ppsrc/nemo/nemogcm.f90:199-201': [
         'NAMELIST/namctl/ sn_cfctl',
@@ -6471,6 +6476,10 @@ CITATION_MAP = {
         4],
     'SWG_OMIP_L1_P3D/BLD/ppsrc/nemo/stprk3.f90:146-161': [
         'IF( MOD(kstp - nit000, 24) == 0 ) THEN',
+        'CALL swg_close( kstp, 1 )',
+        16],
+    'SWG_DG_OMIP_L1_P3D/BLD/ppsrc/nemo/stprk3.f90:146-161': [
+        'IF( MOD(kstp - nit000, NINT(rday / rn_Dt)) == 0 ) THEN',
         'CALL swg_close( kstp, 1 )',
         16],
     'SWG_OMIP_L1_P3D/BLD/ppsrc/nemo/stprk3.f90:324-340': [

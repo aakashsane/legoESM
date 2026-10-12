@@ -74,13 +74,12 @@
 # sensitivity runs.
 : "${FORCING_1979_2014:=/work/bd1083/b309178/diffESM/legoesm_ap/data/forcing/cmip6_1979-2014}"
 : "${OZONE:=${FORCING_1979_2014}/vmro3_input4MIPs_ozone_CMIP_UReading-CCMI-1-0_gn_197901-201412.nc}"
-# Kinne MACv1: fine+coarse for radiation, fine mode for the droplet-number
-# (CCN) path -- the code's documented design and the Ginsburg twin's products
-# (review 2026-10-10 F33: this launcher fed radiation the fine mode only, so
-# dust and sea salt were missing).  Same basenames on both machines; stage the
-# Ginsburg-built files (fv3_duo_gaps/forcing_stage/make_aerosol*.py) here.
-: "${AEROSOL:=${FORCING_1979_2014}/aeropt_kinne_sw_b14_tot_1979-2014_MACv1.nc}"
-: "${AEROSOL_CCN:=${FORCING_1979_2014}/aeropt_kinne_sw_b14_fin_1979-2014_MACv1.nc}"
+# MACv2-SP anthropogenic plumes on the Kinne MACv1 pre-industrial background,
+# 1850-2014: fine+coarse for radiation, fine mode for the droplet-number (CCN)
+# path (review 2026-10-10 F33/F37).  Same basenames on both machines; build
+# them here with scripts/data/adapt_cmip6_aerosol.py (see the Ginsburg twin).
+: "${AEROSOL:=${FORCING_1979_2014}/aeropt_macv2sp_sw_b14_tot_1850-2014_MACv1bg.nc}"
+: "${AEROSOL_CCN:=${FORCING_1979_2014}/aeropt_macv2sp_sw_b14_fin_1850-2014_MACv1bg.nc}"
 : "${VOLCANIC:=${FORCING_1979_2014}/bc_aeropt_cmip6_volc_lw_b16_sw_b14_1979-2014.nc}"
 # CLM surfdata for the multilayer Richards land model (use_multilayer_land): the
 # PFT/texture/glacier surface map. Compute nodes have NO internet, so the auto-

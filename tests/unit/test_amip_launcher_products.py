@@ -47,10 +47,6 @@ def test_both_launchers_name_the_same_product(flag):
 # dated forcing product the Ginsburg launcher hands the coupled lane must cover
 # the decks' run years: read from the file's CF time axis where it is staged
 # (Ginsburg), else from the year span in its basename.
-_AWAITING_1850_DATA = {
-    # No 1850-1978 tropospheric aerosol on disk (Kinne MACv1 starts 1980):
-    # coupled 1850 runs refuse to start until one is staged (F37 follow-up).
-    "--aerosol-file", "--aerosol-ccn-file"}
 
 
 def _file_years(path: str) -> tuple[int, int]:
@@ -84,8 +80,4 @@ def test_coupled_forcing_products_cover_the_decks_run_years(flag):
     for deck in ("cmip_ocean_slab.yaml", "cmip_ocean_3D.yaml"):
         cfg = yaml.safe_load((REPO / "config" / "cmip" / deck).read_text())
         first, last = cfg["start_year"], cfg["start_year"] + (cfg["days"] - 1) // 365
-        covered = lo <= first and last <= hi
-        if flag in _AWAITING_1850_DATA:
-            assert not covered, f"{flag} now covers {deck}: drop it from _AWAITING_1850_DATA"
-        else:
-            assert covered, (flag, path, (lo, hi), deck, (first, last))
+        assert lo <= first and last <= hi, (flag, path, (lo, hi), deck, (first, last))

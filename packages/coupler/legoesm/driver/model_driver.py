@@ -13798,8 +13798,8 @@ class ModelDriver:
             # full-radiation) step of each run/link.  Eager, both lanes
             # (the cell-partition MPI step publishes the same ``_sfc_diag``
             # side channel post-jit, and the update is per-cell elementwise
-# with no neighbour stencil, so it needs no halo exchange).
-# See the daily-boundary note for why the
+            # with no neighbour stencil, so it needs no halo exchange).
+            # See the daily-boundary note for why the
             # advance is per-step rather than a once-daily snapshot.
             if _ice_skin_on and _ice_sic_cur is not None:
                 _sd = getattr(self.model, "_sfc_diag", None)
@@ -18520,7 +18520,10 @@ class ModelDriver:
         _sed_req_window = sed_substeps_window_max(
             None, _sed_req_window, counts=phys_out.sed_substeps_required)
 
-        self.state = self.state._replace(T=self.state.T.replace(data=new_T))
+        # Storage dtype is the state's (#1675): a float64 tendency must not
+        # promote a mixed/fp32 run's T.
+        self.state = self.state._replace(T=self.state.T.replace(
+            data=new_T.astype(self.state.T.data.dtype)))
         if hasattr(phys_out, 'du_dt') and phys_out.du_dt is not None:
             # Cell-centre tendency; on the persistent-D lane it is lifted to
             # the corners before it is added (#1028).
@@ -18679,8 +18682,9 @@ class ModelDriver:
                 hyperdiffusion_3d=hyperdiffusion_3d,
                 target_moisture=(target_moisture if FIX_MOISTURE else None))
 
+            # Storage dtype is the state's (#1675), as in the warmup step.
             self.state = self.state._replace(
-                T=self.state.T.replace(data=new_T)
+                T=self.state.T.replace(data=new_T.astype(self.state.T.data.dtype))
             )
 
             # Apply momentum tendencies from turbulence/GWD

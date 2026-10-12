@@ -111,19 +111,12 @@ def configure_jax_compilation_cache(cache_dir, min_compile_secs: float = 30.0):
     return str(cache_dir)
 
 
-# Opt-in env override: force-enable the persistent COMPILE cache on the CPU
-# backend for a user who KNOWS every node sharing ``cache_dir`` has the SAME
-# CPU microarchitecture (so a wrong-arch AOT load cannot happen).  Default OFF
-# -> CPU is disabled (cross-microarch SIGILL risk).  GPU/TPU ignore this.
-_CPU_COMPILE_CACHE_OPT_IN_ENV = "LEGOESM_ALLOW_CPU_COMPILE_CACHE"
-
-
-def _cpu_compile_cache_opt_in() -> bool:
-    """Return whether the user opted into the CPU persistent COMPILE cache."""
-    return (
-        os.environ.get(_CPU_COMPILE_CACHE_OPT_IN_ENV, "0").strip().lower()
-        in {"1", "true", "yes", "on"}
-    )
+# The CPU opt-in (env name + reader) is the runtime backend's: ONE policy for
+# every caller of the persistent compile cache.
+from legoesm.runtime.backend import (  # noqa: E402
+    CPU_COMPILE_CACHE_OPT_IN_ENV as _CPU_COMPILE_CACHE_OPT_IN_ENV,
+    cpu_compile_cache_opt_in as _cpu_compile_cache_opt_in,
+)
 
 
 def _active_backend_is_cpu() -> bool:

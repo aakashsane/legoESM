@@ -110,6 +110,7 @@ def _driver_forcing(cfg, ncol=_LAT.size, temp_fn=None, **kw):
     fake._owned_face_ids = None
     fake._gather_spmd_tree_to_host = lambda x: x
     fake._owned_temp = lambda: ModelDriver._owned_temp(fake)
+    fake.radiation_ghg_vmr = lambda day: ModelDriver.radiation_ghg_vmr(fake, day)
     lat = jnp.radians(jnp.asarray(_LAT))
     _, aer, _ = ModelDriver._precompute_external_forcing(fake, 15.5, p_s, lat, **kw)
     p_full = np.asarray(fake.sigma.pressure_at_full(p_s)).reshape(ncol, -1)

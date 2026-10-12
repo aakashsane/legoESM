@@ -1349,7 +1349,10 @@ class TestCloudCmorFeed:
         assert np.all(out["field_2d_clwvi"] > 0.0), (
             "radiative clwvi must include the diagnostic condensate floor")
         assert np.all(out["field_2d_clt"] > 0.0)
-        assert np.all(out["field_2d_clt"] <= 100.0)
+        # The native clt is exactly 100 here; the 10-degree CMOR regrid's
+        # weight round-off lifts 103 of 648 cells to 100 + 2.8e-14 (job
+        # 10330692), so the bound allows round-off only.
+        assert np.all(out["field_2d_clt"] <= 100.0 + 1e-9)
 
     def test_clt_bounds_and_units_percent(self, mesh):
         """clt is in CMIP % units: a fully saturated column -> ~100, and

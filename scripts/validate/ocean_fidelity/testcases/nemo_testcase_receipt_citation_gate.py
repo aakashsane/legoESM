@@ -6168,6 +6168,35 @@ CITATION_MAP = {
         ("IF( PRESENT( pr3f ) ) THEN", 1),
         ("END DO   ;   END DO", 3),
         11],
+    # --- SWG round 6: whole-step carry and explicit RK3 materialization ---
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/domqco.f90:218-229': [
+        ("END DO   ;   END DO", 2),
+        ("&                    ) * r1_hf_0", 1),
+        12],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:336-338': [
+        ("CALL ssh_nxt( kstp, Nbb, Nnn, ssh, Naa )", 2),
+        ("CALL dom_qco_r3c( ssh(:,:,Naa)", 3),
+        3],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:358-366': [
+        ("ENDIF", 7),
+        ("Nbb = Naa", 1),
+        9],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:147-159': [
+        ("CALL swg_open( kstp, 1", 1),
+        ("CALL swg_w2( 'utau_now'", 1),
+        13],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:204-210': [
+        ("CALL lbc_lnk( 'stp_RK3'", 1),
+        ("Naa = Nrhs", 1),
+        7],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:278-284': [
+        ("CALL lbc_lnk( 'stp_RK3'", 3),
+        ("Naa = Nrhs", 2),
+        7],
+    'SWG_OMIP_L1_P3/BLD/ppsrc/nemo/stprk3.f90:360-366': [
+        ("CALL lbc_lnk( 'stp_RK3'", 5),
+        ("Nbb = Naa", 1),
+        7],
     'sbcmod.f90:553-560': [
         "calculate utau and vtau on U,V-points",
         ("vmask(ji,jj,1) ) * MAX( tmask(ji,jj,1), tmask(ji,jj+1,1) )", 2),

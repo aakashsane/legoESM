@@ -190,27 +190,29 @@ def _score_state(state) -> ScoredState:
         state.T.data, state.S.data, state.u.data, state.v.data, state.eta.data)
 
 
-def production_rollout(context: GYREContext, d_t0, n_steps: int):
-    """Campaign-order Python loop; every step calls production ``_step_jitted``."""
-    state = context.initial_state._replace(
+def _apply_initial_perturbation(context: GYREContext, d_t0):
+    return context.initial_state._replace(
         T=context.initial_state.T.replace(
             data=context.initial_state.T.data + d_t0))
+
+
+def _production_step(context: GYREContext, state, kt: int):
+    freshwater, surface = context.surface_forcings(context.card, state, kt)
+    return context.model._step_jitted(
+        state, context.card.dt_s, freshwater, surface)
+
+
+def production_rollout(context: GYREContext, d_t0, n_steps: int):
+    """Campaign-order Python loop; every step calls production ``_step_jitted``."""
+    state = _apply_initial_perturbation(context, d_t0)
     for kt in range(1, n_steps + 1):
-        freshwater, surface = context.surface_forcings(context.card, state, kt)
-        state = context.model._step_jitted(
-            state,
-            context.card.dt_s,
-            freshwater,
-            surface,
-        )
+        state = _production_step(context, state, kt)
     return state
 
 
 def gradient_rollout(context: GYREContext, d_t0, n_steps: int):
     """Twin-Decision-49 Python composition of rematerialized production steps."""
-    state = context.initial_state._replace(
-        T=context.initial_state.T.replace(
-            data=context.initial_state.T.data + d_t0))
+    state = _apply_initial_perturbation(context, d_t0)
     for kt in range(1, n_steps + 1):
         freshwater, surface = context.surface_forcings(context.card, state, kt)
         state = context.checkpointed_step(state, freshwater, surface)
@@ -348,6 +350,98 @@ def make_loss(context: GYREContext, reference: LossReference, n_steps: int,
     return loss
 
 
+def loss_at_state(reference: LossReference, state):
+    """Evaluate the registered objective from an already-produced after-state."""
+    candidate = _score_state(state)
+    scores = [
+        volume_weighted_mse(
+            getattr(candidate, name),
+            getattr(reference.state, name),
+            getattr(reference, f"{name}_volume"),
+        ) / getattr(reference, f"{name}_variance")
+        for name in FIELDS
+    ]
+    return jnp.mean(jnp.stack(scores))
+
+
+def explicit_stepwise_directional_derivatives(
+        context: GYREContext, reference: LossReference, base, direction,
+        n_steps: int, *, plant: bool = False):
+    """Compose one VJP/JVP per production step without a whole-window trace."""
+    states = [_apply_initial_perturbation(context, base)]
+    for kt in range(1, n_steps + 1):
+        states.append(_production_step(context, states[-1], kt))
+        jax.block_until_ready(states[-1])
+
+    value, objective_pullback = jax.vjp(
+        lambda state: loss_at_state(reference, state), states[-1])
+    cotangent = objective_pullback(jnp.ones_like(value))[0]
+    replay_reports = {}
+    for kt in range(n_steps, 0, -1):
+        previous = states[kt - 1]
+        replay, step_pullback = jax.vjp(
+            lambda state, step=kt: _production_step(context, state, step),
+            previous,
+        )
+        jax.block_until_ready(replay)
+        replay_reports[str(kt)] = state_bitwise_report(states[kt], replay)
+        require(
+            replay_reports[str(kt)]["bitwise_equal"],
+            f"production-step VJP replay differs at step {kt}",
+        )
+        cotangent = step_pullback(cotangent)[0]
+        jax.block_until_ready(cotangent)
+    gradient = cotangent.T.data
+    if plant:
+        _, plant_pullback = jax.vjp(broken_vjp_identity, base)
+        gradient = plant_pullback(gradient)[0]
+    reverse = float(np.asarray(jnp.vdot(gradient, direction)))
+
+    zero = jnp.asarray(0.0, dtype=base.dtype)
+    state, tangent = jax.jvp(
+        lambda alpha: _apply_initial_perturbation(
+            context, base + alpha * direction),
+        (zero,),
+        (jnp.asarray(1.0, dtype=base.dtype),),
+    )
+    for kt in range(1, n_steps + 1):
+        state, tangent = jax.jvp(
+            lambda step_state, step=kt: _production_step(
+                context, step_state, step),
+            (state,),
+            (tangent,),
+        )
+    _, forward_tangent = jax.jvp(
+        lambda after: loss_at_state(reference, after),
+        (state,),
+        (tangent,),
+    )
+    forward = float(np.asarray(forward_tangent))
+
+    def finite_difference_loss(alpha):
+        after = production_rollout(
+            context, base + alpha * direction, n_steps)
+        return loss_at_state(reference, after)
+
+    plus = float(np.asarray(finite_difference_loss(FD_STEP)))
+    minus = float(np.asarray(finite_difference_loss(-FD_STEP)))
+    finite_difference = (plus - minus) / (2.0 * FD_STEP)
+    row = classify_agreement(reverse, forward, finite_difference)
+    dot_abs_sum = float(np.asarray(jnp.sum(jnp.abs(gradient * direction))))
+    norm_product = float(np.asarray(
+        jnp.linalg.norm(gradient) * jnp.linalg.norm(direction)))
+    discrepancy = abs(reverse - forward)
+    row.update({
+        "gradient_dot_abs_sum": dot_abs_sum,
+        "gradient_direction_norm_product": norm_product,
+        "rev_fwd_absolute_discrepancy": discrepancy,
+        "rev_fwd_scale_aware_error": (
+            discrepancy / max(dot_abs_sum, 1.0e-300)),
+        "step_vjp_replay_reports": replay_reports,
+    })
+    return row
+
+
 def perturbations(context: GYREContext):
     """Return the registered evaluation point and independent unit direction."""
     wet = (
@@ -483,8 +577,6 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
             "production Python loop")
     else:
         reference = build_reference(context, truth_state)
-        forward_loss = make_loss(context, reference, n_steps)
-        reverse_loss = forward_loss
         base, direction = perturbations(context)
         perturbations_to_check = {
             "base": base,
@@ -508,9 +600,9 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
                 + ", ".join(bad_evaluation_reports))
         else:
             try:
-                row = directional_derivatives(
-                    forward_loss, base, direction,
-                    reverse_loss=reverse_loss, plant=plant)
+                row = explicit_stepwise_directional_derivatives(
+                    context, reference, base, direction, n_steps,
+                    plant=plant)
             except (TypeError, ValueError, RuntimeError) as error:
                 row["error"] = f"{type(error).__name__}: {error}"
     identity = runtime_identity()
@@ -529,7 +621,7 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
         "geometry_dtype": str(context.card.recipe.z_coord.dz_ref.dtype),
         "plant": "broken_vjp" if plant else None,
         "production_entry": "LatLonCGridOceanModel._step_jitted",
-        "composition": "per-step Python loop",
+        "composition": "explicit per-production-step VJP/JVP composition",
         "schedule_scope": "Decision-49 per-step Python composition",
         "per_step_whole_step_rematerialization": True,
         "schedule_primal_vs_production": primal_report,

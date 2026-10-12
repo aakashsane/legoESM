@@ -6,6 +6,7 @@ import importlib.util
 import inspect
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
@@ -63,6 +64,52 @@ def test_scalar_line_reverse_equals_full_vjp_dot_direction():
     assert row["gradient_direction_norm_product"] == pytest.approx(
         float(jnp.linalg.norm(full_gradient) * jnp.linalg.norm(direction)))
     assert row["rev_fwd_scale_aware_error"] == pytest.approx(0.0, abs=1.0e-15)
+
+
+def test_explicit_stepwise_vjp_matches_whole_window_gradient(monkeypatch):
+    class Field(NamedTuple):
+        data: jax.Array
+
+        def replace(self, **changes):
+            return self._replace(**changes)
+
+    class State(NamedTuple):
+        T: Field
+
+    class Context(NamedTuple):
+        initial_state: State
+
+    context = Context(State(Field(jnp.asarray([0.2, -0.4], dtype=jnp.float64))))
+    monkeypatch.setattr(
+        G,
+        "_production_step",
+        lambda _context, state, kt: State(Field(state.T.data * (1.0 + 0.1 * kt))),
+    )
+    monkeypatch.setattr(
+        G,
+        "loss_at_state",
+        lambda _reference, state: jnp.sum(jnp.sin(state.T.data)),
+    )
+    base = jnp.asarray([0.01, -0.02], dtype=jnp.float64)
+    direction = jnp.asarray([0.6, -0.8], dtype=jnp.float64)
+    row = G.explicit_stepwise_directional_derivatives(
+        context, None, base, direction, 3)
+
+    def whole_window(value):
+        state = G._apply_initial_perturbation(context, value)
+        for kt in range(1, 4):
+            state = G._production_step(context, state, kt)
+        return G.loss_at_state(None, state)
+
+    expected_gradient = jax.grad(whole_window)(base)
+    assert row["reverse"] == pytest.approx(
+        float(jnp.vdot(expected_gradient, direction)), rel=1e-13)
+    assert row["gradient_dot_abs_sum"] == pytest.approx(
+        float(jnp.sum(jnp.abs(expected_gradient * direction))), rel=1e-13)
+    assert all(
+        report["bitwise_equal"]
+        for report in row["step_vjp_replay_reports"].values()
+    )
 
 
 def test_reverse_only_schedule_compares_against_forward_reference():

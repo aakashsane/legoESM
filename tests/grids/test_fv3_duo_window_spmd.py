@@ -16,10 +16,11 @@ import pytest
 # 1 ulp on Cascade Lake.  Missing flags are appended to any preset XLA_FLAGS;
 # both only bite before jax is imported.
 _XLA = os.environ.get("XLA_FLAGS", "")
+_SET = {t.split("=")[0] for t in _XLA.split()}
 os.environ["XLA_FLAGS"] = " ".join([_XLA] + [
     f for f in ("--xla_force_host_platform_device_count=24",
                 "--xla_cpu_max_isa=AVX")
-    if f.split("=")[0] not in _XLA]).strip()
+    if f.split("=")[0] not in _SET]).strip()
 jax = pytest.importorskip("jax")
 jnp = jax.numpy
 jax.config.update("jax_enable_x64", True)

@@ -1164,8 +1164,11 @@ def test_land_stress_rides_the_duo_column_checkpoint(tmp_path, monkeypatch):
     from legoesm.driver.model_driver import ModelDriver
     dir_a, dir_b = tmp_path / "a", tmp_path / "b"
     dir_a.mkdir(), dir_b.mkdir()
+    # dt=600 (the value the lane's CFL clamp resolves 1920 s to on this
+    # grid) so the one-day checkpoint (144 steps) sits on a radiation
+    # boundary, as D-REX-1 requires of every checkpoint.
     cfg = _land_stress_cfg(dir_a, monkeypatch, stress=True, days=1,
-                           dt=1920.0, rad_update_steps=4)
+                           dt=600.0, rad_update_steps=4)
     cfg = cfg._replace(output=cfg.output._replace(checkpoint_days=1))
     drv_a = ModelDriver(cfg, output_dir=dir_a)
     drv_a.setup()

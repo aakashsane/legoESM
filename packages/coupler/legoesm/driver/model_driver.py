@@ -11664,10 +11664,12 @@ class ModelDriver:
                 f"{start_step} is not on a radiation boundary (the held "
                 "radiation fluxes are not persisted); restart from a "
                 "checkpoint whose absolute step is a multiple of the cadence")
-        if _subcycle_rad and (n_steps_total % RAD_UPDATE_STEPS != 0
-                              or (CHECKPOINT_INTERVAL > 0
-                                  and CHECKPOINT_INTERVAL % RAD_UPDATE_STEPS
-                                  != 0)):
+        # Only a run that WRITES checkpoints is constrained (the final
+        # checkpoint lands at n_steps_total; with checkpointing off there is
+        # nothing to resume from, so any length is fine).
+        if (_subcycle_rad and CHECKPOINT_INTERVAL > 0
+                and (n_steps_total % RAD_UPDATE_STEPS != 0
+                     or CHECKPOINT_INTERVAL % RAD_UPDATE_STEPS != 0)):
             raise ValueError(
                 f"rad_update_steps={RAD_UPDATE_STEPS}: the run length "
                 f"({n_steps_total} steps) and the checkpoint interval "

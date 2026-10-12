@@ -2658,10 +2658,23 @@ class CoupledESMDriver:
             from legoesm.diagnostics.column_integrals import column_water_vapor
             from legoesm.diagnostics.water_budget import atm_moisture_residual
             atm_area = getattr(self._atm.grid, "grid_area", None)
+            _st = self._atm.state
+            if hasattr(_st, "vor_hat"):
+                # SPECTRAL: the state is coefficients with no p_s field; grid
+                # p_s and the grid-space q_v exactly as _build_atm_forcing
+                # reads them (zeros on a dry run, whose tracers are None).
+                from legoesm.atmosphere.dynamics.gcm.spectral_pe import (
+                    spectral_pe_to_grid,
+                )
+                _f = spectral_pe_to_grid(_st, self._atm.grid, self._atm.sigma)
+                _ps = _f["p_s"]
+                _qv = (getattr(_st, "tracers", None) or {}).get("q_v")
+                _qv = (jnp.zeros_like(_f["T"]) if _qv is None
+                       else getattr(_qv, "data", _qv))
+            else:
+                _ps, _qv = _st.p_s.data, self._atm.q_v
             cwv_now = column_water_vapor(
-                self._atm.q_v,
-                self._atm.state.p_s.data,
-                jnp.asarray(self._atm.sigma.dsigma),
+                _qv, _ps, jnp.asarray(self._atm.sigma.dsigma),
             )
             if self._cwv_prev is not None:
                 diag["water_atm_residual_kg_m2_s_global"] = float(

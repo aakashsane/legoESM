@@ -1291,7 +1291,13 @@ def test_wall_default_surface_is_frozen():
 #   hines_launch_p 0.0 -> 70000.0: read only when gravity_wave_drag selects
 #     Hines; both duo decks run mcfarlane and already pin 70000.0.
 # The allow-list is unchanged.
-_WALL_SURFACE_SHA256 = "fde7a80d327a47ca383c3dae7d7d76236e3b5745cdd2d319aed4b16461f3d808"
+#
+# 2026-10-11 (main 294495454): the surface minus ONE path hashes to the old
+# literal (job 10330697): forcing_hold_outside_file_years=False ADDED by the
+# F37 fix (#1936).  An added default cannot trip the wall, and the field is
+# not allow-listed, so a non-default value stays refused on the duo lane.
+# The allow-list is unchanged.
+_WALL_SURFACE_SHA256 = "21b3b847f49238ee1166e46f4c3366d911fae7be60091d0aa3a15a3635ea8190"
 
 
 def test_wall_leaf_types_are_scalar():

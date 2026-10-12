@@ -159,8 +159,12 @@ def test_ext_scalar_matches_flat_impl(setup, stag):
     assert ctx.tab.window_comm is None        # certified path below
     M = N + 2 * NG + (1 if stag == "B" else 0)
     x6 = _rand((6, M, M, KM), 2)
-    ref = np.asarray(gather_windows(lay, ext_scalar_sixface_allk(
-        x6, ctx.tab, stag)))
+    # The flat impl runs under jit like the firing: eager op-by-op dispatch
+    # rounds its extrapolation sums differently (no FMA contraction), 1 ulp
+    # on 4165 cells on a Cascade Lake host (job 10330875), so an eager
+    # reference is not the bitwise twin of ANY compiled program.
+    ref = np.asarray(gather_windows(lay, jax.jit(
+        lambda a: ext_scalar_sixface_allk(a, ctx.tab, stag))(x6)))
     out = jax.jit(lambda a: comm.ext_scalar_allk(a, stag))(
         _windows(lay, comm, x6))
     out = np.asarray(out)
@@ -178,11 +182,13 @@ def test_ext_vector_matches_flat_impl(setup, grid):
     M = N + 2 * NG
     if grid == "D":
         u6, v6 = _rand((6, M, M + 1, KM), 3), _rand((6, M + 1, M, KM), 4)
-        ru, rv = ext_vector_dgrid_sixface_allk(u6, v6, ctx.tab)
+        ru, rv = jax.jit(lambda a, b: ext_vector_dgrid_sixface_allk(
+            a, b, ctx.tab))(u6, v6)          # jit: see the scalar test
         fn = comm.ext_vector_dgrid_allk
     else:
         u6, v6 = _rand((6, M + 1, M, KM), 5), _rand((6, M, M + 1, KM), 6)
-        ru, rv = ext_vector_cgrid_sixface_allk(u6, v6, ctx.tab)
+        ru, rv = jax.jit(lambda a, b: ext_vector_cgrid_sixface_allk(
+            a, b, ctx.tab))(u6, v6)
         fn = comm.ext_vector_cgrid_allk
     ou, ov = jax.jit(fn)(_windows(lay, comm, u6), _windows(lay, comm, v6))
     for o, r, nm in ((ou, ru, "u"), (ov, rv, "v")):
@@ -214,8 +220,10 @@ def test_sabotaged_arms_fail(setup):
         comm._pad_exchange = orig
     assert np.isnan(out).any(), "identity pad exchange still cleared the poison"
 
-    ref = np.asarray(gather_windows(lay, ext_scalar_sixface_allk(
-        x6, ctx.tab, "A")))
+    # jitted, as in the test it guards: an eager reference differs at the
+    # last bit on some hosts, which would make this control pass vacuously
+    ref = np.asarray(gather_windows(lay, jax.jit(
+        lambda a: ext_scalar_sixface_allk(a, ctx.tab, "A"))(x6)))
     body = comm._bodies["A"]
     comm._bodies["A"] = lambda blk: blk
     try:

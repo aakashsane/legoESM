@@ -185,9 +185,11 @@ def test_held_suarez_through_the_contract_is_the_twin_bitwise(dry):
     dyn, col, ic = dry
     post = dyn.step(ic, DT)
     amat6, lat6, wv6 = stack_held_suarez_metrics(col.grid.ctx_np)
-    twin = apply_held_suarez_step_sixface_jax(
-        post["state"], post["press"], col._tab, amat6, lat6, wv6, dt=DT,
-        n=N, ng=NG, km=KM, strat=True)
+    # jit, as the column lane's physics apply is: an eager twin rounds
+    # differently (op-by-op, no FMA contraction) at the last bit.
+    twin = jax.jit(lambda st, pr: apply_held_suarez_step_sixface_jax(
+        st, pr, col._tab, amat6, lat6, wv6, dt=DT,
+        n=N, ng=NG, km=KM, strat=True))(post["state"], post["press"])
     out = col.step(col.from_bundle(ic), DT,
                    physics_fn=_held_suarez_physics(col))
     for k in ("u", "v", "pt"):

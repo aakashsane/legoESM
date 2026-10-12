@@ -726,11 +726,21 @@ def fv3_duo_dynamics_for_layout(config: ExperimentConfig, bundle, cfg):
 def energy_fixer_wired(config: ExperimentConfig, solver_name: str) -> bool:
     """Whether the dycore ``solver_name`` runs ``DycoreConfig.energy_fixer``
     (the CAM-style global total-energy fixer, review 2026-10-10 F15): the
-    MPAS hydrostatic core (serial ``_step_jit`` + MPI ``voronoi_mpi._step``)
-    and the FV3-duo COLUMN lane.  Every other solver does not run it yet."""
-    return (solver_name == "mpas_primitive_equations"
+    MPAS hydrostatic core (serial ``_step_jit`` + MPI ``voronoi_mpi._step``),
+    the FV3-duo COLUMN lane, the lat-lon C-grid hydrostatic core (every lane
+    runs ``_step_cgrid_impl``) and the cube C-D grid hydrostatic core
+    (``_step_fv3``; the sub-face-TILED dynamics lanes do not run it and are
+    refused at their driver entry).  Every other solver does not run it."""
+    return (solver_name in _ENERGY_FIXER_SOLVERS
             or (solver_name == "fv3_duo_primitive_equations"
                 and bool(config.dycore.fv3_duo_column_lane)))
+
+
+_ENERGY_FIXER_SOLVERS = frozenset({
+    "mpas_primitive_equations",
+    "latlon_cgrid_primitive_equations",
+    "cdgrid_primitive_equations",
+})
 
 
 def refuse_unwired_energy_fixer(config: ExperimentConfig,
@@ -742,8 +752,8 @@ def refuse_unwired_energy_fixer(config: ExperimentConfig,
                                                              solver_name):
         raise ValueError(
             f"DycoreConfig.energy_fixer=True, but the dycore total-energy "
-            f"fixer is wired only on the MPAS hydrostatic and FV3-duo column "
-            f"lanes; {solver_name!r} would run WITHOUT it and leave the "
+            f"fixer is wired only on the MPAS, lat-lon C-grid and cube C-D grid "
+            f"hydrostatic and FV3-duo column lanes; {solver_name!r} would run WITHOUT it and leave the "
             f"damping/numerical energy sink open.  Set energy_fixer=False "
             f"(run_amip/run_coupled --no-energy-fixer) to accept that sink "
             f"explicitly on this lane.")
@@ -920,6 +930,8 @@ def create_atmosphere_dycore(
             # #771: flux-form moisture transport (needs moisture attached via
             # ExperimentConfig.moisture_advection; default off = advective).
             moisture_flux_form=getattr(dc, "moisture_flux_form", False),
+            # CAM-style dycore total-energy fixer (F15; DycoreConfig).
+            energy_fixer=dc.energy_fixer,
         )
         return CDGridPrimitiveEquationModel(grid, sigma, cfg)
 
@@ -1486,6 +1498,8 @@ def create_atmosphere_dycore(
             time_integrator=(CGridLatLonPrimitiveEquationConfig().time_integrator
                              if dc.time_integrator == "auto"
                              else dc.time_integrator),
+            # CAM-style dycore total-energy fixer (F15; DycoreConfig).
+            energy_fixer=dc.energy_fixer,
         )
         model = CGridLatLonPrimitiveEquationModel(
             grid, sigma, cfg, dt=_effective_dt)

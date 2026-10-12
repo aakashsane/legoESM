@@ -1119,6 +1119,32 @@ def aimip_inactive_fields(*, cloud_scheme: str) -> frozenset:
     return _INACTIVE_FIELDS_BY_CLOUD_SCHEME.get(cloud_scheme, frozenset())
 
 
+def resolved_inactive_fields(physics_config, *,
+                             subgrid_orography: bool) -> frozenset:
+    """Spec parameters of an ACTIVE scheme that a resolved OPTION of it never
+    reads, from the BUILT config (the ``_inactive_keys`` pattern; the
+    ``assert_no_inert`` gate on the first gradient catches the rest).
+
+    * Morrison ``k_au``/``k_ac``/``x_star``: read only by the
+      ``warm_rain_scheme == "seifert_beheng"`` branch (morrison.py); the
+      kk2000 laws carry their own knobs (``autocon_fact``, ``accre_enhan_fact``).
+    * McFarlane ``h_topo``: the scalar fallback height, read only when no
+      per-column subgrid-orography field is wired (mcfarlane.py).
+      ``subgrid_orography`` = the driver wired one (production: SSO file).
+    """
+    out = set()
+    micro = getattr(physics_config, "microphysics", None)
+    if (getattr(micro, "scheme", None) == "morrison"
+            and micro.morrison.warm_rain_scheme != "seifert_beheng"):
+        out |= {f"atm.micro.MorrisonConfig.{f}"
+                for f in ("k_au", "k_ac", "x_star")}
+    gwd = getattr(physics_config, "gravity_wave_drag", None)
+    if subgrid_orography and "mcfarlane" in str(
+            getattr(gwd, "scheme", "")).split("+"):
+        out.add("atm.gwd.McFarlaneConfig.h_topo")
+    return frozenset(out)
+
+
 class AIMIPTrainableBundle(eqx.Module):
     """The classical arm's trained model when generic scheme params are on.
 

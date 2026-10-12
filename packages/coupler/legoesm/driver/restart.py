@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
+import logging
+
 import jax
 import numpy as np
 
@@ -35,6 +37,8 @@ from legoesm.io.state_digest import compute_state_digest, pytree_state_digest
 # Lazy imports to avoid circular dependency:
 #   io.restart → driver.config → driver.__init__ → model_driver → io.restart
 # We import ExperimentConfig and its serializer at function level instead.
+logger = logging.getLogger(__name__)
+
 _ExperimentConfig = None
 _experiment_config_to_dict = None
 
@@ -207,14 +211,24 @@ def config_hash_matches(stored_hash: str, stored_resolved: dict, config,
     try:
         current = _serialize_config(config, kind)
         defaults = _serialize_config(type(config)(), kind)
+        accepted: list[str] = []
         restricted = _restrict_to_stored_shape(current, stored_resolved,
-                                               defaults)
+                                               defaults, accepted)
         if restricted is _REFUSE:
             return False          # a NEW field sits at a NON-default value
         if restricted == current:
             return False          # nothing grew; the hash mismatch is real
         text = json.dumps(restricted, sort_keys=True)
-        return hashlib.sha256(text.encode("utf-8")).hexdigest() == stored_hash
+        ok = hashlib.sha256(text.encode("utf-8")).hexdigest() == stored_hash
+        if ok:
+            # A new field at today's default is NOT proof it matches the old
+            # behaviour (a fix whose default changes the physics passes this
+            # test) -- so name every field accepted this way.
+            logger.warning(
+                "config_hash_matches: accepted stored manifest by schema-growth "
+                "tolerance; fields absent from the manifest and taken at "
+                "today's defaults: %s", ", ".join(sorted(accepted)))
+        return ok
     except Exception:
         return False  # cannot prove schema growth: fail closed (strict)
 
@@ -228,7 +242,8 @@ def config_hash_matches(stored_hash: str, stored_resolved: dict, config,
 _REFUSE = object()
 
 
-def _restrict_to_stored_shape(current, stored, defaults):
+def _restrict_to_stored_shape(current, stored, defaults, accepted=None,
+                              _path=""):
     """Project *current* onto the key shape *stored* has, AT ANY DEPTH.
 
     Returns the projection, or :data:`_REFUSE` when a key present in *current*
@@ -246,7 +261,8 @@ def _restrict_to_stored_shape(current, stored, defaults):
     out = {}
     for k, v in current.items():
         if k in stored:
-            sub = _restrict_to_stored_shape(v, stored[k], defaults.get(k))
+            sub = _restrict_to_stored_shape(v, stored[k], defaults.get(k),
+                                            accepted, f"{_path}{k}.")
             if sub is _REFUSE:
                 return _REFUSE
             out[k] = sub
@@ -254,6 +270,8 @@ def _restrict_to_stored_shape(current, stored, defaults):
         # A key the manifest never stored: tolerated ONLY as a schema default.
         if k not in defaults or v != defaults[k]:
             return _REFUSE
+        if accepted is not None:
+            accepted.append(f"{_path}{k}")
     return out
 
 
@@ -358,6 +376,129 @@ def _meta_path(checkpoint_path: Path) -> Path:
 # invalidates resume-into-existing-dir for every older manifest — populating an
 # already-present optional field (e.g. dataset_provenance) is NOT a bump.
 RUN_MANIFEST_SCHEMA_VERSION = 1
+
+#: Environment variable that lets a driver continue a restart chain on code that
+#: may differ from the code that wrote it.  Values "1"/"true"/"yes" enable.
+ALLOW_VERSION_DRIFT_ENV = "LEGOESM_ALLOW_VERSION_DRIFT"
+
+
+def version_drift_allowed(environ=None) -> bool:
+    env = os.environ if environ is None else environ
+    return str(env.get(ALLOW_VERSION_DRIFT_ENV, "")).strip().lower() in (
+        "1", "true", "yes")
+
+
+def version_drift(recorded_commit: str, recorded_dirty: bool = False,
+                  recorded_patches=()) -> list[str]:
+    """Reasons the IMPORTED code may differ from the code that wrote a record.
+
+    Empty list = no drift.  Until the uncommitted diff itself is recorded, a
+    dirty tree or an applied patch on EITHER side counts as drift: the commit
+    alone cannot prove the code matched.  An unknown commit on either side
+    also counts (fail closed).
+    """
+    cur = git_provenance(_package_anchor())
+    reasons = []
+    if not recorded_commit:
+        reasons.append("the recorded legoESM commit is unknown")
+    if not cur.commit:
+        reasons.append("the imported legoESM is not a git checkout "
+                       "(commit unknown)")
+    if recorded_commit and cur.commit and recorded_commit != cur.commit:
+        reasons.append(f"recorded commit {recorded_commit[:12]} != imported "
+                       f"commit {cur.commit[:12]}")
+    if recorded_dirty:
+        reasons.append("the recorded run had uncommitted changes")
+    if cur.dirty:
+        reasons.append(f"the imported tree {cur.root} has uncommitted changes")
+    if recorded_patches:
+        reasons.append(f"the recorded run applied patches "
+                       f"{list(recorded_patches)}")
+    return reasons
+
+
+def refuse_version_drift(reasons: list[str], what: str) -> None:
+    """Raise ``RuntimeError`` when *reasons* is non-empty, unless
+    ``LEGOESM_ALLOW_VERSION_DRIFT`` is set (then only warn)."""
+    if not reasons:
+        return
+    detail = "; ".join(reasons)
+    if version_drift_allowed():
+        # ponytail: logged only -- the override is not written into the new
+        # manifest; record it there once the environment block (P1) lands.
+        logger.warning(f"Continuing from {what} despite version drift "
+                       f"({ALLOW_VERSION_DRIFT_ENV} set): {detail}")
+        return
+    raise RuntimeError(
+        f"Refusing to continue from {what}: the code may differ from the code "
+        f"that wrote it ({detail}). Commit and use the same commit, or set "
+        f"{ALLOW_VERSION_DRIFT_ENV}=1 to continue anyway (see "
+        f"docs/architecture/reproducibility.md).")
+
+
+def manifest_file_version_drift(path) -> list[str]:
+    """:func:`manifest_version_drift` for a manifest FILE; an unreadable or
+    schema-invalid manifest proves nothing about the code, so it is drift."""
+    try:
+        manifest = read_run_manifest(path)
+        validate_run_manifest(manifest)
+    except Exception as exc:  # noqa: BLE001 — becomes a refusal reason
+        return [f"{path} is not a valid run manifest ({exc})"]
+    return manifest_version_drift(manifest)
+
+
+def collective_version_drift_gate(reasons_fn, what: str) -> None:
+    """Call on EVERY process at the same point, before rank-local work.
+
+    Process 0 evaluates ``reasons_fn()`` and decides; the decision is broadcast
+    (JAX multi-controller or mpi4py, whichever this run uses) so a refusal
+    raises on every process instead of stranding the others in a collective.
+    """
+    comm = None
+    if jax.process_count() > 1:
+        root = jax.process_index() == 0
+    else:
+        mpi = sys.modules.get("mpi4py.MPI")  # only if this run already uses MPI
+        if (mpi is not None and mpi.Is_initialized()
+                and mpi.COMM_WORLD.Get_size() > 1):
+            comm = mpi.COMM_WORLD
+        root = comm is None or comm.Get_rank() == 0
+    error = None
+    if root:
+        try:
+            refuse_version_drift(reasons_fn(), what)
+        except Exception as exc:  # noqa: BLE001 — re-raised after the vote
+            error = exc
+    failed = error is not None
+    if jax.process_count() > 1:
+        from jax.experimental import multihost_utils
+        failed = bool(int(np.asarray(multihost_utils.broadcast_one_to_all(
+            np.asarray(int(failed), dtype=np.int32), is_source=root))))
+    elif comm is not None:
+        failed = comm.bcast(failed, root=0)
+    if error is not None:
+        raise error
+    if failed:
+        raise RuntimeError(f"version-drift gate refused on process 0 ({what})")
+
+
+def resolved_config_record(config, kind: str | None = None) -> dict:
+    """*config* exactly as a manifest's ``config.resolved_config`` stores it."""
+    return _json_safe(_serialize_config(config, kind or detect_config_kind(config)))
+
+
+def manifest_version_drift(manifest: dict) -> list[str]:
+    """:func:`version_drift` against a run manifest's recorded provenance."""
+    repro = manifest.get("reproducibility") or {}
+    dirty, patches = repro.get("git_dirty"), repro.get("patches")
+    reasons = []
+    if not isinstance(dirty, bool):
+        reasons.append(f"the manifest does not record 'git_dirty' ({dirty!r})")
+    if not isinstance(patches, list):
+        reasons.append(f"the manifest does not record 'patches' ({patches!r})")
+    return reasons + version_drift(
+        (manifest.get("legoESM") or {}).get("commit", ""),
+        dirty is True, patches or [])
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 
 
@@ -646,6 +787,12 @@ def write_run_manifest_on_root(directory, config, **kwargs) -> Path | None:
                     path = write_run_manifest(directory, config,
                                               exclusive=True, **kwargs)
                 except FileExistsError:
+                    # A resume or rerun into a directory that already holds a
+                    # run's record: same drift rule as ModelDriver's resume.
+                    if not old.exists():
+                        continue  # a concurrent start archived it; retry
+                    refuse_version_drift(manifest_file_version_drift(old),
+                                         f"the run manifest at {old}")
                     stamp = datetime.now(timezone.utc).strftime(
                         "%Y%m%dT%H%M%S%fZ")
                     try:
@@ -663,7 +810,7 @@ def write_run_manifest_on_root(directory, config, **kwargs) -> Path | None:
         if failed and error is None:
             raise RuntimeError("run manifest write failed on process 0")
     if error is not None:
-        raise RuntimeError(f"run manifest not written to {directory}") from error
+        raise RuntimeError(f"run manifest not written to {directory}: {error}") from error
     return path
 
 

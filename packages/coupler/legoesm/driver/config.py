@@ -283,8 +283,10 @@ class DycoreConfig(NamedTuple):
     # The projected form subtracts the column-mean tendency as a uniform
     # mixing-ratio offset, which drains stratospheric water vapour (measured
     # -0.4 ppmv/day at 45-70N, -3 ppmv/day in the tropics on e12_year).
-    # Empty = all tracers projected (pre-2026-10 behaviour, bit-identical).
-    mpas_vert4_flux_form_tracers: tuple = ()
+    # Default ("q_v",) since 2026-10 (owner decision after the 60-day A/B:
+    # 45-70N 70-150 hPa vapour 0.64 -> 4.05 ppmv, 100-200 hPa T -2.3 K).
+    # Empty = every tracer projected (the pre-2026-10 form, for bit-comparison).
+    mpas_vert4_flux_form_tracers: tuple = ("q_v",)
     # Column-CONSERVING tracer positivity clamp in the MPAS floors stage.
     # The plain ``max(q, 0)`` is NOT mass-neutral: with no limiter in
     # ``tracer_transport_mpas``, horizontal advection undershoot alone made it
@@ -3676,12 +3678,9 @@ class ExperimentConfig(NamedTuple):
                 "it would be silently inert")
         _v4f = tuple(getattr(d, "mpas_vert4_flux_form_tracers", ()) or ())
         # Tracer names are checked by the dycore against the state's actual
-        # tracers (it raises on an unknown name); here only inertness.
-        if _v4f:
-            if d.discretization != "mpas" or d.mpas_nu_vert4_T <= 0.0:
-                errors.append(
-                    "dycore.mpas_vert4_flux_form_tracers is inert unless "
-                    "discretization='mpas' and mpas_nu_vert4_T > 0")
+        # tracers (it raises on an unknown name).  No inertness error: the
+        # default is non-empty, and like mpas_nu_vert4_T it is simply unused
+        # off the MPAS lane or with the filter off.
         if d.mpas_vert_advection_scheme not in _vert_adv_options:
             errors.append(
                 f"dycore.mpas_vert_advection_scheme must be one of "

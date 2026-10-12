@@ -13,10 +13,13 @@ import pytest
 
 # --xla_cpu_max_isa=AVX (no FMA) is the condition the bitwise pins were
 # certified under (job 9961652); with FMA contraction 4-6 of them differ by
-# 1 ulp on Cascade Lake.  Both flags only bite before jax is imported.
-os.environ.setdefault("XLA_FLAGS",
-                      "--xla_force_host_platform_device_count=24 "
-                      "--xla_cpu_max_isa=AVX")
+# 1 ulp on Cascade Lake.  Missing flags are appended to any preset XLA_FLAGS;
+# both only bite before jax is imported.
+_XLA = os.environ.get("XLA_FLAGS", "")
+os.environ["XLA_FLAGS"] = " ".join([_XLA] + [
+    f for f in ("--xla_force_host_platform_device_count=24",
+                "--xla_cpu_max_isa=AVX")
+    if f.split("=")[0] not in _XLA]).strip()
 jax = pytest.importorskip("jax")
 jnp = jax.numpy
 jax.config.update("jax_enable_x64", True)

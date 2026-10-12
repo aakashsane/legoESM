@@ -1273,3 +1273,57 @@ def test_pipeline_land_tile_gets_moist_lowest_level_density(monkeypatch, tmp_pat
                                want_p / (constants.R_d * T_v), rtol=1e-12)
     # the moisture really is in the forcing (q varies), so T_v != T matters
     assert float(np.max(np.asarray(f.q_lowest))) > 0.01
+
+
+def _tile_forcing(monkeypatch, tmp_path, precip, frozen):
+    """The forcing the pipeline land tile hands the land model for a given
+    lagged precip / frozen pair (captured from step_multilayer_land)."""
+    import legoesm.land.multilayer_land as _mll
+    _patch_land_loaders(monkeypatch)
+    driver = ModelDriver(_small_cfg(), output_dir=tmp_path)
+    driver.setup()
+    seen = {}
+    real = _mll.step_multilayer_land
+
+    def _capture(land, forcing, *a, **k):
+        seen["f"] = forcing
+        return real(land, forcing, *a, **k)
+
+    monkeypatch.setattr(_mll, "step_multilayer_land", _capture)
+    ncol = int(driver._land_ml_state.T_soil.shape[0])
+    T = driver.state.T.data
+    driver.physics._step_multilayer_land_tile(
+        driver._land_ml_state, jnp.full(ncol, 400.0), jnp.full(ncol, 350.0),
+        T, driver.state.p_s.data, driver.q_v, driver.state.u.data,
+        driver.state.v.data, precip(ncol), 600.0,
+        precip_frozen_col=None if frozen is None else frozen(ncol))
+    return seen["f"]
+
+
+def test_pipeline_land_tile_snow_is_the_atmosphere_frozen_flux(
+        monkeypatch, tmp_path):
+    """F29 (review 2026-10-10): the pipeline land tile takes its snowfall from
+    the atmosphere's own (lagged) frozen surface flux, bounded by the total,
+    not a hard 0 C re-split of the total.  The frozen flux here is a
+    temperature-independent fraction (and one column exceeds the total), so
+    the old where(T_low < 273.15, P, 0) cannot reproduce it."""
+    rng = np.random.default_rng(1)
+    P = rng.uniform(1e-5, 1e-4, size=4096)
+    fr = 0.37 * P
+    fr[0] = 2.0 * P[0]            # bounded by the total
+    f = _tile_forcing(monkeypatch, tmp_path,
+                      lambda n: jnp.asarray(P[:n]), lambda n: jnp.asarray(fr[:n]))
+    n = int(np.asarray(f.precip_total).shape[0])
+    want = np.minimum(fr[:n], P[:n])
+    np.testing.assert_allclose(np.asarray(f.precip_snow), want, rtol=1e-12)
+    np.testing.assert_allclose(np.asarray(f.precip_total), P[:n], rtol=1e-12)
+
+
+def test_pipeline_land_tile_refuses_precip_without_its_frozen_part(
+        monkeypatch, tmp_path):
+    """F29: precipitation without its frozen part (an ML emulator) is refused,
+    never re-split by temperature."""
+    import pytest
+    with pytest.raises(ValueError, match="precip_frozen"):
+        _tile_forcing(monkeypatch, tmp_path,
+                      lambda n: jnp.full(n, 1e-5), None)

@@ -498,7 +498,6 @@ class CoupledESMDriver:
             idealized_bathymetry_latlon_cgrid,
             rest_state_latlon_cgrid_ocean,
         )
-        from legoesm.ocean.state import LatLonCGridOceanConfig
         from legoesm.ocean.vertical import create_ocean_z_star
 
         cfg = self.coupled_cfg
@@ -526,38 +525,7 @@ class CoupledESMDriver:
             self._init_tripole_dynamic_ocean()
             return
 
-        # The 3D ocean needs the full LatLonCGridOceanConfig; build a default
-        # one if the caller passed a SimpleOceanConfig.
-        _oc = cfg.ocean_config
-        if not isinstance(_oc, LatLonCGridOceanConfig):
-            _oc = LatLonCGridOceanConfig.from_flat()
-        # Force the OMIP-validated cold-start stack (the defaults
-        # explicit_substep barotropic + euler momentum give O(30 m/s) day-1
-        # transients on a WOA/strat cold start; see omip_latlon_75lev_solved /
-        # omip_rk3_coldstart_solve).  C_smag_lap + smag_cfl_safety are the
-        # CFL-capped Laplacian-Smagorinsky eddy viscosity that damps the
-        # geostrophic-adjustment transient off the (rest-velocity) WOA density
-        # field — WITHOUT it the standalone ocean blows up from the WOA IC alone
-        # (max|u| 21 m/s, eta 84 m in 2 h, NaN by 10 h; the OMIP latlon
-        # cold-start recipe uses exactly --C-smag-lap 3.0 --smag-cfl-safety
-        # 0.125; see omip_smag_cap_stabilizer).
-        # replace_flat routes the flat names into their nested sub-configs
-        # (barotropic_solver -> BarotropicConfig #640; C_smag_lap /
-        # smag_cfl_safety -> LateralViscosityConfig #661) exactly like the
-        # hand-nested ``_replace`` it replaced — leaf-identical by probe.
-        ocfg = _oc.replace_flat(
-            barotropic_solver="implicit_cn",
-            momentum_time_integrator="rk3",
-            pgf_scheme="smc03",
-            implicit_vertical_mixing=True,
-            # Additive Laplacian-Smagorinsky (the "none" lateral-friction
-            # closure); force scheme="none" so a caller-supplied om4p25/qg_leith
-            # config does not trip the model's "no additive A_h/C_smag with a
-            # closure scheme" validation (codex LOW).
-            lateral_friction_scheme="none",
-            C_smag_lap=3.0,
-            smag_cfl_safety=0.125,
-        )
+        ocfg = self._build_latlon_ocean_config()
 
         if cfg.ocean_dt_s <= 0.0:
             raise ValueError(
@@ -683,6 +651,55 @@ class CoupledESMDriver:
             f"nlev={cfg.ocean_nlev}, ocean_dt={cfg.ocean_dt_s}s, "
             f"barotropic={ocfg.barotropic.barotropic_solver}, "
             f"momentum={ocfg.momentum_time_integrator}, pgf={ocfg.pgf_scheme}")
+
+    def _build_latlon_ocean_config(self):
+        """The lat-lon 3-D ocean card: ``coupled_cfg.ocean_config`` (default
+        ``LatLonCGridOceanConfig``) with the OMIP-validated cold-start stack
+        forced on.  Pure config, no grid or data, so a deck test can build it."""
+        from legoesm.ocean.state import LatLonCGridOceanConfig
+
+        # The 3D ocean needs the full LatLonCGridOceanConfig; build a default
+        # one if the caller passed a SimpleOceanConfig.
+        _oc = self.coupled_cfg.ocean_config
+        if not isinstance(_oc, LatLonCGridOceanConfig):
+            _oc = LatLonCGridOceanConfig.from_flat()
+        # Force the OMIP-validated cold-start stack (the defaults
+        # explicit_substep barotropic + euler momentum give O(30 m/s) day-1
+        # transients on a WOA/strat cold start; see omip_latlon_75lev_solved /
+        # omip_rk3_coldstart_solve).  C_smag_lap + smag_cfl_safety are the
+        # CFL-capped Laplacian-Smagorinsky eddy viscosity that damps the
+        # geostrophic-adjustment transient off the (rest-velocity) WOA density
+        # field — WITHOUT it the standalone ocean blows up from the WOA IC alone
+        # (max|u| 21 m/s, eta 84 m in 2 h, NaN by 10 h; the OMIP latlon
+        # cold-start recipe uses exactly --C-smag-lap 3.0 --smag-cfl-safety
+        # 0.125; see omip_smag_cap_stabilizer).
+        # replace_flat routes the flat names into their nested sub-configs
+        # (barotropic_solver -> BarotropicConfig #640; C_smag_lap /
+        # smag_cfl_safety -> LateralViscosityConfig #661) exactly like the
+        # hand-nested ``_replace`` it replaced — leaf-identical by probe.
+        return _oc.replace_flat(
+            barotropic_solver="implicit_cn",
+            momentum_time_integrator="rk3",
+            pgf_scheme="smc03",
+            implicit_vertical_mixing=True,
+            # Additive Laplacian-Smagorinsky (the "none" lateral-friction
+            # closure); force scheme="none" so a caller-supplied om4p25/qg_leith
+            # config does not trip the model's "no additive A_h/C_smag with a
+            # closure scheme" validation (codex LOW).
+            lateral_friction_scheme="none",
+            C_smag_lap=3.0,
+            smag_cfl_safety=0.125,
+            # Decision 90: a card on the RK3 momentum program STATES how the
+            # slow forcing is depth-averaged onto the barotropic faces (the
+            # field has no default and the step raises when it is unset).
+            # min_rule_live = legoESM's own per-level minimum of the two live
+            # thicknesses, the only form that existed when this cold-start
+            # stack was validated; this card does not carry NEMO's prognostic
+            # external mode that NEMO's reference-thickness statement pairs
+            # with.  Differs from 'nemo_literal' only over partial cells.
+            # Majority vote 2026-10-11 (Claude, GLM-5.2, codex).
+            barotropic_slow_forcing_depth_evaluation="min_rule_live",
+        )
 
     def _build_tripole_ocean_config(self):
         """The OMIP-validated tripole ``LatLonCGridOceanConfig`` — cloned VERBATIM
@@ -1840,13 +1857,14 @@ class CoupledESMDriver:
         lw_down = (lw_net_sfc + lw_up_sfc) / jnp.maximum(eps_sfc, 0.01)
 
         precip_total = jnp.maximum(seg_precip, 0.0)
-        # Smooth snow fraction (Wigmosta 1994 / Dai 2008) via shared helper —
-        # single source of truth with the earth-system driver. Replaces the
-        # prior hard step, which killed d(snow)/d(T_low) and miscounted
-        # mixed-phase precip in the 0–4 °C band.
-        from legoesm.forcing.surface_utils import snow_fraction
-        snow_frac = snow_fraction(T_low, constants.T_freeze)
-        precip_snow = precip_total * snow_frac
+        # Snowfall = the atmosphere's OWN segment-mean frozen surface flux
+        # (review 2026-10-10 F29, the MPAS land's rule), bounded by the total:
+        # no temperature re-split, so the fusion heat the atmosphere booked is
+        # the one the surface receives.  require_surface_radiation_aux refuses
+        # a lane that does not publish it while precip is active.
+        _frozen = aux.get("seg_precip_frozen")
+        precip_snow = (jnp.zeros_like(precip_total) if _frozen is None
+                       else jnp.clip(_frozen, 0.0, precip_total))
 
         # Cosine zenith — route through the atmosphere's seasonal insolation seam (iter
         # 449/461) so the coupler's ocean/surface insolation runs the SAME season as the

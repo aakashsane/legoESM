@@ -24,7 +24,7 @@ from legoesm.forcing.time_utils import daily_forcing_bucket, day_to_calendar
 from legoesm.core.conservation import (
     compute_global_moisture, fix_moisture_hydrostatic,
     energy_consistent_moisture_floor,
-    conservative_positive_clip, is_borrow_eligible_tracer,
+    conservative_positive_clip,
 )
 from legoesm.core.tracers import (
     TracerRegistry,
@@ -1670,8 +1670,9 @@ class ModelDriver:
         """Anchor of the segment lanes' DRY-mass fixer (review 2026-10-10
         F13): ``∫ dry p_s dA`` of the current driver state over the water
         species the segment carry holds (q_v/q_c/q_r + the double-moment
-        water species), on the lanes' ``p_s * dsigma`` layer masses -- the
-        same integral ``compiled_segments.fix_segment_dry_mass`` holds."""
+        water species), on the lanes' ``p_s * dsigma`` layer masses (or, for
+        a coordinate passed instead, its own: the per-step lane) -- the same
+        integral ``compiled_segments.fix_segment_dry_mass`` holds."""
         from legoesm.driver.compiled_segments import segment_dry_mass
         moist = {"q_v": self.q_v, "q_c": self.q_c, "q_r": self.q_r}
         if isinstance(self.tracers, dict):
@@ -1679,47 +1680,106 @@ class ModelDriver:
         return segment_dry_mass(self.state.p_s.data, moist, self.grid,
                                 dsigma, owned_mask=owned_mask)
 
-    def _conserving_floor(self, field, dp=None):
-        """Column-conserving non-negativity for a per-mass field
-        ``(..., nlev)``: clip negatives, rescale the column's positives so
-        the TRUE layer-mass (dp) weighted integral is unchanged (owner
-        decision 2026-08-16: conserving form always — the plain
-        ``max(q, 0)`` invents mass at every overdraw/undershoot, the
-        MPAS-century +30 kg/m2/yr class). dp from ``pressure_at_half`` is
-        hybrid-correct and reduces to ``dsigma * p_s`` on pure sigma (the
-        per-column ``p_s`` cancels in the rescale); non-positive dp (broken
-        hybrid layer over terrain) is zero-weighted rather than divided by —
-        mirrors the MPAS floors stage. Pass a precomputed ``dp`` when
-        flooring several fields against the same ``p_s`` (the double-moment
-        loop) to skip recomputing it per field."""
-        if dp is None:
-            _ph = self.sigma.pressure_at_half(self.state.p_s.data)
-            dp = jnp.maximum(_ph[..., 1:] - _ph[..., :-1], 0.0)
-        fixed, _created = conservative_positive_clip(field, dp, axis=-1)
-        return fixed
+    def _per_step_moist(self):
+        """``{name: array | None}`` of the per-step lane's moisture fields in
+        the segment carry's layout (``compiled_segments.MOIST_FIELDS``):
+        the double-moment fields only when the full registry is active (q_i
+        present), as the per-step lane always integrated them."""
+        from legoesm.driver.compiled_segments import MOIST_FIELDS
+        dm = (isinstance(self.tracers, dict)
+              and self.tracer_registry.has("q_i"))
+        return {k: (self.tracers.get(k) if (dm or k in ("q_v", "q_c", "q_r"))
+                    else None) for k in MOIST_FIELDS}
 
-    def _apply_double_moment_tendencies(self, phys_out, dt) -> None:
-        """Integrate the ice/snow/graupel + number tracers one step from the
-        matching ``PhysicsOutput`` tendencies, floored non-negative by the
-        column-conserving borrow (every one of these is per-mass and
-        borrow-eligible; a plain clip invented number at x2.2/day compound on
-        century3 until N_i overflowed). No-op unless the full-moisture
-        registry is active (q_i present)."""
-        if not (isinstance(self.tracers, dict)
-                and self.tracer_registry.has("q_i")):
-            return
-        _upd = {
-            "q_i": phys_out.dq_i_dt, "q_s": phys_out.dq_s_dt,
-            "q_g": phys_out.dq_g_dt, "N_c": phys_out.dN_c_dt,
-            "N_r": phys_out.dN_r_dt, "N_i": phys_out.dN_i_dt,
-        }
-        _ph = self.sigma.pressure_at_half(self.state.p_s.data)
-        _dp = jnp.maximum(_ph[..., 1:] - _ph[..., :-1], 0.0)
-        for k, tend in _upd.items():
-            if self.tracers.get(k) is not None:
-                assert is_borrow_eligible_tracer(k), k
-                self.tracers[k] = self._conserving_floor(
-                    self.tracers[k] + dt * tend, dp=_dp)
+    def _set_per_step_moist(self, moist, p_s):
+        """Write ``moist`` (``None`` entries untouched) and ``p_s`` back to
+        the driver tracers and the dycore state."""
+        for k, v in moist.items():
+            if v is not None:
+                self.tracers[k] = v
+        self.state = self.state._replace(
+            p_s=self.state.p_s.replace(data=p_s))
+
+    def _per_step_fix_dry_mass(self, target_dry_mass, owned_mask):
+        """The per-step lane's DRY-mass fixer after the dycore step (review
+        2026-10-10 F13 remainder): the compiled lane's
+        ``fix_segment_dry_mass`` on the same water species, over the run's
+        TRUE layer masses (``self.sigma``, hybrid-correct), so the added or
+        removed mass is dry air."""
+        from legoesm.driver.compiled_segments import fix_segment_dry_mass
+        p_s, moist = fix_segment_dry_mass(
+            self.state.p_s.data, self._per_step_moist(), target_dry_mass,
+            self.grid, self.sigma, owned_mask=owned_mask)
+        self._set_per_step_moist(moist, p_s)
+
+    def _per_step_moisture_update(self, phys_out, new_T, DT, dsigma, *,
+                                  sat_adjust, hyperdiffusion_3d,
+                                  target_moisture=None):
+        """The per-step lane's moisture update WITH its mass (review
+        2026-10-10 F13 remainder; the compiled lane's convention, same
+        shared helpers): physics water, the positivity floors, the
+        saturation-adjustment rain-out and the moisture fixer / smoother
+        tail each move ``p_s`` by the column water they add or remove, and
+        every moisture field is re-weighted onto the new layer masses, so
+        the column DRY mass is untouched.  ``q += DT*dq`` at fixed ``p_s``
+        (the previous form), with the dycore's total-mass fixer, left the
+        precipitated water behind as dry air.
+
+        All water budgets use the run's TRUE layer masses (``self.sigma``,
+        hybrid-correct; ``dp`` clamped at 0 for the borrow weights over a
+        broken hybrid layer, as the per-step floors always did); ``dsigma``
+        only feeds the existing moisture fixer, whose target it defines.
+
+        Returns ``(new_T, precip_ls)``: ``precip_ls`` [kg/m2/s] is the
+        sat-adjust rain (zeros when ``sat_adjust`` is off)."""
+        from legoesm.driver.compiled_segments import (
+            moist_change_with_mass, segment_physics_water)
+        lay = self.sigma
+
+        def _floor(q, p_s):
+            dp = jnp.maximum(lay.layer_thickness_dp(p_s), 0.0)
+            return conservative_positive_clip(q, dp, axis=-1)[0]
+
+        moist = self._per_step_moist()
+        raw, p_s = segment_physics_water(
+            moist, phys_out, self.state.p_s.data, DT, lay)
+        if self.config.energy_consistent_moisture_clip:
+            q_v, new_T = energy_consistent_moisture_floor(raw["q_v"], new_T)
+        else:
+            # Conserving form always (owner decision 2026-08-16).
+            q_v = _floor(raw["q_v"], p_s)
+        floored = {"q_v": q_v, **{
+            k: (None if raw[k] is None else _floor(raw[k], p_s))
+            for k in raw if k != "q_v"}}
+        # The floors' water change carries its mass too (the borrow moves
+        # none except in net-negative columns; the opt-in hard vapour floor
+        # creates it).
+        moist, p_s = moist_change_with_mass(raw, floored, p_s, lay, DT)
+
+        precip_ls = jnp.zeros_like(p_s)
+        if sat_adjust:
+            q_sat = saturation_mixing_ratio(new_T, lay.pressure_at_full(p_s))
+            excess = jnp.maximum(moist["q_v"] - q_sat, 0.0)
+            new_T = new_T + constants.L_v * excess / constants.c_pd
+            # The condensed excess rains out WITH its mass [kg/m2/s, +down].
+            precip_ls = (jnp.sum(lay.layer_thickness_dp(p_s) * excess, axis=-1)
+                         / (constants.g * DT))
+            moist, p_s = moist_change_with_mass(
+                moist, {**moist, "q_v": moist["q_v"] - excess}, p_s, lay, DT)
+
+        # Tail: moisture fixer (main loop only) + hyperdiffusion smoother with
+        # its conserving floor; the vapour change carries its mass.
+        q_v = moist["q_v"]
+        if target_moisture is not None:
+            q_v = fix_moisture_hydrostatic(
+                q_v, target_moisture, p_s, dsigma, self.grid)
+        q_v = _floor(
+            q_v + DT * hyperdiffusion_3d(q_v, self.grid, self._qv_smooth_coeff),
+            p_s)
+        moist, p_s = moist_change_with_mass(
+            moist, {**moist, "q_v": q_v}, p_s, lay, DT)
+        self._set_per_step_moist(moist, p_s)
+        return new_T, precip_ls
 
     def _land_stress_for_checkpoint(self):
         """``(land_taumag, land_taumag_valid, land_taumag_fresh)`` to persist,
@@ -5458,6 +5518,14 @@ class ModelDriver:
         """
         if not getattr(self.config, "enable_tiled_dycore", False):
             return None
+        if self.config.dycore.energy_fixer:
+            # the tiled dynamics re-implements the cube step without the
+            # dycore energy fixer (F15): refuse, never an open sink
+            raise ValueError(
+                "enable_tiled_dycore: DycoreConfig.energy_fixer=True is not wired on the "
+                "sub-face-TILED cube dynamics; set energy_fixer=False "
+                "(--no-energy-fixer) to accept the open sink explicitly, "
+                "or run on <=6 devices.")
         dc = self._device_config
         if (dc is None or getattr(dc, "mesh", None) is None
                 or tuple(getattr(dc, "tiling", (1, 1))) == (1, 1)):
@@ -7082,9 +7150,13 @@ class ModelDriver:
             # continuation (uniform ~1e-8 drift by day 2).  Save the concrete
             # target and restore it via ``set_target_mass`` so the resumed run
             # anchors to the IDENTICAL mass.
+            # The anchor holds the DRY mass since the F13 remainder, so the
+            # key is ``target_dry_mass``; an old file's TOTAL ``target_mass``
+            # is a different integral and is never reused (the anchor
+            # re-derives from the loaded state, like the compiled lane).
             _tmass = getattr(self.model, "_target_mass", None)
             if _tmass is not None:
-                _save["target_mass"] = np.asarray(_tmass, dtype=np.float64)
+                _save["target_dry_mass"] = np.asarray(_tmass, dtype=np.float64)
             # SCOPE (bit-exact restart): the state (*_hat + trc_*) and the
             # mass-fixer anchor (target_mass) are the full checkpoint for the
             # self-starting integrators (ssp_rk3/34/54 — the spectral default).
@@ -8026,11 +8098,11 @@ class ModelDriver:
                 # branch).  set_target_mass pre-seeds it, so the model's
                 # first-step _maybe_snapshot_target_mass (which only fires when
                 # _target_mass is None) does NOT re-anchor to the loaded state.
-                if "target_mass" in (d.files if hasattr(d, "files") else d) \
+                if "target_dry_mass" in (d.files if hasattr(d, "files") else d) \
                         and hasattr(self.model, "set_target_mass"):
                     import jax.numpy as _jnp
                     self.model.set_target_mass(
-                        _jnp.asarray(d["target_mass"], dtype=_jnp.float64))
+                        _jnp.asarray(d["target_dry_mass"], dtype=_jnp.float64))
             logger.info(
                 f"  Loaded spectral checkpoint: step={step}, day={day:.2f}")
             self._loaded_checkpoint_step_day = (step, day)
@@ -13420,6 +13492,16 @@ class ModelDriver:
                             # land forcing (None on a dry MPAS run).
                             if len(_sfc_diag) > 2 and _sfc_diag[2] is not None:
                                 self._carry_aux["seg_precip"] = _sfc_diag[2].data
+                                # and its FROZEN part, the coupled surface's
+                                # snowfall (F29): the same rule as the land's
+                                if getattr(self, "_requires_surface_flux_export",
+                                           False):
+                                    self._carry_aux["seg_precip_frozen"] = (
+                                        land_snowfall_from_sfc_diag(
+                                            _sfc_diag,
+                                            jnp.asarray(_sfc_diag[2].data
+                                                        ).reshape(-1),
+                                        ).reshape(jnp.shape(_sfc_diag[2].data)))
                             if (not getattr(self, "_logged_sfc_export", False)
                                     and "held_sw_net_sfc" in self._carry_aux):
                                 _sw = self._carry_aux["held_sw_net_sfc"]
@@ -14978,6 +15060,8 @@ class ModelDriver:
                     # Accumulating the true segment precip through the spectral
                     # step is the follow-up for a coupled spectral dynamic ocean.
                     self._carry_aux["seg_precip"] = jnp.zeros_like(_sw_net)
+                    # nothing falls, nothing frozen (F29: the coupler needs it)
+                    self._carry_aux["seg_precip_frozen"] = jnp.zeros_like(_sw_net)
                     if not getattr(self, "_logged_spectral_precip", False):
                         logger.info(
                             "  Coupled spectral lane: surface precip export is "
@@ -15930,6 +16014,14 @@ class ModelDriver:
             make_tiled_cc_loop, scan_tiled_cc_steps,
         )
 
+        if self.config.dycore.energy_fixer:
+            # the tiled dynamics re-implements the cube step without the
+            # dycore energy fixer (F15): refuse, never an open sink
+            raise ValueError(
+                "tiled cube SPMD: DycoreConfig.energy_fixer=True is not wired on the "
+                "sub-face-TILED cube dynamics; set energy_fixer=False "
+                "(--no-energy-fixer) to accept the open sink explicitly, "
+                "or run on <=6 devices.")
         cfg = self.config
         dc = self._device_config
         tiling = tuple(getattr(dc, "tiling", (1, 1)))
@@ -16354,6 +16446,12 @@ class ModelDriver:
             conv_precip_prev=getattr(self, "_conv_precip_prev", None),
             target_moisture=_target_moisture, target_mass=_target_mass,
             precip_accum=jnp.zeros(shape_2d, dtype=_sd),
+            # segment-mean frozen precip for a coupled surface (F29; reseeded
+            # with the other *_accum leaves below)
+            precip_frozen_accum=(
+                jnp.zeros(shape_2d, dtype=_sd)
+                if getattr(self, "_requires_surface_flux_export", False)
+                else None),
             T_land=ctx["T_land"], w_land=ctx["w_land"], snow=ctx.get("snow"),
             tke=ctx["tke"], qke=ctx["qke"], gwd_spectrum=ctx["gwd_spectrum"],
             **_dm,
@@ -16475,6 +16573,10 @@ class ModelDriver:
             self._carry_aux["held_lw_net_sfc"] = carry_full.held_lw_net_sfc
             self._carry_aux["seg_precip"] = segment_accum_to_rate(
                 carry_full.precip_accum, seg_steps, DT)
+            if carry_full.precip_frozen_accum is not None:
+                # segment-mean FROZEN surface precip, the snowfall (F29)
+                self._carry_aux["seg_precip_frozen"] = segment_accum_to_rate(
+                    carry_full.precip_frozen_accum, seg_steps, DT)
             # segment-MEAN net surface radiation for the coupler (F35)
             self._carry_aux["seg_sw_net_sfc"] = segment_accum_to_rate(
                 carry_full.sw_net_sfc_accum, seg_steps, DT)
@@ -17576,6 +17678,18 @@ class ModelDriver:
                 # target, so they reset per segment.
                 conv_precip_prev=(getattr(self, "_conv_precip_prev", None)
                                   if self._ensemble_size == 1 else None),
+                # Frozen surface precip (F29), only for a consumer: lagged
+                # for the multilayer land tile's snowfall (pack_carry seeds
+                # it with a land state; persisted across segments like
+                # conv_precip_prev), accumulated for a coupled surface's
+                # segment-mean snowfall (reset each segment like
+                # precip_accum).  None => byte-identical carry.
+                precip_frozen_prev=(getattr(self, "_precip_frozen_prev", None)
+                                    if self._ensemble_size == 1 else None),
+                precip_frozen_accum=(
+                    jnp.zeros(_ens_2d, dtype=_sd)
+                    if getattr(self, "_requires_surface_flux_export", False)
+                    else None),
                 T_land=T_land,
                 # Prognostic multilayer land state (None ⇒ slab path, byte-identical
                 # carry).  Seeded in _setup_multilayer_land; the segment advances it
@@ -17656,6 +17770,7 @@ class ModelDriver:
             # (single-member only — see pack_carry above).
             if self._ensemble_size == 1:
                 self._conv_precip_prev = carry.conv_precip_prev
+                self._precip_frozen_prev = carry.precip_frozen_prev
                 # Persist the evolved multilayer land state across segments (the
                 # prognostic soil column — no-op when slab/None).
                 if self._land_ml_state is not None:
@@ -17790,6 +17905,12 @@ class ModelDriver:
                 "seg_lw_net_sfc": segment_accum_to_rate(
                     _dm_carry.lw_net_sfc_accum, seg_steps, DT),
             }
+            # Segment-mean FROZEN surface precip [kg/m2/s] for the coupled
+            # surface's snowfall (F29); present only when a coupled consumer
+            # seeded the accumulator (the coupler refuses its absence).
+            if _dm_carry.precip_frozen_accum is not None:
+                self._carry_aux["seg_precip_frozen"] = segment_accum_to_rate(
+                    _dm_carry.precip_frozen_accum, seg_steps, DT)
             # Carry the slab-land temperature to the next segment and
             # into the checkpoint (mirrors the held-radiation fields).
             if carry.T_land is not None:
@@ -18219,6 +18340,35 @@ class ModelDriver:
                 self.q_v, self.state.p_s.data, dsigma, self.grid,
             )
 
+        # DRY-mass convention (review 2026-10-10 F13 remainder, same as the
+        # compiled lane): the dycore's own end-step fixer is off (it holds
+        # total p_s and would keep the rain as dry air) and the driver's
+        # target-anchored DRY-mass fixer runs after every dycore step.  The
+        # target persists as ``target_dry_mass``.  Layer masses: the TRUE
+        # coordinate (hybrid-correct; identical to the compiled lane's
+        # p_s*dsigma on pure sigma).
+        from legoesm.driver.compiled_segments import (
+            dycore_without_inner_mass_fixer)
+        FIX_DRY_MASS = cfg.dycore.fix_mass
+        _dyn_model = (dycore_without_inner_mass_fixer(self.model)
+                      if FIX_DRY_MASS else self.model)
+        _owned_mask = None
+        if self._owned_face_ids is not None:
+            _owned_mask = jnp.zeros(6, dtype=jnp.float32).at[
+                self._owned_face_ids].set(1.0)
+        _target_dry = self._carry_aux.get("target_dry_mass", jnp.asarray(0.0))
+        if FIX_DRY_MASS and float(_target_dry) == 0.0:
+            _target_dry = self._segment_dry_mass_target(
+                self.sigma, owned_mask=_owned_mask)
+            logger.info(f"  Dry-mass target: {float(_target_dry):.6e} Pa·m²")
+        if FIX_DRY_MASS:
+            self._carry_aux["target_dry_mass"] = _target_dry
+
+        def _dycore_step():
+            self.state = _dyn_model.step_with_physics(self.state, DT)
+            if FIX_DRY_MASS:
+                self._per_step_fix_dry_mass(_target_dry, _owned_mask)
+
         run_status = "COMPLETED"
 
         logger.info(f"Starting: {n_steps_total - start_step} steps, {N_DAYS} days")
@@ -18275,7 +18425,7 @@ class ModelDriver:
             getattr(self.physics, "micro_config", None),
             self.config.microphysics, self.config)
 
-        self.state = self.model.step_with_physics(self.state, DT)
+        _dycore_step()
         # Physics reads winds at cell centres.  On the persistent-D lane this
         # is a READ-ONLY view of the corner winds (#1028); on every other lane
         # it is ``self.state`` itself, so the call below is byte-identical.
@@ -18360,40 +18510,21 @@ class ModelDriver:
         if self._hs_newtonian_relax is not None:
             new_T = new_T + DT * self._hs_newtonian_relax(
                 self.state.T.data, self.state.p_s.data, self._grid_lat)
-        # Issue #323: keep the q_v floor moist-static-energy neutral when the
-        # opt-in flag is set (mirror the compiled-segment path so the flag is
-        # not a silent no-op in the per-step driver).
-        _qv_raw = self.q_v + DT * phys_out.dq_v_dt
-        if self.config.energy_consistent_moisture_clip:
-            self.q_v, new_T = energy_consistent_moisture_floor(_qv_raw, new_T)
-        else:
-            # Conserving form always (owner decision 2026-08-16): the plain
-            # ``max(q, 0)`` invented water at every physics overdraw.
-            self.q_v = self._conserving_floor(_qv_raw)
-        self.q_c = self._conserving_floor(self.q_c + DT * phys_out.dq_c_dt)
-        self.q_r = self._conserving_floor(self.q_r + DT * phys_out.dq_r_dt)
-        self._apply_double_moment_tendencies(phys_out, DT)
+        # Moisture WITH its mass (F13 remainder): physics water, floors
+        # (incl. the opt-in #323 energy-consistent q_v floor), sat-adjust
+        # rain-out and the smoother tail all move p_s; the warm-up keeps its
+        # historical absence of the moisture fixer.
+        new_T, _ = self._per_step_moisture_update(
+            phys_out, new_T, DT, dsigma, sat_adjust=(MICROPHYSICS == "none"),
+            hyperdiffusion_3d=hyperdiffusion_3d)
         _sed_req_window = sed_substeps_window_max(
             None, _sed_req_window, counts=phys_out.sed_substeps_required)
-
-        if MICROPHYSICS == "none":
-            p_full = self.sigma.pressure_at_full(self.state.p_s.data)
-            q_sat = saturation_mixing_ratio(new_T, p_full)
-            excess = jnp.maximum(self.q_v - q_sat, 0.0)
-            self.q_v = self.q_v - excess
-            new_T = new_T + constants.L_v * excess / constants.c_pd
 
         self.state = self.state._replace(T=self.state.T.replace(data=new_T))
         if hasattr(phys_out, 'du_dt') and phys_out.du_dt is not None:
             # Cell-centre tendency; on the persistent-D lane it is lifted to
             # the corners before it is added (#1028).
             self._add_cc_wind_increment(phys_out.du_dt, phys_out.dv_dt, DT)
-        # Conserving form always (owner decision 2026-08-16): the
-        # hyperdiffusion tail is non-monotone, so its floor is the same
-        # mass-creating clamp class as the physics floors above.
-        self.q_v = self._conserving_floor(
-            self.q_v + DT * hyperdiffusion_3d(self.q_v, self.grid, self._qv_smooth_coeff)
-        )
         self._scale_winds(self._fric_decay)
 
         jax.block_until_ready(self._prognostic_wind_leaf())
@@ -18410,7 +18541,7 @@ class ModelDriver:
             sst, sic = self.get_sst_sic(day)
 
             # (a) Dynamics
-            self.state = self.model.step_with_physics(self.state, DT)
+            _dycore_step()
             # Cell-centre view for the physics inputs (identity off the
             # persistent-D lane, #1028).
             _cc_step = self._state_cc()
@@ -18538,31 +18669,15 @@ class ModelDriver:
                 new_T = new_T + DT * self._hs_newtonian_relax(
                     self.state.T.data, self.state.p_s.data, self._grid_lat)
 
-            # Issue #323: energy-consistent q_v floor (see warmup path).
-            _qv_raw = self.q_v + DT * phys_out.dq_v_dt
-            if self.config.energy_consistent_moisture_clip:
-                self.q_v, new_T = energy_consistent_moisture_floor(_qv_raw, new_T)
-            else:
-                # Conserving form always (owner decision 2026-08-16).
-                self.q_v = self._conserving_floor(_qv_raw)
-            self.q_c = self._conserving_floor(self.q_c + DT * phys_out.dq_c_dt)
-            self.q_r = self._conserving_floor(self.q_r + DT * phys_out.dq_r_dt)
-
-            # Apply ice/number tracer tendencies when full registry is active
-            self._apply_double_moment_tendencies(phys_out, DT)
-
-            # Saturation adjustment
-            if MICROPHYSICS == "none":
-                p_full = self.sigma.pressure_at_full(self.state.p_s.data)
-                q_sat = saturation_mixing_ratio(new_T, p_full)
-                excess = jnp.maximum(self.q_v - q_sat, 0.0)
-                self.q_v = self.q_v - excess
-                new_T = new_T + constants.L_v * excess / constants.c_pd
-                precip_ls = jnp.sum(
-                    excess * self.sigma.layer_thickness_dp(self.state.p_s.data), axis=-1
-                ) / (constants.g * DT)
-            else:
-                precip_ls = jnp.zeros(shape_2d, dtype=new_T.dtype)
+            # Moisture WITH its mass (F13 remainder): physics water (incl. the
+            # double-moment fields), floors (incl. the opt-in #323 energy-
+            # consistent q_v floor), sat-adjust rain-out, moisture fixer and
+            # smoother tail all move p_s; the dry mass is untouched.
+            new_T, precip_ls = self._per_step_moisture_update(
+                phys_out, new_T, DT, dsigma,
+                sat_adjust=(MICROPHYSICS == "none"),
+                hyperdiffusion_3d=hyperdiffusion_3d,
+                target_moisture=(target_moisture if FIX_MOISTURE else None))
 
             self.state = self.state._replace(
                 T=self.state.T.replace(data=new_T)
@@ -18573,19 +18688,6 @@ class ModelDriver:
                 # Cell-centre tendency; lifted to the corners first on the
                 # persistent-D lane (#1028).
                 self._add_cc_wind_increment(phys_out.du_dt, phys_out.dv_dt, DT)
-
-            # Moisture conservation fixer
-            if FIX_MOISTURE:
-                self.q_v = fix_moisture_hydrostatic(
-                    self.q_v, target_moisture,
-                    self.state.p_s.data, dsigma, self.grid,
-                )
-
-            # Moisture smoothing — conserving floor (owner decision
-            # 2026-08-16), same class as the warmup-lane site.
-            self.q_v = self._conserving_floor(
-                self.q_v + DT * hyperdiffusion_3d(self.q_v, self.grid, self._qv_smooth_coeff)
-            )
 
             # Rayleigh friction
             self._scale_winds(self._fric_decay)
@@ -18642,6 +18744,10 @@ class ModelDriver:
                     "held_lw_net_sfc": phys_out.lw_net_sfc,
                     "conv_prog": conv_prog,
                     "seg_precip": phys_out.precip,
+                    # its FROZEN part, the coupled surface's snowfall (F29;
+                    # None when the physics does not publish it: the coupler
+                    # then refuses)
+                    "seg_precip_frozen": phys_out.precip_frozen,
                 })
 
                 # Segment callback for coupled integration.  This lane is a

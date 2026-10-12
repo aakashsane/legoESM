@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 6879)
+Table of contents (sections, in order; flag reference table at line 6884)
 -----------------------------------------------------------------------------
   1. [line  348] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  469] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -26,31 +26,31 @@ Table of contents (sections, in order; flag reference table at line 6879)
       ``fill_holes_wp2_from_horz_tke``)
   9. [line  2087] Skewness diagnostics (``Skx_func`` / ``compute_gamma_Skw`` / LG05 /
       ``compute_skewness_diagnostics``)
-  10. [line  2273] Dissipation time-scale family (``compute_tke`` / ``compute_tau_family``)
-  11. [line  2354] ADG1 assumed-PDF parameter closure (``ADG1_pdf_driver`` + the liquid
+  10. [line  2275] Dissipation time-scale family (``compute_tke`` / ``compute_tau_family``)
+  11. [line  2356] ADG1 assumed-PDF parameter closure (``ADG1_pdf_driver`` + the liquid
       cloud-fraction closure)
-  12. [line  2676] ADG1 PDF moment integrals + buoyancy-flux assembly
+  12. [line  2678] ADG1 PDF moment integrals + buoyancy-flux assembly
       (``calc_pdf_higher_order_moments`` / ``calc_pdf_xprcp_fluxes`` /
       ``calc_xpthvp_terms``) + the two-level-set reconciliation
       (``calc_trapezoid_zt`` / ``calc_trapezoid_zm`` / ``clip_rcm`` /
       ``compute_cloud_cover``). Every routine in this section is
       grid-agnostic: CAM evaluates the closure once per level set, so all
       regridding is the caller's.
-  13. [line  3037] Moment-advance building blocks + the xp2_xpyp / windm advances
+  13. [line  3039] Moment-advance building blocks + the xp2_xpyp / windm advances
       (diffusion/mean-advection LHS builders, Cauchy-Schwarz clips,
       ``advance_xp2_xpyp`` / ``advance_windm_edsclrm``)
-  14. [line  3923] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
+  14. [line  3925] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
       ``damp_coefficient`` / ``compute_C6_C7_Skw_fnc``)
-  15. [line  3984] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
+  15. [line  3986] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
       ``clip_skewness``)
-  16. [line  4654] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
+  16. [line  4659] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
       ``calc_turb_adv_range``)
-  17. [line  4934] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
+  17. [line  4939] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
       coupling + ``solve_xm_wpxp_with_single_lhs``)
-  18. [line  5308] Core orchestration (``compute_clubb_diagnostics`` /
+  18. [line  5313] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  5963] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  5968] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 
@@ -2164,9 +2164,11 @@ def compute_gamma_Skw(
     gc = jnp.asarray(gamma_coef)
     gb = jnp.asarray(gamma_coefb)
     gcf = jnp.asarray(gamma_coefc)
-    cond = jnp.abs(gc - gb) > jnp.abs(gc + gb) * _EPS / 2.0
-    varying = gb + (gc - gb) * jnp.exp(-0.5 * (Skw / gcf) ** 2)
-    return jnp.where(cond, varying, gc + jnp.zeros_like(Skw))
+    # Fortran collapses to gamma_coef when |gc-gb| <= |gc+gb|*eps/2; the
+    # smooth form equals it exactly at gc == gb, and the collapse as a
+    # jnp.where gave d/d(gamma_coef) = 1, d/d(gamma_coefb) = 0 there instead
+    # of exp(..) and 1 - exp(..) (same defect as compute_skw_fnc).
+    return gb + (gc - gb) * jnp.exp(-0.5 * (Skw / gcf) ** 2)
 
 
 def LG_2005_ansatz(
@@ -4365,17 +4367,20 @@ def compute_a1_a3_coef(sigma_sqd_w, a3_coef_min, gr: CLUBBGrid):
 def compute_skw_fnc(C, Cb, Cc, Skw):
     """Skewness-dependent CLUBB coefficient (``C1_Skw_fnc`` / ``C11_Skw_fnc``).
 
-    ``Cb + (C - Cb)·exp(-½·(Skw/Cc)^2)`` where ``|C - Cb|`` exceeds the
-    floor ``|C + Cb|·eps/2`` (else just ``Cb``). ``C``/``Cb``/``Cc`` are
+    ``Cb + (C - Cb)·exp(-½·(Skw/Cc)^2)``. ``C``/``Cb``/``Cc`` are
     ``(ncol,)`` params; ``Skw`` is ``(ncol, nz)`` on the matching grid (zm for
     C1, zt for C11). NOTE: the CAM-default ``l_damp_wp2_using_em = .false.`` path
     does NOT apply the extra ``1/3`` factor to ``C1_Skw_fnc`` (that is the True
     path); the caller decides.
+
+    DEPARTURE (differentiability): the Fortran collapses to ``Cb`` when
+    ``|C - Cb| <= |C + Cb|·eps/2``. The smooth expression already equals
+    ``Cb`` exactly at ``C == Cb``, so the collapse only changes the value by
+    <= 1e-10 relative inside that band -- but as a ``jnp.where`` it zeroed
+    d/dC at the CAM default ``C1 == C1b == 1.0`` (production AD 0 vs FD
+    -19.4 along C1).  The smooth expression is used everywhere.
     """
-    diff = jnp.abs(C - Cb)[:, None]
-    thresh = (jnp.abs(C + Cb) * _EPS / 2.0)[:, None]
-    smooth = Cb[:, None] + (C[:, None] - Cb[:, None]) * jnp.exp(-0.5 * (Skw / Cc[:, None]) ** 2)
-    return jnp.where(diff > thresh, smooth, Cb[:, None] * jnp.ones_like(Skw))
+    return Cb[:, None] + (C[:, None] - Cb[:, None]) * jnp.exp(-0.5 * (Skw / Cc[:, None]) ** 2)
 
 
 # ---------------------------------------------------------------------------

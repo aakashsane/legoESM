@@ -886,7 +886,8 @@ class PhysicsPipeline:
     def _step_multilayer_land_tile(self, land_ml, sw_down_col, lw_down_col,
                                    T, p_s, q_v, u, v, precip_col, dt,
                                    land_ml_params=None, cos_zenith_col=None,
-                                   ghg_vmr_override=None):
+                                   ghg_vmr_override=None,
+                                   precip_frozen_col=None):
         """Advance the MULTILAYER (Richards) land tile one radiation step and return
         ``(land_ml_new, T_sfc_col, albedo_col)`` — all in flattened COLUMN space.
 
@@ -910,6 +911,17 @@ class PhysicsPipeline:
         p_low = p_full_col[..., -1]
         rho = moist_air_density(T_air, p_low, q_air)
         precip = precip_col if precip_col is not None else jnp.zeros_like(p_s_col)
+        # Snowfall = the atmosphere's OWN frozen surface flux (lagged like
+        # the total), bounded by the total (review 2026-10-10 F29; was a hard
+        # 0 C re-split of the total).  No precip passed -> no snow either.
+        if precip_col is None:
+            snow_col = jnp.zeros_like(p_s_col)
+        else:
+            from legoesm.core.coupling_fields import require_precip_frozen
+            snow_col = jnp.clip(
+                require_precip_frozen(
+                    precip_frozen_col, "the pipeline multilayer land tile"),
+                0.0, jnp.maximum(precip, 0.0))
         ones = jnp.ones_like(p_s_col)
         # Solar zenith: CLM-ML consumes cos_zenith as its beam-extinction geometry
         # (kb = 0.5/cosz), so it needs the REAL diurnal / latitudinal value threaded
@@ -926,7 +938,7 @@ class PhysicsPipeline:
             z_lowest=lowest_level_height(
                 T_air, self.sigma_coord.pressure_at_half(p_s_col), p_full_col),
             sw_down=sw_down_col, lw_down=lw_down_col, precip_total=precip,
-            precip_snow=jnp.where(T_air < constants.T_freeze, precip, 0.0),
+            precip_snow=snow_col,
             T_lowest=T_air, q_lowest=q_air, u_lowest=u_low, v_lowest=v_low,
             p_lowest=p_low, p_surface=p_s_col, rho_lowest=rho,
             cos_zenith=_cosz, co2_ppmv=_co2 * ones,
@@ -1603,6 +1615,9 @@ class PhysicsPipeline:
         dN_r_dt = jnp.zeros(shape_3d, dtype=_sd)
         dN_i_dt = jnp.zeros(shape_3d, dtype=_sd)
         precip_micro = jnp.zeros(shape_2d, dtype=_sd)
+        # FROZEN part of precip_micro [kg/m2/s] (F29): zeros without a
+        # microphysics, None when the scheme does not publish it.
+        frozen_micro = jnp.zeros(shape_2d, dtype=_sd)
         # Isolated saturation-adjustment condensation (q_v->q_c) for the joint
         # vapour donor clamp below; None unless the micro scheme exposes it.
         _micro_dq_v_to_qc = None
@@ -1616,6 +1631,7 @@ class PhysicsPipeline:
             dq_c_dt = ad.unflatten_3d(micro_out_ml.dq_c_dt)
             dq_r_dt = ad.unflatten_3d(micro_out_ml.dq_r_dt)
             precip_micro = ad.unflatten_2d(micro_out_ml.precipitation)
+            frozen_micro = None  # the ML emulator publishes no phase split
             dq_i_dt = ad.unflatten_3d(micro_out_ml.dq_i_dt)
             dq_s_dt = ad.unflatten_3d(micro_out_ml.dq_s_dt)
             dq_g_dt = ad.unflatten_3d(micro_out_ml.dq_g_dt)
@@ -1722,6 +1738,8 @@ class PhysicsPipeline:
             dq_c_dt = ad.unflatten_3d(micro_out.dq_c_dt)
             dq_r_dt = ad.unflatten_3d(micro_out.dq_r_dt)
             precip_micro = ad.unflatten_2d(micro_out.precipitation)
+            frozen_micro = (None if micro_out.precip_frozen is None
+                            else ad.unflatten_2d(micro_out.precip_frozen))
             dq_i_dt = ad.unflatten_3d(micro_out.dq_i_dt)
             dq_s_dt = ad.unflatten_3d(micro_out.dq_s_dt)
             dq_g_dt = ad.unflatten_3d(micro_out.dq_g_dt)
@@ -2332,14 +2350,28 @@ class PhysicsPipeline:
             u[..., -1], v[..., -1], p_s, dt,
         )
 
+        # FROZEN part of the surface precip [kg/m2/s, +down] (review
+        # 2026-10-10 F29): the microphysics' ice+snow+graupel plus the
+        # convective snow, each bounded by the flux it belongs to -- the
+        # atmosphere's OWN phase partition, whose fusion heat it already
+        # booked (the MPAS lane's ``precip_frozen`` rule).  None when a
+        # precipitating scheme does not publish it (ML microphysics
+        # emulator): a land consumer then refuses, never a temperature
+        # re-split.
+        _cf = getattr(conv_out, "precip_frozen_sfc", None)
+        precip_frozen = (
+            None if (frozen_micro is None or _cf is None)
+            else jnp.clip(frozen_micro, 0.0, jnp.maximum(precip_micro, 0.0))
+            + jnp.clip(ad.unflatten_2d(_cf), 0.0, jnp.maximum(precip, 0.0)))
+
         # Advance the prognostic snow water equivalent (snow-albedo feedback):
-        # snowfall (precip when the lowest-level air is below freezing) minus
+        # snowfall (the atmosphere's frozen surface flux, F29) minus
         # degree-day melt.  No-op / snow unchanged when the feedback is off.
         if self.snow_albedo_feedback and snow is not None:
+            from legoesm.core.coupling_fields import require_precip_frozen
             from legoesm.land.snow_budget import update_snow
-            precip_snow_diag = jnp.where(
-                T[..., -1] < constants.T_freeze, precip + precip_micro, 0.0,
-            )
+            precip_snow_diag = require_precip_frozen(
+                precip_frozen, "the slab snow budget (snow_albedo_feedback)")
             snow_new, _, _ = update_snow(
                 snow, jnp.zeros_like(snow), T_land, precip_snow_diag, dt,
                 Q_net=None,
@@ -2379,6 +2411,7 @@ class PhysicsPipeline:
             dq_c_dt=dq_c_dt,
             dq_r_dt=dq_r_dt,
             precip=precip + precip_micro,
+            precip_frozen=precip_frozen,
             sw_net_sfc=sw_net_sfc,
             lw_net_sfc=lw_net_sfc,
             sw_up_toa=sw_up_toa,
@@ -2503,7 +2536,7 @@ class PhysicsPipeline:
                                sfc_sw_up=None, sfc_sw_down=None,
                                conv_precip=None, land_ml=None, w_land=None,
                                snow=None, land_ml_params=None,
-                               cloud_fraction=None):
+                               cloud_fraction=None, conv_precip_frozen=None):
         """Compute radiation tendencies and fluxes (pure JAX, no I/O).
 
         Returns ``(dT_dt_rad, sw_net_sfc, lw_net_sfc, sw_up_toa,
@@ -2938,6 +2971,9 @@ class PhysicsPipeline:
             # (column space) + the lagged precip; the slab T_land rides through.
             precip_col = (ad.flatten_2d(conv_precip)
                           if conv_precip is not None else None)
+            # its frozen part, lagged the same way (F29)
+            precip_frozen_col = (ad.flatten_2d(conv_precip_frozen)
+                                 if conv_precip_frozen is not None else None)
             # CLM-ML: thread the REAL per-column solar zenith (same value the
             # radiation solar path uses) so the canopy radiation sees the diurnal /
             # latitudinal sun, not the 0.5 placeholder.  Only for clm_ml — two_leaf
@@ -2949,7 +2985,8 @@ class PhysicsPipeline:
             land_ml_new, T_sfc_ml_col, _ = self._step_multilayer_land_tile(
                 land_ml, rad_out.sw_flux_down[:, -1], rad_out.lw_flux_down[:, -1],
                 T, p_s, q_v, u, v, precip_col, dt, land_ml_params=_lmp_rad,
-                cos_zenith_col=_cosz_col, ghg_vmr_override=ghg_vmr_override)
+                cos_zenith_col=_cosz_col, ghg_vmr_override=ghg_vmr_override,
+                precip_frozen_col=precip_frozen_col)
             # Couple the multilayer land SKIN TEMPERATURE back to T_land so the
             # atmospheric BL surface fluxes (tiled _tiled_surface_flux / the non-
             # tiled T_sfc blend) see the EVOLVING Richards soil column.  Previously
@@ -3112,7 +3149,8 @@ class PhysicsPipeline:
                          land_frac=None, phis=None,
                          tke=None, qke=None, gwd_spectrum=None,
                          conv_precip=None, land_ml=None, w_land=None,
-                         snow=None, land_ml_params=None, cloud_fraction=None):
+                         snow=None, land_ml_params=None, cloud_fraction=None,
+                         conv_precip_frozen=None):
 
             def _rad_branch(args):
                 (T, p_s, q_v, q_c, q_r, conv_prog, u, v, sst, sic, lat, lon,
@@ -3131,7 +3169,7 @@ class PhysicsPipeline:
                  land_frac, phis,
                  tke, qke, gwd_spectrum,
                  conv_precip, land_ml, w_land, snow, land_ml_params,
-                 cloud_fraction) = args
+                 cloud_fraction, conv_precip_frozen) = args
                 # land_frac / phis exist for the LEARNED wrappers that share
                 # this step signature (phase 2, part 2); the classical
                 # pipeline does not consume them.
@@ -3160,6 +3198,7 @@ class PhysicsPipeline:
                         conv_precip=conv_precip, land_ml=land_ml, w_land=w_land,
                         snow=snow, land_ml_params=land_ml_params,
                         cloud_fraction=cloud_fraction,
+                        conv_precip_frozen=conv_precip_frozen,
                     )
 
                 # Radiation-as-forcing: cut radiation's reverse-mode so the
@@ -3234,8 +3273,9 @@ class PhysicsPipeline:
                  land_frac, phis,
                  tke, qke, gwd_spectrum,
                  conv_precip, land_ml, w_land, snow, land_ml_params,
-                 cloud_fraction) = args
-                del conv_precip, sfc_lw_up, sfc_sw_up, sfc_sw_down  # radiation-only inputs; unused on the no-rad path
+                 cloud_fraction, conv_precip_frozen) = args
+                del conv_precip, conv_precip_frozen  # radiation-only inputs
+                del sfc_lw_up, sfc_sw_up, sfc_sw_down  # unused on the no-rad path
                 # land_frac / phis exist for the LEARNED wrappers that share
                 # this step signature (phase 2, part 2); the classical
                 # pipeline does not consume them.
@@ -3298,7 +3338,7 @@ class PhysicsPipeline:
                     land_frac, phis,
                     tke, qke, gwd_spectrum,
                     conv_precip, land_ml, w_land, snow, land_ml_params,
-                    cloud_fraction)
+                    cloud_fraction, conv_precip_frozen)
 
             # Issue #316 fix: when the caller knows at build time which
             # branch to take, skip the cond — keeps only the live branch
@@ -4028,6 +4068,7 @@ def _noop_convection(T, q_v, p_full, p_half, dt, config):
     z1 = jnp.zeros((ncol,), dtype=T.dtype)
     return ConvectionOutput(
         dT_dt=z2, dq_v_dt=z2, dq_c_conv_dt=z2, cape=z1, convective_mask=z1,
+        precip_frozen_sfc=z1,  # no precipitation, nothing frozen (F29)
     )
 
 

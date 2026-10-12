@@ -75,6 +75,7 @@ def _measure_gyre_one_step_in_subprocess(output: Path) -> dict:
             str(_GYRE_GATE_PATH),
             "agreement",
             "--steps", "1",
+            "--schedule", "uniform",
             "--expect-commit", commit,
             "--output", str(output),
         ],
@@ -234,6 +235,7 @@ def test_step_gradient_health(name, tmp_path):
         )
         assert row["case"] == "GYRE-zco"
         assert row["steps"] == 1
+        assert row["schedule"] == "uniform"
         assert row["backend"] == "cpu"
         assert "transcendentals='libm'" in row["precision_policy"]
         assert row["production_entry"] == "LatLonCGridOceanModel._step_jitted"

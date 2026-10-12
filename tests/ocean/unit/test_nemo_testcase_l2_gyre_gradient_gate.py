@@ -53,6 +53,35 @@ def test_scalar_line_reverse_equals_full_vjp_dot_direction():
     assert row["reverse"] == pytest.approx(expected, rel=1.0e-13)
 
 
+def test_reverse_only_schedule_compares_against_forward_reference():
+    base = jnp.asarray([0.2, -0.4, 0.7], dtype=jnp.float64)
+    direction = jnp.asarray([0.5, -0.1, 0.3], dtype=jnp.float64)
+
+    def forward_loss(value):
+        return jnp.sum(jnp.sin(value) + value**3)
+
+    def reverse_loss(value):
+        return G.checkpointed_loop(
+            lambda carry: carry,
+            forward_loss(value),
+            2,
+            schedule="binomial",
+        )
+
+    row = G.directional_derivatives(
+        forward_loss, base, direction, reverse_loss=reverse_loss)
+    assert row["status"] == "CONFIRMED"
+
+
+@pytest.mark.parametrize(
+    ("finite", "nonzero", "expected"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+def test_resource_rows_fail_closed(finite, nonzero, expected):
+    row = {"gradient_finite": finite, "gradient_nonzero": nonzero}
+    assert G.resource_row_passes(row) is expected
+
+
 @pytest.mark.parametrize(
     ("schedule", "expected"),
     [
@@ -63,6 +92,57 @@ def test_scalar_line_reverse_equals_full_vjp_dot_direction():
 )
 def test_registered_360_step_memory_extrapolation(schedule, expected):
     assert G.extrapolate_360(schedule, 100.0, 110.0) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    ("schedule", "expected"),
+    [
+        ("none", 200.0),
+        ("uniform", 110.0),
+        ("binomial", 100.0 + 10.0 * 8.0 / 3.0),
+    ],
+)
+def test_registered_60_step_memory_extrapolation(schedule, expected):
+    assert G.extrapolate_steps(schedule, 100.0, 110.0, 60) == pytest.approx(
+        expected)
+
+
+@pytest.mark.parametrize("schedule", G.SCHEDULES)
+def test_cold_step_is_segmented_before_fixed_pytree_loop(schedule):
+    """The old scan is non-vacuously rejected; the segmented gradient works."""
+    def unsegmented_body(carry):
+        if carry["cache"] is None:
+            return {"value": carry["value"] + 1.0,
+                    "cache": jnp.asarray(1.0)}
+        return {"value": carry["value"] + carry["cache"],
+                "cache": carry["cache"]}
+
+    with pytest.raises(
+            (TypeError, ValueError),
+            match="(carry input and carry output|same input and output structure)"):
+        G.checkpointed_loop(
+            unsegmented_body,
+            {"value": jnp.asarray(0.0), "cache": None},
+            2,
+            schedule=schedule,
+        )
+
+    def segmented(value):
+        cold = {"value": value, "cache": None}
+
+        def cold_body(carry):
+            return {"value": carry["value"] + 1.0,
+                    "cache": jnp.asarray(1.0)}
+
+        def warm_body(carry):
+            return {"value": carry["value"] + carry["cache"],
+                    "cache": carry["cache"]}
+
+        return G.checkpoint_after_cold_step(
+            cold_body, warm_body, cold, 3, schedule)["value"]
+
+    assert float(segmented(jnp.asarray(0.0))) == 3.0
+    assert float(jax.grad(segmented)(jnp.asarray(0.0))) == 1.0
 
 
 def test_volume_weighted_mse_ignores_zero_volume_cells():
@@ -115,10 +195,11 @@ def test_nemo_literal_dissl_guard_preserves_primal_bits_and_zero_vjp():
     assert "jnp.sqrt(_dissl_sqrt_input)" in source
 
 
-def test_resource_cli_requires_a_schedule():
+@pytest.mark.parametrize("mode", ["agreement", "resources"])
+def test_cli_requires_a_schedule(mode):
     with pytest.raises(SystemExit):
         G.parse_args([
-            "resources", "--steps", "1", "--expect-commit", "deadbeef",
+            mode, "--steps", "1", "--expect-commit", "deadbeef",
             "--output", "/tmp/unused-gyre-gradient-row.json",
         ])
 
@@ -126,6 +207,7 @@ def test_resource_cli_requires_a_schedule():
 def test_gpu_cli_can_select_native_transcendentals_explicitly():
     args = G.parse_args([
         "agreement", "--steps", "1", "--transcendentals", "native",
+        "--schedule", "uniform",
         "--expect-commit", "deadbeef", "--output", "/tmp/unused-row.json",
     ])
     assert args.transcendentals == "native"

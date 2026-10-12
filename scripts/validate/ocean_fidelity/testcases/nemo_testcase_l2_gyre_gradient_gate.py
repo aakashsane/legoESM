@@ -32,7 +32,7 @@ from legoesm.ocean.vertical import (
     nemo_qco_live_t_thickness,
     nemo_qco_resolved_mesh_operands,
 )
-from legoesm.training.checkpoint_schedule import checkpointed_loop
+from legoesm.training.checkpoint_schedule import checkpointed_loop, sqrt_checkpoints
 
 CASE = "GYRE-zco"
 DT_S = 14400.0
@@ -169,24 +169,27 @@ def production_rollout(context: GYREContext, d_t0, n_steps: int):
     return state
 
 
-def gradient_rollout(context: GYREContext, d_t0, n_steps: int):
-    """Twin-Decision-49 per-step remat around production ``_step_jitted``."""
-    state = context.initial_state._replace(
-        T=context.initial_state.T.replace(
-            data=context.initial_state.T.data + d_t0))
-    for kt in range(1, n_steps + 1):
-        freshwater, surface = context.surface_forcings(context.card, state, kt)
-        state = context.checkpointed_step(state, freshwater, surface)
-    return state
+def checkpoint_after_cold_step(
+        cold_body, warm_body, init, n_steps: int, schedule: str):
+    """Run one structure-changing step, then checkpoint the fixed warm carry."""
+    require(n_steps >= 1, "the segmented GYRE rollout requires at least one step")
+    warm = cold_body(init)
+    return checkpointed_loop(
+        warm_body, warm, n_steps - 1, schedule=schedule)
 
 
 def scheduled_rollout(context: GYREContext, d_t0, n_steps: int, schedule: str):
-    """Run the shared component-agnostic checkpoint schedule over production steps."""
+    """Segment the cold step, then schedule the fixed-pytree warm steps."""
     state = context.initial_state._replace(
         T=context.initial_state.T.replace(
             data=context.initial_state.T.data + d_t0))
 
-    def body(carry):
+    def cold_body(carry):
+        freshwater, surface = context.surface_forcings(
+            context.card, carry, 1)
+        return 1, context.checkpointed_step(carry, freshwater, surface)
+
+    def warm_body(carry):
         kt, step_state = carry
         freshwater, surface = context.surface_forcings(
             context.card, step_state, kt + 1)
@@ -198,11 +201,12 @@ def scheduled_rollout(context: GYREContext, d_t0, n_steps: int, schedule: str):
         )
         return kt + 1, step_state
 
-    _, state = checkpointed_loop(
-        body,
-        (jnp.asarray(0, dtype=jnp.int32), state),
+    _, state = checkpoint_after_cold_step(
+        cold_body,
+        warm_body,
+        state,
         n_steps,
-        schedule=schedule,
+        schedule,
     )
     return state
 
@@ -288,15 +292,11 @@ def build_reference(context: GYREContext, truth_state) -> LossReference:
 
 
 def make_loss(context: GYREContext, reference: LossReference, n_steps: int,
-              *, schedule: str | None = None):
+              *, schedule: str):
     """Return the registered four-field normalized after-state loss."""
-    rollout = gradient_rollout if schedule is None else scheduled_rollout
 
     def loss(d_t0):
-        if schedule is None:
-            state = rollout(context, d_t0, n_steps)
-        else:
-            state = rollout(context, d_t0, n_steps, schedule)
+        state = scheduled_rollout(context, d_t0, n_steps, schedule)
         candidate = _score_state(state)
         scores = []
         for name in FIELDS:
@@ -372,53 +372,74 @@ def classify_agreement(reverse: float, forward: float, finite_difference: float)
     }
 
 
-def directional_derivatives(loss, base, direction, *, plant=False):
+def directional_derivatives(
+        forward_loss, base, direction, *, reverse_loss=None, plant=False):
     """Measure the scalar line ``loss(base + alpha*direction)`` three ways.
 
     Reverse mode with respect to ``alpha`` is exactly the full input VJP dotted
     with ``direction``, but avoids materializing that 22x32x30 result.  The
     direct unit test pins this equality and prevents this representation from
-    silently changing the requested directional derivative.
+    silently changing the requested directional derivative. ``reverse_loss``
+    permits a reverse-only checkpoint schedule to be checked against the
+    bit-identical forward-mode-capable schedule.
     """
     zero = jnp.asarray(0.0, dtype=base.dtype)
+    reverse_loss = forward_loss if reverse_loss is None else reverse_loss
 
-    def line(alpha):
-        return loss(base + alpha * direction)
+    def forward_line(alpha):
+        return forward_loss(base + alpha * direction)
+
+    def reverse_line_unplanted(alpha):
+        return reverse_loss(base + alpha * direction)
 
     reverse_line = (
-        (lambda alpha: line(broken_vjp_identity(alpha))) if plant else line)
+        (lambda alpha: reverse_line_unplanted(broken_vjp_identity(alpha)))
+        if plant else reverse_line_unplanted)
     reverse = float(np.asarray(jax.grad(reverse_line)(zero)))
-    _, forward_value = jax.jvp(line, (zero,), (jnp.asarray(1.0, base.dtype),))
+    _, forward_value = jax.jvp(
+        forward_line, (zero,), (jnp.asarray(1.0, base.dtype),))
     forward = float(np.asarray(forward_value))
-    plus = float(np.asarray(line(jnp.asarray(FD_STEP, base.dtype))))
-    minus = float(np.asarray(line(jnp.asarray(-FD_STEP, base.dtype))))
+    plus = float(np.asarray(
+        forward_line(jnp.asarray(FD_STEP, base.dtype))))
+    minus = float(np.asarray(
+        forward_line(jnp.asarray(-FD_STEP, base.dtype))))
     finite_difference = (plus - minus) / (2.0 * FD_STEP)
     return classify_agreement(reverse, forward, finite_difference)
 
 
-def measure_agreement(n_steps: int, *, plant=False,
+def measure_agreement(n_steps: int, schedule: str, *, plant=False,
                       transcendentals: str = "libm"):
     """Build and evaluate one certified-card agreement row."""
     context = build_context(transcendentals=transcendentals)
     zero = jnp.zeros_like(context.initial_state.T.data)
     truth_state = production_rollout(context, zero, n_steps)
     jax.block_until_ready(truth_state)
-    gradient_truth = gradient_rollout(context, zero, n_steps)
-    jax.block_until_ready(gradient_truth)
-    require(states_bitwise_equal(truth_state, gradient_truth),
-            "checkpointed per-step primal differs from production")
+    scheduled_truth = scheduled_rollout(context, zero, n_steps, schedule)
+    jax.block_until_ready(scheduled_truth)
+    require(states_bitwise_equal(truth_state, scheduled_truth),
+            f"{schedule} segmented schedule primal differs from production")
+    if schedule != "uniform":
+        forward_truth = scheduled_rollout(context, zero, n_steps, "uniform")
+        jax.block_until_ready(forward_truth)
+        require(states_bitwise_equal(truth_state, forward_truth),
+                "uniform forward-reference primal differs from production")
     reference = build_reference(context, truth_state)
-    loss = make_loss(context, reference, n_steps)
+    forward_loss = make_loss(context, reference, n_steps, schedule="uniform")
+    reverse_loss = make_loss(context, reference, n_steps, schedule=schedule)
     base, direction = perturbations(context)
     row = classify_agreement(math.nan, math.nan, math.nan)
     try:
-        row = directional_derivatives(loss, base, direction, plant=plant)
+        row = directional_derivatives(
+            forward_loss, base, direction,
+            reverse_loss=reverse_loss, plant=plant)
     except (TypeError, ValueError, RuntimeError) as error:
         row["error"] = f"{type(error).__name__}: {error}"
     row.update({
         "case": CASE,
         "steps": n_steps,
         "model_seconds": n_steps * DT_S,
+        "schedule": schedule,
+        "forward_fd_schedule": "uniform",
         "backend": jax.default_backend(),
         "device": str(jax.devices()[0]),
         "jax_enable_x64": bool(jax.config.jax_enable_x64),
@@ -429,7 +450,7 @@ def measure_agreement(n_steps: int, *, plant=False,
         "geometry_dtype": str(context.card.recipe.z_coord.dz_ref.dtype),
         "plant": "broken_vjp" if plant else None,
         "production_entry": "LatLonCGridOceanModel._step_jitted",
-        "composition": "per-step Python loop",
+        "composition": "cold step segment plus fixed-pytree warm loop",
     })
     return row
 
@@ -492,16 +513,27 @@ class PeakMemorySampler:
         self.peak_mib = max(self.peak_mib, self._read())
 
 
-def extrapolate_360(schedule: str, baseline_mib: float, peak6_mib: float) -> float:
-    """Apply the preregistered schedule-complexity extrapolation."""
+def extrapolate_steps(
+        schedule: str, baseline_mib: float, peak6_mib: float,
+        n_steps: int) -> float:
+    """Apply the preregistered six-step schedule-complexity extrapolation."""
+    require(n_steps >= 1, "projection window must contain at least one step")
     incremental = max(0.0, peak6_mib - baseline_mib)
     if schedule == "none":
-        return baseline_mib + 60.0 * incremental
+        return baseline_mib + (n_steps / 6.0) * incremental
     if schedule == "uniform":
         return peak6_mib
     if schedule == "binomial":
-        return baseline_mib + incremental * 19.0 / 3.0
+        return (
+            baseline_mib
+            + incremental * sqrt_checkpoints(n_steps) / sqrt_checkpoints(6)
+        )
     raise ValueError(f"unknown schedule {schedule!r}")
+
+
+def extrapolate_360(schedule: str, baseline_mib: float, peak6_mib: float) -> float:
+    """Retain the round-1 registered 360-step projection entry point."""
+    return extrapolate_steps(schedule, baseline_mib, peak6_mib, 360)
 
 
 def measure_resources(n_steps: int, schedule: str, *,
@@ -571,6 +603,11 @@ def measure_resources(n_steps: int, schedule: str, *,
     }
 
 
+def resource_row_passes(row: dict) -> bool:
+    """Return the fail-closed resource-row gradient health verdict."""
+    return bool(row["gradient_finite"] and row["gradient_nonzero"])
+
+
 def _git_output(*args: str) -> str:
     return subprocess.check_output(
         ["git", *args], cwd=_repo_root(), text=True).strip()
@@ -596,7 +633,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("agreement", "resources"))
     parser.add_argument("--steps", type=int, choices=(1, 6), required=True)
-    parser.add_argument("--schedule", choices=SCHEDULES)
+    parser.add_argument("--schedule", choices=SCHEDULES, required=True)
     parser.add_argument("--plant", choices=("broken_vjp",))
     parser.add_argument(
         "--transcendentals", choices=("libm", "native"), default="libm",
@@ -605,10 +642,6 @@ def parse_args(argv=None):
     parser.add_argument("--expect-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
-    if args.mode == "resources" and args.schedule is None:
-        parser.error("resources mode requires --schedule")
-    if args.mode == "agreement" and args.schedule is not None:
-        parser.error("agreement mode does not accept --schedule")
     if args.mode == "resources" and args.plant is not None:
         parser.error("resources mode does not accept --plant")
     return args
@@ -619,7 +652,7 @@ def main(argv=None) -> int:
     provenance = require_measurement_stamp(args.expect_commit)
     if args.mode == "agreement":
         row = measure_agreement(
-            args.steps, plant=args.plant == "broken_vjp",
+            args.steps, args.schedule, plant=args.plant == "broken_vjp",
             transcendentals=args.transcendentals)
     else:
         row = measure_resources(
@@ -631,7 +664,7 @@ def main(argv=None) -> int:
     print(json.dumps(row, sort_keys=True), flush=True)
     if args.mode == "agreement":
         return 0 if row["status"] == "CONFIRMED" else 1
-    return 0
+    return 0 if resource_row_passes(row) else 1
 
 
 if __name__ == "__main__":

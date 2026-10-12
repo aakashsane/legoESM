@@ -78,12 +78,26 @@ def test_explicit_stepwise_vjp_matches_whole_window_gradient(monkeypatch):
 
     class Context(NamedTuple):
         initial_state: State
+        card: object
+        model: object
+        surface_forcings: object
 
-    context = Context(State(Field(jnp.asarray([0.2, -0.4], dtype=jnp.float64))))
-    monkeypatch.setattr(
-        G,
-        "_production_step",
-        lambda _context, state, kt: State(Field(state.T.data * (1.0 + 0.1 * kt))),
+    class Card(NamedTuple):
+        dt_s: float
+
+    class Model:
+        def _step_jitted(self, state, _dt_s, freshwater, surface):
+            return State(Field(
+                state.T.data * (1.0 + freshwater) + 0.01 * surface))
+
+    def forcing(_card, state, kt):
+        return 0.1 * kt, state.T.data**2
+
+    context = Context(
+        State(Field(jnp.asarray([0.2, -0.4], dtype=jnp.float64))),
+        Card(1.0),
+        Model(),
+        forcing,
     )
     monkeypatch.setattr(
         G,

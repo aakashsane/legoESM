@@ -369,8 +369,12 @@ def explicit_stepwise_directional_derivatives(
         n_steps: int, *, plant: bool = False):
     """Compose one VJP/JVP per production step without a whole-window trace."""
     states = [_apply_initial_perturbation(context, base)]
+    forcings = []
     for kt in range(1, n_steps + 1):
-        states.append(_production_step(context, states[-1], kt))
+        forcing = context.surface_forcings(context.card, states[-1], kt)
+        forcings.append(forcing)
+        states.append(context.model._step_jitted(
+            states[-1], context.card.dt_s, *forcing))
         jax.block_until_ready(states[-1])
 
     value, objective_pullback = jax.vjp(
@@ -379,9 +383,14 @@ def explicit_stepwise_directional_derivatives(
     replay_reports = {}
     for kt in range(n_steps, 0, -1):
         previous = states[kt - 1]
+        freshwater, surface = forcings[kt - 1]
         replay, step_pullback = jax.vjp(
-            lambda state, step=kt: _production_step(context, state, step),
+            lambda state, freshwater_arg, surface_arg: (
+                context.model._step_jitted(
+                    state, context.card.dt_s, freshwater_arg, surface_arg)),
             previous,
+            freshwater,
+            surface,
         )
         jax.block_until_ready(replay)
         replay_reports[str(kt)] = state_bitwise_report(states[kt], replay)
@@ -389,7 +398,20 @@ def explicit_stepwise_directional_derivatives(
             replay_reports[str(kt)]["bitwise_equal"],
             f"production-step VJP replay differs at step {kt}",
         )
-        cotangent = step_pullback(cotangent)[0]
+        state_cotangent, freshwater_cotangent, surface_cotangent = (
+            step_pullback(cotangent))
+        _, forcing_pullback = jax.vjp(
+            lambda state, step=kt: context.surface_forcings(
+                context.card, state, step),
+            previous,
+        )
+        forcing_state_cotangent = forcing_pullback(
+            (freshwater_cotangent, surface_cotangent))[0]
+        cotangent = jax.tree_util.tree_map(
+            lambda direct, forcing: direct + forcing,
+            state_cotangent,
+            forcing_state_cotangent,
+        )
         jax.block_until_ready(cotangent)
     gradient = cotangent.T.data
     if plant:
@@ -405,11 +427,19 @@ def explicit_stepwise_directional_derivatives(
         (jnp.asarray(1.0, dtype=base.dtype),),
     )
     for kt in range(1, n_steps + 1):
-        state, tangent = jax.jvp(
-            lambda step_state, step=kt: _production_step(
-                context, step_state, step),
+        (freshwater, surface), (freshwater_tangent, surface_tangent) = jax.jvp(
+            lambda step_state, step=kt: context.surface_forcings(
+                context.card, step_state, step),
             (state,),
             (tangent,),
+        )
+        state, tangent = jax.jvp(
+            lambda step_state, freshwater_arg, surface_arg: (
+                context.model._step_jitted(
+                    step_state, context.card.dt_s,
+                    freshwater_arg, surface_arg)),
+            (state, freshwater, surface),
+            (tangent, freshwater_tangent, surface_tangent),
         )
     _, forward_tangent = jax.jvp(
         lambda after: loss_at_state(reference, after),

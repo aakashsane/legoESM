@@ -19,7 +19,9 @@ float32 these gates measure precision floors instead of correctness
 
 The certified ``gyre_nemo_card`` row is deliberately separate from the
 small-grid variants: it starts from the card's day-0 state, enters every step
-through production ``_step_jitted``, and gates both one step and six steps.
+through production ``_step_jitted``, and gates one step in an isolated child.
+The six-step campaign row stays visibly skipped until its isolated explicit
+forward transform completes inside the registered CPU budget.
 Its four-field normalized objective and per-step composition reuse the GYRE
 gradient twin at ``origin/feat/gyre-gradient-twin-2`` commit ``901cfe0d8``.
 
@@ -226,8 +228,9 @@ def _variants():
 def test_step_gradient_health(name, tmp_path):
     if name == "gyre_nemo_card_6step":
         pytest.skip(
-            "six-step CPU GYRE row: LLVM ERROR: Unable to allocate section "
-            "memory! during the XLA large-function compile; tracked in OPEN")
+            "six-step CPU GYRE row: explicit per-step reverse compiled, but "
+            "the isolated forward transform produced no JSON within the "
+            "registered 65-minute attempt; tracked in round 7 OPEN")
     if name == "gyre_nemo_card_1step":
         row = _measure_gyre_one_step_in_subprocess(
             tmp_path / "gyre_nemo_card_1step.json")

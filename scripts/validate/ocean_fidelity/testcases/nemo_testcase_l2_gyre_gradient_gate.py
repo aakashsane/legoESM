@@ -369,12 +369,8 @@ def explicit_stepwise_directional_derivatives(
         n_steps: int, *, plant: bool = False):
     """Compose one VJP/JVP per production step without a whole-window trace."""
     states = [_apply_initial_perturbation(context, base)]
-    forcings = []
     for kt in range(1, n_steps + 1):
-        forcing = context.surface_forcings(context.card, states[-1], kt)
-        forcings.append(forcing)
-        states.append(context.model._step_jitted(
-            states[-1], context.card.dt_s, *forcing))
+        states.append(_production_step(context, states[-1], kt))
         jax.block_until_ready(states[-1])
 
     value, objective_pullback = jax.vjp(
@@ -383,31 +379,13 @@ def explicit_stepwise_directional_derivatives(
     replay_reports = {}
     for kt in range(n_steps, 0, -1):
         previous = states[kt - 1]
-        freshwater, surface = forcings[kt - 1]
         replay, step_pullback = jax.vjp(
-            lambda state, freshwater_arg, surface_arg: (
-                context.model._step_jitted(
-                    state, context.card.dt_s, freshwater_arg, surface_arg)),
+            lambda state, step=kt: _production_step(context, state, step),
             previous,
-            freshwater,
-            surface,
         )
         jax.block_until_ready(replay)
         replay_reports[str(kt)] = state_bitwise_report(states[kt], replay)
-        state_cotangent, freshwater_cotangent, surface_cotangent = (
-            step_pullback(cotangent))
-        _, forcing_pullback = jax.vjp(
-            lambda state, step=kt: context.surface_forcings(
-                context.card, state, step),
-            previous,
-        )
-        forcing_state_cotangent = forcing_pullback(
-            (freshwater_cotangent, surface_cotangent))[0]
-        cotangent = jax.tree_util.tree_map(
-            lambda direct, forcing: direct + forcing,
-            state_cotangent,
-            forcing_state_cotangent,
-        )
+        cotangent = step_pullback(cotangent)[0]
         jax.block_until_ready(cotangent)
     gradient = cotangent.T.data
     if plant:
@@ -416,30 +394,25 @@ def explicit_stepwise_directional_derivatives(
     reverse = float(np.asarray(jnp.vdot(gradient, direction)))
 
     zero = jnp.asarray(0.0, dtype=base.dtype)
-    state, tangent = jax.jvp(
+    _, tangent = jax.jvp(
         lambda alpha: _apply_initial_perturbation(
             context, base + alpha * direction),
         (zero,),
         (jnp.asarray(1.0, dtype=base.dtype),),
     )
+    forward_replay_reports = {}
     for kt in range(1, n_steps + 1):
-        (freshwater, surface), (freshwater_tangent, surface_tangent) = jax.jvp(
-            lambda step_state, step=kt: context.surface_forcings(
-                context.card, step_state, step),
-            (state,),
+        replay, tangent = jax.jvp(
+            lambda state, step=kt: _production_step(context, state, step),
+            (states[kt - 1],),
             (tangent,),
         )
-        state, tangent = jax.jvp(
-            lambda step_state, freshwater_arg, surface_arg: (
-                context.model._step_jitted(
-                    step_state, context.card.dt_s,
-                    freshwater_arg, surface_arg)),
-            (state, freshwater, surface),
-            (tangent, freshwater_tangent, surface_tangent),
-        )
+        jax.block_until_ready(replay)
+        forward_replay_reports[str(kt)] = state_bitwise_report(
+            states[kt], replay)
     _, forward_tangent = jax.jvp(
         lambda after: loss_at_state(reference, after),
-        (state,),
+        (states[-1],),
         (tangent,),
     )
     forward = float(np.asarray(forward_tangent))
@@ -467,6 +440,11 @@ def explicit_stepwise_directional_derivatives(
         "step_vjp_replay_used_as_primal": False,
         "step_vjp_replays_bitwise": all(
             report["bitwise_equal"] for report in replay_reports.values()),
+        "step_jvp_replay_reports": forward_replay_reports,
+        "step_jvp_replay_used_as_primal": False,
+        "step_jvp_replays_bitwise": all(
+            report["bitwise_equal"]
+            for report in forward_replay_reports.values()),
     })
     return row
 

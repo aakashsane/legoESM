@@ -126,6 +126,12 @@ def test_explicit_stepwise_vjp_matches_whole_window_gradient(monkeypatch):
     )
     assert row["step_vjp_replays_bitwise"] is True
     assert row["step_vjp_replay_used_as_primal"] is False
+    assert all(
+        report["bitwise_equal"]
+        for report in row["step_jvp_replay_reports"].values()
+    )
+    assert row["step_jvp_replays_bitwise"] is True
+    assert row["step_jvp_replay_used_as_primal"] is False
 
 
 def test_reverse_only_schedule_compares_against_forward_reference():

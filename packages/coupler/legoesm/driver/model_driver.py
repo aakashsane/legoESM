@@ -6718,9 +6718,15 @@ class ModelDriver:
 
                 def _g_rex(x, _n=_nloc_rex, _p=part):
                     x = jnp.asarray(x)
-                    if x.ndim >= 1 and int(x.shape[0]) == _n:
-                        return gather_voronoi_field(x, _p, "cell")
-                    return x
+                    if x.ndim == 0:
+                        return x
+                    if int(x.shape[0]) != _n:
+                        raise ValueError(
+                            f"R-ex checkpoint payload with leading length "
+                            f"{int(x.shape[0])} != this rank's "
+                            f"{_n} cells: every persisted land/flux array is "
+                            "a per-cell field.")
+                    return gather_voronoi_field(x, _p, "cell")
                 _lio_save = {k: _g_rex(v)
                              for k, v in self._land_io_for_checkpoint().items()}
                 _sfl_save = {k: _g_rex(v) for k, v in
@@ -6866,6 +6872,14 @@ class ModelDriver:
             # CAPE-diurnal forcing reads before the first resumed step.
             for _k, _v in _sfl_save.items():
                 _save[_k] = np.asarray(_v)
+            # The forcing clock's day-0 origin (R-ex): the resumed link
+            # evaluates ``origin + abs_step*dt`` with the SAME origin float.
+            _origin = getattr(self, "_clock_day_origin", None)
+            if _origin is None:
+                _origin = getattr(self, "_clock_day_origin_ckpt", None)
+            if _origin is not None:
+                _save["clock_day_origin"] = np.asarray(float(_origin),
+                                                       dtype=np.float64)
             # #1353 (codex-2 finding 2): within-interval CMOR flux sums —
             # so a mid-interval (wallclock / off-cadence) restart resumes
             # the interval mean instead of dropping the pre-checkpoint
@@ -7774,6 +7788,14 @@ class ModelDriver:
                            or k in _SFC_FLUX_LAG_CKPT_KEYS]:
                 del self._carry_aux[_stale]
             self._land_io_ckpt = None
+            self._clock_day_origin = None
+            self._clock_day_origin_ckpt = (
+                float(d["clock_day_origin"]) if "clock_day_origin" in d.files
+                else None)
+            # A reused driver's model still holds the PREVIOUS run's slots;
+            # a checkpoint without the lagged fluxes must cold-start them.
+            if getattr(self, "model", None) is not None:
+                self.model._sfc_diag = None
             for _k in d.files:
                 if not (_k.startswith(_LAND_IO_CKPT_PREFIX)
                         or _k in _SFC_FLUX_LAG_CKPT_KEYS):
@@ -11652,10 +11674,28 @@ class ModelDriver:
                 f"({CHECKPOINT_INTERVAL} steps) must both be multiples of the "
                 "radiation cadence so every checkpoint is a resumable "
                 "radiation boundary")
-        # Day-0 origin of the forcing clock (see ``_force_day`` below).
-        _DAY_ORIGIN = START_DAY - start_step * DT / 86400.0
-        if abs(_DAY_ORIGIN - float(cfg.start_day)) < 1e-6:
-            _DAY_ORIGIN = float(cfg.start_day)
+        # Day-0 origin of the forcing clock (see ``_force_day`` below): a
+        # fresh run's is START_DAY itself, exactly; a resumed link takes the
+        # origin its checkpoint recorded (``clock_day_origin``), so every
+        # link's clock is the ONE float series the unbroken run would have
+        # produced.  A checkpoint from before the origin was recorded falls
+        # back to the reconstructed origin, snapped to cfg.start_day when
+        # within 0.1 s of it (logged: that restart is bitwise only if the
+        # snap was exact).
+        if start_step == 0:
+            _DAY_ORIGIN = float(START_DAY)
+        elif getattr(self, "_clock_day_origin_ckpt", None) is not None:
+            _DAY_ORIGIN = float(self._clock_day_origin_ckpt)
+        else:
+            _DAY_ORIGIN = START_DAY - start_step * DT / 86400.0
+            if abs(_DAY_ORIGIN - float(cfg.start_day)) < 1e-6:
+                _DAY_ORIGIN = float(cfg.start_day)
+            logger.warning(
+                "  Forcing clock: the checkpoint records no clock origin "
+                "(written before it was persisted); reconstructed %.9f d from "
+                "the restart day -- bitwise only if that reconstruction is "
+                "exact.", _DAY_ORIGIN)
+        self._clock_day_origin = _DAY_ORIGIN
         physics_fn_norad = (
             make_physics(phys_cfg, model_type="mpas", dt=DT_PHYS,
                          column_mesh=_column_mesh, need_rad=False,
@@ -13141,6 +13181,18 @@ class ModelDriver:
                         f"checkpoint landio_{k} shape {tuple(v.shape)} != "
                         f"(nCells={_ncell_rex},) -- mesh mismatch.")
                 return v
+            _need = {"T_skin", "albedo_cells"}
+            _flux4 = {"qsfc_cells", "shflx_cells", "lhflx_cells", "evap_cells"}
+            _have = set(_lio)
+            if (not _need <= _have
+                    or (_have & _flux4) not in (set(), _flux4)
+                    or ("a2s_n" in _have) != ({"cz_wsum", "w_sum"} <= _have)):
+                raise ValueError(
+                    f"checkpoint carries a PARTIAL land-boundary payload "
+                    f"{sorted(_have)}: skin T and albedo are required, the "
+                    "humidity/flux quartet and the cadence sums come all or "
+                    "none.  Refusing a mixed restart (the missing fields "
+                    "would silently cold-start).")
             _land_T_skin = _cell_rex("T_skin")
             _land_albedo_cells = _cell_rex("albedo_cells")
             _land_qsfc_cells = _cell_rex("qsfc_cells")
@@ -13181,8 +13233,16 @@ class ModelDriver:
                     f"checkpoint carries a partial turbulent-flux payload "
                     f"{sorted(_sfl)}; expected {_SFC_FLUX_LAG_CKPT_KEYS}")
             from legoesm.core.field import Field as _SfcField
+            from legoesm.core.state import (
+                MPAS_SFC_DIAG_BASE_KEYS as _SDB,
+                MPAS_SFC_DIAG_EXTRA_KEYS as _SDE,
+            )
             _slots = _sfc_flux_lag_slots()
-            _seeded = [None] * (max(_slots) + 1)
+            # Full contract length: the duo column's slot-wise merge zips
+            # against the previous tuple, so a SHORTER seed would truncate
+            # the first step's publication (measured: slots 8/9 lost, land
+            # skipped).
+            _seeded = [None] * (len(_SDB) + len(_SDE))
             for _k, _slot, _nm in zip(_SFC_FLUX_LAG_CKPT_KEYS, _slots,
                                       ("shflx_sfc", "lhflx_sfc")):
                 _v = jnp.asarray(_sfl[_k]).reshape(-1)
@@ -14365,10 +14425,12 @@ class ModelDriver:
         # the last loop step already hit the periodic cadence, which would
         # re-write the identical file (wasted device→host transfer + I/O
         # every whole-multiple job boundary).
+        # The land snapshot a later ``save_checkpoint`` (final below, or a
+        # caller's own after a checkpoint_days=0 run) must see: the END state.
+        self._land_io_ckpt = _land_io_snapshot()
         if (CHECKPOINT_INTERVAL > 0 and run_status == "COMPLETED"
                 and n_steps_total % CHECKPOINT_INTERVAL != 0):
             _final_day = START_DAY + n_steps_total * DT / 86400.0
-            self._land_io_ckpt = _land_io_snapshot()
             self.save_checkpoint(start_step + n_steps_total, _final_day)
 
         elapsed = time.time() - t_start

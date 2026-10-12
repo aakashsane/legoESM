@@ -23,11 +23,15 @@ Everything below `experiment:` is a standard `legoesm run` config
 
 | Category | Tier(s) | Contents |
 |---|---|---|
-| `1d/` | tier1 | single-column (SCM) — column extent |
-| `2d/` | tier1 | shallow-water (Williamson, Galewsky) |
-| `3d_idealized/` | tier1–2 | dry/idealized 3D (Held-Suarez, baroclinic wave, aquaplanet) |
+| `2d/` | tier1 | shallow-water recipes (Williamson 2, Williamson 5) |
+| `3d_idealized/` | tier2–3 | dry/idealized 3D recipes (Held-Suarez, hydrostatic gray-radiation year) |
+| `atmosphere/` | tier1–2 | `setup:` templates naming atmosphere matrix cases (Williamson 5, Held-Suarez, baroclinic wave) |
+| `ocean/` | tier1–2 | `setup:` templates naming idealized ocean matrix cases (gyres, channels, waves, overflow, BENCH, ...) |
 | `global_ocean/` | tier3 | OMIP / global ocean |
-| `coupled/` | tier2–3 | coupled & AMIP/ERA5 |
+| `sea_ice/` | tier1–2 | `setup:` templates naming sea-ice matrix cases |
+
+There is no single-column (`1d/`) or coupled/AMIP template folder yet; those
+experiments run through their drivers in `scripts/run/`.
 
 ## Use
 

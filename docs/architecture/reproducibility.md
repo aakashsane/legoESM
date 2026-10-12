@@ -22,7 +22,7 @@ guarantee identical numbers.
 | 1. Configuration | *What* was run? | Fully resolved scientific configuration, with every default written out | Partial: driver-level fields only; physics-scheme parameters are not recorded (G2) |
 | 2. Software / environment | *With what code* was it run? | Commit, uncommitted diff, lockfile, jaxlib/CUDA, environment variables, devices | Partial: commit, dirty flag, and python/jax/numpy versions only (G5) |
 | 3. Bitwise numerical | Is the rerun *bit-identical*? | 1 + 2, plus the same hardware, device count and decomposition, XLA version and flags, and deterministic kernels | `legoesm reproduce --check` compares the **final-state digest only**, **atmosphere only**, on whatever code is checked out now (G1) |
-| 4. Scientific / statistical | Does a rerun give the *same climate*? | 1 + 2, an ensemble, and a metric with a tolerance (e.g. ClimateEval scores) | No mechanism; outside this proposal |
+| 4. Scientific / statistical | Does a rerun give the *same climate*? | 1 + 2, an ensemble, and a metric with a tolerance (e.g. ClimateEval scores) | No mechanism (the release matrix, item 11, is the proposed step toward it) |
 
 Even with identical software and hardware, bitwise equality is not
 automatic: GPU atomics and scatter reductions can be non-deterministic. A
@@ -338,6 +338,47 @@ The proposal, change by change:
     - A CIME-ERP-style job reruns one short canonical case on fixed hardware
       and compares `state_digest`.
     - Without it, the bitwise claim is untested between releases.
+11. **A release matrix with statistical bands** (a step toward level 4;
+    modelled on JCM's `tools/release_validation/`,
+    climate-analytics-lab/jax-gcm).
+    - **Supported set.** One committed `matrix.yaml` names the configurations
+      legoESM claims to support. Each member points at an existing template
+      or production config, not a composition written for the test. The
+      template `maturity` field records run and validation status, not a
+      support claim.
+    - **Release check.** Before a release tag, each member runs a long window.
+      Its statistics are compared with a fixed reference climate, not only
+      with the previous release, so that small changes cannot accumulate into
+      drift across releases. This is regression detection between code
+      versions. Separately they are scored against loose
+      climatological health gates (plausibility) and NaN and conservation
+      gates. Known failures are declared in the matrix with an owner and an
+      issue, not hidden.
+    - **Fast regression.** Each member also has a short run from a stored
+      warm state. Area-weighted global means of a named variable set are
+      compared with committed band files, stored as text so a change shows up
+      as a reviewable diff.
+    - **Band derivation.** The band width must exceed the run-to-run spread
+      that roundoff and hardware differences cause in a chaotic model.
+      Proposal: derive it from a small perturbed-initial-condition ensemble.
+      That measures internal variability on one machine. It says nothing
+      about how far runs on other hardware spread, so the bands are set per
+      hardware type unless a cross-hardware ensemble shows they can be
+      shared. Without an ensemble a band is a guess. The fast regression is
+      the first arm of level 4. It does not answer "same climate" on its own,
+      which needs the long window.
+    - **Provenance.** The warm state is named by its content digest. Each band
+      file records the state's own manifest (code, configuration, inputs) and
+      the input-data revision of the band run. A mismatch is reported as
+      "regenerate the bands", not as a physics regression.
+    - **Limits.**
+      - Global means miss regressions that keep the global mean, such as
+        spatial patterns or polar processes.
+      - A short window sees fast processes only, so ocean members need a
+        longer or separate window.
+      - Bands regenerated in the same PR as an intended change guard only
+        later PRs, not that change itself.
+      - Full level 4 also needs levels 1 and 2, i.e. P0 and P1.
 
 How this relates to established practice:
 
@@ -405,7 +446,10 @@ emits v2. Old manifests keep loading.
 12. Merge the two `init_experiment.py` scripts (G9).
 13. FESOM and the matrix runners move to the standard manifest.
 14. Nightly reproduce test (item 10).
-15. Optional: `legoesm manifest show` and `legoesm manifest diff A B`, which
+15. Release matrix with statistical bands (item 11). The direction was
+    approved on 2026-10-12, to start once P0 is merged. Its parameters are
+    still pending (listed below).
+16. Optional: `legoesm manifest show` and `legoesm manifest diff A B`, which
     prints the science-field diff table between two runs.
 
 ## Decisions
@@ -436,3 +480,22 @@ yet.
 - **Strict replay.** Proposal: `reproduce` fails on any field missing from or
   extra to the record, for both the top-level configuration and the physics
   records, instead of today's silent drop or fill.
+
+### Pending decisions for the release matrix (item 11)
+
+These are not yet decided:
+
+- Which configurations are members, for example AMIP res6 MPAS, OMIP lat-lon
+  KPP, Held-Suarez, and an SCM case.
+- The banded variable set and the health-gate ranges.
+- The release-check metric and tolerance against the reference climate, and
+  how that reference is chosen and renewed.
+- The warm-state generation recipe (spin-up length, initial state).
+- Whether declared expected failures expire.
+- The run lengths for each component (release check and fast regression).
+- The band derivation: ensemble size, and whether bands are set per hardware
+  type or shared.
+- Whether a failed release check blocks the tag, or is reported only.
+- The warm-state hosting location and how its revision is pinned.
+- Whether the fast regression runs in CI on a GPU or only before releases.
+- How ClimateEval is wired in: it is optional and AMIP-focused today.

@@ -58,6 +58,11 @@ def test_scalar_line_reverse_equals_full_vjp_dot_direction():
     expected = float(jnp.vdot(full_gradient, direction))
     row = G.directional_derivatives(loss, base, direction)
     assert row["reverse"] == pytest.approx(expected, rel=1.0e-13)
+    assert row["gradient_dot_abs_sum"] == pytest.approx(
+        float(jnp.sum(jnp.abs(full_gradient * direction))))
+    assert row["gradient_direction_norm_product"] == pytest.approx(
+        float(jnp.linalg.norm(full_gradient) * jnp.linalg.norm(direction)))
+    assert row["rev_fwd_scale_aware_error"] == pytest.approx(0.0, abs=1.0e-15)
 
 
 def test_reverse_only_schedule_compares_against_forward_reference():
@@ -80,13 +85,39 @@ def test_reverse_only_schedule_compares_against_forward_reference():
     assert row["status"] == "CONFIRMED"
 
 
+def _healthy_resource_row():
+    return {
+        "gradient_finite": True,
+        "gradient_nonzero": True,
+        "loss": 1.0,
+        "cold_compile_and_reverse_wall_seconds": 2.0,
+        "warm_reverse_wall_seconds": 1.0,
+        "memory_baseline_mib": 100.0,
+        "memory_peak_mib": 110.0,
+        "memory_increment_mib": 10.0,
+        "memory_samples": 3,
+    }
+
+
 @pytest.mark.parametrize(
-    ("finite", "nonzero", "expected"),
-    [(True, True, True), (False, True, False), (True, False, False)],
+    ("field", "bad_value"),
+    [
+        ("gradient_finite", False),
+        ("gradient_nonzero", False),
+        ("loss", np.nan),
+        ("warm_reverse_wall_seconds", 0.0),
+        ("memory_peak_mib", np.nan),
+        ("memory_samples", 1),
+    ],
 )
-def test_resource_rows_fail_closed(finite, nonzero, expected):
-    row = {"gradient_finite": finite, "gradient_nonzero": nonzero}
-    assert G.resource_row_passes(row) is expected
+def test_resource_rows_fail_closed(field, bad_value):
+    row = _healthy_resource_row()
+    row[field] = bad_value
+    assert G.resource_row_passes(row) is False
+
+
+def test_healthy_resource_row_passes():
+    assert G.resource_row_passes(_healthy_resource_row()) is True
 
 
 @pytest.mark.parametrize(
@@ -238,6 +269,38 @@ def test_gpu_cli_can_select_native_transcendentals_explicitly():
         "--expect-commit", "deadbeef", "--output", "/tmp/unused-row.json",
     ])
     assert args.transcendentals == "native"
+
+
+def test_peak_sampler_propagates_worker_failure(monkeypatch):
+    sampler = G.PeakMemorySampler("cpu", interval_s=0.001)
+
+    def fail():
+        raise OSError("planted sampler read failure")
+
+    sampler._read = fail
+    sampler.start()
+    sampler._thread.join(timeout=1.0)
+    with pytest.raises(RuntimeError, match="peak-memory sampler failed"):
+        sampler.stop()
+
+
+def test_measurement_provenance_is_rechecked_after_row(monkeypatch):
+    answers = iter(["changed-commit"])
+    monkeypatch.setattr(G, "_git_output", lambda *_args: next(answers))
+    with pytest.raises(RuntimeError, match="measurement commit"):
+        G.require_unchanged_measurement_stamp(
+            {"commit": "opening-commit", "dirty": False})
+
+
+def test_cli_refuses_existing_output_before_measurement(tmp_path):
+    output = tmp_path / "retained.json"
+    output.write_text("retained\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="refusing to overwrite evidence"):
+        G.main([
+            "agreement", "--steps", "1", "--schedule", "uniform",
+            "--expect-commit", "deadbeef", "--output", str(output),
+        ])
+    assert output.read_text(encoding="utf-8") == "retained\n"
 
 
 def test_measurement_policy_labels_refuse_cross_backend_combinations():

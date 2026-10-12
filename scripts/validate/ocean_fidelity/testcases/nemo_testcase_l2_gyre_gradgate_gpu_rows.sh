@@ -20,6 +20,7 @@ refuse() {
 readonly COMMIT=$(git rev-parse HEAD)
 
 CUDA_VISIBLE_DEVICES=1 JAX_PLATFORMS=cuda JAX_ENABLE_X64=1 \
+  XLA_PYTHON_CLIENT_PREALLOCATE=false \
   "$PYTHON" -c 'import jax; devices=jax.devices(); assert jax.default_backend() == "gpu", jax.default_backend(); assert len(devices) == 1, devices; print(devices[0])'
 nvidia-smi -i 1 --query-gpu=index,memory.used --format=csv,noheader
 
@@ -27,11 +28,15 @@ ROW_FAILURES=0
 
 run_row() {
   local output=$1
+  local mode=$2
+  local steps=$3
+  local schedule=$4
   local rc=0
-  shift
   [[ ! -e "$output" ]] || refuse "refusing to overwrite evidence: $output" 65
-  if CUDA_VISIBLE_DEVICES=1 JAX_PLATFORMS=cuda JAX_ENABLE_X64=1 PYTHONPATH="$MODEL_PATH" \
-      "$PYTHON" "$GATE" "$@" --transcendentals native \
+  if CUDA_VISIBLE_DEVICES=1 JAX_PLATFORMS=cuda JAX_ENABLE_X64=1 \
+      XLA_PYTHON_CLIENT_PREALLOCATE=false PYTHONPATH="$MODEL_PATH" \
+      "$PYTHON" "$GATE" "$mode" --steps "$steps" --schedule "$schedule" \
+        --transcendentals native \
         --expect-commit "$COMMIT" --output "$output"; then
     rc=0
   else
@@ -49,10 +54,22 @@ import pathlib
 import sys
 
 row = json.loads(pathlib.Path(sys.argv[1]).read_text())
+commit, mode, steps, schedule = sys.argv[2:]
 expected = "GPU, XLA transcendentals — not the certified bit-exact policy"
 assert row["measurement_policy_label"] == expected, row
 assert "transcendentals=\x27native\x27" in row["precision_policy"], row
-' "$output"; then
+assert row["provenance"] == {
+    "commit": commit, "dirty": False, "verified_after_measurement": True}, row
+assert row["case"] == "GYRE-zco", row
+assert row["backend"] == "gpu", row
+assert row["physical_gpu_index"] == 1, row
+assert row["cuda_visible_devices"] == "1", row
+assert row["steps"] == int(steps), row
+assert row["schedule"] == schedule, row
+assert row["schedule_scope"].startswith("outer warm-loop schedule"), row
+if mode == "resources":
+    assert row["xla_python_client_preallocate"].lower() == "false", row
+' "$output" "$COMMIT" "$mode" "$steps" "$schedule"; then
     printf 'REFUSE gyre-gradgate-gpu: invalid row provenance: %s\n' "$output" >&2
     ((ROW_FAILURES += 1))
     return 0
@@ -67,14 +84,14 @@ assert "transcendentals=\x27native\x27" in row["precision_policy"], row
 for schedule in none uniform binomial; do
   for steps in 1 6; do
     run_row "$EVIDENCE_DIR/gpu1_agreement_${schedule}_${steps}step.json" \
-      agreement --steps "$steps" --schedule "$schedule"
+      agreement "$steps" "$schedule"
   done
 done
 
 for steps in 1 6; do
   for schedule in none uniform binomial; do
     run_row "$EVIDENCE_DIR/gpu1_resources_${schedule}_${steps}step.json" \
-      resources --steps "$steps" --schedule "$schedule"
+      resources "$steps" "$schedule"
   done
 done
 

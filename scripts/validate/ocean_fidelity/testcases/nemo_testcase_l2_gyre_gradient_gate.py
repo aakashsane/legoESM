@@ -46,6 +46,9 @@ GPU_NATIVE_POLICY_LABEL = (
     "GPU, XLA transcendentals — not the certified bit-exact policy"
 )
 CPU_LIBM_POLICY_LABEL = "CPU, certified fp64/libm bit-exact policy"
+SCHEDULE_SCOPE = (
+    "outer warm-loop schedule atop Decision-49 whole-step rematerialization"
+)
 
 
 class ScoredState(NamedTuple):
@@ -91,6 +94,24 @@ def measurement_policy_label(backend: str, transcendentals: str) -> str:
         "unsupported GYRE gradient measurement policy: "
         f"backend={backend!r}, transcendentals={transcendentals!r}"
     )
+
+
+def runtime_identity() -> dict:
+    """Return the logical device and fail-closed physical GPU selection."""
+    backend = jax.default_backend()
+    identity = {
+        "backend": backend,
+        "device": str(jax.devices()[0]),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+        "physical_gpu_index": None,
+    }
+    if backend == "gpu":
+        require(
+            identity["cuda_visible_devices"] == "1",
+            "GPU measurements require CUDA_VISIBLE_DEVICES=1",
+        )
+        identity["physical_gpu_index"] = 1
+    return identity
 
 
 def configure_runtime(transcendentals: str = "libm") -> None:
@@ -365,6 +386,11 @@ def classify_agreement(reverse: float, forward: float, finite_difference: float)
         "rev_fd_bar": FD_TOL,
         "finite": finite,
         "nonzero": nonzero,
+        "gradient_dot_abs_sum": None,
+        "gradient_direction_norm_product": None,
+        "rev_fwd_absolute_discrepancy": (
+            abs(reverse - forward) if finite else None),
+        "rev_fwd_scale_aware_error": None,
     }
 
 
@@ -385,13 +411,12 @@ def directional_derivatives(
     def forward_line(alpha):
         return forward_loss(base + alpha * direction)
 
-    def reverse_line_unplanted(alpha):
-        return reverse_loss(base + alpha * direction)
+    def reverse_objective(value):
+        reverse_input = broken_vjp_identity(value) if plant else value
+        return reverse_loss(reverse_input)
 
-    reverse_line = (
-        (lambda alpha: reverse_line_unplanted(broken_vjp_identity(alpha)))
-        if plant else reverse_line_unplanted)
-    reverse = float(np.asarray(jax.grad(reverse_line)(zero)))
+    gradient = jax.grad(reverse_objective)(base)
+    reverse = float(np.asarray(jnp.vdot(gradient, direction)))
     _, forward_value = jax.jvp(
         forward_line, (zero,), (jnp.asarray(1.0, base.dtype),))
     forward = float(np.asarray(forward_value))
@@ -400,7 +425,19 @@ def directional_derivatives(
     minus = float(np.asarray(
         forward_line(jnp.asarray(-FD_STEP, base.dtype))))
     finite_difference = (plus - minus) / (2.0 * FD_STEP)
-    return classify_agreement(reverse, forward, finite_difference)
+    row = classify_agreement(reverse, forward, finite_difference)
+    dot_abs_sum = float(np.asarray(jnp.sum(jnp.abs(gradient * direction))))
+    norm_product = float(np.asarray(
+        jnp.linalg.norm(gradient) * jnp.linalg.norm(direction)))
+    absolute_discrepancy = abs(reverse - forward)
+    row.update({
+        "gradient_dot_abs_sum": dot_abs_sum,
+        "gradient_direction_norm_product": norm_product,
+        "rev_fwd_absolute_discrepancy": absolute_discrepancy,
+        "rev_fwd_scale_aware_error": (
+            absolute_discrepancy / max(dot_abs_sum, 1.0e-300)),
+    })
+    return row
 
 
 def measure_agreement(n_steps: int, schedule: str, *, plant=False,
@@ -426,6 +463,7 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
         jax.block_until_ready(forward_truth)
         forward_report = state_bitwise_report(truth_state, forward_truth)
     row = classify_agreement(math.nan, math.nan, math.nan)
+    evaluation_reports = {}
     if not primal_report["bitwise_equal"]:
         row["error"] = (
             f"{schedule} segmented schedule primal differs bitwise from "
@@ -439,20 +477,45 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
         forward_loss = make_loss(context, reference, n_steps, schedule="uniform")
         reverse_loss = make_loss(context, reference, n_steps, schedule=schedule)
         base, direction = perturbations(context)
-        try:
-            row = directional_derivatives(
-                forward_loss, base, direction,
-                reverse_loss=reverse_loss, plant=plant)
-        except (TypeError, ValueError, RuntimeError) as error:
-            row["error"] = f"{type(error).__name__}: {error}"
+        perturbations_to_check = {
+            "base": base,
+            "fd_plus": base + FD_STEP * direction,
+            "fd_minus": base - FD_STEP * direction,
+        }
+        schedules_to_check = (schedule,) if schedule == "uniform" else (
+            schedule, "uniform")
+        for label, perturbation in perturbations_to_check.items():
+            production = production_rollout(context, perturbation, n_steps)
+            jax.block_until_ready(production)
+            for checked_schedule in schedules_to_check:
+                selected = scheduled_rollout(
+                    context, perturbation, n_steps, checked_schedule)
+                jax.block_until_ready(selected)
+                evaluation_reports[f"{checked_schedule}_{label}"] = (
+                    state_bitwise_report(production, selected))
+        bad_evaluation_reports = [
+            name for name, report in evaluation_reports.items()
+            if not report["bitwise_equal"]
+        ]
+        if bad_evaluation_reports:
+            row["error"] = (
+                "scheduled primal differs bitwise from production at "
+                + ", ".join(bad_evaluation_reports))
+        else:
+            try:
+                row = directional_derivatives(
+                    forward_loss, base, direction,
+                    reverse_loss=reverse_loss, plant=plant)
+            except (TypeError, ValueError, RuntimeError) as error:
+                row["error"] = f"{type(error).__name__}: {error}"
+    identity = runtime_identity()
     row.update({
         "case": CASE,
         "steps": n_steps,
         "model_seconds": n_steps * DT_S,
         "schedule": schedule,
         "forward_fd_schedule": "uniform",
-        "backend": jax.default_backend(),
-        "device": str(jax.devices()[0]),
+        **identity,
         "jax_enable_x64": bool(jax.config.jax_enable_x64),
         "precision_policy": repr(get_policy()),
         "measurement_policy_label": measurement_policy_label(
@@ -462,8 +525,11 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
         "plant": "broken_vjp" if plant else None,
         "production_entry": "LatLonCGridOceanModel._step_jitted",
         "composition": "cold step segment plus fixed-pytree warm loop",
+        "schedule_scope": SCHEDULE_SCOPE,
+        "per_step_whole_step_rematerialization": True,
         "schedule_primal_vs_production": primal_report,
         "forward_primal_vs_production": forward_report,
+        "evaluation_primal_vs_production": evaluation_reports,
     })
     return row
 
@@ -547,13 +613,18 @@ class PeakMemorySampler:
         self.baseline_mib = self._read()
         self.peak_mib = self.baseline_mib
         self.samples = 1
+        self._error = None
         self._thread = threading.Thread(target=self._sample, daemon=True)
 
     def _sample(self):
-        while not self._stop.is_set():
-            self.peak_mib = max(self.peak_mib, self._read())
-            self.samples += 1
-            self._stop.wait(self._interval_s)
+        try:
+            while not self._stop.is_set():
+                self.peak_mib = max(self.peak_mib, self._read())
+                self.samples += 1
+                self._stop.wait(self._interval_s)
+        except BaseException as error:
+            self._error = error
+            self._stop.set()
 
     def start(self):
         self._thread.start()
@@ -561,7 +632,10 @@ class PeakMemorySampler:
     def stop(self):
         self._stop.set()
         self._thread.join()
+        if self._error is not None:
+            raise RuntimeError("peak-memory sampler failed") from self._error
         self.peak_mib = max(self.peak_mib, self._read())
+        require(self.samples >= 2, "peak-memory sampler took no in-pass sample")
 
 
 def extrapolate_steps(
@@ -569,7 +643,9 @@ def extrapolate_steps(
         n_steps: int) -> float:
     """Apply the preregistered six-step schedule-complexity extrapolation."""
     require(n_steps >= 1, "projection window must contain at least one step")
-    incremental = max(0.0, peak6_mib - baseline_mib)
+    require(peak6_mib >= baseline_mib,
+            "six-step peak must be at least the sampled baseline")
+    incremental = peak6_mib - baseline_mib
     if schedule == "none":
         return baseline_mib + (n_steps / 6.0) * incremental
     if schedule == "uniform":
@@ -608,31 +684,36 @@ def measure_resources(n_steps: int, schedule: str, *,
     reverse = jax.value_and_grad(line)
     zero_alpha = jnp.asarray(0.0, dtype=base.dtype)
 
+    backend = jax.default_backend()
+    require(backend in ("cpu", "gpu"), f"unsupported backend {backend!r}")
+    identity = runtime_identity()
+    if backend == "gpu":
+        require(
+            os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE", "").lower()
+            == "false",
+            "GPU resource rows require XLA_PYTHON_CLIENT_PREALLOCATE=false",
+        )
     cold_started = time.perf_counter()
     cold_value, cold_gradient = reverse(zero_alpha)
     jax.block_until_ready((cold_value, cold_gradient))
     cold_wall_s = time.perf_counter() - cold_started
 
-    backend = jax.default_backend()
-    require(backend in ("cpu", "gpu"), f"unsupported backend {backend!r}")
-    if backend == "gpu":
-        require(os.environ.get("CUDA_VISIBLE_DEVICES") == "1",
-                "GPU measurements require CUDA_VISIBLE_DEVICES=1")
     sampler = PeakMemorySampler(backend)
     sampler.start()
-    started = time.perf_counter()
-    value, gradient = reverse(zero_alpha)
-    jax.block_until_ready((value, gradient))
-    wall_s = time.perf_counter() - started
-    sampler.stop()
+    try:
+        started = time.perf_counter()
+        value, gradient = reverse(zero_alpha)
+        jax.block_until_ready((value, gradient))
+        wall_s = time.perf_counter() - started
+    finally:
+        sampler.stop()
     gradient_array = np.asarray(gradient)
     return {
         "case": CASE,
         "steps": n_steps,
         "model_seconds": n_steps * DT_S,
         "schedule": schedule,
-        "backend": backend,
-        "device": str(jax.devices()[0]),
+        **identity,
         "jax_enable_x64": bool(jax.config.jax_enable_x64),
         "precision_policy": repr(get_policy()),
         "measurement_policy_label": measurement_policy_label(
@@ -640,6 +721,8 @@ def measure_resources(n_steps: int, schedule: str, *,
         "state_dtype": str(context.initial_state.T.data.dtype),
         "geometry_dtype": str(context.card.recipe.z_coord.dz_ref.dtype),
         "production_entry": "LatLonCGridOceanModel._step_jitted",
+        "schedule_scope": SCHEDULE_SCOPE,
+        "per_step_whole_step_rematerialization": True,
         "schedule_primal_bitwise_production": True,
         "cold_compile_and_reverse_wall_seconds": cold_wall_s,
         "warm_reverse_wall_seconds": wall_s,
@@ -647,6 +730,9 @@ def measure_resources(n_steps: int, schedule: str, *,
         "gradient_finite": bool(np.all(np.isfinite(gradient_array))),
         "gradient_nonzero": bool(np.any(gradient_array != 0.0)),
         "memory_kind": "host_rss" if backend == "cpu" else "gpu1_nvidia_smi",
+        "memory_scope": "warm blocked reverse pass after compilation",
+        "xla_python_client_preallocate": os.environ.get(
+            "XLA_PYTHON_CLIENT_PREALLOCATE"),
         "memory_baseline_mib": sampler.baseline_mib,
         "memory_peak_mib": sampler.peak_mib,
         "memory_increment_mib": sampler.peak_mib - sampler.baseline_mib,
@@ -656,7 +742,22 @@ def measure_resources(n_steps: int, schedule: str, *,
 
 def resource_row_passes(row: dict) -> bool:
     """Return the fail-closed resource-row gradient health verdict."""
-    return bool(row["gradient_finite"] and row["gradient_nonzero"])
+    numeric = (
+        row["loss"], row["cold_compile_and_reverse_wall_seconds"],
+        row["warm_reverse_wall_seconds"], row["memory_baseline_mib"],
+        row["memory_peak_mib"], row["memory_increment_mib"],
+    )
+    return bool(
+        row["gradient_finite"]
+        and row["gradient_nonzero"]
+        and all(math.isfinite(value) for value in numeric)
+        and row["cold_compile_and_reverse_wall_seconds"] > 0.0
+        and row["warm_reverse_wall_seconds"] > 0.0
+        and row["memory_baseline_mib"] >= 0.0
+        and row["memory_peak_mib"] >= row["memory_baseline_mib"]
+        and row["memory_increment_mib"] >= 0.0
+        and row["memory_samples"] >= 2
+    )
 
 
 def _git_output(*args: str) -> str:
@@ -674,10 +775,17 @@ def require_measurement_stamp(expect_commit: str) -> dict:
     return {"commit": actual, "dirty": False}
 
 
+def require_unchanged_measurement_stamp(opening: dict) -> dict:
+    """Recheck provenance after a long measurement, before writing evidence."""
+    closing = require_measurement_stamp(opening["commit"])
+    require(closing == opening, "measurement provenance changed during the row")
+    return {**closing, "verified_after_measurement": True}
+
+
 def write_result(path: Path, row: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(row, indent=2, sort_keys=True) + "\n",
-                    encoding="utf-8")
+    with path.open("x", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, indent=2, sort_keys=True) + "\n")
 
 
 def parse_args(argv=None):
@@ -700,6 +808,8 @@ def parse_args(argv=None):
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    require(not args.output.exists(),
+            f"refusing to overwrite evidence: {args.output}")
     provenance = require_measurement_stamp(args.expect_commit)
     if args.mode == "agreement":
         row = measure_agreement(
@@ -709,7 +819,7 @@ def main(argv=None) -> int:
         row = measure_resources(
             args.steps, args.schedule,
             transcendentals=args.transcendentals)
-    row["provenance"] = provenance
+    row["provenance"] = require_unchanged_measurement_stamp(provenance)
     row["argv"] = list(sys.argv if argv is None else argv)
     write_result(args.output, row)
     print(json.dumps(row, sort_keys=True), flush=True)

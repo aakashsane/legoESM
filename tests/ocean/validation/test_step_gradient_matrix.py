@@ -92,7 +92,11 @@ def _measure_gyre_one_step_in_subprocess(output: Path) -> dict:
     )
     assert output.is_file(), "isolated GYRE child wrote no strict JSON receipt"
     row = json.loads(output.read_text(encoding="utf-8"))
-    assert row["provenance"] == {"commit": commit, "dirty": False}
+    assert row["provenance"] == {
+        "commit": commit,
+        "dirty": False,
+        "verified_after_measurement": True,
+    }
     return row
 
 

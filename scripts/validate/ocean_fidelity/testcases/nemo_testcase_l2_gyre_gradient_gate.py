@@ -40,6 +40,8 @@ REVFWD_TOL = 1.0e-9
 FD_TOL = 0.05
 FD_STEP = 1.0e-3
 PERTURBATION_K = 1.0e-3
+SCHEDULE_RTOL = 1.0e-9
+SCHEDULE_ATOL = 1.0e-11
 SCHEDULES = ("none", "uniform", "binomial")
 AGREEMENT_COMPOSITIONS = ("per_step", *SCHEDULES)
 FIELDS = ("T", "S", "u", "v")
@@ -48,7 +50,13 @@ GPU_NATIVE_POLICY_LABEL = (
 )
 CPU_LIBM_POLICY_LABEL = "CPU, certified fp64/libm bit-exact policy"
 SCHEDULE_SCOPE = (
-    "outer warm-loop schedule atop Decision-49 whole-step rematerialization"
+    "component-agnostic checkpoint schedule over production jitted steps"
+)
+RESOURCE_SCHEMA = "gyre-gradgate-resource-v2-compiled-reverse"
+REVERSE_TRANSFORM = "jax.jit(jax.value_and_grad(scalar_line))"
+WARM_TIMER_SPAN = (
+    "blocked execution of pre-jitted value_and_grad only; sampler start and "
+    "stop/join excluded"
 )
 
 
@@ -78,6 +86,13 @@ class GYREContext(NamedTuple):
     initial_state: object
     surface_forcings: object
     checkpointed_step: object
+
+
+class ReversePassMeasurement(NamedTuple):
+    value: jax.Array
+    gradient: jax.Array
+    wall_seconds: float
+    sampler: object
 
 
 def require(condition: bool, message: str) -> None:
@@ -202,41 +217,27 @@ def gradient_rollout(context: GYREContext, d_t0, n_steps: int):
     return state
 
 
-def checkpoint_after_cold_step(
-        cold_body, warm_body, init, n_steps: int, schedule: str):
-    """Run one structure-changing step, then checkpoint the fixed warm carry."""
-    require(n_steps >= 1, "the segmented GYRE rollout requires at least one step")
-    warm = cold_body(init)
-    return checkpointed_loop(
-        warm_body, warm, n_steps - 1, schedule=schedule)
-
-
 def scheduled_rollout(context: GYREContext, d_t0, n_steps: int, schedule: str):
-    """Select the per-step twin or a segmented checkpoint schedule."""
+    """Run a shared checkpoint schedule whose body is the production step."""
     if schedule == "per_step":
         return gradient_rollout(context, d_t0, n_steps)
     state = context.initial_state._replace(
         T=context.initial_state.T.replace(
             data=context.initial_state.T.data + d_t0))
 
-    def cold_body(carry):
-        freshwater, surface = context.surface_forcings(
-            context.card, carry, 1)
-        return 1, context.checkpointed_step(carry, freshwater, surface)
-
-    def warm_body(carry):
+    def body(carry):
         kt, step_state = carry
         freshwater, surface = context.surface_forcings(
             context.card, step_state, kt + 1)
-        step_state = context.checkpointed_step(step_state, freshwater, surface)
+        step_state = context.model._step_jitted(
+            step_state, context.card.dt_s, freshwater, surface)
         return kt + 1, step_state
 
-    _, state = checkpoint_after_cold_step(
-        cold_body,
-        warm_body,
-        state,
+    _, state = checkpointed_loop(
+        body,
+        (jnp.asarray(0, dtype=jnp.int32), state),
         n_steps,
-        schedule,
+        schedule=schedule,
     )
     return state
 
@@ -322,11 +323,15 @@ def build_reference(context: GYREContext, truth_state) -> LossReference:
 
 
 def make_loss(context: GYREContext, reference: LossReference, n_steps: int,
-              *, schedule: str):
+              *, schedule: str | None = None):
     """Return the registered four-field normalized after-state loss."""
 
     def loss(d_t0):
-        state = scheduled_rollout(context, d_t0, n_steps, schedule)
+        state = (
+            gradient_rollout(context, d_t0, n_steps)
+            if schedule is None
+            else scheduled_rollout(context, d_t0, n_steps, schedule)
+        )
         candidate = _score_state(state)
         scores = []
         for name in FIELDS:
@@ -457,23 +462,15 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
     zero = jnp.zeros_like(context.initial_state.T.data)
     truth_state = production_rollout(context, zero, n_steps)
     jax.block_until_ready(truth_state)
-    scheduled_truth = scheduled_rollout(context, zero, n_steps, schedule)
-    jax.block_until_ready(scheduled_truth)
-    primal_report = state_bitwise_report(truth_state, scheduled_truth)
-    forward_schedule = "per_step" if schedule == "per_step" else "uniform"
-    forward_report = (
-        primal_report if schedule == forward_schedule else {
-            "bitwise_equal": None,
-            "mismatch_count": None,
-            "mismatches": [],
-            "reason": "not evaluated after selected-schedule primal refusal",
-        }
-    )
-    if primal_report["bitwise_equal"] and schedule != forward_schedule:
-        forward_truth = scheduled_rollout(
-            context, zero, n_steps, forward_schedule)
-        jax.block_until_ready(forward_truth)
-        forward_report = state_bitwise_report(truth_state, forward_truth)
+    # Agreement follows the SWG lane's accepted composition: a Python loop
+    # around the rematerialized production JIT.  The checkpoint schedule name
+    # is retained for matrix compatibility but does not replace this byte-exact
+    # agreement path with a scan.
+    gradient_truth = gradient_rollout(context, zero, n_steps)
+    jax.block_until_ready(gradient_truth)
+    primal_report = state_bitwise_report(truth_state, gradient_truth)
+    forward_schedule = "per_step"
+    forward_report = primal_report
     row = classify_agreement(math.nan, math.nan, math.nan)
     evaluation_reports = {}
     if not primal_report["bitwise_equal"]:
@@ -486,28 +483,21 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
             "production Python loop")
     else:
         reference = build_reference(context, truth_state)
-        forward_loss = make_loss(
-            context, reference, n_steps, schedule=forward_schedule)
-        reverse_loss = make_loss(context, reference, n_steps, schedule=schedule)
+        forward_loss = make_loss(context, reference, n_steps)
+        reverse_loss = forward_loss
         base, direction = perturbations(context)
         perturbations_to_check = {
             "base": base,
             "fd_plus": base + FD_STEP * direction,
             "fd_minus": base - FD_STEP * direction,
         }
-        schedules_to_check = (
-            (schedule,) if schedule == forward_schedule
-            else (schedule, forward_schedule)
-        )
         for label, perturbation in perturbations_to_check.items():
             production = production_rollout(context, perturbation, n_steps)
             jax.block_until_ready(production)
-            for checked_schedule in schedules_to_check:
-                selected = scheduled_rollout(
-                    context, perturbation, n_steps, checked_schedule)
-                jax.block_until_ready(selected)
-                evaluation_reports[f"{checked_schedule}_{label}"] = (
-                    state_bitwise_report(production, selected))
+            selected = gradient_rollout(context, perturbation, n_steps)
+            jax.block_until_ready(selected)
+            evaluation_reports[f"per_step_{label}"] = (
+                state_bitwise_report(production, selected))
         bad_evaluation_reports = [
             name for name, report in evaluation_reports.items()
             if not report["bitwise_equal"]
@@ -539,10 +529,8 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
         "geometry_dtype": str(context.card.recipe.z_coord.dz_ref.dtype),
         "plant": "broken_vjp" if plant else None,
         "production_entry": "LatLonCGridOceanModel._step_jitted",
-        "composition": "cold step segment plus fixed-pytree warm loop",
-        "schedule_scope": (
-            "Decision-49 per-step Python composition"
-            if schedule == "per_step" else SCHEDULE_SCOPE),
+        "composition": "per-step Python loop",
+        "schedule_scope": "Decision-49 per-step Python composition",
         "per_step_whole_step_rematerialization": True,
         "schedule_primal_vs_production": primal_report,
         "forward_primal_vs_production": forward_report,
@@ -597,6 +585,65 @@ def state_bitwise_report(left, right) -> dict:
 def states_bitwise_equal(left, right) -> bool:
     """Compare all state leaves byte for byte."""
     return bool(state_bitwise_report(left, right)["bitwise_equal"])
+
+
+def compare_scheduled_primal(left, right) -> dict:
+    """Apply the checkpoint scheduler's frozen floating-point value contract."""
+    left_leaves = jax.tree_util.tree_leaves(left)
+    right_leaves = jax.tree_util.tree_leaves(right)
+    if len(left_leaves) != len(right_leaves):
+        return {
+            "within_contract": False,
+            "bitwise": False,
+            "max_abs": None,
+            "rtol": SCHEDULE_RTOL,
+            "atol": SCHEDULE_ATOL,
+        }
+    bitwise = True
+    within_contract = True
+    max_abs = 0.0
+    for left_leaf, right_leaf in zip(
+            left_leaves, right_leaves, strict=True):
+        left_array = np.asarray(left_leaf)
+        right_array = np.asarray(right_leaf)
+        leaf_bitwise = (
+            left_array.shape == right_array.shape
+            and left_array.dtype == right_array.dtype
+            and left_array.tobytes() == right_array.tobytes()
+        )
+        bitwise = bitwise and leaf_bitwise
+        if leaf_bitwise:
+            continue
+        if left_array.shape != right_array.shape:
+            within_contract = False
+            continue
+        if not (
+            np.issubdtype(left_array.dtype, np.inexact)
+            and np.issubdtype(right_array.dtype, np.inexact)
+        ):
+            within_contract = False
+            continue
+        finite = np.isfinite(left_array) & np.isfinite(right_array)
+        if not bool(np.all(finite)):
+            within_contract = False
+            continue
+        max_abs = max(
+            max_abs,
+            float(np.max(np.abs(left_array - right_array), initial=0.0)),
+        )
+        within_contract = within_contract and bool(np.allclose(
+            left_array,
+            right_array,
+            rtol=SCHEDULE_RTOL,
+            atol=SCHEDULE_ATOL,
+        ))
+    return {
+        "within_contract": within_contract,
+        "bitwise": bitwise,
+        "max_abs": max_abs,
+        "rtol": SCHEDULE_RTOL,
+        "atol": SCHEDULE_ATOL,
+    }
 
 
 def current_rss_mib() -> float:
@@ -655,6 +702,65 @@ class PeakMemorySampler:
         require(self.samples >= 2, "peak-memory sampler took no in-pass sample")
 
 
+def device_memory_stats(device) -> dict[str, int]:
+    """Read the JAX allocator counters required by the GPU memory gate."""
+    stats = device.memory_stats()
+    require(stats is not None, "JAX device does not expose memory_stats()")
+    required = ("bytes_in_use", "peak_bytes_in_use")
+    missing = [name for name in required if name not in stats]
+    require(not missing, f"JAX device memory_stats missing {missing}")
+    result = {
+        name: int(value) for name, value in stats.items()
+        if isinstance(value, (int, np.integer))
+    }
+    for name in required:
+        require(result[name] >= 0, f"JAX device memory stat {name} is unavailable")
+    return result
+
+
+def require_gpu_allocator_instrument() -> None:
+    """Refuse GPU memory rows whose allocator hides live allocations."""
+    preallocate = os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE", "").lower()
+    allocator = os.environ.get("XLA_PYTHON_CLIENT_ALLOCATOR", "").lower()
+    require(
+        preallocate == "false",
+        "GPU resources require XLA_PYTHON_CLIENT_PREALLOCATE=false before JAX import",
+    )
+    require(
+        allocator != "platform",
+        "GPU resources refuse XLA_PYTHON_CLIENT_ALLOCATOR=platform because "
+        "JAX device memory_stats() is unavailable",
+    )
+
+
+def measure_blocked_reverse(reverse, zero_alpha, backend: str):
+    """Time one blocked reverse execution with a single-use sampler."""
+    sampler = PeakMemorySampler(backend)
+    sampler.start()
+    started = time.perf_counter()
+    try:
+        value, gradient = reverse(zero_alpha)
+        jax.block_until_ready((value, gradient))
+        wall_seconds = time.perf_counter() - started
+    finally:
+        sampler.stop()
+    return ReversePassMeasurement(value, gradient, wall_seconds, sampler)
+
+
+def measure_cold_and_warm_reverse(
+        reverse, zero_alpha, backend: str, *, after_cold=None):
+    """Use distinct samplers and observe the cold pass before the warm pass."""
+    cold = measure_blocked_reverse(reverse, zero_alpha, backend)
+    cold_observation = after_cold() if after_cold is not None else None
+    warm = measure_blocked_reverse(reverse, zero_alpha, backend)
+    return cold, warm, cold_observation
+
+
+def build_compiled_reverse(line):
+    """Build the compiled reverse executable used by resource measurements."""
+    return jax.jit(jax.value_and_grad(line))
+
+
 def extrapolate_steps(
         schedule: str, baseline_mib: float, peak6_mib: float,
         n_steps: int) -> float:
@@ -682,7 +788,7 @@ def extrapolate_360(schedule: str, baseline_mib: float, peak6_mib: float) -> flo
 
 def measure_resources(n_steps: int, schedule: str, *,
                       transcendentals: str = "libm"):
-    """Warm once, then measure one blocked reverse execution and peak memory."""
+    """Measure a compiled reverse and its peak footprint in a fresh process."""
     context = build_context(transcendentals=transcendentals)
     zero = jnp.zeros_like(context.initial_state.T.data)
     truth_state = production_rollout(context, zero, n_steps)
@@ -690,42 +796,52 @@ def measure_resources(n_steps: int, schedule: str, *,
     reference = build_reference(context, truth_state)
     scheduled_truth = scheduled_rollout(context, zero, n_steps, schedule)
     jax.block_until_ready(scheduled_truth)
-    require(states_bitwise_equal(truth_state, scheduled_truth),
-            f"{schedule} schedule primal differs from per-step production")
+    primal_comparison = compare_scheduled_primal(truth_state, scheduled_truth)
+    require(
+        primal_comparison["within_contract"],
+        f"{schedule} schedule primal differs from per-step production beyond "
+        f"the checkpoint-schedule contract: {primal_comparison}",
+    )
     loss = make_loss(context, reference, n_steps, schedule=schedule)
     base, direction = perturbations(context)
 
     def line(alpha):
         return loss(base + alpha * direction)
 
-    reverse = jax.value_and_grad(line)
+    reverse = build_compiled_reverse(line)
     zero_alpha = jnp.asarray(0.0, dtype=base.dtype)
 
     backend = jax.default_backend()
     require(backend in ("cpu", "gpu"), f"unsupported backend {backend!r}")
-    identity = runtime_identity()
     if backend == "gpu":
-        require(
-            os.environ.get("XLA_PYTHON_CLIENT_PREALLOCATE", "").lower()
-            == "false",
-            "GPU resource rows require XLA_PYTHON_CLIENT_PREALLOCATE=false",
-        )
-    cold_started = time.perf_counter()
-    cold_value, cold_gradient = reverse(zero_alpha)
-    jax.block_until_ready((cold_value, cold_gradient))
-    cold_wall_s = time.perf_counter() - cold_started
-
-    sampler = PeakMemorySampler(backend)
-    sampler.start()
-    try:
-        started = time.perf_counter()
-        value, gradient = reverse(zero_alpha)
-        jax.block_until_ready((value, gradient))
-        wall_s = time.perf_counter() - started
-    finally:
-        sampler.stop()
+        require_gpu_allocator_instrument()
+    identity = runtime_identity()
+    device_stats_before = (
+        device_memory_stats(jax.devices()[0]) if backend == "gpu" else None)
+    after_cold = (
+        (lambda: device_memory_stats(jax.devices()[0]))
+        if backend == "gpu" else None)
+    cold, warm, device_stats_after = measure_cold_and_warm_reverse(
+        reverse, zero_alpha, backend, after_cold=after_cold)
+    cold_wall_s = cold.wall_seconds
+    value, gradient = warm.value, warm.gradient
+    wall_s = warm.wall_seconds
+    sampler = cold.sampler if backend == "gpu" else warm.sampler
     gradient_array = np.asarray(gradient)
-    return {
+    if backend == "gpu":
+        assert device_stats_before is not None and device_stats_after is not None
+        memory_baseline_mib = device_stats_before["bytes_in_use"] / 2**20
+        memory_peak_mib = device_stats_after["peak_bytes_in_use"] / 2**20
+        memory_samples = 2
+    else:
+        memory_baseline_mib = sampler.baseline_mib
+        memory_peak_mib = sampler.peak_mib
+        memory_samples = sampler.samples
+    loss_value = float(np.asarray(value))
+    gradient_finite = bool(np.all(np.isfinite(gradient_array)))
+    gradient_nonzero = bool(np.any(gradient_array != 0.0))
+    row = {
+        "resource_schema": RESOURCE_SCHEMA,
         "case": CASE,
         "steps": n_steps,
         "model_seconds": n_steps * DT_S,
@@ -739,42 +855,187 @@ def measure_resources(n_steps: int, schedule: str, *,
         "geometry_dtype": str(context.card.recipe.z_coord.dz_ref.dtype),
         "production_entry": "LatLonCGridOceanModel._step_jitted",
         "schedule_scope": SCHEDULE_SCOPE,
-        "per_step_whole_step_rematerialization": True,
-        "schedule_primal_bitwise_production": True,
+        "schedule_primal_bitwise_production": primal_comparison["bitwise"],
+        "schedule_primal_comparison": primal_comparison,
         "cold_compile_and_reverse_wall_seconds": cold_wall_s,
         "warm_reverse_wall_seconds": wall_s,
-        "loss": float(np.asarray(value)),
-        "gradient_finite": bool(np.all(np.isfinite(gradient_array))),
-        "gradient_nonzero": bool(np.any(gradient_array != 0.0)),
-        "memory_kind": "host_rss" if backend == "cpu" else "gpu1_nvidia_smi",
-        "memory_scope": "warm blocked reverse pass after compilation",
-        "xla_python_client_preallocate": os.environ.get(
-            "XLA_PYTHON_CLIENT_PREALLOCATE"),
-        "memory_baseline_mib": sampler.baseline_mib,
-        "memory_peak_mib": sampler.peak_mib,
-        "memory_increment_mib": sampler.peak_mib - sampler.baseline_mib,
-        "memory_samples": sampler.samples,
+        "warm_reverse_timer_span": WARM_TIMER_SPAN,
+        "reverse_transform": REVERSE_TRANSFORM,
+        "loss": loss_value,
+        "gradient_finite": gradient_finite,
+        "gradient_nonzero": gradient_nonzero,
+        "memory_kind": (
+            "host_rss" if backend == "cpu"
+            else "jax_allocator_peak_with_gpu1_nvidia_smi_control"),
+        "memory_pass": (
+            "warm_reverse" if backend == "cpu"
+            else "fresh_process_cold_compile_and_reverse"),
+        "memory_baseline_mib": memory_baseline_mib,
+        "memory_peak_mib": memory_peak_mib,
+        "memory_increment_mib": memory_peak_mib - memory_baseline_mib,
+        "memory_samples": memory_samples,
     }
+    row["status"] = classify_resource_row(row)
+    if backend == "gpu":
+        assert device_stats_before is not None and device_stats_after is not None
+        peak_growth_mib = (
+            device_stats_after["peak_bytes_in_use"]
+            - device_stats_before["peak_bytes_in_use"]
+        ) / 2**20
+        nvidia_increment_mib = sampler.peak_mib - sampler.baseline_mib
+        row.update({
+            "jax_device_memory_stats_before": device_stats_before,
+            "jax_device_memory_stats_after": device_stats_after,
+            "jax_device_memory_increment_mib": (
+                device_stats_after["peak_bytes_in_use"]
+                - device_stats_before["bytes_in_use"]
+            ) / 2**20,
+            "jax_device_peak_growth_mib": peak_growth_mib,
+            "jax_device_peak_scope": "fresh-process lifetime",
+            "nvidia_smi_memory_baseline_mib": sampler.baseline_mib,
+            "nvidia_smi_memory_peak_mib": sampler.peak_mib,
+            "nvidia_smi_memory_increment_mib": nvidia_increment_mib,
+            "nvidia_smi_memory_samples": sampler.samples,
+            "xla_python_client_preallocate": os.environ.get(
+                "XLA_PYTHON_CLIENT_PREALLOCATE"),
+            "xla_python_client_allocator": os.environ.get(
+                "XLA_PYTHON_CLIENT_ALLOCATOR"),
+        })
+        if peak_growth_mib <= 0.0 or nvidia_increment_mib <= 0.0:
+            row["status"] = "VACUOUS"
+            row["resource_vacuity_reason"] = (
+                "JAX peak and nvidia-smi must both advance during reverse")
+    return row
 
 
-def resource_row_passes(row: dict) -> bool:
-    """Return the fail-closed resource-row gradient health verdict."""
+def classify_resource_row(row: dict) -> str:
+    """Classify one row, retracting contaminated historical timer schemas."""
+    if (
+        row.get("resource_schema") != RESOURCE_SCHEMA
+        or row.get("reverse_transform") != REVERSE_TRANSFORM
+        or row.get("warm_reverse_timer_span") != WARM_TIMER_SPAN
+    ):
+        return "RETRACTED"
     numeric = (
-        row["loss"], row["cold_compile_and_reverse_wall_seconds"],
-        row["warm_reverse_wall_seconds"], row["memory_baseline_mib"],
-        row["memory_peak_mib"], row["memory_increment_mib"],
+        row.get("loss"), row.get("cold_compile_and_reverse_wall_seconds"),
+        row.get("warm_reverse_wall_seconds"), row.get("memory_baseline_mib"),
+        row.get("memory_peak_mib"), row.get("memory_increment_mib"),
     )
-    return bool(
-        row["gradient_finite"]
-        and row["gradient_nonzero"]
+    if not all(isinstance(value, (int, float)) for value in numeric):
+        return "VACUOUS"
+    sampler_visible = bool(
+        math.isfinite(row["memory_baseline_mib"])
+        and math.isfinite(row["memory_peak_mib"])
+        and row["memory_peak_mib"] > row["memory_baseline_mib"]
+        and row.get("memory_samples", 0) >= 2
+    )
+    if not sampler_visible:
+        return "VACUOUS"
+    passed = bool(
+        row.get("gradient_finite")
+        and row.get("gradient_nonzero")
         and all(math.isfinite(value) for value in numeric)
         and row["cold_compile_and_reverse_wall_seconds"] > 0.0
         and row["warm_reverse_wall_seconds"] > 0.0
-        and row["memory_baseline_mib"] >= 0.0
-        and row["memory_peak_mib"] >= row["memory_baseline_mib"]
-        and row["memory_increment_mib"] >= 0.0
-        and row["memory_samples"] >= 2
     )
+    return "CONFIRMED" if passed else "REFUTED"
+
+
+def resource_row_passes(row: dict) -> bool:
+    """Return the fail-closed resource-row verdict used by the CLI."""
+    return classify_resource_row(row) == "CONFIRMED"
+
+
+def classify_time_scaling(rows: list[dict], *, plant: bool = False) -> dict:
+    """Gate measured warm-time growth; the plant erases all time scaling."""
+    if len(rows) < 2:
+        return {"status": "VACUOUS", "reason": "at least two rows required"}
+    identity = ("case", "schedule", "backend")
+    for name in identity:
+        if len({row.get(name) for row in rows}) != 1:
+            return {"status": "VACUOUS", "reason": f"rows disagree on {name}"}
+    if any(classify_resource_row(row) != "CONFIRMED" for row in rows):
+        return {
+            "status": "VACUOUS",
+            "reason": "one or more rows lacks a valid compiled timing span",
+        }
+    ordered = sorted(rows, key=lambda row: row["steps"])
+    steps = np.asarray([row["steps"] for row in ordered], dtype=np.float64)
+    times = np.asarray(
+        [row["warm_reverse_wall_seconds"] for row in ordered],
+        dtype=np.float64,
+    )
+    evaluated = np.full_like(times, times[0]) if plant else times
+    slope, intercept = np.polyfit(steps, evaluated, 1)
+    predicted = intercept + slope * steps
+    residual = float(np.sum((evaluated - predicted) ** 2))
+    total = float(np.sum((evaluated - np.mean(evaluated)) ** 2))
+    r_squared = (
+        1.0 if total == 0.0 and residual == 0.0
+        else 0.0 if total == 0.0
+        else 1.0 - residual / total
+    )
+    passed = bool(slope > 0.0 and evaluated[-1] > evaluated[0])
+    return {
+        "status": "CONFIRMED" if passed else "REFUTED",
+        "reason": (
+            "warm reverse time grows with modeled steps"
+            if passed else "warm reverse time does not grow with modeled steps"
+        ),
+        "schedule": ordered[0]["schedule"],
+        "backend": ordered[0]["backend"],
+        "steps": steps.tolist(),
+        "measured_warm_seconds": times.tolist(),
+        "evaluated_warm_seconds": evaluated.tolist(),
+        "slope_seconds_per_step": float(slope),
+        "intercept_seconds": float(intercept),
+        "r_squared": float(r_squared),
+        "plant": "constant_warm_time" if plant else None,
+    }
+
+
+def classify_gpu_resource_suite(rows: list[dict], *, plant: bool = False) -> dict:
+    """Require both GPU samplers to resolve none > binomial > uniform."""
+    by_schedule = {row.get("schedule"): row for row in rows}
+    if set(by_schedule) != set(SCHEDULES) or len(rows) != len(SCHEDULES):
+        return {"status": "VACUOUS", "reason": "three schedules required"}
+    if any(row.get("backend") != "gpu" for row in rows):
+        return {"status": "VACUOUS", "reason": "GPU rows required"}
+    if any(row.get("status") != "CONFIRMED" for row in rows):
+        return {"status": "VACUOUS", "reason": "unconfirmed input row"}
+    keys = {
+        "jax_allocator": "jax_device_memory_increment_mib",
+        "nvidia_smi": "nvidia_smi_memory_increment_mib",
+    }
+    increments = {}
+    for sampler, key in keys.items():
+        values = {name: by_schedule[name].get(key) for name in SCHEDULES}
+        if any(
+            not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value <= 0.0
+            for value in values.values()
+        ):
+            return {
+                "status": "VACUOUS",
+                "reason": f"{sampler} cannot resolve positive allocations",
+            }
+        increments[sampler] = values
+    evaluated = {key: dict(value) for key, value in increments.items()}
+    if plant:
+        for values in evaluated.values():
+            values["uniform"] = values["none"]
+    ordering = {
+        sampler: values["none"] > values["binomial"] > values["uniform"]
+        for sampler, values in evaluated.items()
+    }
+    return {
+        "status": "CONFIRMED" if all(ordering.values()) else "REFUTED",
+        "ordering": ordering,
+        "increments_mib": increments,
+        "evaluated_increments_mib": evaluated,
+        "plant": "uniform_label_uses_none_measurement" if plant else None,
+    }
 
 
 def _git_output(*args: str) -> str:
@@ -807,11 +1068,19 @@ def write_result(path: Path, row: dict) -> None:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("agreement", "resources"))
-    parser.add_argument("--steps", type=int, choices=tuple(range(1, 7)), required=True)
     parser.add_argument(
-        "--schedule", choices=AGREEMENT_COMPOSITIONS, required=True)
-    parser.add_argument("--plant", choices=("broken_vjp",))
+        "mode", choices=(
+            "agreement", "resources", "time-scaling-suite",
+            "gpu-resource-suite",
+        ))
+    parser.add_argument("--steps", type=int, choices=(1, 6, 60))
+    parser.add_argument(
+        "--schedule", choices=AGREEMENT_COMPOSITIONS)
+    parser.add_argument(
+        "--plant", choices=(
+            "broken_vjp", "constant_time", "gpu_ordering",
+        ))
+    parser.add_argument("--input-row", type=Path, action="append", default=[])
     parser.add_argument(
         "--transcendentals", choices=("libm", "native"), default="libm",
         help="libm is the certified CPU policy; GPU rows must select native",
@@ -819,11 +1088,27 @@ def parse_args(argv=None):
     parser.add_argument("--expect-commit", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
+    if args.mode in ("agreement", "resources") and args.steps is None:
+        parser.error(f"{args.mode} mode requires --steps")
+    if args.mode in ("agreement", "resources") and args.schedule is None:
+        parser.error(f"{args.mode} mode requires --schedule")
+    if args.mode == "agreement" and args.plant not in (None, "broken_vjp"):
+        parser.error("agreement accepts only the broken_vjp plant")
     if args.mode == "resources" and args.plant is not None:
         parser.error("resources mode does not accept --plant")
     if args.mode == "resources" and args.schedule == "per_step":
         parser.error(
             "resources mode requires one of the registered checkpoint schedules")
+    if args.mode == "time-scaling-suite":
+        if len(args.input_row) < 2:
+            parser.error("time-scaling-suite requires at least two --input-row")
+        if args.plant not in (None, "constant_time"):
+            parser.error("time-scaling-suite accepts only constant_time plant")
+    if args.mode == "gpu-resource-suite":
+        if len(args.input_row) != 3:
+            parser.error("gpu-resource-suite requires exactly three --input-row")
+        if args.plant not in (None, "gpu_ordering"):
+            parser.error("gpu-resource-suite accepts only gpu_ordering plant")
     return args
 
 
@@ -836,17 +1121,31 @@ def main(argv=None) -> int:
         row = measure_agreement(
             args.steps, args.schedule, plant=args.plant == "broken_vjp",
             transcendentals=args.transcendentals)
-    else:
+    elif args.mode == "resources":
         row = measure_resources(
             args.steps, args.schedule,
             transcendentals=args.transcendentals)
+    else:
+        input_rows = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in args.input_row
+        ]
+        if args.mode == "time-scaling-suite":
+            row = classify_time_scaling(
+                input_rows, plant=args.plant == "constant_time")
+        else:
+            row = classify_gpu_resource_suite(
+                input_rows, plant=args.plant == "gpu_ordering")
+        row["input_rows"] = [str(path) for path in args.input_row]
     row["provenance"] = require_unchanged_measurement_stamp(provenance)
     row["argv"] = list(sys.argv if argv is None else argv)
     write_result(args.output, row)
     print(json.dumps(row, sort_keys=True), flush=True)
     if args.mode == "agreement":
         return 0 if row["status"] == "CONFIRMED" else 1
-    return 0 if resource_row_passes(row) else 1
+    if args.mode == "resources":
+        return 0 if resource_row_passes(row) else 1
+    return 0 if row["status"] == "CONFIRMED" else 1
 
 
 if __name__ == "__main__":

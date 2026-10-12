@@ -87,6 +87,13 @@ def test_reverse_only_schedule_compares_against_forward_reference():
 
 def _healthy_resource_row():
     return {
+        "resource_schema": G.RESOURCE_SCHEMA,
+        "reverse_transform": G.REVERSE_TRANSFORM,
+        "warm_reverse_timer_span": G.WARM_TIMER_SPAN,
+        "case": G.CASE,
+        "schedule": "uniform",
+        "backend": "cpu",
+        "steps": 6,
         "gradient_finite": True,
         "gradient_nonzero": True,
         "loss": 1.0,
@@ -145,42 +152,15 @@ def test_registered_60_step_memory_extrapolation(schedule, expected):
         expected)
 
 
-@pytest.mark.parametrize("schedule", G.SCHEDULES)
-def test_cold_step_is_segmented_before_fixed_pytree_loop(schedule):
-    """The old scan is non-vacuously rejected; the segmented gradient works."""
-    def unsegmented_body(carry):
-        if carry["cache"] is None:
-            return {"value": carry["value"] + 1.0,
-                    "cache": jnp.asarray(1.0)}
-        return {"value": carry["value"] + carry["cache"],
-                "cache": carry["cache"]}
-
-    with pytest.raises(
-            (TypeError, ValueError),
-            match="(carry input and carry output|same input and output structure)"):
-        G.checkpointed_loop(
-            unsegmented_body,
-            {"value": jnp.asarray(0.0), "cache": None},
-            2,
-            schedule=schedule,
-        )
-
-    def segmented(value):
-        cold = {"value": value, "cache": None}
-
-        def cold_body(carry):
-            return {"value": carry["value"] + 1.0,
-                    "cache": jnp.asarray(1.0)}
-
-        def warm_body(carry):
-            return {"value": carry["value"] + carry["cache"],
-                    "cache": carry["cache"]}
-
-        return G.checkpoint_after_cold_step(
-            cold_body, warm_body, cold, 3, schedule)["value"]
-
-    assert float(segmented(jnp.asarray(0.0))) == 3.0
-    assert float(jax.grad(segmented)(jnp.asarray(0.0))) == 1.0
+def test_schedule_primal_contract_records_bits_and_refuses_large_drift():
+    base = {"x": jnp.asarray([1.0, 2.0], dtype=jnp.float64)}
+    last_bit = {"x": jnp.asarray(
+        [np.nextafter(1.0, 2.0), 2.0], dtype=jnp.float64)}
+    bad = {"x": jnp.asarray([1.0, 2.1], dtype=jnp.float64)}
+    close = G.compare_scheduled_primal(base, last_bit)
+    assert close["within_contract"] is True
+    assert close["bitwise"] is False
+    assert G.compare_scheduled_primal(base, bad)["within_contract"] is False
 
 
 def test_volume_weighted_mse_ignores_zero_volume_cells():
@@ -325,3 +305,114 @@ def test_measurement_policy_labels_refuse_cross_backend_combinations():
         G.measurement_policy_label("gpu", "libm")
     with pytest.raises(ValueError, match="unsupported GYRE gradient"):
         G.measurement_policy_label("cpu", "native")
+
+
+def test_historical_uncompiled_resource_timing_is_executable_retraction():
+    old = _healthy_resource_row()
+    old.pop("resource_schema")
+    old.pop("reverse_transform")
+    old.pop("warm_reverse_timer_span")
+    assert G.classify_resource_row(old) == "RETRACTED"
+    assert G.resource_row_passes(old) is False
+
+
+def test_time_scaling_classifier_and_constant_time_plant():
+    six = _healthy_resource_row()
+    sixty = {**six, "steps": 60, "warm_reverse_wall_seconds": 8.0}
+    control = G.classify_time_scaling([six, sixty])
+    planted = G.classify_time_scaling([six, sixty], plant=True)
+    assert control["status"] == "CONFIRMED"
+    assert control["slope_seconds_per_step"] > 0.0
+    assert planted["status"] == "REFUTED"
+    assert planted["slope_seconds_per_step"] == pytest.approx(0.0, abs=1e-15)
+
+
+def _gpu_resource_row(schedule, jax_increment, smi_increment):
+    return {
+        "backend": "gpu",
+        "schedule": schedule,
+        "status": "CONFIRMED",
+        "jax_device_memory_increment_mib": jax_increment,
+        "nvidia_smi_memory_increment_mib": smi_increment,
+    }
+
+
+def test_gpu_resource_ordering_plant_flips():
+    rows = [
+        _gpu_resource_row("none", 900.0, 1000.0),
+        _gpu_resource_row("uniform", 200.0, 250.0),
+        _gpu_resource_row("binomial", 400.0, 500.0),
+    ]
+    assert G.classify_gpu_resource_suite(rows)["status"] == "CONFIRMED"
+    assert G.classify_gpu_resource_suite(rows, plant=True)["status"] == "REFUTED"
+
+
+def test_device_memory_stats_requires_allocator_peak_and_live_bytes():
+    class Device:
+        def memory_stats(self):
+            return {
+                "bytes_in_use": 2**20,
+                "peak_bytes_in_use": 3 * 2**20,
+                "num_allocs": np.int64(7),
+            }
+
+    assert G.device_memory_stats(Device())["num_allocs"] == 7
+
+    class MissingPeak:
+        def memory_stats(self):
+            return {"bytes_in_use": 2**20}
+
+    with pytest.raises(RuntimeError, match="peak_bytes_in_use"):
+        G.device_memory_stats(MissingPeak())
+
+
+def test_gpu_allocator_contract_refuses_platform(monkeypatch):
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    monkeypatch.delenv("XLA_PYTHON_CLIENT_ALLOCATOR", raising=False)
+    G.require_gpu_allocator_instrument()
+    monkeypatch.setenv("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
+    with pytest.raises(RuntimeError, match="refuse.*platform"):
+        G.require_gpu_allocator_instrument()
+
+
+def test_resource_two_pass_control_uses_fresh_sampler(monkeypatch):
+    instances = []
+
+    class SingleUseSampler:
+        def __init__(self, _backend):
+            self.started = 0
+            self.stopped = 0
+            self.baseline_mib = 1.0
+            self.peak_mib = 2.0
+            self.samples = 2
+            instances.append(self)
+
+        def start(self):
+            assert self.started == 0
+            self.started += 1
+
+        def stop(self):
+            assert self.started == 1 and self.stopped == 0
+            self.stopped += 1
+
+    monkeypatch.setattr(G, "PeakMemorySampler", SingleUseSampler)
+    reverse = jax.jit(jax.value_and_grad(lambda x: x**2))
+    cold, warm, _ = G.measure_cold_and_warm_reverse(
+        reverse, jnp.asarray(3.0), "cpu")
+    assert cold.sampler is instances[0]
+    assert warm.sampler is instances[1]
+    assert all(item.started == item.stopped == 1 for item in instances)
+
+
+def test_compiled_reverse_warm_call_does_not_retrace():
+    traces = 0
+
+    def loss(x):
+        nonlocal traces
+        traces += 1
+        return x**2
+
+    reverse = G.build_compiled_reverse(loss)
+    reverse(jnp.asarray(2.0))
+    reverse(jnp.asarray(3.0))
+    assert traces == 1

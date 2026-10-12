@@ -5518,6 +5518,14 @@ class ModelDriver:
         """
         if not getattr(self.config, "enable_tiled_dycore", False):
             return None
+        if self.config.dycore.energy_fixer:
+            # the tiled dynamics re-implements the cube step without the
+            # dycore energy fixer (F15): refuse, never an open sink
+            raise ValueError(
+                "enable_tiled_dycore: DycoreConfig.energy_fixer=True is not wired on the "
+                "sub-face-TILED cube dynamics; set energy_fixer=False "
+                "(--no-energy-fixer) to accept the open sink explicitly, "
+                "or run on <=6 devices.")
         dc = self._device_config
         if (dc is None or getattr(dc, "mesh", None) is None
                 or tuple(getattr(dc, "tiling", (1, 1))) == (1, 1)):
@@ -16006,6 +16014,14 @@ class ModelDriver:
             make_tiled_cc_loop, scan_tiled_cc_steps,
         )
 
+        if self.config.dycore.energy_fixer:
+            # the tiled dynamics re-implements the cube step without the
+            # dycore energy fixer (F15): refuse, never an open sink
+            raise ValueError(
+                "tiled cube SPMD: DycoreConfig.energy_fixer=True is not wired on the "
+                "sub-face-TILED cube dynamics; set energy_fixer=False "
+                "(--no-energy-fixer) to accept the open sink explicitly, "
+                "or run on <=6 devices.")
         cfg = self.config
         dc = self._device_config
         tiling = tuple(getattr(dc, "tiling", (1, 1)))

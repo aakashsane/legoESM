@@ -1847,6 +1847,32 @@ def energy_fixer_dT(e_before, e_after, mass) -> jax.Array:
     return (e_before - e_after) / (constants.c_pd * mass)
 
 
+def gridded_energy_fixer_dT(pre, post, grid, sigma_coord) -> jax.Array:
+    """:func:`energy_fixer_dT` for the structured lanes (lat-lon C-grid, cube
+    C-D grid), serial and distributed.
+
+    ``pre`` / ``post`` are the window's start / end as ``(T, u, v, p_s,
+    phis)`` cell-centre arrays (level axis last; ``u``/``v`` the cell-centre
+    winds the physics reads, KE = 0.5*(u^2+v^2), the duo-lane form, vote
+    F15b-V1).  The three global integrals go through ONE
+    :func:`batch_global_area_sums` call -- the reduction the lanes' own mass
+    fixers use (serial, MPI allreduce-SUM, lat-band / tile SPMD psum, cube
+    face GSPMD), all AD-safe.
+    """
+    acc = conservation_accumulator()
+
+    def _col(T, u, v, p_s, phis):
+        ph = sigma_coord.pressure_at_half(p_s)
+        dp = ph[..., 1:] - ph[..., :-1]
+        e = dycore_column_energy(T, 0.5 * (u * u + v * v), dp, phis, p_s)
+        return e, jnp.sum(dp.astype(acc), axis=-1) / constants.g
+
+    e0, _ = _col(*pre)
+    e1, m1 = _col(*post)
+    s0, s1, sm = batch_global_area_sums([e0, e1, m1], grid)
+    return energy_fixer_dT(s0, s1, sm)
+
+
 def voronoi_energy_fixer_dT(state_pre, state_post, mesh, sigma_coord, area,
                             sum_fn=None) -> jax.Array:
     """:func:`energy_fixer_dT` for the MPAS hydrostatic lane (serial + MPI).

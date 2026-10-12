@@ -193,9 +193,11 @@ fabricated.
   named six-step CPU compiler row; the citation tests, recipe tests, nine
   legacy gradient variants, and isolated one-step GYRE row pass. Log SHA-256:
   `918c8556b4a95b46e456d95a7a0ff10e65a4708a7387ca6169873384595aa3e0`.
-- Standalone citation gate: **PASS**, 274 citations, zero unmapped citations,
-  zero failures, and every planted self-test fired. It ran at clean commit
-  `1dc5e2f67`.
+- Standalone default citation gate: **PASS**, 274 citations and zero failures
+  at clean commit `1dc5e2f67`. The receipt-specific rerun also passes: 8
+  citations, zero unmapped citations, zero failures, and every planted
+  self-test fired at clean commit `0e079ad81`; JSON SHA-256
+  `a7244d9094c9eb79c066038e4a216f4e98a432b0e20e9b2e50d48271748f8657`.
 
 ## Retractions, OPEN, and decision
 

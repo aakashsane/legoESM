@@ -185,6 +185,11 @@ an operator rerun is OPEN. No GPU memory or projection number is fabricated.
 - Receipt-specific citation gate: **PASS**, seven citations, zero unmapped
   citations, zero failures, and every planted self-test fired. JSON SHA-256:
   `df6c5de1a4acb7c27e400445fa91567531f879b9381566561d4c6acfec2f6940`.
+- Independent adversarial reviews: **UNAVAILABLE, not counted**. The Codex CLI
+  refused because its in-process app-server state is read-only; the Claude CLI
+  returned `ENOTFOUND` for its API server. Their retained refusal files contain
+  no verdict. Because this round is HELD rather than shipped, no author review
+  is substituted for either required independent review.
 
 ## OPEN, retractions, and decision
 
@@ -204,6 +209,9 @@ OPEN:
    direct explicit-composition plant is binding, but it is not substituted for
    the missing expensive card row.
 5. Add the SWG card's own gradient gate when that certified card exists.
+6. Obtain two independent adversarial review verdicts after the corrected
+   six-step/resource artifacts exist; the sandbox review refusals do not
+   satisfy the campaign's review rule.
 
 RETRACTED: transformed VJP/JVP replay outputs are not bit-identical production
 trajectories and are not allowed to become later-step primals. The two strict

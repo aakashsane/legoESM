@@ -1794,6 +1794,21 @@ def main(argv=None, *, build_only=False):
     if build_only:
         return driver
 
+    # Coupled run manifest: every component config this driver was built from
+    # (the atmosphere's own manifest, written by its ModelDriver at setup, sits
+    # at the output root and covers the atmosphere only).  A failed write
+    # aborts the run.
+    from legoesm.driver.restart import write_run_manifest_on_root
+    write_run_manifest_on_root(
+        driver.output_dir / "coupled",
+        {"runner": "run_coupled", "atmosphere": atm_config,
+         "coupled": coupled_cfg, "coupler": coupler_config,
+         "sea_ice": ice_config, "lake": lake_config, "cli_args": vars(args)},
+        config_kind="coupled",
+        runner_tag="run_coupled",
+        rng_seeds={"master": int(atm_config.seed)},
+    )
+
     t0 = time.time()
     driver.setup()
     t_setup = time.time() - t0

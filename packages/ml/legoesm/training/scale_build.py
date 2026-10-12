@@ -762,7 +762,27 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
                 self._physics_fn, self._rad_fn = physics_fn, None
 
         def raw(self, ic_carry, n_steps, forcing, adjoint_steps=0):
-            state0 = carry_to_spectral_state(ic_carry, grid)
+            final = self._roll(carry_to_spectral_state(ic_carry, grid),
+                               n_steps, forcing, adjoint_steps=adjoint_steps)
+            return spectral_state_to_carry(final, grid, sigma)
+
+        def raw_two_leg(self, suffix_seg, ic_carry, n_steps, forcing,
+                        suffix_steps):
+            """One forecast whose last ``suffix_steps`` run ``suffix_seg``'s
+            parameters, handed the full carry (state, physics state, cached
+            radiation, step clock). With ``suffix_seg is self`` it is the same
+            forecast as ``raw``; its derivative in the suffix parameters is
+            what ``raw(..., adjoint_steps=suffix_steps)`` differentiates."""
+            k0 = int(n_steps) - int(suffix_steps)
+            mid, ps, rad = self._roll(
+                carry_to_spectral_state(ic_carry, grid), k0, forcing,
+                return_phys_state=True, return_rad_tendency=True)
+            final = suffix_seg._roll(
+                mid, int(suffix_steps), forcing, phys_state_in=ps,
+                rad_tendency_in=rad, step_offset=k0)
+            return spectral_state_to_carry(final, grid, sigma)
+
+        def _roll(self, state0, n_steps, forcing, **kw):
             forcing_base = forcing if uses_forcing else None
             # Classical convection reads the grid's mask, not PhysicsState.
             # Keep the per-sample plane traced and the shared grid immutable.
@@ -777,15 +797,13 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
             gated = ({} if self._rad_fn is None else
                      {"rad_physics_fn": self._rad_fn,
                       "rad_update_interval": split_rad_interval})
-            final = spectral_rollout(
+            return spectral_rollout(
                 state0, self._physics_fn, physics_grid, sigma, pe_config,
                 dt, int(n_steps),
                 sponge_factor, spectral_filter,
                 forcing_base=forcing_base,
-                adjoint_steps=adjoint_steps,
-                **gated,
+                **gated, **kw,
             )
-            return spectral_state_to_carry(final, grid, sigma)
 
     def make_run_seg(trainable):
         return _SpectralRunSeg(make_physics_fn(trainable))

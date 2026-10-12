@@ -62,6 +62,14 @@ def build_args(argv=None):
                         "probe, instead of the largest-gradient ones. Use it "
                         "to contrast a smooth scheme's knob against a gated "
                         "one's. A substring matching nothing is a hard error.")
+    p.add_argument("--adjoint-steps", type=int, default=0,
+                   dest="adjoint_steps",
+                   help="check the TRAINER's gradient: the full forecast to "
+                        "the real target, differentiated through the last n "
+                        "steps only. The finite difference then perturbs the "
+                        "parameters in those n steps only (the first leg runs "
+                        "the unperturbed parameters and hands on its full "
+                        "carry). Exclusive with --rollout-steps.")
     p.add_argument("--column-devices", type=int, default=0,
                    dest="column_devices",
                    help="split each scene's columns over this many GPUs, "
@@ -147,6 +155,9 @@ def noise_floor(h, jitter, baseline, n_terms=1):
 
 def main(argv=None):
     a = build_args(argv)
+    if a.adjoint_steps and a.rollout_steps:
+        raise SystemExit("--adjoint-steps and --rollout-steps measure different "
+                         "things; pass one")
 
     import os
     import sys
@@ -216,15 +227,30 @@ def main(argv=None):
     leaves, treedef = jax.tree_util.tree_flatten(arr)
     names = [jax.tree_util.keystr(p) for p, _ in jax.tree.leaves_with_path(arr)]
 
-    def one_loss(flat, s):
+    if a.adjoint_steps and not 0 < a.adjoint_steps <= roll:
+        raise SystemExit(f"--adjoint-steps must be in 1..{roll}")
+
+    def _seg(flat):
         tree = rep_in_trace(jax.tree_util.tree_unflatten(treedef, flat))
+        return make_run_seg(eqx.combine(tree, static))
+
+    def one_loss(flat, s):
         ic, target, forcing = s
-        return combined_loss(
-            make_run_seg(eqx.combine(tree, static)).raw(ic, roll, forcing),
-            target, sigma_full, grid=grid, config=loss_config)
+        kw = {"adjoint_steps": a.adjoint_steps} if a.adjoint_steps else {}
+        return combined_loss(_seg(flat).raw(ic, roll, forcing, **kw),
+                             target, sigma_full, grid=grid, config=loss_config)
+
+    def suffix_loss(flat, s):
+        # Leg 1 with the UNPERTURBED parameters, leg 2 with ``flat``: the
+        # function whose derivative the windowed adjoint computes.
+        ic, target, forcing = s
+        pred = _seg(leaves).raw_two_leg(_seg(flat), ic, roll, forcing,
+                                        a.adjoint_steps)
+        return combined_loss(pred, target, sigma_full, grid=grid,
+                             config=loss_config)
 
     vg = eqx.filter_jit(jax.value_and_grad(one_loss))
-    fwd = eqx.filter_jit(one_loss)
+    fwd = eqx.filter_jit(suffix_loss if a.adjoint_steps else one_loss)
 
     # Scene selection is RECORDED, not silent. A scene whose forward is finite
     # but whose gradient is not is itself an adjoint failure; dropping it and
@@ -261,6 +287,15 @@ def main(argv=None):
     # Comparing a value from the gradient program against one from the forward
     # program measures the difference between two executables, not the
     # forward's repeatability (codex).
+    if a.adjoint_steps:
+        # The two-leg forecast at unperturbed parameters IS the trainer's
+        # forecast; a mismatch means the chaining dropped part of the carry.
+        v_one = float(eqx.filter_jit(one_loss)(leaves, scenes[0]))
+        v_two = float(fwd(leaves, scenes[0]))
+        log.info("two-leg vs single forecast loss: %.17g vs %.17g", v_two, v_one)
+        if abs(v_two - v_one) > 1e-12 * max(abs(v_one), 1e-300):
+            raise SystemExit("two-leg forecast differs from the single one; "
+                             "the finite difference would test another model")
     base = total(leaves)
     repeat = total(leaves)
     jitter = abs(repeat - base)
@@ -311,7 +346,8 @@ def main(argv=None):
 
     out = {"config": a.config, "checkpoint": a.checkpoint,
            "n_scenes": len(scenes), "rejected_scenes": rejected,
-           "rollout_steps": roll, "baseline_loss": base,
+           "rollout_steps": roll, "adjoint_steps": a.adjoint_steps,
+           "column_devices": a.column_devices, "baseline_loss": base,
            "forward_jitter": jitter, "n_zero_gradient_leaves": len(dead),
            "parameters": {}}
 

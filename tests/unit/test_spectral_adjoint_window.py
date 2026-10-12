@@ -54,7 +54,7 @@ def _setup():
     return grid, sigma, state0
 
 
-def _roll(coef, k, grid, sigma, state0, n=6):
+def _roll(coef, k, grid, sigma, state0, n=6):  # out-of-range check only
     fn = _stub_physics(None, None, heat_per_unit_state=coef)
     final = spectral_rollout(
         state0, fn, grid, sigma, SpectralPEConfig(semi_implicit=True), 600.0, n,
@@ -63,29 +63,89 @@ def _roll(coef, k, grid, sigma, state0, n=6):
     return jnp.mean(jnp.asarray(spectral_state_to_carry(final, grid, sigma).T) ** 2)
 
 
-def test_stateful_rollout_same_forecast_and_suffix_gradient():
+def _rad_live(state, grid_, sigma_coord, sim_time_seconds=0.0, phys_state=None):
+    # Radiation that depends on the clock AND the physics carry, so a broken
+    # cadence, clock or cache hand-off changes the forecast.
+    out = _rad_zero(state, grid_, sigma_coord)
+    T_t = jnp.zeros_like(state.T_hat.data).at[0, :].set(
+        1e-9 * (jnp.asarray(sim_time_seconds) + 600.0) + 1e-7 * phys_state)
+    return out._replace(T_hat=out.T_hat.replace(data=T_t))
+
+
+_CFG = SpectralPEConfig(semi_implicit=True)
+
+
+def _roll_rad(fn, state0, grid, sigma, n, **kw):
+    return spectral_rollout(state0, fn, grid, sigma, _CFG, 600.0, n, None, None,
+                            rad_physics_fn=_rad_live, rad_update_interval=3, **kw)
+
+
+def _T2(state, grid, sigma):
+    return jnp.mean(jnp.asarray(spectral_state_to_carry(state, grid, sigma).T) ** 2)
+
+
+def _single(coef, k, grid, sigma, state0):
+    fn = _stub_physics(None, None, heat_per_unit_state=coef)
+    return _T2(_roll_rad(fn, state0, grid, sigma, 7, adjoint_steps=k), grid, sigma)
+
+
+def _two_leg(coef_suffix, grid, sigma, state0, coef_prefix=1e-5, k=3):
+    pre = _stub_physics(None, None, heat_per_unit_state=coef_prefix)
+    suf = _stub_physics(None, None, heat_per_unit_state=coef_suffix)
+    mid, ps, rad = _roll_rad(pre, state0, grid, sigma, 7 - k,
+                             return_phys_state=True, return_rad_tendency=True)
+    out = _roll_rad(suf, mid, grid, sigma, k, phys_state_in=ps,
+                    rad_tendency_in=rad, step_offset=7 - k)
+    return _T2(out, grid, sigma)
+
+
+def test_two_leg_chain_equals_single_rollout_with_live_radiation():
     grid, sigma, state0 = _setup()
-    full = _roll(1e-5, 0, grid, sigma, state0)
-    assert float(_roll(1e-5, 2, grid, sigma, state0)) == float(full)
+    one = float(_single(1e-5, 0, grid, sigma, state0))
+    assert float(_two_leg(1e-5, grid, sigma, state0)) == one
+    # Non-vacuity: restarting the clock/cadence in leg 2 changes the forecast.
+    pre = _stub_physics(None, None, heat_per_unit_state=1e-5)
+    mid, ps = _roll_rad(pre, state0, grid, sigma, 4, return_phys_state=True)
+    restarted = _T2(_roll_rad(pre, mid, grid, sigma, 3, phys_state_in=ps),
+                    grid, sigma)
+    assert float(restarted) != one
 
-    # Reference: leg 1 stopped, physics carry handed on to leg 2.
-    def chained(coef):
-        fn = _stub_physics(None, None, heat_per_unit_state=coef)
-        kw = dict(rad_physics_fn=_rad_zero, rad_update_interval=3)
-        cfg = SpectralPEConfig(semi_implicit=True)
-        mid, ps = spectral_rollout(state0, fn, grid, sigma, cfg, 600.0, 4,
-                                   None, None, return_phys_state=True, **kw)
-        mid, ps = jax.lax.stop_gradient((mid, ps))
-        out = spectral_rollout(mid, fn, grid, sigma, cfg, 600.0, 2, None, None,
-                               phys_state_in=ps, **kw)
-        return jnp.mean(jnp.asarray(spectral_state_to_carry(out, grid, sigma).T) ** 2)
 
-    g2 = float(jax.grad(_roll)(1e-5, 2, grid, sigma, state0))
-    g0 = float(jax.grad(_roll)(1e-5, 0, grid, sigma, state0))
-    np.testing.assert_allclose(g2, float(jax.grad(chained)(1e-5)), rtol=1e-10)
-    np.testing.assert_allclose(float(jax.grad(_roll)(1e-5, 6, grid, sigma, state0)),
-                               g0, rtol=1e-12)
-    assert abs(g2 - g0) > 1e-3 * abs(g0)
+def test_window_forecast_unchanged_and_gradient_is_the_suffix_derivative():
+    grid, sigma, state0 = _setup()
+    assert float(_single(1e-5, 3, grid, sigma, state0)) == float(
+        _single(1e-5, 0, grid, sigma, state0))
+    g3 = float(jax.grad(_single)(1e-5, 3, grid, sigma, state0))
+    g0 = float(jax.grad(_single)(1e-5, 0, grid, sigma, state0))
+    np.testing.assert_allclose(
+        g3, float(jax.grad(_two_leg)(1e-5, grid, sigma, state0)), rtol=1e-10)
+    np.testing.assert_allclose(
+        float(jax.grad(_single)(1e-5, 7, grid, sigma, state0)), g0, rtol=1e-12)
+    assert abs(g3 - g0) > 1e-3 * abs(g0)
+
+
+def test_markerless_gated_branch_window():
+    grid, sigma, state0 = _setup()
+
+    def f(c, k):
+        fn = _stub_physics(None, None)
+        del fn.with_phys_state, fn.init_phys_state
+        rad = lambda s, g_, sc, sim_time_seconds=0.0: _rad_live(
+            s, g_, sc, sim_time_seconds * c, 0.0)
+        out = spectral_rollout(state0, fn, grid, sigma, _CFG, 600.0, 6, None,
+                               None, rad_physics_fn=rad, rad_update_interval=3,
+                               adjoint_steps=k)
+        return _T2(out, grid, sigma)
+
+    assert float(f(1.0, 2)) == float(f(1.0, 0))
+    assert abs(float(jax.grad(f)(1.0, 2)) - float(jax.grad(f)(1.0, 0))) > 0.0
+
+
+def test_chaining_kwargs_refused_outside_stateful_gated_branch():
+    grid, sigma, state0 = _setup()
+    fn = _stub_physics(None, None)
+    with pytest.raises(ValueError, match="phys_state_in"):
+        _roll_rad(fn, state0, grid, sigma, 2, step_offset=2)
 
 
 def test_adjoint_steps_out_of_range_raises():

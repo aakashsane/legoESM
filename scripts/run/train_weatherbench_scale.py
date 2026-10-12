@@ -1110,12 +1110,25 @@ def _main(argv=None):
         roll_steps = int(_os.environ["LEGOESM_WB_ROLL_STEPS"])
         print(f"MEMPROBE roll_steps OVERRIDDEN to {roll_steps}", flush=True)
 
+    if cfg.adjoint_steps:
+        if cfg.training_core != "spectral":
+            raise SystemExit("--adjoint-steps needs --training-core spectral")
+        if cfg.adjoint_steps > roll_steps:
+            raise SystemExit(f"--adjoint-steps {cfg.adjoint_steps} exceeds the "
+                             f"{roll_steps}-step rollout")
+        log.info("truncated adjoint: forecasting %d steps, differentiating the "
+                 "last %d; target and scored objective unchanged. The "
+                 "reachability freeze below sees the SAME windowed gradient: a "
+                 "leaf reachable only before the window is frozen.",
+                 roll_steps, cfg.adjoint_steps)
+
     def _loss(trainable, sample):
         if _in_trace_rep is not None:
             trainable = _in_trace_rep(trainable)
         ic, target, forcing = sample
-        pred = make_run_seg(trainable).raw(ic, roll_steps, forcing,
-                                           adjoint_steps=cfg.adjoint_steps)
+        # Only the spectral segment takes the kwarg (checked below).
+        _kw = {"adjoint_steps": cfg.adjoint_steps} if cfg.adjoint_steps else {}
+        pred = make_run_seg(trainable).raw(ic, roll_steps, forcing, **_kw)
         return combined_loss(pred, target, sigma_full, grid=grid, config=loss_config)
 
     # Sized here rather than next to the optimizer because the resume check
@@ -1283,6 +1296,8 @@ def _main(argv=None):
         # TRAINED parameters at the end of the run (no second compile).
         _probe_vg = eqx.filter_jit(jax.value_and_grad(
             lambda a, s: _loss(eqx.combine(a, _probe_static), s)))
+        # --probe-scenes N probes N evenly spread scenes instead, which brings
+        # the sampling risk below back in exchange for time (owner, 2026-10-12).
         # n_probe=None (--probe-scenes unset) => every sample in the shard.  That costs one extra
         # forward+adjoint pass over the data (one epoch-equivalent of the
         # twelve a link trains) and removes the SAMPLING risk entirely: a leaf

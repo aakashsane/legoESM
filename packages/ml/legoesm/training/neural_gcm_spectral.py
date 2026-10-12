@@ -1300,6 +1300,9 @@ def spectral_rollout(
     phys_state_in=None,
     return_phys_state: bool = False,
     adjoint_steps: int = 0,
+    step_offset: int = 0,
+    rad_tendency_in=None,
+    return_rad_tendency: bool = False,
 ) -> SpectralHydrostaticState:
     """Roll out spectral PE + SFNO physics for n_steps using lax.scan.
 
@@ -1383,6 +1386,12 @@ def spectral_rollout(
     adjoint_steps : int
         Differentiate only the last ``adjoint_steps`` steps (0 = all). The
         forward rollout is unchanged; see ``_scan_adjoint_window``.
+    step_offset, rad_tendency_in, return_rad_tendency
+        Exact segment chaining (rad-gated stateful branch only): a segment
+        started at ``step_offset`` with the previous segment's physics state
+        and cached radiation tendency continues the step index, radiation
+        cadence and clock, so two chained segments equal one rollout.
+        ``return_rad_tendency`` appends the cached tendency to the return.
 
     Returns
     -------
@@ -1414,6 +1423,18 @@ def spectral_rollout(
         else None
     )
 
+    _chained = (step_offset or rad_tendency_in is not None
+                or return_rad_tendency)
+    if _chained and (rad_physics_fn is None or phys_state_in is None
+                     and not return_phys_state):
+        raise ValueError(
+            "spectral_rollout: step_offset/rad_tendency_in/return_rad_tendency "
+            "chain the rad-gated STATEFUL branch only (rad_physics_fn plus "
+            "phys_state_in or return_phys_state).")
+    if (step_offset or rad_tendency_in is not None) and phys_state_in is None:
+        raise ValueError(
+            "spectral_rollout: a continued segment (step_offset or "
+            "rad_tendency_in) needs the previous segment's phys_state_in.")
     if not 0 <= int(adjoint_steps) <= int(n_steps):
         raise ValueError(
             f"spectral_rollout: adjoint_steps must be in 0..{n_steps}, got "
@@ -1977,11 +1998,14 @@ def spectral_rollout(
             prevent_cse=True,
             policy=jax.checkpoint_policies.nothing_saveable,
         )
-        (final_state, _, final_ps), _ = _scan_adjoint_window(
+        rad0 = _init_rad(phys0) if rad_tendency_in is None else rad_tendency_in
+        (final_state, final_rad, final_ps), _ = _scan_adjoint_window(
             step_fn_ckpt,
-            (initial_state, _init_rad(phys0), phys0),
-            jnp.arange(n_steps), None, adjoint_steps,
+            (initial_state, rad0, phys0),
+            jnp.arange(step_offset, step_offset + n_steps), None, adjoint_steps,
         )
+        if return_rad_tendency:
+            return final_state, final_ps, final_rad
         if return_phys_state:
             return final_state, final_ps
         return final_state

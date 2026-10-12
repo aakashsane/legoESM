@@ -175,11 +175,16 @@ an operator rerun is OPEN. No GPU memory or projection number is fabricated.
   historical timing retraction, compiled timer no-retrace control,
   constant-time scaling plant, GPU ordering plant, memory sampler failures,
   policy dispatch, projections, provenance, and overwrite refusal.
-- Certified recipe tests: PENDING FINAL BATTERY.
-- Exact three-file CPU push battery: PENDING FINAL BATTERY. The six-step row is
-  a named skip with this receipt's bounded-attempt reason; no process abort is
-  hidden.
-- Citation gate: PENDING RECEIPT-SPECIFIC RUN.
+- Certified recipe tests: **25 passed in 748.34 s**. Standalone log SHA-256:
+  `454a49995beb1277344568f29c5d155fffcb274fb8d703e51c981c82f724012a`.
+- Exact three-file CPU push battery: **35 passed, 1 skipped in 3890.68 s**.
+  The nine legacy variants and isolated current-commit one-step GYRE row pass;
+  the six-step row is the named bounded-attempt skip. The parent process exits
+  normally, so no abort is hidden. Log SHA-256:
+  `a64e5c5135d2e4ff95be1dbed2aa72451295e1dc427b00afe350018fd1f58b5f`.
+- Receipt-specific citation gate: **PASS**, seven citations, zero unmapped
+  citations, zero failures, and every planted self-test fired. JSON SHA-256:
+  `df6c5de1a4acb7c27e400445fa91567531f879b9381566561d4c6acfec2f6940`.
 
 ## OPEN, retractions, and decision
 

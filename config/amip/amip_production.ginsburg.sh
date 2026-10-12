@@ -84,11 +84,19 @@ CMIP6_FORCING_FLAGS=(
 # provenance: fv3_duo_gaps/forcing_stage/ (deck_ledgers.md 2026-10-08).
 #   GHG: input4MIPs UoM-CMIP-1-2-0 global means incl. CFC-22/CCl4/CF4.
 #   AEROSOL: Kinne MACv1 fine+coarse (radiation); AEROSOL_CCN: fine mode (CCN).
-#   VOLCANIC: ETH CMIP6 stratospheric aerosol v4.0.0, ECHAM6 bands (SW + LW).
+#   VOLCANIC: ETH CMIP6 stratospheric aerosol v4.0.0, ECHAM6 bands (SW + LW),
+#     1850-2014 for every lane (review 2026-10-10 F37, vote): built from the raw
+#     CMIP_ECHAM6_radiation_v4.nc by scripts/data/adapt_cesm_forcing.py volcanic
+#     --years 1850 2014 (md5 22f926c24aaf5fcce373a6a21be7caf0); 1979-2014 records equal the old
+#     *_1979-2014_IACETH-v4.nc slice.
+#   The Kinne MACv1 aerosol pair covers 1979-2014 ONLY (MACv1 anthropogenic
+#   starts 1980; nothing older is on disk), so the 1850-start coupled decks
+#   still refuse to start at the first aerosol update until a 1850-2014
+#   tropospheric aerosol product is staged (F37 follow-up).
 : "${GHG:=${CMIP6_FORCING_DIR}/ghg_cmip6_UoM-CMIP-1-2-0_halogens_0000-2014.nc}"
 : "${AEROSOL:=${CMIP6_FORCING_DIR}/aeropt_kinne_sw_b14_tot_1979-2014_MACv1.nc}"
 : "${AEROSOL_CCN:=${CMIP6_FORCING_DIR}/aeropt_kinne_sw_b14_fin_1979-2014_MACv1.nc}"
-: "${VOLCANIC:=${CMIP6_FORCING_DIR}/bc_aeropt_cmip6_volc_lw_b16_sw_b14_1979-2014_IACETH-v4.nc}"
+: "${VOLCANIC:=${CMIP6_FORCING_DIR}/bc_aeropt_cmip6_volc_lw_b16_sw_b14_1850-2014_IACETH-v4.nc}"
 CMIP6_FORCING_FLAGS+=(
   --ghg-forcing external --ghg-file "${GHG}"
   --aerosol-forcing external --aerosol-file "${AEROSOL}" --aerosol-ccn-file "${AEROSOL_CCN}"

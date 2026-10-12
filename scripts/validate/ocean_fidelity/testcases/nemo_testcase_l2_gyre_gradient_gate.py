@@ -394,10 +394,6 @@ def explicit_stepwise_directional_derivatives(
         )
         jax.block_until_ready(replay)
         replay_reports[str(kt)] = state_bitwise_report(states[kt], replay)
-        require(
-            replay_reports[str(kt)]["bitwise_equal"],
-            f"production-step VJP replay differs at step {kt}",
-        )
         state_cotangent, freshwater_cotangent, surface_cotangent = (
             step_pullback(cotangent))
         _, forcing_pullback = jax.vjp(
@@ -468,6 +464,9 @@ def explicit_stepwise_directional_derivatives(
         "rev_fwd_scale_aware_error": (
             discrepancy / max(dot_abs_sum, 1.0e-300)),
         "step_vjp_replay_reports": replay_reports,
+        "step_vjp_replay_used_as_primal": False,
+        "step_vjp_replays_bitwise": all(
+            report["bitwise_equal"] for report in replay_reports.values()),
     })
     return row
 

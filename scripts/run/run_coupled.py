@@ -1281,18 +1281,21 @@ def require_forcing_files(args) -> None:
         raise SystemExit("--aerosol-file is required with --aerosol-forcing external")
 
 
-def main():
+def main(argv=None, *, build_only=False):
+    """Run a coupled experiment.  ``build_only`` stops after the driver is
+    constructed and returns it (deck tests build every committed deck this way
+    without integrating)."""
     parser = build_parser()
 
     # Two-pass parse so a --config file supplies defaults that explicit CLI
     # flags still override (precedence: CLI > config file > parser default).
-    pre, _ = parser.parse_known_args()
+    pre, _ = parser.parse_known_args(argv)
     if pre.config is not None:
         from legoesm.driver.run_config_yaml import load_yaml_config
         parser.set_defaults(**load_yaml_config(
             pre.config, parser, example_keys=_COUPLED_EXAMPLE_KEYS))
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # --minimal-physics: collapse the full-physics defaults to a cheap
     # idealized atmosphere (gray radiation + SBM convection only).  Applied
@@ -1788,6 +1791,8 @@ def main():
         ice_config=ice_config, lake_config=lake_config,
         ocean_grid=ocean_grid_obj, output_dir=args.output,
     )
+    if build_only:
+        return driver
 
     t0 = time.time()
     driver.setup()

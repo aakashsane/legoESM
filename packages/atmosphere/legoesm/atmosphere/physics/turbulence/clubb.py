@@ -6489,7 +6489,7 @@ def clubb_step(
     # included) plus the water BC at the reference L_v.  Equals shflx + lhflx
     # for the bulk and injected paths; read by the column energy fixer.
     sfc_energy_in = rho_sfc * (constants.c_pd * exner_sfc * wpthlp_sfc
-                               + constants.L_v * wprtp_sfc)
+                               + constants.L_v * wprtp_sfc)  # latent-ok: CAM6 clubb_intr energy-fix reference constant
     diags = dict(diags, ustar=ustar, shflx=shflx, lhflx=lhflx,
                  sfc_energy_in=sfc_energy_in)
     return du_dt, dv_dt, dT_dt, dq_v_dt, new_state, diags
@@ -6720,7 +6720,7 @@ def clubb_turbulence_prognostic(
     dp_g = (p_half[:, 1:] - p_half[:, :-1]) / constants.g
     dke_dt = (du_dt * (u + 0.5 * dt * du_dt) + dv_dt * (v + 0.5 * dt * dv_dt))
     resid = (jnp.sum(dp_g * (constants.c_pd * dT_dt + dke_dt
-                             + constants.L_v * dq_v_dt), axis=1)
+                             + constants.L_v * dq_v_dt), axis=1)  # latent-ok: CAM6 clubb_intr energy-fix reference constant
              - sfc_energy_in)
     if config.trop_cloud_top_press > 0.0:
         w_fix = jax.nn.sigmoid(

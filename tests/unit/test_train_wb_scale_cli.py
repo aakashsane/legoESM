@@ -555,3 +555,22 @@ def test_probe_progress_round_trip_is_fingerprint_gated(tmp_path):
     b = mod._sample_fingerprint([np.asarray([2.0, 0.0, 4.0])])
     assert np.allclose(a[1][:, :3], b[1][:, :3]) and a[0] == b[0]
     assert not mod._content_matches(mod._content_payload(a), b)
+
+
+def test_adjoint_window_and_probe_scenes_flags():
+    cfg = mod.build_scale_config_from_args(["--adjoint-steps", "3", "--probe-scenes", "48"])
+    assert (cfg.adjoint_steps, cfg.probe_scenes) == (3, 48)
+    base = mod.build_scale_config_from_args([])
+    assert (base.adjoint_steps, base.probe_scenes) == (0, None)
+    for bad in (["--adjoint-steps", "-1"], ["--probe-scenes", "0"]):
+        with pytest.raises(SystemExit):
+            mod.build_scale_config_from_args(bad)
+    yml = {"n_lat": 96, "n_lon": 192, "nlev": 32}
+    common = ["--mode", "physics", "--epochs", "1", "--lr", "1e-3", "--optimizer", "adamw"]
+    base = mod.build_scale_config_from_args(common)
+    cfg = mod.build_scale_config_from_args(
+        common + ["--adjoint-steps", "3", "--probe-scenes", "48"])
+    fp_base = mod._run_fingerprint(base, yml, 200, 12, 240, 1)
+    assert "adjoint_steps" not in fp_base and "probe_scenes" not in fp_base
+    fp = mod._run_fingerprint(cfg, yml, 200, 12, 240, 1)
+    assert fp["adjoint_steps"] == 3 and fp["probe_scenes"] == 48

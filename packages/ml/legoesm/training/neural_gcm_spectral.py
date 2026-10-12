@@ -1262,6 +1262,26 @@ def positive_tracers(tracers, sigma_coord):
     return out
 
 
+def _scan_adjoint_window(step_fn, carry0, xs, length, adjoint_steps):
+    """``lax.scan`` whose gradient flows through only the last ``adjoint_steps``.
+
+    The forward is the same per-step sequence as one scan (the step index in
+    ``xs`` continues across the cut, so radiation cadence and the solar clock
+    are unchanged); ``stop_gradient`` on the WHOLE carry at the cut (state,
+    cached radiation, prognostic physics) removes every earlier step from the
+    adjoint. ``adjoint_steps`` 0 or >= the length = ordinary scan.
+    """
+    n = int(length if xs is None else xs.shape[0])
+    k = n - int(adjoint_steps) if 0 < int(adjoint_steps) < n else 0
+    if k == 0:
+        return jax.lax.scan(step_fn, carry0, xs, length=length)
+    carry, _ = jax.lax.scan(step_fn, carry0, None if xs is None else xs[:k],
+                            length=k if xs is None else None)
+    carry = jax.lax.stop_gradient(carry)
+    return jax.lax.scan(step_fn, carry, None if xs is None else xs[k:],
+                        length=n - k if xs is None else None)
+
+
 def spectral_rollout(
     initial_state: SpectralHydrostaticState,
     physics_fn,
@@ -1279,6 +1299,7 @@ def spectral_rollout(
     forcing_base: dict | None = None,
     phys_state_in=None,
     return_phys_state: bool = False,
+    adjoint_steps: int = 0,
 ) -> SpectralHydrostaticState:
     """Roll out spectral PE + SFNO physics for n_steps using lax.scan.
 
@@ -1359,6 +1380,9 @@ def spectral_rollout(
         across the rollout (daily-AMIP granularity).  Mutually
         exclusive with the rad-gating path (the classical AMIP rollout
         ``spectral_amip_rollout`` owns that combination).
+    adjoint_steps : int
+        Differentiate only the last ``adjoint_steps`` steps (0 = all). The
+        forward rollout is unchanged; see ``_scan_adjoint_window``.
 
     Returns
     -------
@@ -1390,6 +1414,10 @@ def spectral_rollout(
         else None
     )
 
+    if not 0 <= int(adjoint_steps) <= int(n_steps):
+        raise ValueError(
+            f"spectral_rollout: adjoint_steps must be in 0..{n_steps}, got "
+            f"{adjoint_steps}.")
     if rad_physics_fn is not None and rad_update_interval < 1:
         raise ValueError(
             "spectral_rollout: rad_update_interval must be >= 1, got "
@@ -1629,8 +1657,9 @@ def spectral_rollout(
                 prevent_cse=True,
                 policy=jax.checkpoint_policies.nothing_saveable,
             )
-            (final_state, final_ps), _ = jax.lax.scan(
-                step_fn_ckpt, (initial_state, phys0), None, length=n_steps,
+            (final_state, final_ps), _ = _scan_adjoint_window(
+                step_fn_ckpt, (initial_state, phys0), None, n_steps,
+                adjoint_steps,
             )
             if return_phys_state:
                 return final_state, final_ps
@@ -1654,10 +1683,11 @@ def spectral_rollout(
             policy=jax.checkpoint_policies.nothing_saveable,
         )
 
-        final_state, _ = jax.lax.scan(
+        final_state, _ = _scan_adjoint_window(
             step_fn_ckpt, initial_state,
             jnp.arange(n_steps) if forcing_base is not None else None,
-            length=None if forcing_base is not None else n_steps,
+            None if forcing_base is not None else n_steps,
+            adjoint_steps,
         )
         return final_state
 
@@ -1947,10 +1977,10 @@ def spectral_rollout(
             prevent_cse=True,
             policy=jax.checkpoint_policies.nothing_saveable,
         )
-        (final_state, _, final_ps), _ = jax.lax.scan(
+        (final_state, _, final_ps), _ = _scan_adjoint_window(
             step_fn_ckpt,
             (initial_state, _init_rad(phys0), phys0),
-            jnp.arange(n_steps),
+            jnp.arange(n_steps), None, adjoint_steps,
         )
         if return_phys_state:
             return final_state, final_ps
@@ -1969,10 +1999,10 @@ def spectral_rollout(
         policy=jax.checkpoint_policies.nothing_saveable,
     )
 
-    (final_state, _), _ = jax.lax.scan(
+    (final_state, _), _ = _scan_adjoint_window(
         step_fn_ckpt,
         (initial_state, _init_rad()),
-        jnp.arange(n_steps),
+        jnp.arange(n_steps), None, adjoint_steps,
     )
     return final_state
 

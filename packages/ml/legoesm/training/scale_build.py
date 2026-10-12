@@ -761,7 +761,7 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
             else:
                 self._physics_fn, self._rad_fn = physics_fn, None
 
-        def raw(self, ic_carry, n_steps, forcing):
+        def raw(self, ic_carry, n_steps, forcing, adjoint_steps=0):
             state0 = carry_to_spectral_state(ic_carry, grid)
             forcing_base = forcing if uses_forcing else None
             # Classical convection reads the grid's mask, not PhysicsState.
@@ -782,6 +782,7 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
                 dt, int(n_steps),
                 sponge_factor, spectral_filter,
                 forcing_base=forcing_base,
+                adjoint_steps=adjoint_steps,
                 **gated,
             )
             return spectral_state_to_carry(final, grid, sigma)

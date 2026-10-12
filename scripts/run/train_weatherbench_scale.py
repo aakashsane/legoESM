@@ -62,6 +62,11 @@ class ScaleConfig(NamedTuple):
     # >0: ONE sample per step, its columns split over this many GPUs (all
     # processes of the job form one mesh). 0 = one sample per MPI rank.
     column_devices: int = 0
+    # Differentiate only the LAST n model steps of the rollout (0 = all). The
+    # forecast and target are unchanged; only the gradient window shrinks.
+    adjoint_steps: int = 0
+    # Scenes the start-of-run reachability freeze probes (None = every one).
+    probe_scenes: int | None = None
 
 
 # Scenes used for the POST-TRAINING reachability report.  A subsample, not the
@@ -279,7 +284,7 @@ def _run_fingerprint(cfg, yml, warmup, roll_steps, n_global_samples, nproc):
         _defaults["muon_min_dim"] = getattr(_tr, "_MUON_MIN_DIM_DEFAULT", None)
     except Exception:                                   # pragma: no cover
         _defaults["muon_min_dim"] = None
-    return {
+    fp = {
         "optimizer_defaults": hashlib.sha256(
             _json.dumps(_defaults, sort_keys=True).encode()).hexdigest()[:16],
         "config_sha256": digest[:32], "mode": cfg.mode,
@@ -289,6 +294,12 @@ def _run_fingerprint(cfg, yml, warmup, roll_steps, n_global_samples, nproc):
         "rollout_steps": int(roll_steps),
         "n_global_samples": int(n_global_samples), "nproc": int(nproc),
     }
+    # Only when set, so runs written before these knobs still resume.
+    if getattr(cfg, "adjoint_steps", 0):
+        fp["adjoint_steps"] = int(cfg.adjoint_steps)
+    if getattr(cfg, "probe_scenes", None) is not None:
+        fp["probe_scenes"] = int(cfg.probe_scenes)
+    return fp
 
 
 def _val_yaml(yml: dict, n_windows: int) -> dict:
@@ -663,7 +674,19 @@ def build_scale_config_from_args(argv=None) -> ScaleConfig:
                         "Every process trains the same single sample per "
                         "step; no MPI data parallelism. 0 (default) = one "
                         "sample per MPI rank, as before.")
+    p.add_argument("--adjoint-steps", type=int, default=0, dest="adjoint_steps",
+                   help="Differentiate only the LAST n model steps (0 = all). "
+                        "The forecast still runs the full horizon against the "
+                        "same target; only the gradient window shrinks.")
+    p.add_argument("--probe-scenes", type=int, default=None,
+                   dest="probe_scenes",
+                   help="Scenes the start-of-run reachability probe reads "
+                        "(spread evenly over the shard). Default: all.")
     a = p.parse_args(argv)
+    if a.adjoint_steps < 0:
+        raise SystemExit(f"--adjoint-steps must be >= 0, got {a.adjoint_steps}")
+    if a.probe_scenes is not None and a.probe_scenes < 1:
+        raise SystemExit(f"--probe-scenes must be >= 1, got {a.probe_scenes}")
     if a.column_devices < 0:
         raise SystemExit(f"--column-devices must be >= 0, got {a.column_devices}")
     # --mode is already restricted by argparse ``choices=VALID_MODES`` (exits 2
@@ -683,6 +706,7 @@ def build_scale_config_from_args(argv=None) -> ScaleConfig:
         out_dir=a.out_dir, resume=a.resume, eval_wb2=a.eval_wb2, smoke=a.smoke,
         training_core=a.training_core, n_days=a.n_days,
         column_devices=a.column_devices,
+        adjoint_steps=a.adjoint_steps, probe_scenes=a.probe_scenes,
     )
 
 
@@ -1090,7 +1114,8 @@ def _main(argv=None):
         if _in_trace_rep is not None:
             trainable = _in_trace_rep(trainable)
         ic, target, forcing = sample
-        pred = make_run_seg(trainable).raw(ic, roll_steps, forcing)
+        pred = make_run_seg(trainable).raw(ic, roll_steps, forcing,
+                                           adjoint_steps=cfg.adjoint_steps)
         return combined_loss(pred, target, sigma_full, grid=grid, config=loss_config)
 
     # Sized here rather than next to the optimizer because the resume check
@@ -1258,7 +1283,7 @@ def _main(argv=None):
         # TRAINED parameters at the end of the run (no second compile).
         _probe_vg = eqx.filter_jit(jax.value_and_grad(
             lambda a, s: _loss(eqx.combine(a, _probe_static), s)))
-        # n_probe=None => every sample in the shard.  That costs one extra
+        # n_probe=None (--probe-scenes unset) => every sample in the shard.  That costs one extra
         # forward+adjoint pass over the data (one epoch-equivalent of the
         # twelve a link trains) and removes the SAMPLING risk entirely: a leaf
         # is frozen iff it is zero on every scene in the shard.  It does NOT
@@ -1329,7 +1354,8 @@ def _main(argv=None):
                               lambda t: _pathlib.Path(t).write_text(_payload))
 
             arr, static, frozen_names, n_probe_used = freeze_unreachable(
-                params, _probe_vg, local, n_probe=None, num_processes=nproc,
+                params, _probe_vg, local, n_probe=cfg.probe_scenes,
+                num_processes=nproc,
                 device_put=place_sample, resume_state=_probe_resume,
                 on_scene=_save_probe_progress)
             arr, static, frozen_names = _policy_freeze(arr, static, frozen_names)

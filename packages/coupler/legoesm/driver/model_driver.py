@@ -2170,6 +2170,8 @@ class ModelDriver:
         # This is the canonical single entry point — handles everything before
         # any JAX array creation.
         self._bootstrap_runtime()
+        # Collective, so it runs before the first step where ranks diverge.
+        self._check_resume_version_drift()
 
         # Land inputs whose validity depends on FILE CONTENTS rather than the
         # config alone.  Placement is exact and both halves matter: AFTER the
@@ -7646,6 +7648,56 @@ class ModelDriver:
                 "non-finite) up to step %d; run totals %d / %d", ds, dr, step,
                 self._land_stress_seed_total, self._land_stress_reused_total)
 
+    def _check_resume_version_drift(self) -> None:
+        """Version-drift gate for resuming into an output directory that
+        already holds a run manifest (every process, top of setup)."""
+        from legoesm.driver.restart import (
+            RUN_MANIFEST_FILENAME,
+            collective_version_drift_gate,
+            manifest_version_drift,
+            read_run_manifest,
+            validate_run_manifest,
+        )
+        existing = self._output_dir / RUN_MANIFEST_FILENAME
+
+        def reasons():
+            if not existing.exists():
+                return []
+            try:
+                manifest = read_run_manifest(existing)
+                validate_run_manifest(manifest)
+            except Exception as exc:  # noqa: BLE001 — refused on every process
+                raise RuntimeError(
+                    f"Existing run manifest at {existing} is invalid ({exc}); "
+                    f"refusing to start a run without valid run-start "
+                    f"provenance. Remove or repair it to continue.") from exc
+            return manifest_version_drift(manifest)
+        collective_version_drift_gate(reasons, f"the run manifest at {existing}")
+
+    def _check_checkpoint_version_drift(self, path: Path) -> None:
+        """Version-drift gate for continuing from a checkpoint (every process).
+
+        Checkpoints are written as ``<output_dir>/checkpoint_day_NNNN*``, so the
+        run that wrote one left its ``run_manifest.json`` beside it.  No manifest
+        there means the writing code is unknown, which counts as drift.
+        """
+        from legoesm.driver.restart import (
+            RUN_MANIFEST_FILENAME,
+            collective_version_drift_gate,
+            manifest_file_version_drift,
+        )
+        manifest_file = path.parent / RUN_MANIFEST_FILENAME
+
+        def reasons():
+            if not path.exists():
+                return []  # the loader reports the missing checkpoint itself
+            if manifest_file.is_file():
+                return manifest_file_version_drift(manifest_file)
+            return [f"no {RUN_MANIFEST_FILENAME} beside the checkpoint, so the "
+                    f"code that wrote it is unknown (copy the writing run's "
+                    f"{RUN_MANIFEST_FILENAME} next to it)"]
+        collective_version_drift_gate(reasons, f"checkpoint {path}")
+
     def load_checkpoint(self, path: str | Path) -> tuple[int, float]:
         """Load state from a checkpoint using unified restart API.
 
@@ -7658,6 +7710,7 @@ class ModelDriver:
         refused loudly instead of dying on an unrelated shape error
         deeper in a decode (codex 2026-08-18 MAJOR, kept as a gate).
         """
+        self._check_checkpoint_version_drift(Path(path))
         _col_lane = self._fv3_duo_column_model() is not None
         if self.config.dycore.discretization == "fv3_duo" and not _col_lane:
             return self._load_fv3_duo_checkpoint(Path(path))

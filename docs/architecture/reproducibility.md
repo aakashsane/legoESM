@@ -425,6 +425,13 @@ emits v2. Old manifests keep loading.
    continuation, and reporting from `config_hash_matches` (item 2). Until the
    code delta is captured (P1 step 6), a recorded or current `git_dirty` (a
    field the manifest already has) or any applied patch counts as drift.
+   **Implemented** for `legoesm reproduce`, `ModelDriver` resume and
+   `load_checkpoint`, and reruns through `write_run_manifest_on_root`. To
+   proceed anyway, pass `legoesm reproduce --allow-version-drift` or set
+   `LEGOESM_ALLOW_VERSION_DRIFT=1` (any driver). A checkpoint needs the
+   writing run's `run_manifest.json` beside it. Not yet gated: the
+   `--restart-from` loaders in `run_omip.py`, `run_dino.py`, `run_lmip.py`
+   and `run_omip_core2.py`, which read restart files directly.
 3. The manifest is written by `run_omip.py`, `run_lmip.py`, `run_coupled.py`
    and `run_dino.py` (item 3).
 4. Docs: correct the README claim that every run is reproducible

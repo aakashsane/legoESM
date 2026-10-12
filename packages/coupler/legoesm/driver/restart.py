@@ -135,15 +135,30 @@ def detect_config_kind(config) -> str:
     return "atmosphere"
 
 
+# Kinds serialized with the recursive tagged NamedTuple codec (it lives in
+# ``legoesm.ocean.config`` but is component-agnostic).  "land" and "coupled"
+# records are plain dicts of a runner's resolved config + run controls.
+_TAGGED_CONFIG_KINDS = ("ocean", "land", "coupled")
+
+
+def _check_config_kind(kind: str) -> None:
+    if kind != "atmosphere" and kind not in _TAGGED_CONFIG_KINDS:
+        raise ValueError(
+            f"unknown run-manifest config_kind {kind!r}; expected 'atmosphere' "
+            f"or one of {_TAGGED_CONFIG_KINDS}")
+
+
 def _serialize_config(config, kind: str) -> dict:
-    if kind == "ocean":
+    _check_config_kind(kind)
+    if kind in _TAGGED_CONFIG_KINDS:
         from legoesm.ocean.config import ocean_config_to_dict
         return ocean_config_to_dict(config)
     return _config_to_dict_any(config)
 
 
 def _deserialize_config(resolved: dict, kind: str):
-    if kind == "ocean":
+    _check_config_kind(kind)
+    if kind in _TAGGED_CONFIG_KINDS:
         from legoesm.ocean.config import ocean_config_from_dict
         return ocean_config_from_dict(resolved)
     from legoesm.driver.config import experiment_config_from_dict
@@ -625,6 +640,55 @@ def write_run_manifest(directory, config, *, exclusive: bool = False, **kwargs) 
     return path
 
 
+def write_run_manifest_on_root(directory, config, **kwargs) -> Path | None:
+    """Write the manifest from process 0; raise on EVERY process if it failed.
+
+    Call on every process at the same point, before any rank-local work that
+    can raise.  Single-process runs reduce to :func:`write_run_manifest`.  Under
+    multi-process JAX the outcome is broadcast so a failed write aborts all
+    processes instead of leaving the others to hang in the next collective.
+    An existing manifest (a resume or rerun into the same directory) is moved
+    aside to ``run_manifest.prev-<UTC time>-<pid>.json``, never overwritten, so
+    every invocation's record and final digest survive.  The new manifest is
+    created atomic-exclusively, so two concurrent starts cannot clobber each
+    other: the loser archives the winner's manifest and retries.  This is not
+    a run lock: two runs *active at once* in one directory still collide on
+    every output, including the final digest (see ModelDriver's manifest
+    docstring; an active-run lease is a separate, driver-wide feature).
+    Returns the path on process 0, ``None`` elsewhere.
+    """
+    root = jax.process_index() == 0
+    path = error = None
+    if root:
+        try:
+            old = Path(directory) / RUN_MANIFEST_FILENAME
+            stem = old.name.removesuffix(".json")
+            while path is None:
+                try:
+                    path = write_run_manifest(directory, config,
+                                              exclusive=True, **kwargs)
+                except FileExistsError:
+                    stamp = datetime.now(timezone.utc).strftime(
+                        "%Y%m%dT%H%M%S%fZ")
+                    try:
+                        os.replace(old, old.with_name(
+                            f"{stem}.prev-{stamp}-{os.getpid()}.json"))
+                    except FileNotFoundError:
+                        pass  # a concurrent start archived it first; retry
+        except Exception as exc:  # noqa: BLE001 — re-raised below, after the vote
+            error = exc
+    if jax.process_count() > 1:
+        from jax.experimental import multihost_utils
+        failed = int(np.asarray(multihost_utils.broadcast_one_to_all(
+            np.asarray(int(error is not None), dtype=np.int32),
+            is_source=root)))
+        if failed and error is None:
+            raise RuntimeError("run manifest write failed on process 0")
+    if error is not None:
+        raise RuntimeError(f"run manifest not written to {directory}") from error
+    return path
+
+
 def read_run_manifest(path) -> dict:
     """Load a run manifest written by :func:`write_run_manifest`."""
     path = Path(path)
@@ -721,6 +785,23 @@ def record_state_digest(manifest_path, state_digest: str, *,
         json.dump(_json_safe(manifest), f, indent=2, sort_keys=True)
     tmp.replace(manifest_path)
     return manifest_path
+
+
+def record_final_state_digest(manifest_path, *trees) -> str | None:
+    """Best-effort: digest the final state *trees* into an existing manifest.
+
+    The run has already finished, so a digest failure (e.g. a non-addressable
+    sharded leaf) is reported, not raised; ``reproduce --check`` then reports
+    the missing reference honestly.
+    """
+    try:
+        digest = pytree_state_digest(*trees)
+        record_state_digest(manifest_path, digest)
+    except Exception as exc:  # noqa: BLE001 — provenance after a completed run
+        print(f"[warn] state_digest not recorded: {type(exc).__name__}: {exc}")
+        return None
+    print(f"[done] recorded state_digest {digest[:16]}... in {manifest_path}")
+    return digest
 
 
 def recorded_state_digest(manifest: dict) -> str:

@@ -297,7 +297,7 @@ def _parse_args():
              "which restores the velocity null mode. 'een_metric' = METRIC-"
              "COMPLETE EEN (folds NEMO's e1v/r1_e1u + e2u/r1_e2v scale factors "
              "into ffu/ffv exactly, matching NEMO dyn_cor_2D) — the more NEMO-"
-             "faithful choice (node 16; DINO default). NB it is a ~1% high-lat "
+             "faithful choice (node 16; DINO default). NB it is a ~1%% high-lat "
              "correction and does NOT cure the |lat|~68deg 2dx eta runaway.",
     )
     p.add_argument(
@@ -983,6 +983,26 @@ def main():
     snapshot_dir = args.output_dir / "snapshots"
     snapshot_dir.mkdir(exist_ok=True)
     _save_run_metadata(args, cfg, grid, z, args.output_dir, grid_kind)
+    # Run manifest (every process calls it; a failed write aborts the run).
+    from legoesm.driver.restart import (
+        dataset_provenance_entry,
+        record_final_state_digest,
+        write_run_manifest_on_root,
+    )
+    manifest_path = write_run_manifest_on_root(
+        args.output_dir,
+        {"runner": "run_dino", "dino_config": dataclasses.asdict(cfg),
+         "runtime_config": model.config, "grid_kind": grid_kind,
+         "n_levels": int(z.n_levels), "dt_seconds": float(dt),
+         "cli_args": vars(args)},
+        config_kind="ocean",
+        runner_tag="run_dino",
+        rng_seeds={"master": int(args.seed)},
+        dataset_provenance=(
+            [dataset_provenance_entry(args.restart_from,
+                                      dataset_id="restart_from")]
+            if args.restart_from is not None else []),
+    )
 
     # Time loop
     n_steps_total = int(round(args.days * 86400.0 / dt))
@@ -1176,6 +1196,10 @@ def main():
     print(f"  SYPD:         {sypd:.1f}")
     print(f"  Mcells/s:     {mcells_s:.1f}")
     print(f"Done. Wall time: {wall:.1f}s. Snapshots: {snapshot_idx + 1}")
+    # Sharded multicontroller state is not host-addressable: digest only the
+    # single-controller run.
+    if manifest_path is not None and not args.multicontroller:
+        record_final_state_digest(manifest_path, state)
 
     _write_timing_jsonl(args, {
         "script": "run_dino",

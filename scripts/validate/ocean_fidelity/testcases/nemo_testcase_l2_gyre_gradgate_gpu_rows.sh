@@ -23,14 +23,27 @@ CUDA_VISIBLE_DEVICES=1 JAX_PLATFORMS=cuda JAX_ENABLE_X64=1 \
   "$PYTHON" -c 'import jax; devices=jax.devices(); assert jax.default_backend() == "gpu", jax.default_backend(); assert len(devices) == 1, devices; print(devices[0])'
 nvidia-smi -i 1 --query-gpu=index,memory.used --format=csv,noheader
 
+ROW_FAILURES=0
+
 run_row() {
   local output=$1
+  local rc=0
   shift
   [[ ! -e "$output" ]] || refuse "refusing to overwrite evidence: $output" 65
-  CUDA_VISIBLE_DEVICES=1 JAX_PLATFORMS=cuda JAX_ENABLE_X64=1 PYTHONPATH="$MODEL_PATH" \
-    "$PYTHON" "$GATE" "$@" --transcendentals native \
-      --expect-commit "$COMMIT" --output "$output"
-  "$PYTHON" -c '
+  if CUDA_VISIBLE_DEVICES=1 JAX_PLATFORMS=cuda JAX_ENABLE_X64=1 PYTHONPATH="$MODEL_PATH" \
+      "$PYTHON" "$GATE" "$@" --transcendentals native \
+        --expect-commit "$COMMIT" --output "$output"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [[ ! -f "$output" ]]; then
+    printf 'REFUSE gyre-gradgate-gpu: row wrote no JSON (exit %s): %s\n' \
+      "$rc" "$*" >&2
+    ((ROW_FAILURES += 1))
+    return 0
+  fi
+  if ! "$PYTHON" -c '
 import json
 import pathlib
 import sys
@@ -39,7 +52,16 @@ row = json.loads(pathlib.Path(sys.argv[1]).read_text())
 expected = "GPU, XLA transcendentals — not the certified bit-exact policy"
 assert row["measurement_policy_label"] == expected, row
 assert "transcendentals=\x27native\x27" in row["precision_policy"], row
-' "$output"
+' "$output"; then
+    printf 'REFUSE gyre-gradgate-gpu: invalid row provenance: %s\n' "$output" >&2
+    ((ROW_FAILURES += 1))
+    return 0
+  fi
+  if ((rc != 0)); then
+    printf 'REFUSE gyre-gradgate-gpu: row exited %s after writing JSON: %s\n' \
+      "$rc" "$output" >&2
+    ((ROW_FAILURES += 1))
+  fi
 }
 
 for schedule in none uniform binomial; do
@@ -49,12 +71,14 @@ for schedule in none uniform binomial; do
   done
 done
 
-for schedule in none uniform binomial; do
-  for steps in 1 6; do
+for steps in 1 6; do
+  for schedule in none uniform binomial; do
     run_row "$EVIDENCE_DIR/gpu1_resources_${schedule}_${steps}step.json" \
       resources --steps "$steps" --schedule "$schedule"
   done
 done
+
+((ROW_FAILURES == 0)) || refuse "$ROW_FAILURES measurement rows failed" 1
 
 printf 'GYRE_GRADGATE_GPU_ROWS_COMPLETE commit=%s evidence=%s\n' \
   "$COMMIT" "$EVIDENCE_DIR"

@@ -40,6 +40,13 @@ def test_broken_vjp_plant_flips_passing_row():
     assert planted["reverse"] == pytest.approx(2.0 * planted["forward"])
 
 
+def test_nonfinite_agreement_row_is_not_labeled_nonzero():
+    row = G.classify_agreement(np.nan, np.nan, np.nan)
+    assert row["finite"] is False
+    assert row["nonzero"] is False
+    assert row["status"] == "REFUTED"
+
+
 def test_scalar_line_reverse_equals_full_vjp_dot_direction():
     base = jnp.asarray([0.2, -0.4, 0.7], dtype=jnp.float64)
     direction = jnp.asarray([0.5, -0.1, 0.3], dtype=jnp.float64)

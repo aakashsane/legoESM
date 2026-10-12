@@ -346,7 +346,8 @@ def classify_agreement(reverse: float, forward: float, finite_difference: float)
     """Fail-closed classification shared by the real row and plant test."""
     finite = all(math.isfinite(value)
                  for value in (reverse, forward, finite_difference))
-    nonzero = all(value != 0.0 for value in (reverse, forward, finite_difference))
+    nonzero = finite and all(
+        value != 0.0 for value in (reverse, forward, finite_difference))
     revfwd = abs(reverse - forward) / max(
         abs(reverse), abs(forward), 1.0e-300)
     revfd = abs(reverse - finite_difference) / max(
@@ -412,8 +413,14 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
     scheduled_truth = scheduled_rollout(context, zero, n_steps, schedule)
     jax.block_until_ready(scheduled_truth)
     primal_report = state_bitwise_report(truth_state, scheduled_truth)
-    forward_report = {"bitwise_equal": True, "mismatch_count": 0,
-                      "mismatches": []}
+    forward_report = (
+        primal_report if schedule == "uniform" else {
+            "bitwise_equal": None,
+            "mismatch_count": None,
+            "mismatches": [],
+            "reason": "not evaluated after selected-schedule primal refusal",
+        }
+    )
     if primal_report["bitwise_equal"] and schedule != "uniform":
         forward_truth = scheduled_rollout(context, zero, n_steps, "uniform")
         jax.block_until_ready(forward_truth)

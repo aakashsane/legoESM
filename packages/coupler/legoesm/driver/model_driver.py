@@ -13183,7 +13183,7 @@ class ModelDriver:
                         f"checkpoint landio_{k} shape {tuple(v.shape)} != "
                         f"(nCells={_ncell_rex},) -- mesh mismatch.")
                 return v
-            _need = {"T_skin", "albedo_cells"}
+            _need = {"T_skin", "albedo_cells", "qsfc_last"}
             _flux4 = {"qsfc_cells", "shflx_cells", "lhflx_cells", "evap_cells"}
             _have = set(_lio)
             if (not _need <= _have
@@ -13197,6 +13197,11 @@ class ModelDriver:
                     "would silently cold-start).")
             _land_T_skin = _cell_rex("T_skin")
             _land_albedo_cells = _cell_rex("albedo_cells")
+            # The CMOR hourly sampler's land anchors (tas over land) are the
+            # driver mirrors of the last land solve; without them the first
+            # resumed hours anchor on the neighbouring ocean skin.
+            self._land_T_skin_last = _land_T_skin
+            self._land_qsfc_last = _cell_rex("qsfc_last")
             _land_qsfc_cells = _cell_rex("qsfc_cells")
             _land_shflx_cells = _cell_rex("shflx_cells")
             _land_lhflx_cells = _cell_rex("lhflx_cells")
@@ -13273,6 +13278,7 @@ class ModelDriver:
             out = {}
             for k, v in (("T_skin", _land_T_skin),
                          ("albedo_cells", _land_albedo_cells),
+                         ("qsfc_last", getattr(self, "_land_qsfc_last", None)),
                          ("qsfc_cells", _land_qsfc_cells),
                          ("shflx_cells", _land_shflx_cells),
                          ("lhflx_cells", _land_lhflx_cells),

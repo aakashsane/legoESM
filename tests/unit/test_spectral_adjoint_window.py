@@ -63,21 +63,29 @@ def _roll(coef, k, grid, sigma, state0, n=6):  # out-of-range check only
     return jnp.mean(jnp.asarray(spectral_state_to_carry(final, grid, sigma).T) ** 2)
 
 
-def _rad_live(state, grid_, sigma_coord, sim_time_seconds=0.0, phys_state=None):
-    # Radiation that depends on the clock AND the physics carry, so a broken
-    # cadence, clock or cache hand-off changes the forecast.
+def _rad_live(state, grid_, sigma_coord, sim_time_seconds=0.0, phys_state=None,
+              forcing=None):
+    # Radiation that depends on the clock, the per-step forcing calendar AND
+    # the physics carry, so a broken cadence, clock or hand-off shows.
     out = _rad_zero(state, grid_, sigma_coord)
+    sod = 0.0 if forcing is None else forcing["seconds_of_day"]
     T_t = jnp.zeros_like(state.T_hat.data).at[0, :].set(
-        1e-9 * (jnp.asarray(sim_time_seconds) + 600.0) + 1e-7 * phys_state)
+        1e-9 * (jnp.asarray(sim_time_seconds) + 600.0) + 1e-7 * phys_state
+        + 1e-10 * jnp.asarray(sod))
     return out._replace(T_hat=out.T_hat.replace(data=T_t))
 
 
 _CFG = SpectralPEConfig(semi_implicit=True)
 
 
+_FORCING = {"day_of_year": jnp.asarray(10.0), "seconds_of_day": jnp.asarray(3600.0),
+            "T_sfc": None, "sic": None}  # no surface override on the stub carry
+
+
 def _roll_rad(fn, state0, grid, sigma, n, **kw):
     return spectral_rollout(state0, fn, grid, sigma, _CFG, 600.0, n, None, None,
-                            rad_physics_fn=_rad_live, rad_update_interval=3, **kw)
+                            rad_physics_fn=_rad_live, rad_update_interval=3,
+                            forcing_base=_FORCING, **kw)
 
 
 def _T2(state, grid, sigma):
@@ -109,6 +117,15 @@ def test_two_leg_chain_equals_single_rollout_with_live_radiation():
     restarted = _T2(_roll_rad(pre, mid, grid, sigma, 3, phys_state_in=ps),
                     grid, sigma)
     assert float(restarted) != one
+    # ...and so does a continued leg that keeps the cache but restarts the clock.
+    mid, ps, rad = _roll_rad(pre, state0, grid, sigma, 4,
+                             return_phys_state=True, return_rad_tendency=True)
+    no_clock = spectral_rollout(
+        mid, pre, grid, sigma, _CFG, 600.0, 3, None, None,
+        rad_physics_fn=_rad_live, rad_update_interval=3,
+        forcing_base=_FORCING, phys_state_in=ps, rad_tendency_in=rad,
+        step_offset=1)
+    assert float(_T2(no_clock, grid, sigma)) != one
 
 
 def test_window_forecast_unchanged_and_gradient_is_the_suffix_derivative():
@@ -141,11 +158,20 @@ def test_markerless_gated_branch_window():
     assert abs(float(jax.grad(f)(1.0, 2)) - float(jax.grad(f)(1.0, 0))) > 0.0
 
 
-def test_chaining_kwargs_refused_outside_stateful_gated_branch():
+def test_chaining_kwargs_refused_where_they_cannot_be_exact():
     grid, sigma, state0 = _setup()
     fn = _stub_physics(None, None)
-    with pytest.raises(ValueError, match="phys_state_in"):
-        _roll_rad(fn, state0, grid, sigma, 2, step_offset=2)
+    with pytest.raises(ValueError, match="rad_tendency_in"):    # no cache
+        _roll_rad(fn, state0, grid, sigma, 2, step_offset=2,
+                  phys_state_in=jnp.asarray(0.0))
+    with pytest.raises(ValueError, match="STATEFUL"):          # no radiation
+        spectral_rollout(state0, fn, grid, sigma, _CFG, 600.0, 2, None, None,
+                         return_phys_state=True, return_rad_tendency=True)
+    with pytest.raises(ValueError, match="anchor"):
+        spectral_rollout(state0, fn, grid, sigma,
+                         _CFG._replace(fix_mass=True, anchor_mass_to_initial=True),
+                         600.0, 2, None, None, rad_physics_fn=_rad_live,
+                         return_phys_state=True, return_rad_tendency=True)
 
 
 def test_adjoint_steps_out_of_range_raises():

@@ -774,9 +774,13 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
             forecast as ``raw``; its derivative in the suffix parameters is
             what ``raw(..., adjoint_steps=suffix_steps)`` differentiates."""
             k0 = int(n_steps) - int(suffix_steps)
+            if not 0 < k0 < int(n_steps):
+                raise ValueError(f"suffix_steps must be in 1..{int(n_steps) - 1}, "
+                                 f"got {suffix_steps}")
             mid, ps, rad = self._roll(
                 carry_to_spectral_state(ic_carry, grid), k0, forcing,
                 return_phys_state=True, return_rad_tendency=True)
+            mid, ps, rad = jax.lax.stop_gradient((mid, ps, rad))
             final = suffix_seg._roll(
                 mid, int(suffix_steps), forcing, phys_state_in=ps,
                 rad_tendency_in=rad, step_offset=k0)

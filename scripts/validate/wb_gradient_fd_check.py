@@ -155,6 +155,9 @@ def noise_floor(h, jitter, baseline, n_terms=1):
 
 def main(argv=None):
     a = build_args(argv)
+    if a.adjoint_steps and a.mode != "physics":
+        raise SystemExit("--adjoint-steps checks the classical (physics) arm "
+                         "only; its two-leg forecast needs the radiation carry")
     if a.adjoint_steps and a.rollout_steps:
         raise SystemExit("--adjoint-steps and --rollout-steps measure different "
                          "things; pass one")
@@ -293,7 +296,9 @@ def main(argv=None):
         v_one = float(eqx.filter_jit(one_loss)(leaves, scenes[0]))
         v_two = float(fwd(leaves, scenes[0]))
         log.info("two-leg vs single forecast loss: %.17g vs %.17g", v_two, v_one)
-        if abs(v_two - v_one) > 1e-12 * max(abs(v_one), 1e-300):
+        # Two executables may round differently (fusion order, amplified over
+        # the forecast); a dropped carry moves the loss by far more than 1e-6.
+        if abs(v_two - v_one) > 1e-6 * max(abs(v_one), 1e-300):
             raise SystemExit("two-leg forecast differs from the single one; "
                              "the finite difference would test another model")
     base = total(leaves)

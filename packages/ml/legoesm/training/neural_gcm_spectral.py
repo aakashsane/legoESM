@@ -1423,18 +1423,25 @@ def spectral_rollout(
         else None
     )
 
-    _chained = (step_offset or rad_tendency_in is not None
-                or return_rad_tendency)
-    if _chained and (rad_physics_fn is None or phys_state_in is None
-                     and not return_phys_state):
+    _continued = bool(step_offset) or rad_tendency_in is not None
+    if _continued or return_rad_tendency:
+        if rad_physics_fn is None or (phys_state_in is None
+                                      and not return_phys_state):
+            raise ValueError(
+                "spectral_rollout: step_offset/rad_tendency_in/"
+                "return_rad_tendency chain the rad-gated STATEFUL branch only "
+                "(rad_physics_fn plus phys_state_in or return_phys_state).")
+        if getattr(pe_config, "fix_mass", False) and getattr(
+                pe_config, "anchor_mass_to_initial", False):
+            raise ValueError(
+                "spectral_rollout: segment chaining with the dry-mass anchor "
+                "would re-anchor to the segment start, not the forecast start.")
+    if _continued and (phys_state_in is None or rad_tendency_in is None
+                       or int(step_offset) < 1):
         raise ValueError(
-            "spectral_rollout: step_offset/rad_tendency_in/return_rad_tendency "
-            "chain the rad-gated STATEFUL branch only (rad_physics_fn plus "
-            "phys_state_in or return_phys_state).")
-    if (step_offset or rad_tendency_in is not None) and phys_state_in is None:
-        raise ValueError(
-            "spectral_rollout: a continued segment (step_offset or "
-            "rad_tendency_in) needs the previous segment's phys_state_in.")
+            "spectral_rollout: a continued segment needs step_offset >= 1, "
+            "the previous segment's phys_state_in AND rad_tendency_in (the "
+            "first steps may sit between radiation updates).")
     if not 0 <= int(adjoint_steps) <= int(n_steps):
         raise ValueError(
             f"spectral_rollout: adjoint_steps must be in 0..{n_steps}, got "

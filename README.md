@@ -340,7 +340,7 @@ python scripts/experiment/init_experiment.py 2d/williamson2_sw \
 # 3. run it (config.yaml is fed to `legoesm run`)
 cd ./runs/w2hi && bash run.sh
 
-# 4. reproduce ANY past run bit-for-bit from its manifest
+# 4. rerun a past run from its manifest; --check compares the final-state digest
 legoesm reproduce ./runs/w2hi/<output>/run_manifest.json --check
 ```
 
@@ -353,9 +353,17 @@ regenerate the run-status table:
 python scripts/experiment/validate_templates.py --write-status   # -> project_status.md
 ```
 
-The driver writes a `run_manifest.json` (resolved config + `state_digest` +
-`git_hash` + jax/numpy versions) for every run, so reproducibility is built in —
-do **not** add a parallel tag/provenance system.
+`ModelDriver`-based runs (`legoesm run`, `run_amip.py`) and `run_omip_core2.py`
+write a `run_manifest.json` (resolved config + `state_digest` + legoESM commit +
+jax/numpy versions); extend it rather than adding a parallel tag/provenance
+system. It does **not** yet capture everything needed to reconstruct a run:
+physics-scheme parameters are rebuilt from code defaults, several drivers
+(`run_omip.py`, `run_lmip.py`, `run_coupled.py`, `run_dino.py`) write no
+manifest, `reproduce` reruns on whatever commit is checked out, and a bitwise
+`--check` match can only be expected on identical software, hardware and device
+layout. See
+[docs/architecture/reproducibility.md](docs/architecture/reproducibility.md)
+for the gaps and the planned fixes.
 
 ### A new script
 

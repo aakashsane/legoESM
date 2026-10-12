@@ -41,6 +41,7 @@ FD_TOL = 0.05
 FD_STEP = 1.0e-3
 PERTURBATION_K = 1.0e-3
 SCHEDULES = ("none", "uniform", "binomial")
+AGREEMENT_COMPOSITIONS = ("per_step", *SCHEDULES)
 FIELDS = ("T", "S", "u", "v")
 GPU_NATIVE_POLICY_LABEL = (
     "GPU, XLA transcendentals — not the certified bit-exact policy"
@@ -190,6 +191,17 @@ def production_rollout(context: GYREContext, d_t0, n_steps: int):
     return state
 
 
+def gradient_rollout(context: GYREContext, d_t0, n_steps: int):
+    """Twin-Decision-49 Python composition of rematerialized production steps."""
+    state = context.initial_state._replace(
+        T=context.initial_state.T.replace(
+            data=context.initial_state.T.data + d_t0))
+    for kt in range(1, n_steps + 1):
+        freshwater, surface = context.surface_forcings(context.card, state, kt)
+        state = context.checkpointed_step(state, freshwater, surface)
+    return state
+
+
 def checkpoint_after_cold_step(
         cold_body, warm_body, init, n_steps: int, schedule: str):
     """Run one structure-changing step, then checkpoint the fixed warm carry."""
@@ -200,7 +212,9 @@ def checkpoint_after_cold_step(
 
 
 def scheduled_rollout(context: GYREContext, d_t0, n_steps: int, schedule: str):
-    """Segment the cold step, then schedule the fixed-pytree warm steps."""
+    """Select the per-step twin or a segmented checkpoint schedule."""
+    if schedule == "per_step":
+        return gradient_rollout(context, d_t0, n_steps)
     state = context.initial_state._replace(
         T=context.initial_state.T.replace(
             data=context.initial_state.T.data + d_t0))
@@ -396,14 +410,10 @@ def classify_agreement(reverse: float, forward: float, finite_difference: float)
 
 def directional_derivatives(
         forward_loss, base, direction, *, reverse_loss=None, plant=False):
-    """Measure the scalar line ``loss(base + alpha*direction)`` three ways.
+    """Measure one direction and its full-gradient cancellation scales.
 
-    Reverse mode with respect to ``alpha`` is exactly the full input VJP dotted
-    with ``direction``, but avoids materializing that 22x32x30 result.  The
-    direct unit test pins this equality and prevents this representation from
-    silently changing the requested directional derivative. ``reverse_loss``
-    permits a reverse-only checkpoint schedule to be checked against the
-    bit-identical forward-mode-capable schedule.
+    ``reverse_loss`` permits a reverse-only checkpoint schedule to be checked
+    against the bit-identical forward-mode-capable composition.
     """
     zero = jnp.asarray(0.0, dtype=base.dtype)
     reverse_loss = forward_loss if reverse_loss is None else reverse_loss
@@ -450,16 +460,18 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
     scheduled_truth = scheduled_rollout(context, zero, n_steps, schedule)
     jax.block_until_ready(scheduled_truth)
     primal_report = state_bitwise_report(truth_state, scheduled_truth)
+    forward_schedule = "per_step" if schedule == "per_step" else "uniform"
     forward_report = (
-        primal_report if schedule == "uniform" else {
+        primal_report if schedule == forward_schedule else {
             "bitwise_equal": None,
             "mismatch_count": None,
             "mismatches": [],
             "reason": "not evaluated after selected-schedule primal refusal",
         }
     )
-    if primal_report["bitwise_equal"] and schedule != "uniform":
-        forward_truth = scheduled_rollout(context, zero, n_steps, "uniform")
+    if primal_report["bitwise_equal"] and schedule != forward_schedule:
+        forward_truth = scheduled_rollout(
+            context, zero, n_steps, forward_schedule)
         jax.block_until_ready(forward_truth)
         forward_report = state_bitwise_report(truth_state, forward_truth)
     row = classify_agreement(math.nan, math.nan, math.nan)
@@ -474,7 +486,8 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
             "production Python loop")
     else:
         reference = build_reference(context, truth_state)
-        forward_loss = make_loss(context, reference, n_steps, schedule="uniform")
+        forward_loss = make_loss(
+            context, reference, n_steps, schedule=forward_schedule)
         reverse_loss = make_loss(context, reference, n_steps, schedule=schedule)
         base, direction = perturbations(context)
         perturbations_to_check = {
@@ -482,8 +495,10 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
             "fd_plus": base + FD_STEP * direction,
             "fd_minus": base - FD_STEP * direction,
         }
-        schedules_to_check = (schedule,) if schedule == "uniform" else (
-            schedule, "uniform")
+        schedules_to_check = (
+            (schedule,) if schedule == forward_schedule
+            else (schedule, forward_schedule)
+        )
         for label, perturbation in perturbations_to_check.items():
             production = production_rollout(context, perturbation, n_steps)
             jax.block_until_ready(production)
@@ -514,7 +529,7 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
         "steps": n_steps,
         "model_seconds": n_steps * DT_S,
         "schedule": schedule,
-        "forward_fd_schedule": "uniform",
+        "forward_fd_schedule": forward_schedule,
         **identity,
         "jax_enable_x64": bool(jax.config.jax_enable_x64),
         "precision_policy": repr(get_policy()),
@@ -525,7 +540,9 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
         "plant": "broken_vjp" if plant else None,
         "production_entry": "LatLonCGridOceanModel._step_jitted",
         "composition": "cold step segment plus fixed-pytree warm loop",
-        "schedule_scope": SCHEDULE_SCOPE,
+        "schedule_scope": (
+            "Decision-49 per-step Python composition"
+            if schedule == "per_step" else SCHEDULE_SCOPE),
         "per_step_whole_step_rematerialization": True,
         "schedule_primal_vs_production": primal_report,
         "forward_primal_vs_production": forward_report,
@@ -792,7 +809,8 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("agreement", "resources"))
     parser.add_argument("--steps", type=int, choices=tuple(range(1, 7)), required=True)
-    parser.add_argument("--schedule", choices=SCHEDULES, required=True)
+    parser.add_argument(
+        "--schedule", choices=AGREEMENT_COMPOSITIONS, required=True)
     parser.add_argument("--plant", choices=("broken_vjp",))
     parser.add_argument(
         "--transcendentals", choices=("libm", "native"), default="libm",
@@ -803,6 +821,9 @@ def parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.mode == "resources" and args.plant is not None:
         parser.error("resources mode does not accept --plant")
+    if args.mode == "resources" and args.schedule == "per_step":
+        parser.error(
+            "resources mode requires one of the registered checkpoint schedules")
     return args
 
 

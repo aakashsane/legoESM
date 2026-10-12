@@ -271,6 +271,19 @@ def test_gpu_cli_can_select_native_transcendentals_explicitly():
     assert args.transcendentals == "native"
 
 
+def test_per_step_composition_is_agreement_only():
+    args = G.parse_args([
+        "agreement", "--steps", "6", "--schedule", "per_step",
+        "--expect-commit", "deadbeef", "--output", "/tmp/unused-row.json",
+    ])
+    assert args.schedule == "per_step"
+    with pytest.raises(SystemExit):
+        G.parse_args([
+            "resources", "--steps", "6", "--schedule", "per_step",
+            "--expect-commit", "deadbeef", "--output", "/tmp/unused-row.json",
+        ])
+
+
 def test_peak_sampler_propagates_worker_failure(monkeypatch):
     sampler = G.PeakMemorySampler("cpu", interval_s=0.001)
 

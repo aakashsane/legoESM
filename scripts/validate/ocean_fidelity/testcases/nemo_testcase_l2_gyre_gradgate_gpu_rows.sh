@@ -66,9 +66,11 @@ assert row["physical_gpu_index"] == 1, row
 assert row["cuda_visible_devices"] == "1", row
 assert row["steps"] == int(steps), row
 assert row["schedule"] == schedule, row
-assert row["schedule_scope"].startswith("outer warm-loop schedule"), row
 if mode == "resources":
+    assert row["schedule_scope"].startswith("outer warm-loop schedule"), row
     assert row["xla_python_client_preallocate"].lower() == "false", row
+else:
+    assert row["schedule_scope"].startswith("Decision-49 per-step"), row
 ' "$output" "$COMMIT" "$mode" "$steps" "$schedule"; then
     printf 'REFUSE gyre-gradgate-gpu: invalid row provenance: %s\n' "$output" >&2
     ((ROW_FAILURES += 1))
@@ -81,11 +83,9 @@ if mode == "resources":
   fi
 }
 
-for schedule in none uniform binomial; do
-  for steps in 1 6; do
-    run_row "$EVIDENCE_DIR/gpu1_agreement_${schedule}_${steps}step.json" \
-      agreement "$steps" "$schedule"
-  done
+for steps in 1 6; do
+  run_row "$EVIDENCE_DIR/gpu1_agreement_${steps}step.json" \
+    agreement "$steps" per_step
 done
 
 for steps in 1 6; do

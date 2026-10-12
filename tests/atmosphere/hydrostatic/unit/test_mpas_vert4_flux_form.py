@@ -141,13 +141,51 @@ def test_dycore_selects_flux_form_per_tracer():
                                   np.asarray(base.tracer_tendencies["q_c"].data))
 
 
-def test_unknown_tracer_name_raises():
+def test_name_absent_from_state_is_skipped():
+    """A selected name the state does not carry is unused (the q_v default on a
+    tracer state without q_v must not crash); results equal the empty selection."""
     from legoesm.atmosphere.dynamics.gcm.primitive_eq_mpas import mpas_hydrostatic_tendencies
     mesh, coord, cfg, state = _tracer_state()
-    with pytest.raises(ValueError, match="not tracers"):
-        mpas_hydrostatic_tendencies(
-            state, mesh, coord, cfg._replace(vert4_flux_form_tracers=("q_x",)), None, 0.0)
+    base = mpas_hydrostatic_tendencies(state, mesh, coord, cfg, None, 0.0)
+    sel = mpas_hydrostatic_tendencies(
+        state, mesh, coord, cfg._replace(vert4_flux_form_tracers=("q_i",)), None, 0.0)
+    for k in ("q_v", "q_c"):
+        np.testing.assert_array_equal(np.asarray(sel.tracer_tendencies[k].data),
+                                      np.asarray(base.tracer_tendencies[k].data))
 
+
+
+@pytest.mark.parametrize("names", [("qv",), ("trc_q_v",), tuple("q_v")])
+def test_unknown_tracer_name_raises(names):
+    """Typos (and a string split into characters by tuple()) raise in the dycore,
+    which every lane that builds the config goes through."""
+    from legoesm.atmosphere.dynamics.gcm.primitive_eq_mpas import mpas_hydrostatic_tendencies
+    mesh, coord, cfg, state = _tracer_state()
+    with pytest.raises(ValueError, match="unknown tracer names"):
+        mpas_hydrostatic_tendencies(
+            state, mesh, coord, cfg._replace(vert4_flux_form_tracers=names), None, 0.0)
+
+
+def test_new_fields_are_appended_last():
+    """Positional ABI: the new fields sit at the end of both NamedTuples."""
+    from legoesm.atmosphere.dynamics.gcm.primitive_eq_mpas import MPASPrimitiveEquationConfig
+    from legoesm.driver.config import DycoreConfig
+    assert MPASPrimitiveEquationConfig._fields[-1] == "vert4_flux_form_tracers"
+    assert DycoreConfig._fields[-1] == "mpas_vert4_flux_form_tracers"
+
+
+def test_every_builder_forwarding_the_filter_forwards_the_form():
+    """Any source file that builds the dycore config with the filter strength
+    (driver factory, 4D-Var, NMC) must also forward the per-tracer form, or that
+    lane silently runs the projected (vapour-draining) form."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[4]
+    hits = [p for d in ("packages", "scripts") for p in (root / d).rglob("*.py")
+            if "nu_vert4_T=dycore.mpas_nu_vert4_T" in p.read_text()
+            or "nu_vert4_T=dc.mpas_nu_vert4_T" in p.read_text()]
+    assert len(hits) >= 3, hits
+    missing = [str(p) for p in hits if "vert4_flux_form_tracers=" not in p.read_text()]
+    assert not missing, missing
 
 @pytest.mark.parametrize("dp", [
     [1.0, 1e-6, 1.0, 1.0],

@@ -31,3 +31,12 @@ def test_band_layer_mean_selects_and_weights():
     f[1, 0] = np.nan
     with pytest.raises(SystemExit):
         S.band_layer_mean(f, p_full, dp, lat, area, (45, 70), (70, 150))
+
+
+def test_nan_outside_region_does_not_leak():
+    lat = np.array([50.0, 10.0])
+    area = np.array([1.0, 1.0])
+    p_full = np.array([[10000.0], [10000.0]])
+    dp = np.ones((2, 1))
+    f = np.array([[2.0], [np.nan]])          # NaN only in the excluded tropical cell
+    assert S.band_layer_mean(f, p_full, dp, lat, area, (45, 70), (70, 150)) == 2.0

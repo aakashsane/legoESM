@@ -29,6 +29,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm.core.conservation import (
+    BORROW_ELIGIBLE_TRACERS,
     conservative_positive_clip,
     conservative_positive_clip_global,
     is_borrow_eligible_tracer,
@@ -173,10 +174,6 @@ class MPASPrimitiveEquationConfig(NamedTuple):
     # ``nu_del4`` "off by default, set in production" convention); the
     # coupled/AMIP path sets a small value.
     nu_vert4_T: float = 0.0
-    # Tracer names whose vertical del4 filter uses the mass-weighted FLUX form
-    # (``vertical_del4_tracer_tendency_flux``) instead of the projected form.
-    # Empty = every tracer projected (pre-2026-10 behaviour, bit-identical).
-    vert4_flux_form_tracers: tuple = ()
     # Vertical advection scheme for the SIGMA lane (``vertical_coord="sigma"``),
     # applied to the θ thermodynamic transport, the tracers and the edge winds
     # — one selector for the one shared operator they all call.
@@ -225,6 +222,11 @@ class MPASPrimitiveEquationConfig(NamedTuple):
     # driver sets it from ``DycoreConfig.energy_fixer`` (default True, review
     # 2026-10-10 F15).
     energy_fixer: bool = False
+    # (appended last: positional ABI)
+    # Tracer names whose vertical del4 filter uses the mass-weighted FLUX form
+    # (``vertical_del4_tracer_tendency_flux``) instead of the projected form.
+    # Empty = every tracer projected (pre-2026-10 behaviour, bit-identical).
+    vert4_flux_form_tracers: tuple = ()
 
 
 # ============================================================================
@@ -893,12 +895,18 @@ def mpas_hydrostatic_tendencies(
             # Per-tracer form: names in ``vert4_flux_form_tracers`` get the
             # mass-weighted flux form (no projection); the rest keep the
             # projected form.  Static Python selection on the tracer names.
-            _flux_set = tuple(config.vert4_flux_form_tracers)
-            _unknown = [n for n in _flux_set if n not in _tnames]
+            # A known water/number name this state does not carry (e.g. the
+            # q_v default on a passive-tracer-only state) is simply unused; any
+            # other name is a typo (or a string split into characters) and
+            # raises here, on every lane that builds this config.
+            _unknown = [n for n in config.vert4_flux_form_tracers
+                        if n not in BORROW_ELIGIBLE_TRACERS]
             if _unknown:
                 raise ValueError(
-                    f"vert4_flux_form_tracers names {_unknown} are not tracers "
-                    f"of this state (have {_tnames})")
+                    f"vert4_flux_form_tracers: unknown tracer names {_unknown} "
+                    f"(expected per-mass water/number tracers such as q_v)")
+            _flux_set = tuple(n for n in config.vert4_flux_form_tracers
+                              if n in _tnames)
             if not _flux_set:
                 dq = dq + jax.vmap(
                     lambda qk: vertical_del4_T_tendency(

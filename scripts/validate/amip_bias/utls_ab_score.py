@@ -43,7 +43,8 @@ def band_layer_mean(field, p_full, dp, lat, area, lat_band, p_band_hpa):
         raise SystemExit("FATAL: empty band/layer selection")
     if not np.isfinite(field[w > 0]).all():
         raise SystemExit("FATAL: non-finite values in the scored region")
-    return float((field * w).sum() / w.sum())
+    sel = w > 0                      # NaN outside the region must not leak in as NaN*0
+    return float((field[sel] * w[sel]).sum() / w[sel].sum())
 
 
 def score_day(run_dir, day, lat, area):

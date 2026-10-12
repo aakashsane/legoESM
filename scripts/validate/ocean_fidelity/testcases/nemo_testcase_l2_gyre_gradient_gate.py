@@ -193,12 +193,7 @@ def scheduled_rollout(context: GYREContext, d_t0, n_steps: int, schedule: str):
         kt, step_state = carry
         freshwater, surface = context.surface_forcings(
             context.card, step_state, kt + 1)
-        step_state = context.model._step_jitted(
-            step_state,
-            context.card.dt_s,
-            freshwater,
-            surface,
-        )
+        step_state = context.checkpointed_step(step_state, freshwater, surface)
         return kt + 1, step_state
 
     _, state = checkpoint_after_cold_step(

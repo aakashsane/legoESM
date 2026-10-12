@@ -142,8 +142,12 @@ python scripts/experiment/fetch_data.py check 2d/williamson2_sw
 python scripts/experiment/init_experiment.py 2d/williamson2_sw --name w2 --output-dir ./runs/w2
 cd ./runs/w2 && bash run.sh
 
-# higher resolution + longer
-python scripts/experiment/init_experiment.py 2d/williamson2_sw --name w2hi --output-dir ./runs/w2hi \
+# longer (shallow-water templates run the matrix case; only its duration is overridable)
+python scripts/experiment/init_experiment.py 2d/williamson2_sw --name w2long --output-dir ./runs/w2long \
+    -o setup.duration_days=10
+
+# higher resolution + longer (a `legoesm run` template: any config field is overridable)
+python scripts/experiment/init_experiment.py 3d_idealized/held_suarez --name hshi --output-dir ./runs/hshi \
     -o grid.resolution=96 -o time.duration_hours=240
 
 # data-gated template (the one template with a data list; the run itself is

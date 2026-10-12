@@ -21,7 +21,8 @@ _ATM_TEMPLATES = _REPO_ROOT / "config" / "templates" / "atmosphere"
 
 
 def _template_paths() -> list[Path]:
-    return sorted(_ATM_TEMPLATES.glob("*.yaml"))
+    return sorted([*_ATM_TEMPLATES.glob("*.yaml"),
+                   *(_ATM_TEMPLATES.parent / "2d").glob("*.yaml")])
 
 
 def _matrix_case_pairs() -> set[tuple[str, str]]:

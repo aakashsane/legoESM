@@ -6,11 +6,11 @@ Maturity: **run_tested** (integration completed clean) · **init_only** (constru
 
 | Template | Tier | Complexity | Extent | Maturity | Valid | Description |
 |---|---|---|---|---|---|---|
-| `templates/2d/williamson2_sw.yaml` | tier1 | shallow_water | global | run_tested | ❌ ValueError: Invalid ExperimentConfig: grid.vertical_coord must be one of ('sigma', 'hybrid', 'cam_l32'); got 'none' | Williamson (1992) Test Case 2 — steady geostrophic flow; the |
-| `templates/2d/williamson5_sw.yaml` | tier1 | shallow_water | global | run_tested | ❌ ValueError: Invalid ExperimentConfig: grid.vertical_coord must be one of ('sigma', 'hybrid', 'cam_l32'); got 'none' | Williamson (1992) Test Case 5 — zonal flow impinging on an i |
+| `templates/2d/williamson2_sw.yaml` | tier1 | shallow_water | global | run_tested | ✅ | Williamson (1992) Test Case 2 — steady geostrophic flow; the canonical shallow-w |
+| `templates/2d/williamson5_sw.yaml` | tier1 | shallow_water | global | run_tested | ✅ | Williamson (1992) Test Case 5 — zonal flow impinging on an isolated mountain; ex |
 | `templates/atmosphere/williamson5_sw.yaml` | tier1 | shallow_water | global | structurally_validated | ✅ | Williamson test 5: zonal flow over an isolated mountain — the standard shallow-w |
 | `templates/ocean/barotropic_wave.yaml` | tier1 | primitive_equation | idealized | structurally_validated | ✅ | Barotropic wave propagation: a single-layer wave tests the C-grid dispersion rel |
-| `templates/ocean/bench.yaml` | tier1 | primitive_equation | global | experimental | ❌ maturity='experimental' not in ['init_only', 'run_tested', 'structurally_validated'] | NEMO-BENCH-inspired performance benchmark: flat-bottom all-ocean box, zero analy |
+| `templates/ocean/bench.yaml` | tier1 | primitive_equation | global | structurally_validated | ✅ | NEMO-BENCH-inspired performance benchmark: flat-bottom all-ocean box, zero analy |
 | `templates/ocean/geostrophic_adjustment.yaml` | tier1 | primitive_equation | idealized | structurally_validated | ✅ | Geostrophic adjustment: an initially-unbalanced meridional temperature front (th |
 | `templates/ocean/inertia_gravity_wave.yaml` | tier1 | primitive_equation | idealized | structurally_validated | ✅ | Inertia-gravity (Poincaré) wave propagation: a barotropic-equivalent shallow-wat |
 | `templates/sea_ice/itd_roundtrip.yaml` | tier1 | itd | column | structurally_validated | ✅ | Ice-thickness-distribution (ITD) linear-remap round-trip: advecting the ITD forw |
@@ -36,4 +36,4 @@ Maturity: **run_tested** (integration completed clean) · **init_only** (constru
 | `templates/global_ocean/omip_latlon.yaml` | tier3 | primitive_equation | global | init_only | ✅ | OMIP-style forced global ocean: lat-lon C-grid finite-volume hydrostatic primiti |
 | `templates/global_ocean/omip_latlon_kpp.yaml` | tier3 | primitive_equation | global | structurally_validated | ✅ | OMIP-style forced global ocean (lat-lon C-grid) with the physics pipeline config |
 
-**26/29 templates valid.**
+**29/29 templates valid.**

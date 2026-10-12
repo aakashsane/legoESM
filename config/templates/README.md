@@ -15,15 +15,18 @@ experiment:
   conservation_gates: [mass, energy]   # the matrix PASS/FAIL gates this case asserts
 ```
 
-Everything below `experiment:` is a standard `legoesm run` config
+Everything below `experiment:` is either a standard `legoesm run` config
 (`model`/`grid`/`atmosphere`/`physics`/`conservation`/`time`/`output`/`hardware`)
-— `Config` ignores the `experiment:` block when resolving to `ExperimentConfig`.
+— `Config` ignores the `experiment:` block when resolving to `ExperimentConfig` —
+or a `setup:` block naming a test-matrix case (`name`, `grid`, optional
+`duration_days`), which `init_experiment.py` turns into a matrix-runner command.
+Shallow water only runs the second way.
 
 ## Layout (by domain/extent; tier is derived from `experiment.tier`)
 
 | Category | Tier(s) | Contents |
 |---|---|---|
-| `2d/` | tier1 | shallow-water recipes (Williamson 2, Williamson 5) |
+| `2d/` | tier1 | `setup:` templates naming the shallow-water matrix cases (Williamson 2, Williamson 5) |
 | `3d_idealized/` | tier2–3 | dry/idealized 3D recipes (Held-Suarez, hydrostatic gray-radiation year) |
 | `atmosphere/` | tier1–2 | `setup:` templates naming atmosphere matrix cases (Williamson 5, Held-Suarez, baroclinic wave) |
 | `ocean/` | tier1–2 | `setup:` templates naming idealized ocean matrix cases (gyres, channels, waves, overflow, BENCH, ...) |
@@ -37,7 +40,7 @@ experiments run through their drivers in `scripts/run/`.
 
 ```bash
 python scripts/experiment/validate_templates.py --write-status      # validate all + regen project_status.md
-python scripts/experiment/init_experiment.py 2d/williamson2_sw --name w2 --output-dir ./runs/w2 \
+python scripts/experiment/init_experiment.py 3d_idealized/held_suarez --name hs --output-dir ./runs/hs \
     -o grid.resolution=96                                            # resolve + override
 ```
 

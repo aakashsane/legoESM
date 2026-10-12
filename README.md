@@ -263,13 +263,11 @@ More things to try:
 Found while writing this walkthrough on 2026-10-12. None blocks the path
 above.
 
-- **`2d/williamson2_sw` and `2d/williamson5_sw` templates fail validation**
-  (`vertical_coord: none` is no longer accepted), although
-  `project_status.md` lists `williamson2_sw` as run-tested. Use
-  `legoesm test williamson` (step 3) for shallow water until the templates
-  are fixed.
-- **`ocean/bench` template fails validation** (`maturity='experimental'` is
-  not an allowed value).
+- **Shallow water does not run through `legoesm run`.** The
+  `2d/williamson2_sw` and `2d/williamson5_sw` templates therefore name the
+  matrix cases (`init_experiment.py 2d/williamson2_sw ...` writes a `run.sh`
+  that calls the matrix runner), and their grid, timestep and duration are the
+  matrix case's. There is no `run_manifest.json` / `legoesm reproduce` for them.
 - `config/templates/README.md` lists `1d/` and `coupled/` template folders that
   do not exist.
 - **Held–Suarez ran at dt=200 s** although its template says

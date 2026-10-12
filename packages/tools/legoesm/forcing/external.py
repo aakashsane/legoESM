@@ -547,8 +547,19 @@ def _load_monthly_zonal_anchored(
         ds.close()
         raise ValueError(f"Variable {varname!r} not found in {path!r}")
     var = ds[varname]
-    data = np.asarray(var.values, dtype=np.float64)
     dims = list(var.dims)
+    lon_name = next((n for n in ("lon", "longitude") if n in dims), None)
+    if lon_name is not None and dims.index(lon_name) > 0:
+        # Zonal mean one leading-axis slab at a time: the same per-element
+        # nanmean as on the whole array, without holding a full-resolution
+        # float64 copy (a 1850-2014 1x1-degree 14-band file is ~22 GB that way).
+        ax = dims.index(lon_name) - 1
+        data = np.stack([
+            np.nanmean(np.asarray(var.isel({dims[0]: i}).values, dtype=np.float64), axis=ax)
+            for i in range(var.sizes[dims[0]])])
+        dims.remove(lon_name)
+    else:
+        data = np.asarray(var.values, dtype=np.float64)
 
     if "lat" in ds:
         lat = np.asarray(ds["lat"].values, dtype=np.float64)
@@ -563,7 +574,7 @@ def _load_monthly_zonal_anchored(
         mid_days = np.array([15.5 + 30.4375 * m for m in range(12)])
         first_date = None
 
-    # Average over longitude to produce a zonal mean.
+    # Average over longitude to produce a zonal mean (lon-leading layout).
     for lname in ("lon", "longitude"):
         if lname in dims:
             ax = dims.index(lname)

@@ -152,6 +152,26 @@ def test_volume_weighted_mse_ignores_zero_volume_cells():
     assert float(G.volume_weighted_mse(pred, target, volume)) == pytest.approx(3.25)
 
 
+def test_state_bitwise_report_detects_last_bit_and_signed_zero():
+    left = {
+        "x": jnp.asarray([1.0, 0.0], dtype=jnp.float64),
+        "i": jnp.asarray([1], dtype=jnp.int32),
+    }
+    right = {
+        "x": jnp.asarray(
+            [np.nextafter(1.0, 2.0), -0.0], dtype=jnp.float64),
+        "i": jnp.asarray([1], dtype=jnp.int32),
+    }
+    report = G.state_bitwise_report(left, right)
+    assert report["bitwise_equal"] is False
+    assert report["mismatch_count"] == 1
+    assert report["mismatches"][0]["path"] == "['x']"
+    assert report["mismatches"][0]["max_abs"] == pytest.approx(
+        np.nextafter(1.0, 2.0) - 1.0)
+    assert G.states_bitwise_equal(left, right) is False
+    assert G.states_bitwise_equal(left, left) is True
+
+
 def test_nemo_literal_dissl_guard_preserves_primal_bits_and_zero_vjp():
     """The approved production guard changes only the zero-TKE transpose."""
     values = jnp.asarray(

@@ -411,24 +411,33 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
     jax.block_until_ready(truth_state)
     scheduled_truth = scheduled_rollout(context, zero, n_steps, schedule)
     jax.block_until_ready(scheduled_truth)
-    require(states_bitwise_equal(truth_state, scheduled_truth),
-            f"{schedule} segmented schedule primal differs from production")
-    if schedule != "uniform":
+    primal_report = state_bitwise_report(truth_state, scheduled_truth)
+    forward_report = {"bitwise_equal": True, "mismatch_count": 0,
+                      "mismatches": []}
+    if primal_report["bitwise_equal"] and schedule != "uniform":
         forward_truth = scheduled_rollout(context, zero, n_steps, "uniform")
         jax.block_until_ready(forward_truth)
-        require(states_bitwise_equal(truth_state, forward_truth),
-                "uniform forward-reference primal differs from production")
-    reference = build_reference(context, truth_state)
-    forward_loss = make_loss(context, reference, n_steps, schedule="uniform")
-    reverse_loss = make_loss(context, reference, n_steps, schedule=schedule)
-    base, direction = perturbations(context)
+        forward_report = state_bitwise_report(truth_state, forward_truth)
     row = classify_agreement(math.nan, math.nan, math.nan)
-    try:
-        row = directional_derivatives(
-            forward_loss, base, direction,
-            reverse_loss=reverse_loss, plant=plant)
-    except (TypeError, ValueError, RuntimeError) as error:
-        row["error"] = f"{type(error).__name__}: {error}"
+    if not primal_report["bitwise_equal"]:
+        row["error"] = (
+            f"{schedule} segmented schedule primal differs bitwise from "
+            "the production Python loop")
+    elif not forward_report["bitwise_equal"]:
+        row["error"] = (
+            "uniform forward-reference primal differs bitwise from the "
+            "production Python loop")
+    else:
+        reference = build_reference(context, truth_state)
+        forward_loss = make_loss(context, reference, n_steps, schedule="uniform")
+        reverse_loss = make_loss(context, reference, n_steps, schedule=schedule)
+        base, direction = perturbations(context)
+        try:
+            row = directional_derivatives(
+                forward_loss, base, direction,
+                reverse_loss=reverse_loss, plant=plant)
+        except (TypeError, ValueError, RuntimeError) as error:
+            row["error"] = f"{type(error).__name__}: {error}"
     row.update({
         "case": CASE,
         "steps": n_steps,
@@ -446,18 +455,58 @@ def measure_agreement(n_steps: int, schedule: str, *, plant=False,
         "plant": "broken_vjp" if plant else None,
         "production_entry": "LatLonCGridOceanModel._step_jitted",
         "composition": "cold step segment plus fixed-pytree warm loop",
+        "schedule_primal_vs_production": primal_report,
+        "forward_primal_vs_production": forward_report,
     })
     return row
 
 
+def state_bitwise_report(left, right) -> dict:
+    """Report exact byte differences between corresponding state leaves."""
+    left_path_leaves, left_tree = jax.tree_util.tree_flatten_with_path(left)
+    right_path_leaves, right_tree = jax.tree_util.tree_flatten_with_path(right)
+    if left_tree != right_tree:
+        return {
+            "bitwise_equal": False,
+            "mismatch_count": None,
+            "mismatches": [{"path": "<pytree>", "reason": "treedef differs"}],
+        }
+    mismatches = []
+    for ((left_path, left_leaf), (right_path, right_leaf)) in zip(
+            left_path_leaves, right_path_leaves, strict=True):
+        require(left_path == right_path, "paired state leaf paths differ")
+        left_array = np.asarray(left_leaf)
+        right_array = np.asarray(right_leaf)
+        same_layout = (
+            left_array.shape == right_array.shape
+            and left_array.dtype == right_array.dtype
+        )
+        same_bytes = same_layout and left_array.tobytes() == right_array.tobytes()
+        if same_bytes:
+            continue
+        entry = {
+            "path": jax.tree_util.keystr(left_path),
+            "shape": list(left_array.shape),
+            "dtype": str(left_array.dtype),
+            "max_abs": None,
+        }
+        if (same_layout and np.issubdtype(left_array.dtype, np.number)
+                and np.all(np.isfinite(left_array))
+                and np.all(np.isfinite(right_array))):
+            entry["max_abs"] = float(np.max(np.abs(
+                left_array.astype(np.float64)
+                - right_array.astype(np.float64))))
+        mismatches.append(entry)
+    return {
+        "bitwise_equal": not mismatches,
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches,
+    }
+
+
 def states_bitwise_equal(left, right) -> bool:
-    """Compare all floating and integer state leaves without summary rounding."""
-    left_leaves = jax.tree_util.tree_leaves(left)
-    right_leaves = jax.tree_util.tree_leaves(right)
-    if len(left_leaves) != len(right_leaves):
-        return False
-    return all(np.array_equal(np.asarray(a), np.asarray(b))
-               for a, b in zip(left_leaves, right_leaves, strict=True))
+    """Compare all state leaves byte for byte."""
+    return bool(state_bitwise_report(left, right)["bitwise_equal"])
 
 
 def current_rss_mib() -> float:
@@ -627,7 +676,7 @@ def write_result(path: Path, row: dict) -> None:
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("agreement", "resources"))
-    parser.add_argument("--steps", type=int, choices=(1, 6), required=True)
+    parser.add_argument("--steps", type=int, choices=tuple(range(1, 7)), required=True)
     parser.add_argument("--schedule", choices=SCHEDULES, required=True)
     parser.add_argument("--plant", choices=("broken_vjp",))
     parser.add_argument(

@@ -108,6 +108,8 @@ def test_explicit_stepwise_vjp_matches_whole_window_gradient(monkeypatch):
     direction = jnp.asarray([0.6, -0.8], dtype=jnp.float64)
     row = G.explicit_stepwise_directional_derivatives(
         context, None, base, direction, 3)
+    planted = G.explicit_stepwise_directional_derivatives(
+        context, None, base, direction, 3, plant=True)
 
     def whole_window(value):
         state = G._apply_initial_perturbation(context, value)
@@ -132,6 +134,8 @@ def test_explicit_stepwise_vjp_matches_whole_window_gradient(monkeypatch):
     )
     assert row["step_jvp_replays_bitwise"] is True
     assert row["step_jvp_replay_used_as_primal"] is False
+    assert planted["status"] == "REFUTED"
+    assert planted["reverse"] == pytest.approx(2.0 * planted["forward"])
 
 
 def test_reverse_only_schedule_compares_against_forward_reference():

@@ -1297,7 +1297,23 @@ def test_wall_default_surface_is_frozen():
 # F37 fix (#1936).  An added default cannot trip the wall, and the field is
 # not allow-listed, so a non-default value stays refused on the duo lane.
 # The allow-list is unchanged.
-_WALL_SURFACE_SHA256 = "21b3b847f49238ee1166e46f4c3366d911fae7be60091d0aa3a15a3635ea8190"
+#
+# 2026-10-12, merging cf/main (207686288) into fu/composable-p2 (#1933): the
+# surface was dumped on both trees (job 10342193, fv3_duo_gaps/fu/p2/
+# merge1012/tests_r1/wall_*.txt). Same 386 paths; the ONLY differences are
+# P2's nine renames (commit 54e21adec), every default identical:
+#   dycore.fv3_duo_column_lane -> dycore.column_lane (False)
+#   mpas_ice_skin_prognostic -> ice_skin_prognostic (False)
+#   mpas_ice_thickness_m -> ice_thickness_m (2.0)
+#   mpas_land_beta -> land_beta (1.0)
+#   mpas_land_beta_soil -> land_beta_soil (False)
+#   mpas_land_lapse_K_per_km -> land_lapse_K_per_km (0.0)
+#   mpas_land_params_refresh -> land_params_refresh (True)
+#   mpas_land_stress_from_land -> land_stress_from_land (None)
+#   mpas_ocean_flux_on_ocean_surface -> ocean_flux_on_ocean_surface (False)
+# No default moved. None of the old or new names is allow-listed, so a
+# non-default value stays refused on the duo lane; the allow-list is unchanged.
+_WALL_SURFACE_SHA256 = "6d5dc520a853031fedfb86a244afb0a422682b7d46f133ac94dbe02a181d757e"
 
 
 def test_wall_leaf_types_are_scalar():

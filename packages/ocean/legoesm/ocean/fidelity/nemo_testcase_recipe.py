@@ -71,6 +71,126 @@ class NEMOTestcaseCard(NamedTuple):
     # must spell this out so no caller can inherit an implicit iceberg choice.
     icebergs_enabled: bool | None = None
     iceberg_inputs: tuple[str, ...] | None = None
+    # Complete resolved deck where a parameterised card provides one.  Legacy
+    # cards retain None until their own deck audit is promoted.
+    resolved_namelist: object | None = None
+
+
+class GyreResolvedNamelist(NamedTuple):
+    """Resolved GYRE choices consumed by the certified card.
+
+    The run-control fields are retained even where they do not enter one model
+    step, so an acquisition, a short ladder, and a long driver can all print
+    the deck they actually selected.  The remaining fields are the physical
+    and scheme pins already embodied by ``gyre_vector_ene_c2``; validation
+    rejects any unsupported hybrid instead of accepting an inert-looking
+    namelist change.
+    """
+
+    cn_exp: str = "GYRE_OMIP_L2"
+    nn_it000: int = 1
+    nn_itend: int = 4320
+    nn_date0: int = 10101
+    nn_leapy: int = 30
+    nn_stock: int = 4320
+    nn_write: int = 60
+    nn_istate: int = 0
+    nn_GYRE: int = 1
+    ln_bench: bool = False
+    jpkglo: int = 31
+    rn_Dt_s: float = 14400.0
+    ln_meshmask: bool = False
+    l_runstat: bool = False
+    ptimincr: int = 1
+    nn_fsbc: int = 1
+    ln_usr_sbc: bool = True
+    ln_traqsr: bool = True
+    ln_qsr_2bd: bool = True
+    nn_chldta: int = 0
+    rn_shlat: float = 0.0
+    ln_non_lin: bool = True
+    ln_teos10: bool = True
+    ln_eos80: bool = False
+    ln_seos: bool = False
+    ln_traadv_fct: bool = True
+    nn_fct_h: int = 2
+    nn_fct_v: int = 2
+    ln_traldf_lap: bool = True
+    ln_traldf_iso: bool = True
+    nn_aht_ijk_t: int = 0
+    rn_Ud_m_s: float = 0.02
+    rn_Ld_m: float = 100000.0
+    ln_dynadv_vec: bool = True
+    nn_dynkeg: int = 0
+    ln_dynvor_ene: bool = True
+    ln_hpg_sco: bool = True
+    ln_dynspg_ts: bool = True
+    nn_bt_flt: int = 3
+    rn_bt_alpha: float = 0.07
+    ln_bt_auto: bool = True
+    rn_bt_cmax: float = 0.8
+    ln_dynldf_lap: bool = True
+    ln_dynldf_lev: bool = True
+    nn_ahm_ijk_t: int = 0
+    rn_Uv_m_s: float = 2.0
+    rn_Lv_m: float = 100000.0
+    ln_zdftke: bool = True
+    ln_zdfevd: bool = True
+    nn_evdm: int = 1
+    rn_evd_m2_s: float = 100.0
+    rn_avm0_m2_s: float = 1.2e-4
+    rn_avt0_m2_s: float = 1.2e-5
+    nn_avb: int = 0
+    nn_havtb: int = 0
+    nn_etau: int = 0
+    key_qco: bool = True
+    key_vco_1d: bool = True
+    key_RK3: bool = True
+
+
+GYRE_SHIPPED_NAMELIST = GyreResolvedNamelist()
+GYRE_R4_NAMELIST = GYRE_SHIPPED_NAMELIST._replace(
+    nn_GYRE=4,
+    rn_Dt_s=3600.0,
+    rn_Ld_m=25000.0,
+    rn_Lv_m=25000.0,
+    nn_itend=26280,
+    nn_stock=8760,
+    nn_write=24,
+    l_runstat=True,
+)
+
+
+_GYRE_RUNTIME_FIELDS = frozenset({
+    "nn_GYRE", "rn_Dt_s", "rn_Ld_m", "rn_Lv_m", "nn_itend",
+    "nn_stock", "nn_write", "ln_meshmask", "l_runstat", "ptimincr",
+})
+
+
+def validate_gyre_namelist(namelist: GyreResolvedNamelist) -> None:
+    """Reject unsupported GYRE physics or malformed runtime controls."""
+
+    if not isinstance(namelist, GyreResolvedNamelist):
+        raise TypeError("GYRE namelist must be a GyreResolvedNamelist")
+    fixed = GYRE_SHIPPED_NAMELIST._asdict()
+    for name, value in namelist._asdict().items():
+        if name not in _GYRE_RUNTIME_FIELDS and value != fixed[name]:
+            raise ValueError(
+                f"unsupported GYRE namelist value {name}={value!r}; "
+                f"certified value is {fixed[name]!r}"
+            )
+    if namelist.nn_GYRE < 1:
+        raise ValueError("GYRE nn_GYRE must be a positive integer")
+    if namelist.rn_Dt_s <= 0.0:
+        raise ValueError("GYRE rn_Dt must be positive")
+    if namelist.rn_Ld_m <= 0.0 or namelist.rn_Lv_m <= 0.0:
+        raise ValueError("GYRE rn_Ld/rn_Lv must be positive")
+    if namelist.nn_it000 != 1 or namelist.nn_itend < namelist.nn_it000:
+        raise ValueError("GYRE card supports nn_it000=1 and nn_itend >= 1")
+    if namelist.nn_stock < 1 or namelist.nn_write < 1:
+        raise ValueError("GYRE nn_stock/nn_write must be positive")
+    if namelist.ptimincr < 1:
+        raise ValueError("GYRE ptimincr must be positive")
 
 
 class GYRESurfaceBoundaryCondition(NamedTuple):
@@ -802,14 +922,18 @@ def gyre_vertical_ladder() -> dict[str, np.ndarray]:
     }
 
 
-def gyre_horizontal_coordinates() -> dict[str, np.ndarray]:
-    """Transcribe the rotated GYRE T/U/V/F coordinates and beta-plane f."""
+def gyre_horizontal_coordinates(
+    namelist: GyreResolvedNamelist = GYRE_SHIPPED_NAMELIST,
+) -> dict[str, np.ndarray]:
+    """Transcribe the resolved GYRE T/U/V/F coordinates and beta-plane f."""
 
-    nx, ny = 32, 22
+    validate_gyre_namelist(namelist)
+    nx = 30 * namelist.nn_GYRE + 2
+    ny = 20 * namelist.nn_GYRE + 2
     radius = float(NEMO_CONSTANTS_CONFIG.R_earth)
     omega = float(NEMO_CONSTANTS_CONFIG.Omega)
     rad = np.pi / 180.0
-    spacing = 106000.0
+    spacing = 106000.0 / float(namelist.nn_GYRE)
     spacing_deg = spacing / (radius * rad)
     sin_alpha = -math.sqrt(2.0) * 0.5
     cos_alpha = math.sqrt(2.0) * 0.5
@@ -844,12 +968,14 @@ def gyre_horizontal_coordinates() -> dict[str, np.ndarray]:
     }
 
 
-def _gyre_grid():
-    """Build the source-rotated 106-km Cartesian C-grid."""
+def _gyre_grid(namelist: GyreResolvedNamelist = GYRE_SHIPPED_NAMELIST):
+    """Build the source-rotated resolved Cartesian C-grid."""
 
-    source = gyre_horizontal_coordinates()
+    source = gyre_horizontal_coordinates(namelist)
+    ny, nx = source["gphit"].shape
+    spacing = 106000.0 / float(namelist.nn_GYRE)
     grid = create_beta_plane_cgrid_geometry(
-        22, 32, dx_m=106000.0, dy_m=106000.0, f0=0.0, beta=0.0,
+        ny, nx, dx_m=spacing, dy_m=spacing, f0=0.0, beta=0.0,
         radius=float(NEMO_CONSTANTS_CONFIG.R_earth),
         cartesian_pseudo_lat=True, dtype=jnp.float64,
     )
@@ -880,10 +1006,10 @@ def _gyre_grid():
         f_u=jnp.asarray(f_u, dtype=jnp.float64),
         f_v=jnp.asarray(f_v, dtype=jnp.float64),
         ff_f=jnp.asarray(source["ff_f"], dtype=jnp.float64),
-        cos_alpha_u=jnp.full((22, 33), rotation, dtype=jnp.float64),
-        sin_alpha_u=jnp.full((22, 33), rotation, dtype=jnp.float64),
-        cos_alpha_v=jnp.full((23, 32), rotation, dtype=jnp.float64),
-        sin_alpha_v=jnp.full((23, 32), rotation, dtype=jnp.float64),
+        cos_alpha_u=jnp.full((ny, nx + 1), rotation, dtype=jnp.float64),
+        sin_alpha_u=jnp.full((ny, nx + 1), rotation, dtype=jnp.float64),
+        cos_alpha_v=jnp.full((ny + 1, nx), rotation, dtype=jnp.float64),
+        sin_alpha_v=jnp.full((ny + 1, nx), rotation, dtype=jnp.float64),
         native_lat_T_deg=jnp.asarray(source["gphit"], dtype=jnp.float64),
     )
 
@@ -1092,17 +1218,22 @@ def build_overflow_zps_card() -> NEMOTestcaseCard:
     return card
 
 
-def build_gyre_zco_card() -> NEMOTestcaseCard:
-    """Certified GYRE: rotated beta-plane, MI96 zco, OMIP RK3 identity."""
+def build_gyre_zco_card(
+    namelist: GyreResolvedNamelist = GYRE_SHIPPED_NAMELIST,
+) -> NEMOTestcaseCard:
+    """Certified GYRE from a resolved rotated-beta-plane OMIP deck."""
 
-    grid = _gyre_grid()
-    wet = _closed_box_mask(22, 32)
+    validate_gyre_namelist(namelist)
+    grid = _gyre_grid(namelist)
+    ny, nx = grid.n_lat, grid.n_lon
+    spacing = 106000.0 / float(namelist.nn_GYRE)
+    wet = _closed_box_mask(ny, nx)
     wet_np = np.asarray(wet)
     u_wet_native = wet_np * np.roll(wet_np, -1, axis=1)
     v_wet_native = wet_np * np.roll(wet_np, -1, axis=0)
     area_native = np.asarray(grid.dx_T) * np.asarray(grid.dy_T)
     reference_depth = float(_GYRE_GDEPW_1D[30])
-    native_3d = (22, 32, 30)
+    native_3d = (ny, nx, 30)
     zco_thickness = np.broadcast_to(_GYRE_E3T_1D[:30], native_3d)
     umask_3d = np.broadcast_to(u_wet_native[..., None], native_3d)
     vmask_3d = np.broadcast_to(v_wet_native[..., None], native_3d)
@@ -1127,8 +1258,8 @@ def build_gyre_zco_card() -> NEMOTestcaseCard:
         e2u=np.asarray(grid.dy_u)[:, 1:],
         e1v=np.asarray(grid.dx_v)[1:],
         e2v=np.asarray(grid.dy_v)[1:],
-        e1f=np.full((22, 32), 106000.0),
-        e2f=np.full((22, 32), 106000.0),
+        e1f=np.full((ny, nx), spacing),
+        e2f=np.full((ny, nx), spacing),
     )
     z_ref = create_z_star_from_thicknesses(
         _GYRE_E3T_1D[:30],
@@ -1142,8 +1273,8 @@ def build_gyre_zco_card() -> NEMOTestcaseCard:
         nemo_e1e2t_m=area_native,
         nemo_e1e2u_m=area_native,
         nemo_e1e2v_m=area_native,
-        nemo_e2u_m=np.full_like(area_native, 106000.0),
-        nemo_e1v_m=np.full_like(area_native, 106000.0),
+        nemo_e2u_m=np.full_like(area_native, spacing),
+        nemo_e1v_m=np.full_like(area_native, spacing),
         nemo_een_barotropic_m=literal_barotropic_operands,
     )
     # The generic constructor deliberately recovers dz from a cumulative-sum
@@ -1177,12 +1308,15 @@ def build_gyre_zco_card() -> NEMOTestcaseCard:
         T=state.T.replace(data=jnp.asarray(temperature, dtype=jnp.float64)),
         S=state.S.replace(data=jnp.asarray(salinity, dtype=jnp.float64)),
     )
-    # GYRE resolves ln_bt_auto=T to nn_e=50 with nn_bt_flt=3 and
-    # rn_bt_alpha=.07 (ocean.output:833-839).  Keep this executed value pinned;
-    # auto-resolution is separately checked from the live card geometry.
+    # GYRE resolves ln_bt_auto=T from the live depth, metric, timestep, and
+    # rn_bt_cmax=.8 (dynspg_ts.F90:1223-1240).  The shipped and r4 operator
+    # decks both resolve to 50; compute it so later supported resolutions do
+    # not inherit a size-specific literal.
+    resolved_substeps = _resolved_auto_substeps(
+        grid, bathymetry, namelist.rn_Dt_s)
     model_config = _model_config(
         barotropic_time_filter="nemo_ab3am4",
-        n_barotropic_substeps=50,
+        n_barotropic_substeps=resolved_substeps,
         bbl_adv_option=0,
         bbl_gamma_s=0.0,
         bbl_diffusive_option=0,
@@ -1195,8 +1329,19 @@ def build_gyre_zco_card() -> NEMOTestcaseCard:
     # mixed-layer recurrence and the slope denominator on that one carried
     # step-entry field instead of evaluating eosbn2 a second time.
     model_config = model_config._replace(
+        lateral_viscosity=model_config.lateral_viscosity._replace(
+            A_h=0.5 * namelist.rn_Uv_m_s * namelist.rn_Lv_m),
         gm_redi=model_config.gm_redi._replace(
-            slope_n2_evaluation="carried_step_entry"))
+            kappa_Redi=0.5 * namelist.rn_Ud_m_s * namelist.rn_Ld_m,
+            slope_n2_evaluation="carried_step_entry"),
+        physics=model_config.physics._replace(
+            shortwave_penetration=(
+                model_config.physics.shortwave_penetration._replace(
+                    nemo_time_step_s=namelist.rn_Dt_s
+                )
+            )
+        ),
+    )
     recipe = NEMORecipe(
         model_config=model_config,
         physics_config=model_config.physics,
@@ -1208,14 +1353,15 @@ def build_gyre_zco_card() -> NEMOTestcaseCard:
     card = NEMOTestcaseCard(
         "GYRE-zco",
         recipe,
-        14400.0,
-        4320,
+        namelist.rn_Dt_s,
+        namelist.nn_itend,
         1,
         0,
         0,
         0.0,
         0.0,
         surface_boundary_condition="gyre_usrdef_sbc",
+        resolved_namelist=namelist,
     )
     validate_nemo_testcase_card(card)
     return card
@@ -1257,6 +1403,52 @@ def gyre_surface_boundary_condition(
         taum.astype(jnp.float64),
         wndm.astype(jnp.float64),
     )
+
+
+def gyre_surface_forcings(card: NEMOTestcaseCard, state, kt):
+    """Materialize the executed GYRE freshwater and surface forcing pair.
+
+    ``kt`` may be a JAX scalar.  Keeping the seasonal clock in this shared
+    function lets an outer ``lax.scan`` evaluate it from each step index
+    inside the compiled day instead of freezing one day's forcing.
+    """
+
+    from legoesm.core.source_rounding import nemo_source_round
+    from legoesm.ocean.eos import nemo_potential_temperature_from_conservative
+    from legoesm.ocean.fidelity.nemo_recipe import nemo_gyre_qns
+    from legoesm.ocean.freshwater import FreshwaterForcing
+    from legoesm.ocean.state import OceanSurfaceForcing
+
+    sbc = gyre_surface_boundary_condition(card, kt * card.dt_s)
+    sst = state.T.data[..., 0]
+    sst_m = nemo_potential_temperature_from_conservative(
+        sst, state.S.data[..., 0])
+    qns = nemo_gyre_qns(
+        sst, sst_m, sbc.t_star_c, sbc.qsr_w_m2, sbc.emp_kg_m2_s)
+    q_total = nemo_source_round(qns + sbc.qsr_w_m2)
+    surface = OceanSurfaceForcing(
+        sw_down=sbc.qsr_w_m2,
+        q_net=q_total,
+        tau_x=-(
+            card.recipe.grid.cos_alpha_u[:, 1:] * sbc.utau_pa
+            - card.recipe.grid.sin_alpha_u[:, 1:] * sbc.vtau_pa
+        ),
+        tau_y=-(
+            card.recipe.grid.sin_alpha_u[:, 1:] * sbc.utau_pa
+            + card.recipe.grid.cos_alpha_u[:, 1:] * sbc.vtau_pa
+        ),
+        tau_i_native=sbc.utau_pa,
+        tau_j_native=sbc.vtau_pa,
+    )
+    zeros = jnp.zeros_like(sbc.emp_kg_m2_s)
+    freshwater = FreshwaterForcing(
+        precip=zeros,
+        evap=sbc.emp_kg_m2_s,
+        runoff=zeros,
+        ice_fw=zeros,
+        restoring=zeros,
+    )
+    return freshwater, surface
 
 
 def _orca2_depth_ladder(e3t_1d: np.ndarray, e3w_1d: np.ndarray):
@@ -2893,10 +3085,20 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
             f"{card.case} requires scalar-libm certification transcendentals, "
             f"got {card.transcendentals!r}"
         )
+    gyre_count = 50
+    if card.case == "GYRE-zco":
+        if not isinstance(card.resolved_namelist, GyreResolvedNamelist):
+            raise ValueError("GYRE-zco requires its complete resolved namelist")
+        validate_gyre_namelist(card.resolved_namelist)
+        gyre_count = _resolved_auto_substeps(
+            card.recipe.grid,
+            card.recipe.initial_state.H_bathy.data,
+            card.dt_s,
+        )
     expected = {
         "LOCK_EXCHANGE-zco": ("nemo_ab3am4", 1, 0, 0.0, 0, 0.0),
         "OVERFLOW-zps": ("nemo_boxcar1_ab3", 3, 2, 20.0, 0, 1000.0),
-        "GYRE-zco": ("nemo_ab3am4", 50, 0, 0.0, 0, 0.0),
+        "GYRE-zco": ("nemo_ab3am4", gyre_count, 0, 0.0, 0, 0.0),
         "ORCA2-zps": ("nemo_ab3am4", 65, 0, 0.0, 1, 1000.0),
         "VORTEX-zco": ("nemo_ab3am4", 48, 0, 0.0, 0, 0.0),
         # The vector-EEN deck differs from the flux deck only in the momentum
@@ -3015,9 +3217,38 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
                 f"{card.case} requires its live literal E[N]E barotropic "
                 "composition")
         if card.case == "GYRE-zco":
+            nml = card.resolved_namelist
+            assert isinstance(nml, GyreResolvedNamelist)
+            resolved = (
+                card.dt_s,
+                card.n_steps,
+                cfg.lateral_viscosity.A_h,
+                cfg.gm_redi.kappa_Redi,
+                cfg.physics.shortwave_penetration.nemo_time_step_s,
+            )
+            expected_resolved = (
+                nml.rn_Dt_s,
+                nml.nn_itend,
+                0.5 * nml.rn_Uv_m_s * nml.rn_Lv_m,
+                0.5 * nml.rn_Ud_m_s * nml.rn_Ld_m,
+                nml.rn_Dt_s,
+            )
+            if resolved != expected_resolved:
+                raise ValueError(
+                    "GYRE-zco card fields do not resolve from its namelist: "
+                    f"got {resolved!r}, expected {expected_resolved!r}"
+                )
+            expected_shape = (
+                20 * nml.nn_GYRE + 2, 30 * nml.nn_GYRE + 2)
+            if wet.shape != expected_shape:
+                raise ValueError(
+                    f"GYRE-zco grid {wet.shape!r} disagrees with "
+                    f"nn_GYRE={nml.nn_GYRE} ({expected_shape!r})"
+                )
             require_rotation = (
                 np.any(np.asarray(card.recipe.grid.f_T) != 0.0)
-                and np.count_nonzero(np.any(wet, axis=1)) == 20
+                and np.count_nonzero(np.any(wet, axis=1))
+                == expected_shape[0] - 2
                 and np.all(np.asarray(card.recipe.grid.sin_alpha_u) != 0.0)
             )
             if not require_rotation:
@@ -3349,14 +3580,14 @@ def validate_nemo_testcase_card_for_execution(card: NEMOTestcaseCard) -> None:
 
 
 def build_nemo_testcase_card(
-    case: str, *, deck_root: str | Path | None = None
+    case: str, *, deck_root: str | Path | None = None,
+    namelist: GyreResolvedNamelist | None = None,
 ) -> NEMOTestcaseCard:
     """Fail-closed dispatch for the certified phase-2 cards."""
 
     builders = {
         "LOCK_EXCHANGE-zco": build_lock_exchange_zco_card,
         "OVERFLOW-zps": build_overflow_zps_card,
-        "GYRE-zco": build_gyre_zco_card,
         "VORTEX-zco": build_vortex_zco_card,
         "VORTEX_VEC-zco": lambda: build_vortex_zco_card("vector"),
         # Decision 74's resolution ladder (operator note BZ).
@@ -3380,9 +3611,18 @@ def build_nemo_testcase_card(
             "vector", "smt4"),
     }
     if case == "ORCA2-zps":
+        if namelist is not None:
+            raise ValueError("ORCA2-zps does not accept a GYRE namelist")
         if deck_root is None:
             raise ValueError("ORCA2-zps requires an explicit deck_root")
         return build_orca2_zps_card(deck_root)
+    if case == "GYRE-zco":
+        if deck_root is not None:
+            raise ValueError("GYRE-zco does not accept deck_root")
+        return build_gyre_zco_card(
+            GYRE_SHIPPED_NAMELIST if namelist is None else namelist)
+    if namelist is not None:
+        raise ValueError(f"{case} does not accept a GYRE namelist")
     if case not in builders:
         raise ValueError(
             f"unknown NEMO testcase {case!r}; expected one of {sorted(builders)}"

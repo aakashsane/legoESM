@@ -12,6 +12,8 @@ from legoesm.ocean.fidelity.nemo_recipe import (
     nemo_gyre_seasonal_cosines,
 )
 from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+    GYRE_R4_NAMELIST,
+    GYRE_SHIPPED_NAMELIST,
     _orca2_depth_ladder,
     _orca2_masks,
     build_gyre_zco_card,
@@ -21,6 +23,7 @@ from legoesm.ocean.fidelity.nemo_testcase_recipe import (
     gyre_horizontal_coordinates,
     gyre_surface_boundary_condition,
     gyre_vertical_ladder,
+    validate_gyre_namelist,
     validate_nemo_testcase_card,
     validate_nemo_testcase_card_for_execution,
 )
@@ -423,6 +426,33 @@ def test_gyre_card_pins_rotated_grid_mi96_ic_and_seasonal_sbc():
     assert float(np.sum(final_emp[wet])) == pytest.approx(0.0, abs=1.0e-17)
     assert card.recipe.model_config.barotropic_coriolis_split == "live"
     assert card.recipe.model_config.barotropic.barotropic_coriolis == "ene_metric"
+
+
+def test_gyre_r4_card_resolves_grid_clock_and_mixing_from_namelist():
+    set_policy(PrecisionPolicy.fp64())
+    card = build_nemo_testcase_card("GYRE-zco", namelist=GYRE_R4_NAMELIST)
+    cfg = card.recipe.model_config
+
+    assert card.resolved_namelist == GYRE_R4_NAMELIST
+    assert (card.recipe.grid.n_lat, card.recipe.grid.n_lon) == (82, 122)
+    assert card.dt_s == 3600.0
+    assert card.n_steps == 26280
+    assert cfg.barotropic.n_barotropic_substeps == 50
+    assert cfg.lateral_viscosity.A_h == 25000.0
+    assert cfg.gm_redi.kappa_Redi == 250.0
+    assert cfg.physics.shortwave_penetration.nemo_time_step_s == 3600.0
+    np.testing.assert_array_equal(
+        np.asarray(card.recipe.grid.dx_T), np.full((82, 122), 26500.0))
+    sbc = gyre_surface_boundary_condition(card, card.dt_s)
+    assert sbc.qsr_w_m2.shape == (82, 122)
+
+
+def test_gyre_parameterised_dispatch_fails_closed_on_unsupported_values():
+    with pytest.raises(ValueError, match="unsupported GYRE namelist value"):
+        validate_gyre_namelist(GYRE_SHIPPED_NAMELIST._replace(nn_fct_h=4))
+    with pytest.raises(ValueError, match="does not accept a GYRE namelist"):
+        build_nemo_testcase_card(
+            "LOCK_EXCHANGE-zco", namelist=GYRE_SHIPPED_NAMELIST)
 
 
 @pytest.mark.parametrize(

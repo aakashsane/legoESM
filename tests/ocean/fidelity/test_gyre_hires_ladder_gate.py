@@ -30,6 +30,8 @@ def test_exact_score_one_ulp_control_fires():
         "plant", values, values, mask, plant_one_ulp=True)
     assert planted["status"] == "DEBT"
     assert planted["n_unequal"] == 1
+    assert planted["max_ulp"] == 1
+    assert planted["ulp_at_max_abs"] == 1
 
 
 def test_shared_entry_reader_accepts_runtime_high_resolution_dimensions(tmp_path):
@@ -45,3 +47,24 @@ def test_shared_entry_reader_accepts_runtime_high_resolution_dimensions(tmp_path
     assert record["kt"] == 1 and record["Nbb"] == 1
     assert record["T"].shape == (2, 2, 2)
     assert record["ssh"].shape == (2, 2)
+
+
+def test_shared_stage_and_zdf_readers_accept_runtime_dimensions(tmp_path):
+    dims = (6, 6, 2)
+    count = np.prod(dims)
+    stage_path = tmp_path / "oracle_stage_kt00000001_s1.bin"
+    with stage_path.open("wb") as stream:
+        stream.write(b"NEMO_L1_STAGE_1 ")
+        stream.write(struct.pack("=9i", 1, 1, 1, 3, *dims, 2, 64))
+        np.arange(4 * count + dims[0] * dims[1], dtype=np.float64).tofile(stream)
+    stage = GATE.read_stage(stage_path, 1, dims=dims)
+    assert stage["T"].shape == (2, 2, 2)
+
+    zdf_path = tmp_path / "oracle_zdf_entry_kt00000001.bin"
+    with zdf_path.open("wb") as stream:
+        stream.write(b"NEMO_L2_ZDF___1 ")
+        stream.write(struct.pack("=7i", 1, 1, 1, *dims, 64))
+        np.arange(count + 2 * 2 * 2, dtype=np.float64).tofile(stream)
+    zdf = GATE.read_zdf_entry(zdf_path, dims=dims)
+    assert zdf["avm"].shape == (2, 2, 2)
+    assert zdf["avt"].shape == (2, 2, 2)

@@ -18,7 +18,10 @@ from nemo_testcase_l2_gyre_phase3_gate import (  # noqa: E402
     expected_masks,
     lego_fields,
     read_entry,
+    read_stage,
+    read_zdf_entry,
 )
+from nemo_testcase_state_ulp_probe import ulp_distance  # noqa: E402
 
 NEMO_DIMS = (126, 86, 31)
 DEFAULT_ORACLES = {
@@ -51,12 +54,17 @@ def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> d
     unequal = int(
         np.count_nonzero(reference[active].view(np.uint64) != value[active].view(np.uint64))
     )
+    ulps = ulp_distance(reference[active], value[active])
+    absolute = np.abs(reference[active] - value[active])
+    worst = int(np.argmax(absolute))
     return {
         "name": name,
         "status": "AT-BAR" if unequal == 0 else "DEBT",
         "n": int(active.sum()),
         "n_unequal": unequal,
-        "max_abs": float(np.max(np.abs(reference[active] - value[active]))),
+        "max_abs": float(absolute[worst]),
+        "ulp_at_max_abs": int(ulps[worst]),
+        "max_ulp": int(np.max(ulps)),
         "bit_bar": 0,
         "plant_one_ulp": plant_one_ulp,
     }
@@ -65,7 +73,10 @@ def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> d
 def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
     import jax
     from legoesm.core.precision import PrecisionPolicy, set_policy
-    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import LatLonCGridOceanModel
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        LatLonCGridOceanModel,
+        _NEMOWSRK3TestHooks,
+    )
     from legoesm.ocean.fidelity.nemo_testcase_recipe import (
         GYRE_R4_NAMELIST,
         GYRE_R4_SMAG_NAMELIST,
@@ -88,6 +99,8 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
     state = card.recipe.initial_state
     steps = []
     controls = []
+    rk_stages = []
+    vertical_candidate = None
     for kt in range(1, 11):
         path = oracle_root / f"oracle_step_entry_kt{kt:08d}.bin"
         if not path.is_file():
@@ -120,7 +133,140 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
                 )
         steps.append({"kt": kt, "Nbb": oracle["Nbb"], "rows": rows})
         freshwater, surface = gyre_surface_forcings(card, state, kt)
-        state = model.step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+        state_before = state
+        state = model.step(state_before, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+        if kt == 1:
+            for stage in (1, 2):
+                stage_model = LatLonCGridOceanModel(
+                    card.recipe.grid,
+                    card.recipe.z_coord,
+                    card.recipe.model_config,
+                    _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                        expose_momentum_stage=stage,
+                        expose_tracer_stage=stage,
+                    ),
+                )
+                stage_state = stage_model.step(
+                    state_before,
+                    card.dt_s,
+                    freshwater=freshwater,
+                    surface_forcing=surface,
+                )
+                stage_oracle = read_stage(
+                    oracle_root / f"oracle_stage_kt{kt:08d}_s{stage}.bin",
+                    stage,
+                    dims=NEMO_DIMS,
+                )
+                stage_rows = []
+                for field in FIELDS:
+                    reference = (
+                        stage_oracle[field]
+                        if field == "ssh"
+                        else stage_oracle[field][..., :30]
+                    )
+                    stage_rows.append(
+                        exact_score(
+                            f"{case}.kt1.rk_stage{stage}.{field}",
+                            reference,
+                            lego_fields(stage_state)[field],
+                            masks[field],
+                        )
+                    )
+                rk_stages.append({"stage": stage, "rows": stage_rows})
+            stage_oracle = read_stage(
+                oracle_root / f"oracle_stage_kt{kt:08d}_s3.bin",
+                3,
+                dims=NEMO_DIMS,
+            )
+            stage_rows = []
+            for field in FIELDS:
+                reference = (
+                    stage_oracle[field]
+                    if field == "ssh"
+                    else stage_oracle[field][..., :30]
+                )
+                stage_rows.append(
+                    exact_score(
+                        f"{case}.kt1.rk_stage3.{field}",
+                        reference,
+                        lego_fields(state)[field],
+                        masks[field],
+                    )
+                )
+            rk_stages.append({"stage": 3, "rows": stage_rows})
+
+            if deck == "r4":
+                import jax.numpy as jnp
+
+                zdf = read_zdf_entry(
+                    oracle_root / "oracle_zdf_entry_kt00000001.bin",
+                    dims=NEMO_DIMS,
+                )
+                seeded = model._seed_tke_preclosure_carry(state_before)
+                model.prime_step_caches(seeded)
+                lego_avt, lego_avm = model.diagnose_vertical_K(
+                    seeded, card.dt_s, surface
+                )
+                interface_mask = (
+                    np.asarray(card.recipe.z_coord.is_active)[..., 1:]
+                    & (np.asarray(seeded.land_mask.data) > 0.5)[..., None]
+                )
+                coefficient_rows = [
+                    exact_score(
+                        f"{case}.kt1.zdf_entry.avt",
+                        zdf["avt"][..., 1:30],
+                        lego_avt,
+                        interface_mask,
+                    ),
+                    exact_score(
+                        f"{case}.kt1.zdf_entry.avm",
+                        zdf["avm"][..., 1:30],
+                        lego_avm,
+                        interface_mask,
+                    ),
+                ]
+                vertical_control_state = model.step(
+                    state_before,
+                    card.dt_s,
+                    freshwater=freshwater,
+                    surface_forcing=surface,
+                    _vertical_K_test_override=(
+                        jnp.asarray(zdf["avt"][..., 1:30]),
+                        jnp.asarray(zdf["avm"][..., 1:30]),
+                    ),
+                )
+                oracle2 = read_entry(
+                    oracle_root / "oracle_step_entry_kt00000002.bin",
+                    dims=NEMO_DIMS,
+                )
+                faithful = lego_fields(state)
+                controlled = lego_fields(vertical_control_state)
+                arm_rows = []
+                for field in FIELDS:
+                    reference = oracle2[field] if field == "ssh" else oracle2[field][..., :30]
+                    arm_rows.append(
+                        {
+                            "field": field,
+                            "faithful": exact_score(
+                                f"{case}.kt2.faithful.{field}",
+                                reference,
+                                faithful[field],
+                                masks[field],
+                            ),
+                            "oracle_zdf_override": exact_score(
+                                f"{case}.kt2.oracle_zdf_override.{field}",
+                                reference,
+                                controlled[field],
+                                masks[field],
+                            ),
+                        }
+                    )
+                vertical_candidate = {
+                    "candidate": "stage-entry TKE/EVD vertical coefficients",
+                    "changed_operand": "avt/avm profile bundle only",
+                    "coefficient_rows": coefficient_rows,
+                    "one_variable_arm": arm_rows,
+                }
     passed = all(row["status"] == "AT-BAR" for step in steps for row in step["rows"]) and all(
         control["status"] == "FIRED" for control in controls
     )
@@ -134,6 +280,8 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
         "acceptance": "zero unequal active float64 values in every field/step",
         "namelist": namelist._asdict(),
         "steps": steps,
+        "rk_stage_walk": rk_stages,
+        "vertical_candidate": vertical_candidate,
         "controls": controls,
         "verdict": "PASS" if passed else "DEBT",
     }

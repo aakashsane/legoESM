@@ -250,9 +250,10 @@ def test_mpas_restart_refuses_a_start_day_the_saved_origin_does_not_imply(
     assert repr(dB._clock_day_origin_ckpt + step * DT / 86400.0) in \
         str(exc.value)
     # The saved origin DRIVES the clock: plant one a day off the config
-    # start day; the start day it implies resumes, and the run's clock
-    # origin is the planted one (an origin rebuilt from cfg.start_day would
-    # refuse here, or record the config's).
+    # start day and resume with the day it implies plus 5e-7 d (inside the
+    # guard's tolerance).  Every calendar time the step loop asks for is the
+    # planted origin + abs_step*dt exactly; an origin from cfg.start_day is
+    # a day off, and one rebuilt from the start day is 5e-7 d off.
     with np.load(ckpt) as z:
         origin = float(z["clock_day_origin"])
         planted = tmp_path / "planted" / ckpt.name
@@ -263,7 +264,14 @@ def test_mpas_restart_refuses_a_start_day_the_saved_origin_does_not_imply(
                 land_stress_from_land=True)
     step, day = _drive(dP.load_checkpoint, planted)
     _require(dP._clock_day_origin_ckpt == origin + 1.0, "origin not planted")
-    assert _drive(dP.run, start_step=step, start_day=day + 1.0) == "COMPLETED"
+    seen = []
+    cal = dP._calendar_for_radiation
+    dP._calendar_for_radiation = lambda d: (seen.append(float(d)), cal(d))[1]
+    assert _drive(dP.run, start_step=step,
+                  start_day=day + 1.0 + 5e-7) == "COMPLETED"
+    _require(seen, "the step loop never asked for a calendar time")
+    assert set(seen) <= {origin + 1.0 + k * DT / 86400.0
+                         for k in range(step, step + 4)}, seen
     assert dP._clock_day_origin == origin + 1.0
     legacy = tmp_path / "legacy" / ckpt.name
     legacy.parent.mkdir()

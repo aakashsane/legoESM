@@ -1,7 +1,7 @@
 # NEMO testcase L2 GYRE high-resolution round 2 receipt
 
-**Date:** 2026-10-13  
-**Incoming tip:** `7f7d2a207`  
+**Date:** 2026-10-13
+**Incoming tip:** `7f7d2a207`
 **Implementation commit:** `bc9ea7d53`
 
 ## Verdict and preregistration

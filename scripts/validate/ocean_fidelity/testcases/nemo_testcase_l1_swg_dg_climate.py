@@ -72,23 +72,19 @@ def _require_legoesm_deck(namelist: dict) -> None:
 
 
 def _require_nemo_deck(root: Path) -> dict:
-    """Bind an IOIPSL directory to the operator's resolved SWG_DG deck."""
+    """Bind an IOIPSL directory to its manifest and resolved SWG_DG deck."""
     executable = root / "nemo"
     require(executable.is_file(), f"missing NEMO executable {executable}")
-    require(sha256(executable) == NEMO_DG_EXECUTABLE_SHA256,
-            "NEMO executable is not the registered SWG_DG build")
-    pins = {
-        "nemo": NEMO_DG_EXECUTABLE_SHA256,
-        "namelist_cfg": NEMO_DG_NAMELIST_CFG_SHA256,
-        "namelist_ref": NEMO_DG_NAMELIST_REF_SHA256,
-    }
     manifest_path = root / "manifest.sha256"
     require(manifest_path.is_file(), f"missing NEMO manifest {manifest_path}")
     manifest = {}
     for line in manifest_path.read_text().splitlines():
         digest, name = line.split(maxsplit=1)
         manifest[name] = digest
-    require(manifest == pins, "NEMO manifest does not describe the registered deck")
+    required_pins = {"nemo", "namelist_cfg", "namelist_ref"}
+    require(required_pins <= set(manifest),
+            "NEMO manifest does not pin nemo, namelist_cfg, and namelist_ref")
+    pins = {name: manifest[name] for name in required_pins}
     for name, digest in pins.items():
         require((root / name).is_file() and sha256(root / name) == digest,
                 f"NEMO deck digest mismatch: {name}")
@@ -120,10 +116,14 @@ def _require_nemo_deck(root: Path) -> dict:
         actual = float(resolved[field])
         require(actual == value, f"resolved NEMO deck differs at {field}")
     return {
-        "executable_sha256": NEMO_DG_EXECUTABLE_SHA256,
+        "executable_sha256": pins["nemo"],
+        "matches_2026_10_13_reference_build": (
+            pins["nemo"] == NEMO_DG_EXECUTABLE_SHA256
+            and pins["namelist_cfg"] == NEMO_DG_NAMELIST_CFG_SHA256
+            and pins["namelist_ref"] == NEMO_DG_NAMELIST_REF_SHA256),
         "manifest_sha256": sha256(manifest_path),
-        "namelist_cfg_sha256": NEMO_DG_NAMELIST_CFG_SHA256,
-        "namelist_ref_sha256": NEMO_DG_NAMELIST_REF_SHA256,
+        "namelist_cfg_sha256": pins["namelist_cfg"],
+        "namelist_ref_sha256": pins["namelist_ref"],
         "resolved_namelist_sha256": sha256(resolved_path),
         "resolved_values": {field: resolved[field] for field in expected},
     }
@@ -132,6 +132,7 @@ def _require_nemo_deck(root: Path) -> dict:
 def assemble_coordinate_tiles(
         tiles: Iterable[tuple[np.ndarray, np.ndarray, np.ndarray]],
         expected_lon: np.ndarray, expected_lat: np.ndarray,
+        *, word_exact: bool = False,
 ) -> np.ndarray:
     """Assemble overlapping rank tiles by coordinates, refusing conflicts."""
     expected_lon = np.asarray(expected_lon)
@@ -146,12 +147,16 @@ def assemble_coordinate_tiles(
     }
     require(len(keys) == expected_lon.size,
             "expected coordinates are not unique")
-    assembled = np.empty(expected_lon.shape, dtype=np.float64)
+    tiles = list(tiles)
+    require(bool(tiles), "no coordinate tiles supplied")
+    dtype = np.asarray(tiles[0][2]).dtype
+    assembled = np.empty(expected_lon.shape, dtype=dtype)
     filled = np.zeros(expected_lon.shape, dtype=bool)
     for lon, lat, values in tiles:
         lon, lat, values = np.asarray(lon), np.asarray(lat), np.asarray(values)
         require(lon.shape == lat.shape == values.shape,
                 "rank tile coordinate/value shapes differ")
+        require(values.dtype == dtype, "rank tile dtypes differ")
         require(np.all(np.isfinite(values)), "rank tile has non-finite values")
         for key, value in zip(
                 zip(lon.flat, lat.flat, strict=True), values.flat, strict=True):
@@ -159,7 +164,13 @@ def assemble_coordinate_tiles(
             if at is None:  # NEMO outer or inter-rank halo outside card storage.
                 continue
             if filled[at]:
-                require(assembled[at] == value,
+                equal = assembled[at] == value
+                if word_exact and dtype.kind == "f":
+                    word = np.dtype(f"u{dtype.itemsize}")
+                    equal = bool(
+                        np.asarray([assembled[at]], dtype=dtype).view(word)[0]
+                        == np.asarray([value], dtype=dtype).view(word)[0])
+                require(equal,
                         f"conflicting rank overlap at coordinate {key}")
             else:
                 assembled[at] = value

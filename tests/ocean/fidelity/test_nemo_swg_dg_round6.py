@@ -24,6 +24,13 @@ def test_bit_summary_is_word_exact_for_signed_zero_and_one_ulp():
     assert row["bit_unequal"] == 2
     assert row["first_unequal_cell"] == [0]
     assert not row["bit_identical"]
+    assert row["numeric_unequal"] == 1
+    assert row["signed_zero_only"] == 1
+    assert row["signed_ulp_histogram"] == {"-1": 1, "1": 1}
+
+    single = np.array([1.0], dtype=np.float32)
+    moved = np.nextafter(single, np.float32(np.inf))
+    assert round6.bit_summary(single, moved)["signed_ulp_histogram"] == {"1": 1}
 
 
 def test_coordinate_assembly_is_exact_and_rejects_conflicting_overlap():

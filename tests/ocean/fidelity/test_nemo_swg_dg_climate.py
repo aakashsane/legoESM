@@ -32,6 +32,13 @@ def test_coordinate_assembly_deduplicates_halos_and_refuses_bad_coverage():
     conflicting[1][2][0, 0] += 1.0
     with pytest.raises(Exception, match="conflicting"):
         climate.assemble_coordinate_tiles(conflicting, lon, lat)
+    signed_zero_tiles = [
+        (lon[:, :2], lat[:, :2], np.zeros((2, 2))),
+        (lon[:, 1:], lat[:, 1:], -np.zeros((2, 2))),
+    ]
+    with pytest.raises(Exception, match="conflicting"):
+        climate.assemble_coordinate_tiles(
+            signed_zero_tiles, lon, lat, word_exact=True)
 
 
 def _synthetic_provider(name="synthetic", sampling="daily_mean"):
@@ -182,6 +189,14 @@ def test_nemo_provider_admits_window_and_refuses_shifted_clock_and_deck(
     provider = climate.nemo_ioipsl_provider(tmp_path, 1, start_day=2)
     assert provider.provenance["window_days"] == [2, 2]
     assert [frame.day for frame in provider.iterate()] == [1]
+    executable = tmp_path / "nemo"
+    executable.write_bytes(b"synthetic colleague rebuild")
+    manifest = tmp_path / "manifest.sha256"
+    lines = manifest.read_text().splitlines()
+    lines[0] = f"{climate.sha256(executable)}  nemo"
+    manifest.write_text("\n".join(lines) + "\n")
+    rebuilt = climate.nemo_ioipsl_provider(tmp_path, 1, start_day=2)
+    assert not rebuilt.provenance["deck"]["matches_2026_10_13_reference_build"]
     import netCDF4
     path = tmp_path / "SWG_test_grid_T_0000.nc"
     with netCDF4.Dataset(path, "r+") as ds:

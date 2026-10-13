@@ -1,0 +1,54 @@
+{
+  "schema": "swg-double-gyre-environment-v1",
+  "measured_on": "2026-10-13",
+  "nemo": {
+    "version": "5.0.2",
+    "source_revision": "dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796",
+    "xios": false,
+    "fortran": {
+      "compiler": "GNU Fortran",
+      "compiler_version": "15.2.0",
+      "conda_forge_package": "gcc 15.2.0-19",
+      "flags": "-fdefault-real-8 -O3 -funroll-all-loops -fcray-pointer -ffree-line-length-none -fallow-argument-mismatch -fno-tree-vectorize"
+    },
+    "mpi": {
+      "implementation": "Open MPI",
+      "version": "5.0.10"
+    },
+    "cpp": "cpp -Dkey_nosignedzero",
+    "cflags": "-O0",
+    "reference_arch_sha256": "132f7a0500c4f0e86d8d3bf7864974a82e1dea5d83166dcfdfaf409e2ca04561"
+  },
+  "python": {
+    "version": "3.13.0",
+    "packages": {
+      "equinox": "0.13.7",
+      "jax": "0.10.0",
+      "jax-cuda12-plugin": "0.10.0",
+      "jaxlib": "0.10.0",
+      "numpy": "2.4.4"
+    }
+  },
+  "hardware": {
+    "cpu": "Intel Xeon Gold 6242R",
+    "gpu": "Tesla V100S-PCIE-32GB",
+    "gpu_driver": "580.126.20"
+  },
+  "operating_system": {
+    "kernel": "Linux 5.14.0-611.36.1.el9_7.x86_64"
+  },
+  "provenance": {
+    "remeasured_in_round_b": [
+      "nemo.source_revision",
+      "nemo.fortran.compiler_version",
+      "nemo.mpi.version",
+      "python",
+      "hardware.cpu",
+      "operating_system.kernel"
+    ],
+    "operator_recorded_because_gpu_was_unavailable_in_sandbox": [
+      "hardware.gpu",
+      "hardware.gpu_driver"
+    ]
+  }
+}

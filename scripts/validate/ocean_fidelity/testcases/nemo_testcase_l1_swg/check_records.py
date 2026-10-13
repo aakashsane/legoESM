@@ -162,19 +162,44 @@ def main(argv=None) -> int:
     p.add_argument("--evidence", type=Path, required=True)
     p.add_argument("--reference", type=Path, required=True)
     p.add_argument("--json", type=Path, required=True)
+    p.add_argument("--outputs-only", action="store_true")
+    p.add_argument("--expected-variable-count", type=int)
     p.add_argument("--record-kts", type=_int_csv,
                    default=tuple(range(1, STEPS + 1)))
     p.add_argument("--stages", type=_int_csv, default=STAGES)
     p.add_argument("--restart-kts", type=_int_csv, default=())
     a = p.parse_args(argv)
     try:
-        out = check(a.evidence, a.reference, record_kts=a.record_kts,
-                    stages=a.stages, restart_kts=a.restart_kts)
+        if a.outputs_only:
+            identity = compare_outputs(a.evidence, a.reference)
+            variable_count = sum(len(names) for names in identity.values())
+            if (a.expected_variable_count is not None
+                    and variable_count != a.expected_variable_count):
+                raise Refusal(
+                    f"output variable count {variable_count}, expected "
+                    f"{a.expected_variable_count}")
+            out = {
+                "schema": "swg-dg-nemo-case-identity-v1",
+                "reference": str(a.reference.resolve()),
+                "candidate": str(a.evidence.resolve()),
+                "output_identity": identity,
+                "variables_compared": variable_count,
+                "differing_variables": 0,
+                "bit_identical": True,
+            }
+        else:
+            out = check(a.evidence, a.reference, record_kts=a.record_kts,
+                        stages=a.stages, restart_kts=a.restart_kts)
     except (Refusal, OSError, ValueError) as exc:
         print(f"REFUSE: {exc}", file=sys.stderr)
         return 1
     a.json.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n")
-    print(f"ADMITTED {len(out['records'])} STAGE-ENTRY RECORDS; PASSIVE OUTPUTS")
+    if a.outputs_only:
+        print(
+            "SWG_DG_IDENTITY BIT_IDENTICAL "
+            f"variables={out['variables_compared']} differing=0")
+    else:
+        print(f"ADMITTED {len(out['records'])} STAGE-ENTRY RECORDS; PASSIVE OUTPUTS")
     return 0
 
 

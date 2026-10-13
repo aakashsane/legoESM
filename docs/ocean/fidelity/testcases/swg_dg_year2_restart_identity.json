@@ -1,0 +1,172 @@
+{
+  "capture_instant": {
+    "NEMO": "restart kt=N after RK3 stage 3 completes step N; sshn and un/vn level 0 are the completed SWE layer state",
+    "excluded": "NEMO uu_n/vv_n are barotropic workspace arrays and are not used as evidence for layer-velocity identity",
+    "legoESM": "dayNNNN.npz end-of-day snapshot after exactly N production steps in the one-jitted-scan-per-day composition"
+  },
+  "day": 730,
+  "field_mapping": {
+    "ssh_m": {
+      "grid": "T",
+      "nemo": "sshn",
+      "nemo_index": "[0]"
+    },
+    "u_m_s": {
+      "grid": "U",
+      "nemo": "un",
+      "nemo_index": "[0, 0]"
+    },
+    "v_m_s": {
+      "grid": "V",
+      "nemo": "vn",
+      "nemo_index": "[0, 0]"
+    }
+  },
+  "label": "NEMO-versus-legoESM completed-step restart identity",
+  "provenance": {
+    "NEMO": {
+      "excluded_restart_fields": {
+        "uu_n": {
+          "nonzero_words": 0,
+          "reason": "NEMO SWE restart barotropic workspace; not the completed layer velocity. The compared velocities are un/vn level 0.",
+          "sha256": "8b8dfe0b466d30151a97dcc1e6a57e6d5784aca2cb857bc210e40a4d51c3313b"
+        },
+        "vv_n": {
+          "nonzero_words": 0,
+          "reason": "NEMO SWE restart barotropic workspace; not the completed layer velocity. The compared velocities are un/vn level 0.",
+          "sha256": "8b8dfe0b466d30151a97dcc1e6a57e6d5784aca2cb857bc210e40a4d51c3313b"
+        }
+      },
+      "rank_files": 32,
+      "restart_files_sha256": {
+        "SWG_01261440_restart_0000.nc": "b01f53adf82316abea950ce361099f7c923d238352d3ce613fc7ab201fe6bf8d",
+        "SWG_01261440_restart_0001.nc": "0cde0c25668550e35a533c891b6f5ddc5b940177e17303dc6b60ccfc79921749",
+        "SWG_01261440_restart_0002.nc": "eaed23e3754c156d12b17d97fc682ae20ed998b4ac1fc4e5b377b0a3a3d32caf",
+        "SWG_01261440_restart_0003.nc": "6b1c95d467a40da39f20c69df61ee95216270d3204c69fd073bf2eeb486ff38b",
+        "SWG_01261440_restart_0004.nc": "54443ec3cfd1c3ce393071d8e719664cb95ee577b179e90bf9cf4d84d3d88c4e",
+        "SWG_01261440_restart_0005.nc": "87f8bd60d8e5e1fcc4d05326659e49586f2e79b50cd489f98cedef6f24e5966f",
+        "SWG_01261440_restart_0006.nc": "2f576d4b3262bfadbdea5625d81b1d08493783eeca5772c2f3ad79982ffb3320",
+        "SWG_01261440_restart_0007.nc": "280525a7cabaf49a9d7ecde4bb4977283f6dcd0def7ab0d7e92b45fd405d8704",
+        "SWG_01261440_restart_0008.nc": "ffecdc253c9d1c0bea86049369e98f5dca1da4cad98c4060644ab89bfa38213c",
+        "SWG_01261440_restart_0009.nc": "7e2e5b4db2a5c3bad5db5e75710ca712f667e5bb52a7013ad288423a2c1837ae",
+        "SWG_01261440_restart_0010.nc": "701b0760d4e3feb7c34950449d87714547ebb61279e51870b6663068d275f835",
+        "SWG_01261440_restart_0011.nc": "29e91057a90083e31341d551b007923536dfdad3db73bcc047a8b83538024f91",
+        "SWG_01261440_restart_0012.nc": "6a276e4443f2814760079a057e34754fd9c6c1592268422724b89049ab3a259a",
+        "SWG_01261440_restart_0013.nc": "0b34501390483de07bb39716908038aebf4f9517860db5e3cfc971aad59e948d",
+        "SWG_01261440_restart_0014.nc": "ac806ba66eedfeeb708bab0489e27b0f4fb6a4d6c35d1bbb3d9f92eaca49876a",
+        "SWG_01261440_restart_0015.nc": "b02e4ee4723bc1ed36e2a159ffb4e86d47fb9226209868ac73194b709bbc32b7",
+        "SWG_01261440_restart_0016.nc": "35c30a29f8ff22dfdd25e9af9a0d664ef696ff5cf664f2578831069663e7b140",
+        "SWG_01261440_restart_0017.nc": "66de8ae380da2439e645fc31d43742a3206e32fa76416ea77ed95bad7bf9eccb",
+        "SWG_01261440_restart_0018.nc": "c2eacd2730b7f840580e0ee2933fd4302ef8b4b59196c6409851d0976c30b8db",
+        "SWG_01261440_restart_0019.nc": "5fb526ba8eafd52851bc6983fe11f6ed16023485b47b317cb07c1d254b1da2f3",
+        "SWG_01261440_restart_0020.nc": "d160e47efc2132229bbca5cdcc59d8b06722a0cc02cb9dac8940fe362f7bada6",
+        "SWG_01261440_restart_0021.nc": "75b50defc2c7286a0cad08d46e8960adc0b8b978cab7e0a172a144c47ee7a193",
+        "SWG_01261440_restart_0022.nc": "1bccaf921c5573ed370a7966441ab68b51573fbe06229a942fc89f4ffabb9d73",
+        "SWG_01261440_restart_0023.nc": "caf7b31585b78f2b06331a3b0165f34c89cb00962aeef451be70c584a2a5a2bc",
+        "SWG_01261440_restart_0024.nc": "18c46e81a98f1490398dfe8b1c089dd5f8c63be71a2ea9a9ee873d345839108f",
+        "SWG_01261440_restart_0025.nc": "296051a0ae31d170e020e5bd44517adb6591dd4323a36cc2c1b57821cd64356c",
+        "SWG_01261440_restart_0026.nc": "2a14ae0aa8c087a74797f6d6c6a3e64d1f1686684e68075b43941d063938354d",
+        "SWG_01261440_restart_0027.nc": "ce547b43aa8840ba70d13f25474587bbc6d64910aff47173e74f537b9a403e24",
+        "SWG_01261440_restart_0028.nc": "2664b1ed491ba764d39957de7c8a58c8306303705511eccf6f62122c3c760bc1",
+        "SWG_01261440_restart_0029.nc": "4eb549025e1d77e1c3e54fe0e169670014c355382642817976e51ad07e65e325",
+        "SWG_01261440_restart_0030.nc": "b276783404347948aa0423100adffef7079583042ce515af737365350f309fee",
+        "SWG_01261440_restart_0031.nc": "c96c8aa51cb327751fab8c279bf35d972e3a8079e205817c1951ced0a66a07df"
+      },
+      "root": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/swg_rounds/maddison_deck/md_dg_dx6p25_dt50_3yr",
+      "step": 1261440
+    },
+    "legoESM": {
+      "backend": "gpu",
+      "integration": "one-jitted-scan-per-day",
+      "legoesm_git_sha": "402ba0c4b9bcf2bde0c384994bd4c45ae1f834de",
+      "manifest_path": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/swgdg_rounds/legoesm_runs/dg_gpu_1095d/manifest.json",
+      "manifest_sha256": "8d14451013ca11debaf2a360a1e14d58e76fc0b3f496f1fc80e752ec5216c06d",
+      "mode": "gpu-native",
+      "path": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/swgdg_rounds/legoesm_runs/dg_gpu_1095d/day0730.npz",
+      "sha256": "917fb0e0dae8db724ee1f7029826b2b8f7bcd9427772e3d80107bc4194bf4e7e",
+      "transcendentals": "native"
+    }
+  },
+  "rows": {
+    "ssh_m": {
+      "bit_identical": true,
+      "bit_unequal": 0,
+      "candidate_sha256": "5e03a0d907ac62f7ae42f8b8b5c4d6f6f51dd3542c680ea21e86ce9cfc2db74f",
+      "dtype": "float64",
+      "first_unequal_cell": null,
+      "grid": "T",
+      "legoesm_field": "ssh_m",
+      "mask_sha256": "ac93ad5b89df276089ded1fabfeffe74b85ff264a49b8f8b468b8fbc254f7482",
+      "max_abs": 0.0,
+      "nemo_field": "sshn",
+      "nemo_index": "[0]",
+      "numeric_unequal": 0,
+      "reference_sha256": "5e03a0d907ac62f7ae42f8b8b5c4d6f6f51dd3542c680ea21e86ce9cfc2db74f",
+      "shape": [
+        409600
+      ],
+      "signed_ulp_histogram": {
+        "0": 409600
+      },
+      "signed_zero_only": 0,
+      "wet_words": 409600
+    },
+    "u_m_s": {
+      "bit_identical": true,
+      "bit_unequal": 0,
+      "candidate_sha256": "01a1bfe0c4743d6d1a1d4c8305d6c8446ff118790f0fea693c53f024d87f99d3",
+      "dtype": "float64",
+      "first_unequal_cell": null,
+      "grid": "U",
+      "legoesm_field": "u_m_s",
+      "mask_sha256": "06097cfd8c201a2d060c7c6f479db72cc8e9dcefb803d97bf24076ea8359cf4f",
+      "max_abs": 0.0,
+      "nemo_field": "un",
+      "nemo_index": "[0, 0]",
+      "numeric_unequal": 0,
+      "reference_sha256": "01a1bfe0c4743d6d1a1d4c8305d6c8446ff118790f0fea693c53f024d87f99d3",
+      "shape": [
+        408960
+      ],
+      "signed_ulp_histogram": {
+        "0": 408960
+      },
+      "signed_zero_only": 0,
+      "wet_words": 408960
+    },
+    "v_m_s": {
+      "bit_identical": true,
+      "bit_unequal": 0,
+      "candidate_sha256": "16e55aeca3d30813bf93dce78abff4ae07c9224bcd6d441c0e6a17069707e575",
+      "dtype": "float64",
+      "first_unequal_cell": null,
+      "grid": "V",
+      "legoesm_field": "v_m_s",
+      "mask_sha256": "311c836bcaa13847c2d40c76e5445eb4dd528e68e32d73edee8a922f04165edf",
+      "max_abs": 0.0,
+      "nemo_field": "vn",
+      "nemo_index": "[0, 0]",
+      "numeric_unequal": 0,
+      "reference_sha256": "16e55aeca3d30813bf93dce78abff4ae07c9224bcd6d441c0e6a17069707e575",
+      "shape": [
+        408960
+      ],
+      "signed_ulp_histogram": {
+        "0": 408960
+      },
+      "signed_zero_only": 0,
+      "wet_words": 408960
+    }
+  },
+  "schema": "swg-dg-yearly-restart-identity-v1",
+  "status": "PASS",
+  "step": 1261440,
+  "summary": {
+    "all_bit_identical": true,
+    "bit_unequal": 0,
+    "fields": 3,
+    "max_abs": 0.0,
+    "prognostic_signed_zero_words": 0,
+    "wet_words": 1227520
+  }
+}

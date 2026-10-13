@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import sys
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -61,6 +62,32 @@ def array_sha256(value: np.ndarray) -> str:
     return hashlib.sha256(value.tobytes()).hexdigest()
 
 
+def signed_ulp_histogram(reference, candidate) -> dict[str, int]:
+    """Count signed IEEE word distances, including signed zero."""
+    reference = np.asarray(reference)
+    candidate = np.asarray(candidate)
+    require(reference.shape == candidate.shape, "ULP comparison shapes differ")
+    require(reference.dtype == candidate.dtype
+            and reference.dtype in (np.dtype("float32"), np.dtype("float64")),
+            "ULP comparison requires matching float32 or float64")
+    unsigned = np.dtype(f"u{reference.dtype.itemsize}")
+    ref_bits = np.ascontiguousarray(reference).view(unsigned).ravel()
+    can_bits = np.ascontiguousarray(candidate).view(unsigned).ravel()
+    bits = reference.dtype.itemsize * 8
+    sign = 1 << (bits - 1)
+    mask = (1 << bits) - 1
+
+    def ordered(word) -> int:
+        value = int(word)
+        return (~value & mask) if value & sign else value ^ sign
+
+    counts = Counter(
+        ordered(candidate_word) - ordered(reference_word)
+        for reference_word, candidate_word in zip(
+            ref_bits, can_bits, strict=True))
+    return {str(distance): int(counts[distance]) for distance in sorted(counts)}
+
+
 def bit_summary(reference, candidate) -> dict:
     """Return exact IEEE comparison metadata without treating signed zero equal."""
     reference = np.asarray(reference)
@@ -75,13 +102,19 @@ def bit_summary(reference, candidate) -> dict:
     )
     at = np.argwhere(different)
     delta = np.abs(candidate - reference)
+    signed_zero = (
+        (reference == 0.0) & (candidate == 0.0)
+        & (np.signbit(reference) != np.signbit(candidate)))
     return {
         "shape": list(reference.shape),
         "dtype": str(reference.dtype),
         "bit_identical": not bool(at.size),
         "bit_unequal": int(at.shape[0]),
+        "numeric_unequal": int(np.count_nonzero(reference != candidate)),
+        "signed_zero_only": int(np.count_nonzero(signed_zero)),
         "first_unequal_cell": at[0].tolist() if at.size else None,
         "max_abs": float(np.max(delta)) if delta.size else 0.0,
+        "signed_ulp_histogram": signed_ulp_histogram(reference, candidate),
         "reference_sha256": array_sha256(reference),
         "candidate_sha256": array_sha256(candidate),
     }
@@ -597,7 +630,7 @@ def main(argv=None) -> int:
     compare.add_argument("right", type=Path)
     compare.add_argument("--json", type=Path, required=True)
     rank = sub.add_parser("rank-check")
-    rank.add_argument("--root", type=Path, default=RANKCHECK_ROOT)
+    rank.add_argument("--root", type=Path, required=True)
     rank.add_argument("--json", type=Path, required=True)
     exposure = sub.add_parser("exposure")
     exposure.add_argument("shipped", type=Path)

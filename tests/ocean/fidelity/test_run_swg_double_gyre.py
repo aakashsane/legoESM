@@ -39,6 +39,9 @@ def test_tiny_cpu_driver_writes_daily_native_state_with_provenance(tmp_path):
     assert manifest["completed_days"] == 1
     assert manifest["transcendentals"] == "libm"
     assert manifest["integration"] == "production-python-step-loop"
+    assert manifest["device_selection"]["requested_physical_gpu"] is None
+    assert manifest["wall_seconds"] > 0.0
+    assert manifest["wall_seconds_per_model_day"] == manifest["wall_seconds"]
     assert manifest["profile"] is None
     assert manifest["scan_vs_python"] is None
     saved_manifest = json.loads((output / "manifest.json").read_text())
@@ -161,3 +164,17 @@ def test_daily_mean_output_refuses_certified_cpu_mode(tmp_path):
         driver.run_long(
             tiny, tmp_path / "run", days=1, mode="cpu-certified",
             commit="a" * 40, daily_means=True)
+
+
+def test_gpu_device_is_explicit_and_not_pinned_to_one(monkeypatch):
+    environ = {}
+    selected = driver.configure_runtime_device("gpu-native", "0", environ)
+    assert selected == {
+        "requested_physical_gpu": "0", "CUDA_VISIBLE_DEVICES": "0"}
+    assert environ == {"CUDA_VISIBLE_DEVICES": "0"}
+    selected = driver.configure_runtime_device("gpu-native", "3", environ)
+    assert selected["requested_physical_gpu"] == "3"
+    with pytest.raises(ValueError, match="requires --gpu-device"):
+        driver.configure_runtime_device("gpu-native", None, {})
+    with pytest.raises(ValueError, match="valid only"):
+        driver.configure_runtime_device("cpu-certified", "0", {})

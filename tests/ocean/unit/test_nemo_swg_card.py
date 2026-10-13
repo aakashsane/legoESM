@@ -140,6 +140,28 @@ def test_swg_card_requires_libm_certification_transcendentals(card):
         validate_nemo_testcase_card(bad)
 
 
+@pytest.mark.parametrize("namelist", (
+    pytest.param(SWG_NAMELIST, id="shipped"),
+    pytest.param(SWG_MADDISON_NAMELIST, id="fine-double-gyre"),
+    pytest.param(
+        SWG_NAMELIST._replace(nn_SWG=2, nn_itend=4, nn_write=2, nn_stock=2),
+        id="other-accepted"),
+))
+def test_every_parameterised_swg_deck_keeps_libm_and_selector_validation(
+        namelist):
+    from legoesm.ocean.eos import nemo_r3t_stretch
+
+    card = build_swg_card(namelist)
+    validate_nemo_testcase_card(card)
+    with pytest.raises(ValueError, match="scalar-libm certification"):
+        validate_nemo_testcase_card(card._replace(transcendentals="native"))
+    eta = np.zeros(card.recipe.land_mask.shape, dtype=np.float64)
+    depth = np.ones_like(eta)
+    with pytest.raises(ValueError, match="unknown r3t evaluation"):
+        nemo_r3t_stretch(
+            card.recipe.z_coord, eta, depth, evaluation="unsupported")
+
+
 def test_ens_vorticity_config_has_no_mask_default():
     from legoesm.ocean.state import ENSVorticityConfig
 

@@ -154,6 +154,14 @@ def test_daily_restart_passivity_refuses_one_changed_bit(tmp_path):
         "nn_stock": "432", "nn_write": "432", "ln_meshmask": ".true.",
         "sn_cfctl%l_runstat": ".TRUE.", "sn_cfctl%ptimincr": "1",
     }),
+    ("namelist_cfg_maddison_3yr.patch", {
+        "nn_SWG": "16", "rn_domsiz": "4000000", "rn_tau": "0.10",
+        "rn_modified_grav": "9.80665", "rn_rfr": "1.e-7",
+        "rn_beta": "2.e-11", "rn_f0": "0.7e-4", "rn_Uv": "2.0",
+        "rn_Lv": "10", "rn_Dt": "50.", "nn_itend": "1892160",
+        "nn_stock": "630720", "nn_write": "1728", "ln_meshmask": ".true.",
+        "sn_cfctl%l_runstat": ".TRUE.", "sn_cfctl%ptimincr": "1",
+    }),
 ))
 def test_maddison_patches_resolve_exact_operator_decks(tmp_path, name, expected):
     target = tmp_path / "namelist_cfg"
@@ -161,9 +169,10 @@ def test_maddison_patches_resolve_exact_operator_decks(tmp_path, name, expected)
     subprocess.run(
         ["patch", "-s", "--fuzz=0", str(target)],
         input=(TOOLS / name).read_bytes(), check=True)
-    subprocess.run(
-        ["patch", "-s", "--fuzz=0", str(target)],
-        input=(TOOLS / "namelist_meshmask.patch").read_bytes(), check=True)
+    if name != "namelist_cfg_maddison_3yr.patch":
+        subprocess.run(
+            ["patch", "-s", "--fuzz=0", str(target)],
+            input=(TOOLS / "namelist_meshmask.patch").read_bytes(), check=True)
     values = {}
     for raw in target.read_text().splitlines():
         code = raw.split("!", 1)[0]

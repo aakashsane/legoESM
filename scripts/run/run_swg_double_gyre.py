@@ -30,6 +30,28 @@ def _write_hashes_atomic(path: Path, hashes: dict[str, str]) -> None:
     temporary.replace(path)
 
 
+def configure_runtime_device(
+        mode: str, gpu_device: str | None,
+        environ: dict[str, str] | None = None,
+) -> dict[str, str | None]:
+    """Resolve the explicit physical-device selection before importing JAX."""
+    if mode not in ("gpu-native", "cpu-certified"):
+        raise ValueError("mode must be 'gpu-native' or 'cpu-certified'")
+    target = os.environ if environ is None else environ
+    if mode == "gpu-native":
+        if gpu_device is None or not gpu_device.isdigit():
+            raise ValueError(
+                "gpu-native mode requires --gpu-device with one physical "
+                "non-negative GPU index")
+        target["CUDA_VISIBLE_DEVICES"] = gpu_device
+    elif gpu_device is not None:
+        raise ValueError("--gpu-device is valid only with gpu-native mode")
+    return {
+        "requested_physical_gpu": gpu_device,
+        "CUDA_VISIBLE_DEVICES": target.get("CUDA_VISIBLE_DEVICES"),
+    }
+
+
 def resolved_daily_namelist(days: int):
     """Return the user-selected Maddison deck resolved for a number of days."""
     from legoesm.ocean.fidelity.nemo_testcase_recipe import SWG_MADDISON_NAMELIST
@@ -197,9 +219,10 @@ def profile_step_modes(model, state, dt_s: float, forcing, n_steps: int) -> dict
 def run_long(
         namelist, output: Path, *, days: int, mode: str, commit: str,
         profile_steps: int = 0, compare_days: int = 0,
-        daily_means: bool = False,
+        daily_means: bool = False, gpu_device: str | None = None,
 ) -> dict:
     """Integrate one resolved SWG deck and write one native state per day."""
+    device_selection = configure_runtime_device(mode, gpu_device)
     import jax
     from legoesm.core.precision import PrecisionPolicy, set_policy
     from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import LatLonCGridOceanModel
@@ -211,8 +234,6 @@ def run_long(
     from legoesm.ocean.state import OceanSurfaceForcing
 
     validate_swg_namelist(namelist)
-    if mode not in ("gpu-native", "cpu-certified"):
-        raise ValueError("mode must be 'gpu-native' or 'cpu-certified'")
     if type(days) is not int or days <= 0:
         raise ValueError("days must be a positive integer")
     if type(profile_steps) is not int or profile_steps < 0:
@@ -233,8 +254,6 @@ def run_long(
         raise ValueError("resolved nn_itend does not equal days times steps/day")
 
     if mode == "gpu-native":
-        if os.environ.get("CUDA_VISIBLE_DEVICES") != "1":
-            raise RuntimeError("gpu-native mode requires CUDA_VISIBLE_DEVICES=1")
         set_policy(PrecisionPolicy.fp64(transcendentals="native"))
         certified_policy = False
         expected_backend = "gpu"
@@ -250,6 +269,7 @@ def run_long(
             f"{jax.default_backend()}")
     if output.exists():
         raise FileExistsError(f"refusing to overwrite output directory {output}")
+    wall_started = time.perf_counter()
 
     card = build_swg_card(namelist)
     model = LatLonCGridOceanModel(
@@ -302,6 +322,9 @@ def run_long(
         "certified_policy": certified_policy,
         "deck_certification": "pending NEMO ladder acquisition",
         "backend": jax.default_backend(),
+        "device_selection": device_selection | {
+            "jax_devices": [str(device) for device in jax.devices()],
+        },
         "precision_policy": "fp64",
         "transcendentals": "native" if mode == "gpu-native" else "libm",
         "days": days,
@@ -381,7 +404,9 @@ def run_long(
     completed = manifest | {
         "status": "complete", "completed_days": days,
         "daily_sha256": day_hashes,
+        "wall_seconds": time.perf_counter() - wall_started,
     }
+    completed["wall_seconds_per_model_day"] = completed["wall_seconds"] / days
     _write_json_atomic(pending_path, completed)
     pending_path.replace(output / "manifest.json")
     return completed
@@ -394,6 +419,9 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--mode", choices=("gpu-native", "cpu-certified"),
         default="gpu-native")
+    parser.add_argument(
+        "--gpu-device",
+        help="required physical GPU index for gpu-native mode")
     parser.add_argument(
         "--profile-steps", type=int, default=0,
         help="warm wall-clock profile of Python and scan programs")
@@ -411,13 +439,15 @@ def main(argv=None) -> int:
         manifest = run_long(
             namelist, args.output, days=args.days, mode=args.mode,
             commit=git_sha(), profile_steps=args.profile_steps,
-            compare_days=args.compare_days, daily_means=args.daily_means)
+            compare_days=args.compare_days, daily_means=args.daily_means,
+            gpu_device=args.gpu_device)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"REFUSE: {exc}", file=sys.stderr)
         return 2
     print(
         f"COMPLETED days={manifest['days']} backend={manifest['backend']} "
         f"certified_policy={manifest['certified_policy']} "
+        f"wall_seconds={manifest['wall_seconds']:.3f} "
         f"deck_certification=pending output={args.output.resolve()}")
     if manifest["profile"] is not None:
         profile = manifest["profile"]

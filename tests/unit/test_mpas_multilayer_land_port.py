@@ -405,6 +405,7 @@ def test_restart_after_a_held_solve_counts_the_reuse(monkeypatch, tmp_path):
     assert dB._land_stress_reused_total == unbroken
 
 
+@pytest.mark.usefixtures("allow_version_drift")
 def test_old_checkpoint_without_land_stress_reseeds_loudly(monkeypatch,
                                                           tmp_path, caplog):
     """A checkpoint written before the land stress was persisted still loads:
@@ -591,6 +592,7 @@ def _land_leaves(d):
     return [np.asarray(x) for x in jax.tree_util.tree_leaves(d._land_ml_state)]
 
 
+@pytest.mark.usefixtures("allow_version_drift")
 def test_land_window_restart_matches_an_unbroken_run(monkeypatch, tmp_path,
                                                      caplog):
     """F31: the pending land-cadence window and the held land outputs ride

@@ -92,6 +92,16 @@ def test_exact_score_one_ulp_control_fires():
     assert planted["max_abs_index"] == [0, 0]
 
 
+def test_scalar_first_owner_discriminator_scores_increment_and_narrow_override():
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert 'stage1_tracer_transport_override=oracle_transport' in source
+    assert 'tracer_oracle["zFu"][..., :30]' in source
+    assert 'tracer_oracle["zFv"][..., :30]' in source
+    assert 'tracer_oracle["zFw"]' in source
+    assert 'after_sbc_{field}' in source and 'after_advection_{field}' in source
+    assert 'NEMO_stage1_transport_override' in source
+
+
 def test_wind_expression_arms_preserve_compiled_association_and_reciprocal():
     rho = np.float64(1.0 / 1026.0)
     stress = np.array([[-0.2, 0.0]], dtype=np.float64)

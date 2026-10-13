@@ -170,6 +170,9 @@ def test_daily_operator_recipes_pin_components_registration_and_one_rank():
     assert "GYRE_OMIP_L2_P3/EXP00" in run
     assert "RANKS=${RANKS:-1}" in run
     assert "RANKS must be 1" in run
+    assert "manifest/oracle_records.sha256" in run
+    assert "sha256sum oracle_step_entry_kt*.bin" in run
+    assert "REFUSE_RECORD_MANIFEST" in run
     assert "rg " not in build and "rg " not in run
 
 

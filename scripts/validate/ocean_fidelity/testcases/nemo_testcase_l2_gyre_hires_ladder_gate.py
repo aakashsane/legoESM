@@ -390,6 +390,7 @@ def run(
     rk_stages = []
     tracer_stage1_transport = []
     tracer_stage1_walk = []
+    tracer_stage1_transport_discriminator = None
     vertical_candidate = None
     barotropic_resolution_walk = None
     smagorinsky_coefficients = []
@@ -729,6 +730,7 @@ def run(
                     )
                     for name in ("zFu", "zFv", "zFw")
                 ]
+                boundary_candidates = {}
                 for boundary in ("after_advection", "after_sbc"):
                     boundary_model = LatLonCGridOceanModel(
                         card.recipe.grid,
@@ -746,6 +748,7 @@ def run(
                     )
                     boundary_state = host_and_clear(boundary_state)
                     boundary_fields = lego_fields(boundary_state)
+                    boundary_candidates[boundary] = boundary_fields
                     tracer_stage1_walk.append({
                         "boundary": boundary,
                         "rows": [
@@ -758,6 +761,74 @@ def run(
                             for field in ("T", "S")
                         ],
                     })
+
+                # Compare the increment itself, not just the two endpoint
+                # maxima.  Equal endpoint maxima do not prove that SBC added
+                # no error because the unequal cells and signs may differ.
+                sbc_increment_rows = []
+                for field in ("T", "S"):
+                    oracle_increment = (
+                        tracer_oracle[f"after_sbc_{field}"][..., :30]
+                        - tracer_oracle[f"after_advection_{field}"][..., :30]
+                    )
+                    candidate_increment = (
+                        boundary_candidates["after_sbc"][field]
+                        - boundary_candidates["after_advection"][field]
+                    )
+                    sbc_increment_rows.append(exact_score(
+                        f"{case}.kt1.stage1.sbc_increment.{field}",
+                        oracle_increment, candidate_increment, masks[field],
+                    ))
+
+                # One-variable experiment required by the scalar kt=2 stop
+                # rule: inject NEMO's recorded stage-1 zF triplet into the
+                # tracer consumer while leaving momentum and later stages on
+                # production operands.  zFu/zFv are already exact, so this
+                # changes only the observed zFw debt.
+                oracle_transport = (
+                    jnp.asarray(tracer_oracle["zFu"][..., :30]),
+                    jnp.asarray(tracer_oracle["zFv"][..., :30]),
+                    jnp.asarray(tracer_oracle["zFw"]),
+                )
+                override_model = LatLonCGridOceanModel(
+                    card.recipe.grid,
+                    card.recipe.z_coord,
+                    card.recipe.model_config,
+                    _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                        stage1_tracer_transport_override=oracle_transport,
+                    ),
+                )
+                override_state = override_model.step(
+                    state_before,
+                    card.dt_s,
+                    freshwater=freshwater,
+                    surface_forcing=surface,
+                )
+                override_state = host_and_clear(override_state)
+                override_fields = lego_fields(override_state)
+                oracle2 = read_entry(
+                    oracle_root / "oracle_step_entry_kt00000002.bin",
+                    dims=NEMO_DIMS,
+                )
+                override_rows = []
+                for field in FIELDS:
+                    reference = (
+                        oracle2[field]
+                        if field == "ssh" else oracle2[field][..., :30]
+                    )
+                    override_rows.append(exact_score(
+                        f"{case}.kt2.NEMO_stage1_transport_override.{field}",
+                        reference, override_fields[field], masks[field],
+                    ))
+                tracer_stage1_transport_discriminator = {
+                    "changed_operand": (
+                        "stage-1 tracer zFu/zFv/zFw triplet only; zFu/zFv "
+                        "are independently exact, so the effective changed "
+                        "operand is zFw"
+                    ),
+                    "sbc_increment_rows": sbc_increment_rows,
+                    "NEMO_transport_override_rows": override_rows,
+                }
 
             if deck == "r4":
                 import jax.numpy as jnp
@@ -1034,6 +1105,8 @@ def run(
         "rk_stage_walk": rk_stages,
         "tracer_stage1_transport": tracer_stage1_transport,
         "tracer_stage1_walk": tracer_stage1_walk,
+        "tracer_stage1_transport_discriminator": (
+            tracer_stage1_transport_discriminator),
         "vertical_candidate": vertical_candidate,
         "barotropic_resolution_walk": barotropic_resolution_walk,
         "smagorinsky_coefficients": smagorinsky_coefficients,

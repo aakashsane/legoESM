@@ -112,5 +112,12 @@ actual=$(find "$EVIDENCE/run" -maxdepth 1 -type f \
   -name 'oracle_step_entry_kt*.bin' | wc -l)
 [[ $actual -eq $expected ]] || {
   printf 'REFUSE_RECORD_COUNT: expected %s, found %s\n' "$expected" "$actual" >&2; exit 70; }
+(
+  cd "$EVIDENCE/run"
+  sha256sum oracle_step_entry_kt*.bin \
+    >../manifest/oracle_records.sha256
+)
+[[ $(wc -l <"$EVIDENCE/manifest/oracle_records.sha256") -eq $expected ]] || {
+  printf 'REFUSE_RECORD_MANIFEST: expected %s hashes\n' "$expected" >&2; exit 70; }
 printf 'ACQUISITION_DONE: %s (r4_smag day boundaries 0..30, kt=1,25,...,721)\n' \
   "$EVIDENCE"

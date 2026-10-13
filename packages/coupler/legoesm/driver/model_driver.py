@@ -740,8 +740,9 @@ def _spectral_full_physics(cfg) -> bool:
             or cfg.turbulence != "none" or cfg.gravity_wave_drag != "none")
 
 
-def _spectral_micro_config(cfg):
-    """MicrophysicsConfig for the spectral standalone lane: the experiment
+def _spectral_micro_config(cfg, lane: str = "spectral"):
+    """MicrophysicsConfig for a standalone lane (spectral, FV3-duo Kessler,
+    simple tiled-cube Kessler): the experiment
     switches (sub-grid autoconversion, cirrus homogeneous nucleation, hard
     saturation adjustment IN-SCHEME as on the lat-lon / cube pipeline) through
     the shared helper the other lanes use, then the flat ``morrison_*`` scalars
@@ -756,6 +757,11 @@ def _spectral_micro_config(cfg):
     leaf = getattr(mc, cfg.microphysics, None)
     if leaf is None:   # 'none': no scheme leaf; validate_strict refuses morrison_* there
         return mc
+    if cfg.nc_from_aerosol and lane != "spectral":
+        raise ValueError(
+            f"nc_from_aerosol (--aerosol-ccn) is not supported on the {lane} "
+            "lane: it runs Kessler, which has no aerosol droplet-number mode; "
+            "drop --aerosol-ccn.")
     if cfg.nc_from_aerosol:
         raise ValueError(
             "nc_from_aerosol (--aerosol-ccn) is not wired on the spectral lane: "
@@ -3459,7 +3465,9 @@ class ModelDriver:
 
     def _create_physics(self) -> None:
         """Build the physics pipeline."""
-        self.physics = build_physics_pipeline(self.grid, self.sigma, self.config)
+        self.physics = build_physics_pipeline(
+            self.grid, self.sigma, self.config,
+            spacing_grid=self._coeff_grid())
         rad_str = self.config.radiation or "none"
         conv_str = self.config.convection or "none"
         logger.info(f"  Physics: radiation={rad_str}, convection={conv_str}")
@@ -5495,13 +5503,13 @@ class ModelDriver:
             return True                     # tile pipeline / default Kessler
         return False
 
-    def _record_default_kessler_physics(self, kessler_on: bool) -> None:
-        """The idealized lanes (FV3 duo, simple tiled cube) run Kessler with
-        its DEFAULT ``KesslerConfig`` (they pass no config), whatever the
-        run's microphysics flags say, and no other scheme; record that."""
-        from legoesm.atmosphere.physics.microphysics.config import KesslerConfig
+    def _record_idealized_kessler_physics(self, lane: str) -> None:
+        """The idealized lanes (FV3 duo, simple tiled cube) run Kessler, with
+        the run's config as ``_spectral_micro_config`` resolves it, or
+        nothing, and no other scheme; record that."""
         self._record_resolved_physics(
-            microphysics=KesslerConfig() if kessler_on else None)
+            microphysics=(_spectral_micro_config(self.config, lane=lane).kessler
+                          if self.config.microphysics == "kessler" else None))
 
     def _forcing_configs(self) -> dict:
         """External-forcing configs (set in ``_setup_external_forcing``) the
@@ -5509,7 +5517,12 @@ class ModelDriver:
         return dict(solar=self._solar_config, ozone=self._ozone_ext_config,
                     aerosol=self._aerosol_config, ghg=self._ghg_config)
 
-    def _record_pipeline_physics(self, pipeline) -> None:
+    def _record_pipeline_physics(self, pipeline,
+                                 conv_precip_threaded: bool = True) -> None:
+        """*conv_precip_threaded*: whether the lane passes the lagged
+        convective precip to radiation (compiled and operator-split lanes do,
+        the per-step lane does not), which decides whether the convective
+        cloud term is on in the CloudConfig the radiation path builds."""
         self._record_resolved_physics(
             convection=pipeline.convection_config,
             microphysics=pipeline.micro_config,
@@ -5519,7 +5532,8 @@ class ModelDriver:
             # The CloudConfig the radiation path builds (only with a cloud
             # scheme); the snow albedo config only with snow-albedo feedback.
             cloud=(pipeline.resolved_cloud_config(
-                       pipeline._cloud_scheme, pipeline._cloud_convective)
+                       pipeline._cloud_scheme,
+                       pipeline._cloud_convective and conv_precip_threaded)
                    if pipeline._cloud_scheme != "none" else None),
             land=pipeline.land_ml_cfg,
             land_albedo=(pipeline.land_albedo_config
@@ -8667,7 +8681,9 @@ class ModelDriver:
         self._checkpoint_callback = checkpoint_callback
         self._physics_recorded = False
         if self.physics is not None and not self._lane_builds_own_physics():
-            self._record_pipeline_physics(self.physics)
+            # Only _run_compiled and _run_per_step remain for these runs.
+            self._record_pipeline_physics(self.physics,
+                                          conv_precip_threaded=compiled)
         self._run_wallclock_start = time.time()
         if (self.config.output.max_wallclock_seconds > 0
                 and self._mpi_world_size not in (None, 1)):
@@ -10229,7 +10245,7 @@ class ModelDriver:
 
         hs_on = bool(cfg.held_suarez_forcing)
         kessler_on = cfg.microphysics == "kessler"
-        self._record_default_kessler_physics(kessler_on)
+        self._record_idealized_kessler_physics("FV3-duo Kessler")
         logger.info(
             "FV3 duo lane: C%d km=%d %s, Held-Suarez %s, Kessler %s, "
             "dt=%.1fs, %d "
@@ -10473,7 +10489,9 @@ class ModelDriver:
             ptop = self.model._ptop
             sh = self.model.step_out_shardings
             lay = self.model.window_layout
-            kw = dict(n=n, ng=ng, km=km, ptop=ptop, akap=FV3_KAPPA)
+            kw = dict(n=n, ng=ng, km=km, ptop=ptop, akap=FV3_KAPPA,
+                      config=_spectral_micro_config(
+                          self.config, lane="FV3-duo Kessler").kessler)
 
             def _kessler(state, press, q, dt):
                 if lay is not None:
@@ -15923,7 +15941,9 @@ class ModelDriver:
                 make_kessler_column_physics_fn,
             )
             return make_kessler_column_physics_fn(
-                self.sigma, float(cfg.dycore.dt))
+                self.sigma, float(cfg.dycore.dt),
+                config=_spectral_micro_config(
+                    cfg, lane="tiled-cube Kessler").kessler)
         raise NotImplementedError(
             "tiled cube SPMD (6*kt^2 devices): this SIMPLE lane supports "
             "dynamics-only (all parameterizations 'none') or Kessler "
@@ -16294,7 +16314,7 @@ class ModelDriver:
                 start_step, start_day, mesh, kt)
         self._reject_unconsumed_flux_override(
             "the simple blocked-loop tiled-cube sub-lane")
-        self._record_default_kessler_physics(cfg.microphysics == "kessler")
+        self._record_idealized_kessler_physics("tiled-cube Kessler")
 
         column_physics_fn = self._tiled_cube_column_physics_fn()
         DT = cfg.dycore.dt
@@ -16580,7 +16600,8 @@ class ModelDriver:
         # its ColumnAdapter bakes the band ncol (bands are uniform, so one build
         # serves every band — the make_sharded_operator_split_step CONTRACT). ---
         band_grid = build_band_grids_atm(self.grid, n_dev)[0]
-        band_physics = build_physics_pipeline(band_grid, self.sigma, cfg)
+        band_physics = build_physics_pipeline(
+            band_grid, self.sigma, cfg, spacing_grid=self.grid)
         self._record_pipeline_physics(band_physics)
         # Radiation cadence.  ``make_sharded_operator_split_step`` computes the
         # serial prologue's predicate per step (``_need_rad_and_time``,

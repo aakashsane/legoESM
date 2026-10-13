@@ -413,11 +413,6 @@ def test_lat_band_lane_records_its_band_pipeline(tmp_path: Path,
         discretization="latlon_cgrid"), built)
 
 
-@pytest.mark.xfail(raises=AttributeError, strict=True, reason=(
-    "pre-existing: build_physics_pipeline asks the per-tile grid for "
-    "grid_area (Bechtold dx fill), which _TilePhysicsGrid lacks, so this "
-    "lane fails before stepping; the existing tiled parity test fails the "
-    "same way"))
 def test_tiled_cube_lane_records_its_tile_pipeline(tmp_path: Path,
                                                    monkeypatch) -> None:
     import jax
@@ -431,22 +426,21 @@ def test_tiled_cube_lane_records_its_tile_pipeline(tmp_path: Path,
         div_damp_scale=0.0, a_h_scale=0.0), built)
 
 
-def test_idealized_lanes_record_the_default_kessler_they_run(
+def test_idealized_lanes_record_the_kessler_config_they_run(
         tmp_path: Path) -> None:
-    """The FV3-duo and simple tiled-cube lanes call Kessler without a config,
-    so the record holds the default leaf, not the setup pipeline's."""
-    import types
-    from legoesm.atmosphere.physics.microphysics.config import KesslerConfig
+    """The FV3-duo and simple tiled-cube lanes run Kessler with the run's
+    config as ``_spectral_micro_config`` resolves it, and nothing else."""
+    from legoesm.driver.model_driver import _spectral_micro_config
     write_run_manifest(tmp_path, ExperimentConfig())
+    cfg = ExperimentConfig(microphysics="kessler",
+                           hard_saturation_adjustment=True)
     d = _driver_at(tmp_path)
-    d.physics = types.SimpleNamespace(
-        convection_config=None, micro_config="setup-pipeline-leaf",
-        turbulence_config=None, gwd_config=None)
-    d._record_default_kessler_physics(True)
+    d.config = cfg
+    d._record_idealized_kessler_physics("FV3-duo Kessler")
     rec = read_run_manifest(tmp_path)["config"]["resolved_physics"]
-    assert rec["microphysics"] == resolved_physics_record(
-        {"m": KesslerConfig()})["m"]
-
+    want = _spectral_micro_config(cfg, lane="FV3-duo Kessler").kessler
+    assert rec["microphysics"] == resolved_physics_record({"m": want})["m"]
+    assert rec == _full_record(microphysics=want)
 
 def test_a_lane_that_records_nothing_fails_the_run(tmp_path: Path,
                                                    monkeypatch) -> None:
@@ -528,3 +522,16 @@ def test_pipeline_records_the_cloud_config_its_radiation_builds(
     assert want.rh_crit == 0.85
     assert rec["radiation"]["scheme"]["__type__"].endswith(":RRTMGPConfig")
     assert rec["radiation"]["orbit"] is not None
+    # Convective cloud reaches the optics only where the lane passes the
+    # lagged convective precip: compiled / operator-split yes, per-step no.
+    d.physics._cloud_convective = True
+    for threaded in (True, False):
+        out = tmp_path / f"conv{threaded}"
+        write_run_manifest(out, cfg)
+        d._output_dir = out
+        d._record_pipeline_physics(d.physics, conv_precip_threaded=threaded)
+        got = read_run_manifest(out)["config"]["resolved_physics"]["cloud"]
+        assert got == resolved_physics_record({"c": d.physics.resolved_cloud_config(
+            "sundqvist", threaded)})["c"]
+    assert d.physics.resolved_cloud_config("sundqvist", True) != \
+        d.physics.resolved_cloud_config("sundqvist", False)

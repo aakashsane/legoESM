@@ -249,30 +249,31 @@ def test_mpas_restart_refuses_a_start_day_the_saved_origin_does_not_imply(
     assert repr(day + 1.0) in str(exc.value)
     assert repr(dB._clock_day_origin_ckpt + step * DT / 86400.0) in \
         str(exc.value)
-    # The saved origin DRIVES the clock: plant one a day off the config
-    # start day and resume with the day it implies plus 5e-7 d (inside the
-    # guard's tolerance).  Every calendar time the step loop asks for is the
-    # planted origin + abs_step*dt exactly; an origin from cfg.start_day is
-    # a day off, and one rebuilt from the start day is 5e-7 d off.
+    # The saved origin DRIVES the clock: plant one 1.25 d off the config
+    # start day (fractional, so an origin rebuilt from floor(start day) is
+    # 0.25 d off) and resume with the day it implies plus 5e-7 d (inside the
+    # guard's tolerance).  The one resumed step asks for exactly the planted
+    # origin + start_step*dt; an origin from cfg.start_day is 1.25 d off, one
+    # rebuilt from the start day 5e-7 d off, a clock one step late 1 dt off.
     with np.load(ckpt) as z:
         origin = float(z["clock_day_origin"])
+        planted_origin = origin + 1.25
         planted = tmp_path / "planted" / ckpt.name
         planted.parent.mkdir()
         np.savez(planted, **{**{k: z[k] for k in z.files},
-                             "clock_day_origin": np.float64(origin + 1.0)})
+                             "clock_day_origin": np.float64(planted_origin)})
     dP = _drive(_build_driver, str(tmp_path / "p"), ONE_STEP_DAYS, **_LS_KW,
                 land_stress_from_land=True)
     step, day = _drive(dP.load_checkpoint, planted)
-    _require(dP._clock_day_origin_ckpt == origin + 1.0, "origin not planted")
+    _require(dP._clock_day_origin_ckpt == planted_origin, "origin not planted")
     seen = []
     cal = dP._calendar_for_radiation
     dP._calendar_for_radiation = lambda d: (seen.append(float(d)), cal(d))[1]
     assert _drive(dP.run, start_step=step,
-                  start_day=day + 1.0 + 5e-7) == "COMPLETED"
+                  start_day=day + 1.25 + 5e-7) == "COMPLETED"
     _require(seen, "the step loop never asked for a calendar time")
-    assert set(seen) <= {origin + 1.0 + k * DT / 86400.0
-                         for k in range(step, step + 4)}, seen
-    assert dP._clock_day_origin == origin + 1.0
+    assert set(seen) == {planted_origin + step * DT / 86400.0}, seen
+    assert dP._clock_day_origin == planted_origin
     legacy = tmp_path / "legacy" / ckpt.name
     legacy.parent.mkdir()
     with np.load(ckpt) as z:
@@ -291,7 +292,8 @@ def test_duo_daily_external_forcing_restart_needs_a_day_boundary(
     """D-REX-3, FV3-duo column lane, RRTMGP every 4 steps, the daily
     external-ozone cache on: the whole-day checkpoint (step 144 at 600 s)
     still resumes bitwise; the mid-day final checkpoint of a 148-step run
-    (step 148) is refused before any step, naming the step."""
+    (step 148) is refused before any step, naming the step -- also with its
+    forcing-clock origin stripped (origin reconstructed from the start day)."""
     from legoesm.driver.model_driver import ModelDriver
     monkeypatch.setenv("LEGOESM_DIGEST_EVERY_STEPS", "1")
 
@@ -326,3 +328,15 @@ def test_duo_daily_external_forcing_restart_needs_a_day_boundary(
     with pytest.raises(ValueError, match="restart at step 148 .* not on a "
                        "day boundary while daily external forcing"):
         dM.run(start_step=step, start_day=day)
+    legacy = tmp_path / "legacy" / "checkpoint_day_0001.npz"
+    legacy.parent.mkdir()
+    with np.load(tmp_path / "c" / "checkpoint_day_0001.npz") as z:
+        np.savez(legacy, **{k: z[k] for k in z.files
+                            if k != "clock_day_origin"})
+    dN, _ = build("n", 4)
+    step, day = _drive(dN.load_checkpoint, legacy)
+    _require(step == 148 and dN._clock_day_origin_ckpt is None,
+             "origin not stripped")
+    with pytest.raises(ValueError, match="restart at step 148 .* not on a "
+                       "day boundary while daily external forcing"):
+        dN.run(start_step=step, start_day=day)

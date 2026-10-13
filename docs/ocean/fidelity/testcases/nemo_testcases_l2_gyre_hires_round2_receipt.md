@@ -40,7 +40,7 @@ the T/F grid scales as `(2 e1 e2/(e1+e2))^2` in
 forms the T- and F-point deformation invariants, applies the velocity lower
 bound and timestep upper bound, including the bilaplacian `16/9` factor, and
 converts the limited Laplacian coefficient to `sqrt(esq*ahm/8)` in
-`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90:462-529`.
+`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90:462-528`.
 
 The WS-RK3 step computes the coefficient from `Nbb` immediately after vertical
 and lateral tracer physics and before the external mode in

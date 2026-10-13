@@ -103,6 +103,7 @@ def test_scalar_first_owner_discriminator_scores_increment_and_narrow_override()
     assert 'expose_momentum_operator=operator' in source
     assert 'stage2_momentum_rhs_override=' in source
     assert 'NEMO_completed_rhs_override_rows' in source
+    assert 'NEMO_completed_rhs_raw_update_rows' in source
 
 
 def test_wind_expression_arms_preserve_compiled_association_and_reciprocal():
@@ -328,3 +329,21 @@ def test_stage2_term_reader_validates_source_order_payload(tmp_path):
     bad.write_bytes(path.read_bytes()[:-8])
     with pytest.raises(ValueError, match="payload"):
         GATE.read_stage2_terms(bad, dims=dims)
+
+
+def test_stage2_composition_reader_separates_raw_and_post_mean(tmp_path):
+    dims = (6, 6, 3)
+    n3 = int(np.prod(dims))
+    n2 = dims[0] * dims[1]
+    ni = (dims[0] - 4) * (dims[1] - 4)
+    payload = np.arange(10 * n3 + 2 * n2 + 2 * ni, dtype=np.float64)
+    path = tmp_path / "oracle_rkstage2_operands_kt00000001.bin"
+    with path.open("wb") as stream:
+        stream.write(b"NEMO_L2_RKSTG_1 ")
+        stream.write(struct.pack(
+            "=11i", 1, 1, 2, 1, 3, 2, 2, *dims, 64))
+        payload.tofile(stream)
+    record = GATE.read_stage2_composition(path, dims=dims)
+    assert record["raw_Kaa_u"].shape == (2, 2, 3)
+    assert record["post_mean_Kaa_v"].shape == (2, 2, 3)
+    assert not np.array_equal(record["raw_Kaa_u"], record["post_mean_Kaa_u"])

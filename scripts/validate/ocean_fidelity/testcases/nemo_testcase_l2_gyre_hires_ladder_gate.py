@@ -351,6 +351,43 @@ def read_stage2_terms(path: Path, *, dims=NEMO_DIMS) -> dict:
     return result
 
 
+def read_stage2_composition(path: Path, *, dims=NEMO_DIMS) -> dict:
+    """Read raw update and post-barotropic-replacement stage-2 states."""
+    with path.open("rb") as handle:
+        magic = handle.read(16).decode("ascii").rstrip()
+        header = struct.unpack("=11i", handle.read(44))
+        values = np.fromfile(handle, dtype=np.float64)
+    version, kt, stage, kbb, kmm, krhs, kaa, nx, ny, nz, bits = header
+    if magic != "NEMO_L2_RKSTG_1":
+        raise ValueError(f"{path}: bad stage-2 composition magic")
+    if ((version, kt, stage, kbb, kmm, krhs, kaa, nx, ny, nz, bits)
+            != (1, 1, 2, 1, 3, 2, 2, *dims, 64)):
+        raise ValueError(f"{path}: bad stage-2 composition header")
+    n3, n2 = nx * ny * nz, nx * ny
+    ni = (nx - 4) * (ny - 4)
+    if values.size != 10 * n3 + 2 * n2 + 2 * ni:
+        raise ValueError(f"{path}: bad stage-2 composition payload")
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"{path}: non-finite stage-2 composition payload")
+    result = {}
+    offset = 0
+    for name in (
+        "Kbb_u", "Kbb_v", "Kmm_u", "Kmm_v", "Krhs_u", "Krhs_v",
+        "raw_Kaa_u", "raw_Kaa_v",
+    ):
+        result[name] = _full_xyz(values[offset:offset + n3], dims)
+        offset += n3
+    offset += 2 * n2  # barotropic Kaa u/v, not scored by this discriminator
+    offset += 2 * ni  # zub/zvb, already represented by the post state
+    result["post_mean_Kaa_u"] = _full_xyz(values[offset:offset + n3], dims)
+    offset += n3
+    result["post_mean_Kaa_v"] = _full_xyz(values[offset:offset + n3], dims)
+    offset += n3
+    if offset != values.size:
+        raise ValueError(f"{path}: unread stage-2 composition payload")
+    return result
+
+
 def _redundant_faces(u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Map native NEMO east/north faces to legoESM redundancy."""
     u = np.asarray(u)[..., :30]
@@ -948,9 +985,33 @@ def run(
                     )
                     for field in ("u", "v")
                 ]
+                composition_oracle = read_stage2_composition(
+                    oracle_root / "oracle_rkstage2_operands_kt00000001.bin",
+                    dims=NEMO_DIMS,
+                )
+                raw_fields = diagnostic_fields(expose_stage2_raw_momentum=True)
+                overridden_raw = diagnostic_fields(
+                    stage2_momentum_rhs_override=(
+                        jnp.asarray(oracle_rhs[0]), jnp.asarray(oracle_rhs[1])),
+                    expose_stage2_raw_momentum=True,
+                )
+                raw_rows = []
+                override_raw_rows = []
+                for field in ("u", "v"):
+                    reference = composition_oracle[f"raw_Kaa_{field}"][..., :30]
+                    raw_rows.append(exact_score(
+                        f"{case}.kt1.stage2.raw_update.{field}",
+                        reference, raw_fields[field], masks[field],
+                    ))
+                    override_raw_rows.append(exact_score(
+                        f"{case}.kt1.stage2.NEMO_rhs_raw_update.{field}",
+                        reference, overridden_raw[field], masks[field],
+                    ))
                 stage2_momentum_term_walk = {
                     "operator_increment_rows": operator_rows,
                     "completed_rhs_rows": total_rows,
+                    "raw_update_rows": raw_rows,
+                    "NEMO_completed_rhs_raw_update_rows": override_raw_rows,
                     "NEMO_completed_rhs_override_rows": override_stage_rows,
                 }
 

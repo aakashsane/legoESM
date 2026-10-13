@@ -125,8 +125,15 @@ def render_year(nemo_root: Path, lego_root: Path, output: Path, *, year: int, fp
     finally:
         writer.close()
     require(count == 365, "movie did not receive 365 daily frames")
-    return {"year": year, "window_days": [start, start + 364], "frames": count,
-            "fps": fps, "scales": scales, "sha256": sha256(output)}
+    return {
+        "year": year,
+        "window_days": [start, start + 364],
+        "frames": count,
+        "fps": fps,
+        "scales": scales,
+        "provenance": {provider.name: provider.provenance for provider in providers},
+        "sha256": sha256(output),
+    }
 
 
 def main(argv=None) -> int:

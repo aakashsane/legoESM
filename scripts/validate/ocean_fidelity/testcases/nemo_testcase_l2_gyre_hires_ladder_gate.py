@@ -111,6 +111,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
     steps = []
     controls = []
     rk_stages = []
+    tracer_stage1_transport = []
     tracer_stage1_walk = []
     vertical_candidate = None
     for kt in range(1, 11):
@@ -209,40 +210,70 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
                 )
             rk_stages.append({"stage": 3, "rows": stage_rows})
 
-            tracer_oracle = read_tracer_stage12(
-                oracle_root / "oracle_rktracer_operands_kt00000001_s1.bin",
-                1,
-                dims=NEMO_DIMS,
-            )
-            for boundary in ("after_advection", "after_sbc"):
-                boundary_model = LatLonCGridOceanModel(
+            if deck == "r4":
+                tracer_oracle = read_tracer_stage12(
+                    oracle_root / "oracle_rktracer_operands_kt00000001_s1.bin",
+                    1,
+                    dims=NEMO_DIMS,
+                )
+                transport_model = LatLonCGridOceanModel(
                     card.recipe.grid,
                     card.recipe.z_coord,
                     card.recipe.model_config,
                     _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
-                        expose_tracer_stage1_boundary=boundary,
+                        expose_tracer_transport_stage=1,
                     ),
                 )
-                boundary_state = boundary_model.step(
+                transport_state = transport_model.step(
                     state_before,
                     card.dt_s,
                     freshwater=freshwater,
                     surface_forcing=surface,
                 )
-                boundary_state = host_and_clear(boundary_state)
-                boundary_fields = lego_fields(boundary_state)
-                tracer_stage1_walk.append({
-                    "boundary": boundary,
-                    "rows": [
-                        exact_score(
-                            f"{case}.kt1.stage1.{boundary}.{field}",
-                            tracer_oracle[f"{boundary}_{field}"][..., :30],
-                            boundary_fields[field],
-                            masks[field],
-                        )
-                        for field in ("T", "S")
-                    ],
-                })
+                transport_state = host_and_clear(transport_state)
+                transport_values = {
+                    "zFu": np.asarray(transport_state.u.data)[:, 1:, :],
+                    "zFv": np.asarray(transport_state.v.data)[1:, :, :],
+                    "zFw": np.asarray(transport_state.T.data),
+                }
+                tracer_stage1_transport = [
+                    exact_score(
+                        f"{case}.kt1.stage1.transport.{name}",
+                        tracer_oracle[name][..., :30],
+                        transport_values[name],
+                        masks[{"zFu": "u", "zFv": "v", "zFw": "T"}[name]],
+                    )
+                    for name in ("zFu", "zFv", "zFw")
+                ]
+                for boundary in ("after_advection", "after_sbc"):
+                    boundary_model = LatLonCGridOceanModel(
+                        card.recipe.grid,
+                        card.recipe.z_coord,
+                        card.recipe.model_config,
+                        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                            expose_tracer_stage1_boundary=boundary,
+                        ),
+                    )
+                    boundary_state = boundary_model.step(
+                        state_before,
+                        card.dt_s,
+                        freshwater=freshwater,
+                        surface_forcing=surface,
+                    )
+                    boundary_state = host_and_clear(boundary_state)
+                    boundary_fields = lego_fields(boundary_state)
+                    tracer_stage1_walk.append({
+                        "boundary": boundary,
+                        "rows": [
+                            exact_score(
+                                f"{case}.kt1.stage1.{boundary}.{field}",
+                                tracer_oracle[f"{boundary}_{field}"][..., :30],
+                                boundary_fields[field],
+                                masks[field],
+                            )
+                            for field in ("T", "S")
+                        ],
+                    })
 
             if deck == "r4":
                 import jax.numpy as jnp
@@ -332,6 +363,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
         "namelist": namelist._asdict(),
         "steps": steps,
         "rk_stage_walk": rk_stages,
+        "tracer_stage1_transport": tracer_stage1_transport,
         "tracer_stage1_walk": tracer_stage1_walk,
         "vertical_candidate": vertical_candidate,
         "controls": controls,

@@ -48,3 +48,24 @@ def test_render_frame_has_encoder_shape(monkeypatch):
                                scales, {}, object())
     assert image.shape == (640, 1280, 3)
     assert image.dtype == np.uint8
+
+
+def test_movie_fields_run_on_the_registered_grid():
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        GYRE_R4_SMAG_NAMELIST,
+        build_gyre_zco_card,
+    )
+
+    geom = MOVIE.geometry()
+    grid = build_gyre_zco_card(GYRE_R4_SMAG_NAMELIST).recipe.grid
+    shape = geom["wet"].shape
+    zeros = np.zeros(shape, dtype=np.float64)
+    frame = MOVIE.DailyFrame(1, zeros, zeros, zeros, zeros)
+    fields = MOVIE.movie_fields(frame, geom, grid)
+    assert tuple(fields) == (
+        "relative vorticity / f", "SSH (m)", "surface speed (m/s)", "SST (C)",
+    )
+    for value in fields.values():
+        assert value.shape == shape
+        assert np.all(np.isfinite(value[geom["wet"]]))
+        assert np.all(np.isnan(value[~geom["wet"]]))

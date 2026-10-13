@@ -37,9 +37,12 @@ def test_weighted_sst_is_divided_by_same_file_thickness():
         CLIMATE.decode_weighted_surface_temperature(weighted, np.zeros_like(thickness))
 
 
-def test_diagnose_applies_31_day_highpass_and_registered_statistics():
+def test_diagnose_applies_native_velocity_highpass_and_registered_statistics(monkeypatch):
+    from scipy.ndimage import uniform_filter1d
+
     shape = (6, 8)
-    wet = np.ones(shape, dtype=bool)
+    wet = np.zeros(shape, dtype=bool)
+    wet[1:5, 1:7] = True
     geom = {
         "wet": wet,
         "u_mask": wet.copy(),
@@ -58,10 +61,27 @@ def test_diagnose_applies_31_day_highpass_and_registered_statistics():
             np.full(shape, 10.0 + day),
         ))
     provider = CLIMATE.DailyProvider("synthetic", "daily_mean", {}, lambda: iter(frames))
+    monkeypatch.setattr(
+        CLIMATE, "cell_velocity",
+        lambda u, v, geom: (np.zeros_like(u), np.zeros_like(v)),
+    )
     result = CLIMATE.diagnose(provider, target_start=16, target_days=20, geom=geom)
+    raw_u = np.stack([frame.u for frame in frames])
+    raw_v = np.stack([frame.v for frame in frames])
+    raw_u = np.where(wet, raw_u, 0.0)
+    raw_v = np.where(wet, raw_v, 0.0)
+    expected_eke = np.mean(0.5 * (
+        (raw_u - uniform_filter1d(raw_u, 31, axis=0, mode="nearest"))[15:35] ** 2
+        + (raw_v - uniform_filter1d(raw_v, 31, axis=0, mode="nearest"))[15:35] ** 2
+    ), axis=0)
     assert result["basin_mean_ke_series_m2_s2"].shape == (20,)
     assert result["highpass_eke_map_m2_s2"].shape == shape
+    assert np.allclose(result["highpass_eke_map_m2_s2"][wet], expected_eke[wet])
+    assert np.all(np.isnan(result["highpass_eke_map_m2_s2"][~wet]))
+    assert np.all(np.isnan(result["time_mean_sst_c"][~wet]))
     assert float(result["eddy_fraction"]) > 0.0
+    assert float(result["window_mean_basin_ke_m2_s2"]) > 0.0
+    assert np.all(result["time_mean_speed_m_s"][wet] == 0.0)
     assert float(result["ssh_zero_crossing_row"]) == 2.5
 
 
@@ -75,3 +95,41 @@ def test_preregistered_score_has_two_relative_and_two_row_bars():
     report = CLIMATE.score_statistics({"NEMO": base, "legoESM": dict(base)})
     assert report["verdict"] == "PASS"
     assert [row["bar"] for row in report["rows"]] == [0.2, 0.2, 2.0, 2.0]
+
+
+def test_preregistered_window_and_gpu_run_metadata_fail_closed():
+    CLIMATE.require_registered_window(1461, 365)
+    with pytest.raises(Exception, match="preregistered"):
+        CLIMATE.require_registered_window(1, 365)
+    manifest = {
+        "legoesm_git_sha": CLIMATE.LEGOESM_RUN_COMMIT,
+        "mode": "gpu-native",
+        "backend": "gpu",
+        "transcendentals": "native",
+        "certified_policy": False,
+        "daily_mean_convention": {
+            "surface_temperature_c": CLIMATE.LEGOESM_SST_CONVENTION,
+        },
+    }
+    CLIMATE._require_legoesm_run_metadata(manifest)
+    for field, bad_value in (
+        ("legoesm_git_sha", "wrong"),
+        ("backend", "cpu"),
+        ("transcendentals", "certified"),
+        ("certified_policy", True),
+    ):
+        candidate = dict(manifest)
+        candidate[field] = bad_value
+        with pytest.raises(Exception):
+            CLIMATE._require_legoesm_run_metadata(candidate)
+
+
+def test_report_only_pattern_comparison_uses_common_finite_support():
+    score = CLIMATE.paired_comparison(
+        np.array([1.0, 2.0, np.nan]),
+        np.array([2.0, 4.0, np.nan]),
+    )
+    assert score["common_points"] == 2
+    assert score["bias"] == 1.5
+    assert score["rmse"] == pytest.approx(np.sqrt(2.5))
+    assert score["correlation"] == pytest.approx(1.0)

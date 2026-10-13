@@ -29,6 +29,12 @@ NEMO_MANIFEST = {
     "namelist_cfg": "97956dbbf895842f8728ba408167ac0875bef691215a851ecfc5fd6a73b5dbec",
     "namelist_ref": "b04f2ce4d12aa247ae3b707483d25cf2d38d0b3cf8817d71d33e66918fd81cfd",
 }
+LEGOESM_RUN_COMMIT = "7b772afb86681cc61536faa4fc766cdbe6098e9d"
+LEGOESM_SST_CONVENTION = (
+    "thickness weighted: mean(T*e3t)/mean(e3t), matching NEMO IOIPSL "
+    "votemper/vovvle3t"
+)
+_FILE_DIGEST_CACHE: dict[tuple[str, int, int], str] = {}
 PREREGISTRATION = {
     "claim": "trajectories diverge; only matched-window climate statistics are scored",
     "window_days": [1461, 1825],
@@ -67,6 +73,22 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def cached_sha256(path: Path) -> str:
+    """Hash large immutable oracle files once per instrument process."""
+    stat = path.stat()
+    key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+    if key not in _FILE_DIGEST_CACHE:
+        _FILE_DIGEST_CACHE[key] = sha256(path)
+    return _FILE_DIGEST_CACHE[key]
+
+
+def require_registered_window(start_day: int, days: int) -> None:
+    require(
+        (start_day, days) == (1461, 365),
+        "scored climate window must be preregistered days 1461..1825",
+    )
 
 
 def assemble_domain_tiles(
@@ -152,16 +174,32 @@ def nemo_ioipsl_provider(root: Path, days: int, *, start_day: int) -> DailyProvi
                 for kind, found in paths.items()
             }
             for kind, dsets in datasets.items():
-                variable = {"T": "sossheig", "U": "vozocrtx", "V": "vomecrty"}[kind]
+                variables = (
+                    ("sossheig", "sosstsst", "vovvle3t")
+                    if kind == "T" else
+                    ({"U": "vozocrtx", "V": "vomecrty"}[kind],)
+                )
                 for ds in dsets:
                     ds.set_auto_mask(False)
                     require(np.array_equal(ds.DOMAIN_size_global, [122, 82]),
                             "NEMO DOMAIN_size_global is not 122x82")
-                    require(getattr(ds[variable], "online_operation", None) == "ave(x)",
-                            f"{variable} is not an IOIPSL daily mean")
-                    require(float(ds[variable].interval_operation) == 3600.0
-                            and float(ds[variable].interval_write) == SECONDS_PER_DAY,
-                            f"{variable} cadence differs")
+                    for variable in variables:
+                        require(variable in ds.variables,
+                                f"NEMO tile is missing {variable}")
+                        require(getattr(ds[variable], "online_operation", None) == "ave(x)",
+                                f"{variable} is not an IOIPSL daily mean")
+                        require(float(ds[variable].interval_operation) == 3600.0
+                                and float(ds[variable].interval_write) == SECONDS_PER_DAY,
+                                f"{variable} cadence differs")
+                        require(np.array_equal(
+                            np.asarray(ds["time_counter"][start_day - 1:stop]),
+                            (np.arange(start_day - 1, stop, dtype=np.float64) + 0.5)
+                            * SECONDS_PER_DAY,
+                        ), f"{variable} time_counter differs")
+                        require(np.array_equal(
+                            np.asarray(ds.DOMAIN_size_local),
+                            np.asarray(ds[variable].shape[-2:][::-1]),
+                        ), f"{variable} DOMAIN_size_local differs")
             for day in range(start_day, stop + 1):
                 index = day - 1
                 t_tiles, sst_tiles, u_tiles, v_tiles = [], [], [], []
@@ -188,10 +226,15 @@ def nemo_ioipsl_provider(root: Path, days: int, *, start_day: int) -> DailyProvi
                 )
 
     files = {kind: [path.name for path in found] for kind, found in paths.items()}
+    file_sha256 = {
+        path.name: cached_sha256(path)
+        for found in paths.values() for path in found
+    }
     return DailyProvider(
         "NEMO", "daily_mean",
         {"root": str(root.resolve()), "window_days": [start_day, stop],
-         "tiles": files, "deck": deck, "sst_convention": "sosstsst/vovvle3t same file"},
+         "tiles": files, "tile_sha256": file_sha256, "deck": deck,
+         "sst_convention": "sosstsst/vovvle3t same file"},
         iterate,
     )
 
@@ -203,6 +246,21 @@ def _require_legoesm_deck(namelist: dict) -> None:
     for field in expected.keys() - {"nn_itend", "nn_stock", "nn_write"}:
         require(namelist.get(field) == expected[field],
                 f"legoESM manifest differs from r4_smag at {field}")
+
+
+def _require_legoesm_run_metadata(manifest: dict) -> None:
+    require(manifest.get("legoesm_git_sha") == LEGOESM_RUN_COMMIT,
+            "legoESM run commit is not the operator-launched commit")
+    require(manifest.get("mode") == "gpu-native"
+            and manifest.get("backend") == "gpu"
+            and manifest.get("transcendentals") == "native"
+            and manifest.get("certified_policy") is False,
+            "legoESM run is not the registered non-certified native GPU mode")
+    require(
+        manifest.get("daily_mean_convention", {}).get("surface_temperature_c")
+        == LEGOESM_SST_CONVENTION,
+        "legoESM SST daily mean is not thickness weighted",
+    )
 
 
 def legoesm_npz_provider(root: Path, days: int, *, start_day: int) -> DailyProvider:
@@ -218,12 +276,18 @@ def legoesm_npz_provider(root: Path, days: int, *, start_day: int) -> DailyProvi
     require(manifest.get("sampling") == ["end_of_day_snapshot", "daily_mean"],
             "legoESM run does not contain daily means")
     _require_legoesm_deck(manifest.get("namelist", {}))
+    _require_legoesm_run_metadata(manifest)
     pins = manifest.get("daily_sha256", {})
     fields = (
         "ssh_m_daily_mean", "surface_u_m_s_daily_mean",
         "surface_v_m_s_daily_mean", "surface_temperature_c_daily_mean",
     )
     expected = [root / f"day{day:04d}.npz" for day in range(start_day, stop + 1)]
+    complete = [root / f"day{day:04d}.npz" for day in range(1, manifest["days"] + 1)]
+    require(sorted(root.glob("day????.npz")) == complete,
+            "legoESM daily file sequence differs")
+    require(set(pins) == {path.name for path in complete},
+            "legoESM manifest does not pin every daily file")
     for path in expected:
         require(path.is_file() and pins.get(path.name) == sha256(path),
                 f"legoESM daily digest mismatch: {path.name}")
@@ -236,6 +300,8 @@ def legoesm_npz_provider(root: Path, days: int, *, start_day: int) -> DailyProvi
                 values = [np.asarray(data[name], dtype=np.float64) for name in fields]
             require(all(value.shape == GLOBAL_SHAPE for value in values),
                     f"{path.name}: field shape differs")
+            require(all(np.all(np.isfinite(value)) for value in values),
+                    f"{path.name}: non-finite daily mean")
             yield DailyFrame(day, *values)
 
     return DailyProvider(
@@ -243,8 +309,11 @@ def legoesm_npz_provider(root: Path, days: int, *, start_day: int) -> DailyProvi
         {"root": str(root.resolve()), "window_days": [start_day, stop],
          "manifest_sha256": sha256(manifest_path),
          "legoesm_git_sha": manifest.get("legoesm_git_sha"),
-         "mode": manifest.get("mode"), "certified_policy": manifest.get("certified_policy"),
-         "sst_convention": manifest.get("daily_mean_convention", {}).get("surface_temperature_c")},
+         "mode": manifest.get("mode"), "backend": manifest.get("backend"),
+         "transcendentals": manifest.get("transcendentals"),
+         "certified_policy": manifest.get("certified_policy"),
+         "sst_convention": manifest.get("daily_mean_convention", {}).get(
+             "surface_temperature_c")},
         iterate,
     )
 
@@ -325,6 +394,9 @@ def diagnose(provider: DailyProvider, *, target_start: int, target_days: int, ge
     ssh = np.stack([frame.ssh for frame in raw])
     sst = np.stack([frame.sst for frame in raw])
     native_u = np.stack([frame.u for frame in raw])
+    native_v = np.stack([frame.v for frame in raw])
+    native_u = np.where(geom["u_mask"], native_u, 0.0)
+    native_v = np.where(geom["v_mask"], native_v, 0.0)
     velocities = [cell_velocity(frame.u, frame.v, geom) for frame in raw]
     u = np.stack([value[0] for value in velocities])
     v = np.stack([value[1] for value in velocities])
@@ -332,10 +404,19 @@ def diagnose(provider: DailyProvider, *, target_start: int, target_days: int, ge
     wet = geom["wet"]
     area = np.where(wet, geom["area"], 0.0)
     area_sum = np.sum(area, dtype=np.float64)
-    speed2 = u[target] ** 2 + v[target] ** 2
-    ke_series = np.sum(0.5 * speed2 * area, axis=(1, 2), dtype=np.float64) / area_sum
-    u_hp = u - uniform_filter1d(u, FILTER_DAYS, axis=0, mode="nearest")
-    v_hp = v - uniform_filter1d(v, FILTER_DAYS, axis=0, mode="nearest")
+    # Match the operator's preregistered eddy diagnostic: native U/V arrays
+    # share NEMO's horizontal index space and are combined before optional
+    # T-point interpolation.  Cell-centred velocity remains the input to the
+    # spectrum and the separately named mean-magnitude field below.
+    native_speed2 = native_u[target] ** 2 + native_v[target] ** 2
+    ke_series = (
+        np.sum(0.5 * native_speed2 * area, axis=(1, 2), dtype=np.float64)
+        / area_sum
+    )
+    u_hp = native_u - uniform_filter1d(
+        native_u, FILTER_DAYS, axis=0, mode="nearest")
+    v_hp = native_v - uniform_filter1d(
+        native_v, FILTER_DAYS, axis=0, mode="nearest")
     eke_map = np.mean(0.5 * (u_hp[target] ** 2 + v_hp[target] ** 2), axis=0)
     basin_eke = float(np.sum(eke_map * area, dtype=np.float64) / area_sum)
     mean_ke = float(np.mean(ke_series, dtype=np.float64))
@@ -358,18 +439,23 @@ def diagnose(provider: DailyProvider, *, target_start: int, target_days: int, ge
         if spectrum is None:
             wavenumber, spectrum = k, np.zeros_like(e)
         spectrum += e
+    mean_sst = np.mean(sst[target], axis=0)
+    mean_speed = np.mean(np.sqrt(u[target] ** 2 + v[target] ** 2), axis=0)
+    rms_native_speed = np.sqrt(np.mean(native_speed2, axis=0))
     return {
         "basin_mean_ke_series_m2_s2": ke_series,
         "window_mean_basin_ke_m2_s2": np.asarray(mean_ke),
-        "highpass_eke_map_m2_s2": eke_map,
+        "highpass_eke_map_m2_s2": np.where(wet, eke_map, np.nan),
         "basin_mean_highpass_eke_m2_s2": np.asarray(basin_eke),
         "eddy_fraction": np.asarray(basin_eke / mean_ke),
         "absolute_u_jet_row": np.asarray(absolute_u_jet_row),
         "ssh_zero_crossing_row": np.asarray(ssh_row),
         "ssh_zero_crossing_latitude_deg": np.asarray(ssh_lat),
-        "time_mean_ssh_m": mean_ssh,
-        "time_mean_sst_c": np.mean(sst[target], axis=0),
-        "time_mean_speed_m_s": np.mean(np.sqrt(speed2), axis=0),
+        "time_mean_ssh_m": np.where(wet, mean_ssh, np.nan),
+        "time_mean_sst_c": np.where(wet, mean_sst, np.nan),
+        "time_mean_speed_m_s": np.where(wet, mean_speed, np.nan),
+        "time_mean_rms_native_speed_m_s": np.where(
+            wet, rms_native_speed, np.nan),
         "spectrum_wavenumber_m-1": wavenumber,
         "mean_ke_spectrum_m3_s2": spectrum / target_days,
     }
@@ -398,9 +484,124 @@ def score_statistics(results: dict[str, dict]) -> dict:
 
 def _array_summary(value) -> dict:
     array = np.asarray(value)
-    return {"shape": list(array.shape), "min": float(np.min(array)),
-            "max": float(np.max(array)), "mean": float(np.mean(array, dtype=np.float64)),
+    finite = array[np.isfinite(array)]
+    require(finite.size > 0, "diagnostic array contains no finite values")
+    return {"shape": list(array.shape), "min": float(np.min(finite)),
+            "max": float(np.max(finite)),
+            "mean": float(np.mean(finite, dtype=np.float64)),
             "sha256": hashlib.sha256(np.ascontiguousarray(array).tobytes()).hexdigest()}
+
+
+def paired_comparison(reference, candidate) -> dict:
+    """Return report-only pattern scores on the models' common finite support."""
+    reference = np.asarray(reference, dtype=np.float64)
+    candidate = np.asarray(candidate, dtype=np.float64)
+    require(reference.shape == candidate.shape, "comparison shapes differ")
+    common = np.isfinite(reference) & np.isfinite(candidate)
+    require(np.any(common), "comparison has no common finite support")
+    left, right = reference[common], candidate[common]
+    delta = right - left
+    centered_left = left - np.mean(left, dtype=np.float64)
+    centered_right = right - np.mean(right, dtype=np.float64)
+    denominator = np.sqrt(
+        np.sum(centered_left * centered_left, dtype=np.float64)
+        * np.sum(centered_right * centered_right, dtype=np.float64)
+    )
+    correlation = (
+        float(np.sum(centered_left * centered_right, dtype=np.float64) / denominator)
+        if denominator > 0.0 else None
+    )
+    rms_reference = float(np.sqrt(np.mean(left * left, dtype=np.float64)))
+    rmse = float(np.sqrt(np.mean(delta * delta, dtype=np.float64)))
+    return {
+        "common_points": int(left.size),
+        "bias": float(np.mean(delta, dtype=np.float64)),
+        "mean_absolute_difference": float(np.mean(np.abs(delta), dtype=np.float64)),
+        "rmse": rmse,
+        "normalized_rmse": rmse / rms_reference if rms_reference > 0.0 else None,
+        "correlation": correlation,
+    }
+
+
+def report_only_comparisons(results: dict[str, dict]) -> dict[str, dict]:
+    names = (
+        "time_mean_ssh_m",
+        "time_mean_sst_c",
+        "time_mean_speed_m_s",
+        "time_mean_rms_native_speed_m_s",
+        "highpass_eke_map_m2_s2",
+        "mean_ke_spectrum_m3_s2",
+    )
+    require(np.array_equal(
+        results["NEMO"]["spectrum_wavenumber_m-1"],
+        results["legoESM"]["spectrum_wavenumber_m-1"],
+    ), "model spectrum wavenumbers differ")
+    return {
+        name: paired_comparison(results["NEMO"][name], results["legoESM"][name])
+        for name in names
+    }
+
+
+def write_comparison_figure(path: Path, results: dict[str, dict], score: dict) -> None:
+    """Write common-scale model maps, differences, KE series, and spectra."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fields = (
+        ("time_mean_ssh_m", "mean SSH (m)"),
+        ("time_mean_sst_c", "mean SST (C)"),
+        ("time_mean_speed_m_s", "mean speed (m/s)"),
+        ("highpass_eke_map_m2_s2", "31-day high-pass EKE (m2/s2)"),
+    )
+    fig, axes = plt.subplots(5, 3, figsize=(13, 17), constrained_layout=True)
+    for row, (name, title) in enumerate(fields):
+        left = np.asarray(results["NEMO"][name])
+        right = np.asarray(results["legoESM"][name])
+        finite = np.concatenate((left[np.isfinite(left)], right[np.isfinite(right)]))
+        vmin, vmax = float(np.min(finite)), float(np.max(finite))
+        difference = right - left
+        limit = float(np.nanmax(np.abs(difference)))
+        if limit == 0.0:
+            limit = np.finfo(np.float64).eps
+        for col, (label, value, lo, hi, cmap) in enumerate((
+            ("NEMO", left, vmin, vmax, "viridis"),
+            ("legoESM", right, vmin, vmax, "viridis"),
+            ("legoESM - NEMO", difference, -limit, limit, "RdBu_r"),
+        )):
+            image = axes[row, col].imshow(
+                value, origin="lower", vmin=lo, vmax=hi, cmap=cmap)
+            axes[row, col].set_title(f"{label}: {title}", fontsize=9)
+            axes[row, col].set_xticks([])
+            axes[row, col].set_yticks([])
+            fig.colorbar(image, ax=axes[row, col], shrink=0.75)
+    for model in ("NEMO", "legoESM"):
+        axes[4, 0].plot(
+            results[model]["basin_mean_ke_series_m2_s2"], label=model)
+        axes[4, 1].loglog(
+            results[model]["spectrum_wavenumber_m-1"],
+            results[model]["mean_ke_spectrum_m3_s2"], label=model)
+    axes[4, 0].set_title("year-5 basin-mean surface KE")
+    axes[4, 0].set_xlabel("day in window")
+    axes[4, 0].set_ylabel("m2/s2")
+    axes[4, 0].legend()
+    axes[4, 1].set_title("year-5 mean KE wavenumber spectrum")
+    axes[4, 1].set_xlabel("wavenumber (m-1)")
+    axes[4, 1].set_ylabel("m3/s2")
+    axes[4, 1].legend()
+    axes[4, 2].axis("off")
+    axes[4, 2].text(
+        0.0, 1.0,
+        "Preregistered scalar verdict: " + score["verdict"] + "\n\n"
+        + "\n".join(
+            f"{row['name']}: {row['status']} ({row['error']:.4g} <= {row['bar']})"
+            for row in score["rows"]
+        ),
+        va="top", family="monospace", fontsize=9,
+    )
+    fig.suptitle("GYRE r4_smag matched-window climate comparison, days 1461..1825")
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
 
 
 def write_outputs(
@@ -414,6 +615,8 @@ def write_outputs(
         for name, value in metrics.items()
     })
     score = score_statistics(results)
+    figure_path = output / "gyre_hires_climate_comparison.png"
+    write_comparison_figure(figure_path, results, score)
     report = {
         "schema": "gyre-r4-smag-climate-comparison-v1",
         "preregistration": PREREGISTRATION,
@@ -423,7 +626,11 @@ def write_outputs(
         "metrics": {model: {name: _array_summary(value) for name, value in metrics.items()}
                     for model, metrics in results.items()},
         "acceptance": score,
-        "artifacts": {arrays_path.name: sha256(arrays_path)},
+        "report_only_comparisons": report_only_comparisons(results),
+        "artifacts": {
+            arrays_path.name: sha256(arrays_path),
+            figure_path.name: sha256(figure_path),
+        },
     }
     path = output / "gyre_hires_climate_report.json"
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -439,6 +646,7 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        require_registered_window(args.start_day, args.days)
         context_start = max(1, args.start_day - FILTER_LEAD_DAYS)
         context_days = args.start_day + args.days - context_start
         providers = (

@@ -1421,9 +1421,9 @@ CITATION_MAP = {
     'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:159-183': [
         'CALL eos_rab( ts(:,:,:,:,Nbb), rab_b, Nbb )',
         'IF( l_ldfdyn_time                    )   CALL ldf_dyn( kstp, Nbb )', 25],
-    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:195-210': [
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:195-216': [
         'CALL rk3_dia( 0 )',
-        'CALL stp_RK3_stg( 3, kstp, Nbb, Nnn, Nrhs, Naa )', 16],
+        'Nrhs = Nbb   ;   Nbb  = Naa   ;   Naa  = Nrhs', 22],
     'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:604-634': [
         'Phase-3 L2 WRITE-only tracer-stage operand stream',
         ('& WRITE(l1_unit) ts(:,:,:,jp_tem,Krhs), ts(:,:,:,jp_sal,Krhs)', 2), 31],

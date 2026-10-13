@@ -409,3 +409,34 @@ def test_driver_surface_data_and_cmip_output_are_the_lat_lon_lanes(tmp_path):
     o3_col = c.diagnostics._regrid_to_latlon_3d(t3)
     o3_pipe = p.diagnostics._regrid_to_latlon_3d(t3.reshape(RES, 2 * RES, -1))
     np.testing.assert_array_equal(o3_col, o3_pipe)
+
+
+def test_driver_subgrid_orography_uses_the_native_grid_spacing(tmp_path,
+                                                               monkeypatch):
+    """The SSO file's scale check sees the native lat-lon spacing (180/n_lat),
+    not the cell-count estimate of an unstructured mesh.  (The PhysicsPipeline
+    lat-lon lane has no per-column SSO field and refuses the file.)"""
+    import xarray as xr
+    import legoesm.grids.topography as topo
+    from legoesm.driver.model_driver import ModelDriver
+    lat = np.arange(-89.0, 90.0, 2.0)
+    lon = np.arange(0.0, 360.0, 2.0)
+    sso = 100.0 + 50.0 * np.cos(np.deg2rad(lat))[:, None] * np.ones(lon.size)
+    path = tmp_path / "sso.nc"
+    xr.Dataset({"SSO_STDH": (("lat", "lon"), sso)},
+               coords={"lat": lat, "lon": lon}).to_netcdf(path)
+    seen = []
+    real = topo._check_sso_scale_decomposition
+    monkeypatch.setattr(topo, "_check_sso_scale_decomposition",
+                        lambda built, dx, *a, **k: (seen.append(dx),
+                                                    real(built, dx, *a, **k))[1])
+    over = dict(subgrid_orography_path=str(path), gravity_wave_drag="mcfarlane")
+    col = _driver(tmp_path / "col", **over)
+    assert seen == [pytest.approx(180.0 / RES)]
+    got = np.asarray(col.grid.subgrid_topo_stddev)
+    assert got.shape == (RES * 2 * RES,) and got.min() > 100.0
+    (tmp_path / "pipe").mkdir()
+    pipe = ModelDriver(_driver_cfg(tmp_path / "pipe", column=False, **over),
+                       output_dir=tmp_path / "pipe")
+    with pytest.raises(ValueError, match="no subgrid_topo_stddev field"):
+        pipe.setup()

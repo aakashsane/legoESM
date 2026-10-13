@@ -15,7 +15,7 @@ def test_on_by_default(monkeypatch):
     assert _hs_persistent_d_enabled() is True
 
 
-@pytest.mark.parametrize("val,expect", [("0", False), ("1", True), ("off", False)])
+@pytest.mark.parametrize("val,expect", [("0", False), ("1", True), ("off", False), ("", True)])
 def test_env_override(monkeypatch, val, expect):
     monkeypatch.setenv("LEGOESM_HS_PERSISTENT_D", val)
     assert _hs_persistent_d_enabled() is expect

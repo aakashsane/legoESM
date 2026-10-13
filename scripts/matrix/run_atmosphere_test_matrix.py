@@ -4246,8 +4246,8 @@ def run_cosine_bell(tc: TestCase, output_dir: Path, days: float, *,
 
 def _hs_persistent_d_enabled() -> bool:
     """#1028 persistent-D for the cube HS case: ON unless LEGOESM_HS_PERSISTENT_D=0."""
-    return (os.environ.get("LEGOESM_HS_PERSISTENT_D", "1").strip().lower()
-            in ("1", "true", "yes", "on"))
+    return ((os.environ.get("LEGOESM_HS_PERSISTENT_D", "").strip().lower()
+             or "1") in ("1", "true", "yes", "on"))
 
 
 def run_held_suarez(tc: TestCase, output_dir: Path, days: float, *,

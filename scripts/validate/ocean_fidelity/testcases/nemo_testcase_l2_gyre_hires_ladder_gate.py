@@ -406,7 +406,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
                                 "substep": substep + 1,
                                 "field": name,
                                 "row": row,
-                                "first_active_index": list(first_index),
+                                "first_active_index": [int(index) for index in first_index],
                                 "first_ulp": int(ulp_distance(
                                     np.asarray([reference[first_index]]),
                                     np.asarray([candidate[first_index]]),

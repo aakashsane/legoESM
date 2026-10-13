@@ -115,6 +115,11 @@ SSH-zero-crossing-row difference at most two rows.  The fields and spectrum
 are report-only pattern diagnostics.  Trajectory divergence is expected and
 is not a failed climate result.
 
+KE, high-pass EKE, eddy fraction, and the reference RMS-speed map use the
+operator reference's native masked U/V index convention.  A separately named
+time-mean speed field and the spectrum use the shared C-grid interpolation to
+T points; the two conventions are not silently interchanged.
+
 ## Movie instrument
 
 `nemo_testcase_l2_gyre_hires_movie.py` renders daily-mean frames for year 1

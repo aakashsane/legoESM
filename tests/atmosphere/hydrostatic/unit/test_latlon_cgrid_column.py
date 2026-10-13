@@ -37,8 +37,11 @@ def _dyn(g, s):
     return CGridLatLonPrimitiveEquationModel(g, s, cfg, dt=DT)
 
 
-def _tend(T, p_s, *, du=1e-4, dT=1e-4, precip=None):
+def _tend(T, p_s, *, du=1e-4, dT=1e-4, precip=None, lat=None, lon=None):
     z, z2 = jnp.zeros_like(T), jnp.zeros_like(p_s)
+    if lat is not None:
+        # cell-dependent, so a mis-ordered column<->grid map is visible
+        z = z + (jnp.sin(lat) * jnp.cos(lon))[..., None]
     f = lambda a, n: Field(data=a, name=n)  # noqa: E731
     return HydrostaticTendencies(
         du_dt=f(z + du, "du"), dT_dt=f(z + dT, "dT"), dp_s_dt=f(z2, "dps"),
@@ -84,10 +87,11 @@ def test_column_physics_is_the_native_operator_split_bitwise(setup):
 
     def col_phys(cols, mesh, sigma, phys_state=None, forcing=None):
         assert cols.T.data.shape == (mesh.nCells, NLEV)
-        return _tend(cols.T.data, cols.p_s.data, precip=1.0)
+        return _tend(cols.T.data, cols.p_s.data, precip=1.0,
+                     lat=mesh.latCell, lon=mesh.lonCell)
 
     def grid_phys(hs, grid, sigma):
-        return _tend(hs.T.data, hs.p_s.data)
+        return _tend(hs.T.data, hs.p_s.data, lat=grid.lat2d, lon=grid.lon2d)
 
     ref = _dyn(g, s).step(nat, DT, physics_fn=grid_phys)
     col = LatLonCGridColumnModel(_dyn(g, s))
@@ -229,6 +233,9 @@ def test_driver_restart_is_bitwise(tmp_path, phys):
     for k in ("u", "v", "T", "p_s", "phis"):
         assert _same(getattr(a, k), getattr(b, k)), k
     assert sorted(a.tracers) == sorted(b.tracers)
+    if phys:
+        # the moist run carries its water on the dycore state
+        assert "q_v" in a.tracers and float(np.max(a.tracers["q_v"])) > 0.0
     for nm in a.tracers:
         assert _same(a.tracers[nm], b.tracers[nm]), nm
     assert not _same(u_mid, a.u)        # the second day moved the state

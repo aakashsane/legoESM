@@ -95,6 +95,16 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
     namelist = base._replace(nn_itend=10, nn_stock=10, nn_write=10)
     card = build_nemo_testcase_card("GYRE-zco", namelist=namelist)
     model = LatLonCGridOceanModel(card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+
+    def host_and_clear(value):
+        host = jax.tree_util.tree_map(
+            lambda leaf: np.asarray(leaf)
+            if isinstance(leaf, (jax.Array, np.ndarray)) else leaf,
+            value,
+        )
+        jax.clear_caches()
+        return host
+
     masks = expected_masks(card)
     state = card.recipe.initial_state
     steps = []
@@ -136,6 +146,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
         state_before = state
         state = model.step(state_before, card.dt_s, freshwater=freshwater, surface_forcing=surface)
         if kt == 1:
+            state = host_and_clear(state)
             for stage in (1, 2):
                 stage_model = LatLonCGridOceanModel(
                     card.recipe.grid,
@@ -152,6 +163,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
                     freshwater=freshwater,
                     surface_forcing=surface,
                 )
+                stage_state = host_and_clear(stage_state)
                 stage_oracle = read_stage(
                     oracle_root / f"oracle_stage_kt{kt:08d}_s{stage}.bin",
                     stage,
@@ -207,6 +219,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
                 lego_avt, lego_avm = model.diagnose_vertical_K(
                     seeded, card.dt_s, surface
                 )
+                lego_avt, lego_avm = host_and_clear((lego_avt, lego_avm))
                 interface_mask = (
                     np.asarray(card.recipe.z_coord.is_active)[..., 1:]
                     & (np.asarray(seeded.land_mask.data) > 0.5)[..., None]
@@ -235,6 +248,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
                         jnp.asarray(zdf["avm"][..., 1:30]),
                     ),
                 )
+                vertical_control_state = host_and_clear(vertical_control_state)
                 oracle2 = read_entry(
                     oracle_root / "oracle_step_entry_kt00000002.bin",
                     dims=NEMO_DIMS,

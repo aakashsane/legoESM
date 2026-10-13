@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
@@ -116,11 +117,16 @@ def _require_nemo_deck(root: Path) -> dict:
         require((root / name).is_file() and sha256(root / name) == digest,
                 f"NEMO deck digest mismatch: {name}")
     text = resolved.read_text(encoding="utf-8")
-    for token in (
-        "nn_GYRE = 4", "rn_Dt = 3600.", "ln_dynldf_lap = .false.",
-        "ln_dynldf_blp = .true.", "nn_ahm_ijk_t = 32", "rn_csmc = 3.5",
+    for name, pattern in (
+        ("nn_GYRE=4", r"\bnn_GYRE\s*=\s*4\b"),
+        ("rn_Dt=3600", r"\brn_Dt\s*=\s*3600\."),
+        ("ln_dynldf_lap=false", r"\bln_dynldf_lap\s*=\s*\.false\."),
+        ("ln_dynldf_blp=true", r"\bln_dynldf_blp\s*=\s*\.true\."),
+        ("nn_ahm_ijk_t=32", r"\bnn_ahm_ijk_t\s*=\s*32\b"),
+        ("rn_csmc=3.5", r"\brn_csmc\s*=\s*3\.5\b"),
     ):
-        require(token in text, f"resolved r4_smag deck missing {token}")
+        require(re.search(pattern, text) is not None,
+                f"resolved r4_smag deck missing {name}")
     return {
         "manifest_sha256": sha256(manifest_path),
         "resolved_namelist_sha256": sha256(resolved),
@@ -263,7 +269,7 @@ def geometry() -> dict:
         "area": np.asarray(card.recipe.grid.area),
         "latitude": np.asarray(coords["gphit"]),
         "f": np.asarray(coords["ff_t"]),
-        "spacing_m": float(coords["spacing_m"]),
+        "spacing_m": float(np.asarray(card.recipe.grid.dx_T)[0, 0]),
     }
 
 

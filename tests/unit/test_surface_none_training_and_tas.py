@@ -44,6 +44,35 @@ def test_none_prescribes_zero_surface_exchange_for_every_scheme(turb):
     assert getattr(ref.turbulence, turb).surface.prescribed_shflx_w_m2 is None
 
 
+@pytest.mark.parametrize("turb", ["mynn25", "clubb"])
+def test_none_reaches_schemes_spectral_physics_refuses(turb, monkeypatch):
+    """mynn25 / clubb: the spectral make_physics refuses them, so stop the
+    builder at that call and inspect the config it would have received."""
+    import legoesm.atmosphere.physics.combined as combined
+    from legoesm.grids.gaussian import create_gaussian_grid
+    from legoesm.training.aimip_params import (
+        AIMIPClassicalParams, make_aimip_classical_spectral_physics)
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def _spy(cfg, *a, **k):
+        seen["cfg"] = cfg
+        raise _Stop
+
+    monkeypatch.setattr(combined, "make_physics", _spy)
+    with pytest.raises(_Stop):
+        make_aimip_classical_spectral_physics(
+            AIMIPClassicalParams.from_defaults(),
+            create_gaussian_grid(11, dealiasing="quadratic"), dt=1800.0,
+            radiation="gray", turbulence_scheme=turb,
+            surface_bulk_scheme="none")
+    surface = getattr(seen["cfg"].turbulence, turb).surface
+    for name in _ZERO_PRESCRIBED:
+        assert getattr(surface, name) == 0.0, name
+
+
 def test_none_built_surface_gives_zero_fluxes():
     """The surface config the builder installs, fed to the surface layer every
     scheme calls: zero stress, heat and moisture against a warm, moist
@@ -72,6 +101,19 @@ def test_none_trains_no_surface_exchange_knob():
     assert {"surface_Cd_neutral", "surface_Ch_neutral"} <= const
     assert not {n for n in none if n.startswith("surface_")}
     assert const - none == {"surface_Cd_neutral", "surface_Ch_neutral"}
+
+
+def test_aimip_spatial_exchange_fields_frozen_under_none():
+    from legoesm.training.aimip_params import (
+        AIMIPClassicalParams, aimip_classical_trainable_names)
+    kw = dict(convection="tiedtke", turbulence="louis", gwd="mcfarlane",
+              microphysics="sundqvist", cloud="xu_randall", radiation="rrtmgp")
+    for sbs, frozen in (("none", {"Cd_neutral", "Ch_neutral", "z0"}),
+                        ("constant", {"z0"})):
+        p = AIMIPClassicalParams.from_defaults(
+            spatial_surface=True, trainable=aimip_classical_trainable_names(
+                surface_bulk_scheme=sbs, **kw))
+        assert set(p.spatial_surface.frozen) == frozen, sbs
 
 
 def test_wb_policy_freeze_covers_exchange_not_radiative_surface():
@@ -170,6 +212,25 @@ def test_native_feed_and_daily_extremes_omit_tas_under_none():
         assert ("tas" in dc._spatial_daily.track_extremes) is want, sbs
 
 
+def test_restore_with_tas_refused_under_none(tmp_path):
+    from tests.tools.unit.test_cmor_accumulator_restart import (
+        _day_fields, _make_diag)
+    from legoesm.driver.diagnostics import DiagnosticCollector
+    a = _make_diag(tmp_path / "a")
+    f2d, _ = _day_fields(np.random.default_rng(0))
+    a._spatial_monthly.add_2d(1, 0, f2d)
+    side = tmp_path / "acc.npz"
+    a.save_cmor_accumulators(side)
+    b = _make_diag(tmp_path / "b")
+    none = DiagnosticCollector(
+        nlev=b.nlev, sigma_full=b.sigma_full, dsigma=b.dsigma,
+        experiment_id="test", cmip_output=True, output_dir=str(tmp_path / "c"),
+        cmip_resolution_deg=30.0, n_days=400, surface_bulk_scheme="none")
+    assert b.load_cmor_accumulators(side) is True
+    with pytest.raises(ValueError, match="surface_bulk_scheme='none'"):
+        none.load_cmor_accumulators(side)
+
+
 # -------------------------------------------------------------- ClimateEval
 
 def test_climateeval_drops_not_produced_variables():
@@ -178,9 +239,10 @@ def test_climateeval_drops_not_produced_variables():
     suite = [{"name": "map", "variables": shared},
              {"name": "zonal", "variables": shared},
              {"name": "only_tas", "variables": [{"id": "tas"}]}]
+    suite.append({"name": "already_empty", "variables": []})
     out, gone = drop_not_produced(suite, ["tas"])
     assert gone == ["tas"]
-    assert [b["name"] for b in out] == ["map", "zonal"]
+    assert [b["name"] for b in out] == ["map", "zonal", "already_empty"]
     assert out[0]["variables"] == [{"id": "pr"}]
 
 
@@ -203,8 +265,9 @@ def test_climateeval_hook_names_tas_not_produced_under_none(monkeypatch):
                                output=OutputConfig(evaluation=ev))
         climateeval_hook.maybe_run_climateeval(cfg, "/out")
         cmd = seen["cmd"]
-        has = "--not-produced" in cmd and cmd[cmd.index("--not-produced") + 1] == "tas"
-        assert has is want, sbs
+        i = cmd.index("--not-produced") if "--not-produced" in cmd else None
+        got = None if i is None else cmd[i + 1:i + 4]
+        assert (got == ["tas", "tasmin", "tasmax"]) is want, sbs
 
 
 @pytest.mark.parametrize("turb", ["louis", "tke", "smagorinsky", "mynn25",
@@ -239,3 +302,19 @@ def test_every_scheme_takes_a_zero_lower_boundary_condition(turb):
     assert float(np.abs(np.asarray(zero.shflx)).max()) == 0.0
     assert float(np.abs(np.asarray(zero.lhflx)).max()) == 0.0
     assert col(bulk.du_dt) > 1e-3 and col(bulk.dq_v_dt) > 1e-6
+    # The column heat a scheme still produces is internal (dissipation,
+    # mixing of an unstable profile): it does not see the surface temperature.
+    from tests.unit.test_prescribed_surface_fluxes_driver_path import NLEV
+    inp, _ = _inputs(pipe)
+    held3, held2 = jnp.zeros((*s2, NLEV)), jnp.zeros(s2)
+    heat = []
+    for sst in (260.0, 320.0):
+        o = pipe.physics_step_no_rad(
+            inp["T"], inp["p_s"], inp["q_v"], inp["q_c"], inp["q_r"],
+            jnp.zeros((pipe.adapter.ncol,)), inp["u"], inp["v"],
+            jnp.full(s2, sst), inp["sic"], inp["lat"], 600.0,
+            held3, held2, held2, held2, held2, held2,
+            sfc_shflx_override=z, sfc_lhflx_override=z, sfc_evap_override=z,
+            sfc_taux_override=z, sfc_tauy_override=z, **carry)
+        heat.append(np.asarray(o.dT_dt))
+    np.testing.assert_array_equal(heat[0], heat[1])

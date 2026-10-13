@@ -2410,6 +2410,21 @@ class DiagnosticCollector:
             if accum is not None and sub:
                 accum.set_state(sub)
                 restored = True
+        if restored and not self.produces_tas:
+            buckets = [
+                *(self._spatial_monthly._data_2d.values()
+                  if self._spatial_monthly is not None else ()),
+                *(self._spatial_daily._data.values()
+                  if self._spatial_daily is not None else ()),
+            ]
+            if any("tas" in b for b in buckets):
+                raise ValueError(
+                    f"{path}: the restored CMOR accumulators hold 2 m "
+                    "temperature, but this run has surface_bulk_scheme='none' "
+                    "and produces none; resuming would publish a tas written "
+                    "under a different surface setting. Resume with the "
+                    "setting that wrote it, or delete the sidecar to drop the "
+                    "partial month.")
         return restored
 
     def save(self, output_dir: str | Path) -> None:

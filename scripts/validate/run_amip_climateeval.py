@@ -156,6 +156,7 @@ def drop_not_produced(suite_def: list[Any], not_produced: list[str]) -> tuple[li
     removed: list[str] = []
     drop = set(not_produced)
     seen: set[int] = set()
+    emptied: set[int] = set()
     for block in suite_def:
         variables = block.get("variables") if isinstance(block, dict) else None
         if not isinstance(variables, list) or id(variables) in seen:
@@ -165,9 +166,12 @@ def drop_not_produced(suite_def: list[Any], not_produced: list[str]) -> tuple[li
                 if not (isinstance(v, dict) and v.get("id") in drop)]
         removed += [v["id"] for v in variables
                     if isinstance(v, dict) and v.get("id") in drop]
+        if variables and not keep:
+            emptied.add(id(variables))
         variables[:] = keep
     suite_def = [b for b in suite_def
-                 if not isinstance(b, dict) or b.get("variables") != []]
+                 if not (isinstance(b, dict)
+                         and id(b.get("variables")) in emptied)]
     return suite_def, sorted(set(removed))
 
 

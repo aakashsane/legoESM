@@ -535,3 +535,27 @@ def test_pipeline_records_the_cloud_config_its_radiation_builds(
             "sundqvist", threaded)})["c"]
     assert d.physics.resolved_cloud_config("sundqvist", True) != \
         d.physics.resolved_cloud_config("sundqvist", False)
+
+
+@pytest.mark.parametrize("compiled", [True, False])
+def test_run_tells_the_record_whether_conv_precip_reaches_radiation(
+        tmp_path: Path, monkeypatch, compiled) -> None:
+    from legoesm.driver.model_driver import ModelDriver
+    seen = []
+    real = ModelDriver._record_pipeline_physics
+
+    def spy(self, pipeline, conv_precip_threaded=True):
+        seen.append(conv_precip_threaded)
+        return real(self, pipeline, conv_precip_threaded)
+    monkeypatch.setattr(ModelDriver, "_record_pipeline_physics", spy)
+    cfg = ExperimentConfig(
+        grid=GridConfig(grid_type="cubed_sphere", resolution=4, nlev=5),
+        dycore=DycoreConfig(energy_fixer=False, dt=1800.0),
+        output=OutputConfig(output_dir="", diag_days=0, checkpoint_days=0),
+        days=3601.0 / 86400.0, dataset="analytical", radiation="gray",
+        microphysics="none", convection="none", turbulence="louis",
+        precision="fp64")
+    d = ModelDriver(cfg, output_dir=str(tmp_path))
+    d.setup()
+    assert d.run(compiled=compiled) == "COMPLETED"
+    assert seen == [compiled]

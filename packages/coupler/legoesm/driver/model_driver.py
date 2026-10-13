@@ -15570,13 +15570,12 @@ class ModelDriver:
         return jax.sharding.Mesh(_np.array(devs[:nd]), axis_names=("lat",))
 
     def _latlon_spmd_physics_fn(self):
-        """Select the STATELESS physics closure for the lat-band SPMD run, or
-        raise if the configured physics is the stateful unified pipeline (not
-        yet SPMD-routed). Supports Held-Suarez forcing and dynamics-only."""
+        """Select the STATELESS physics closure for the lat-band SPMD run:
+        pure Held-Suarez (all schemes 'none') or dynamics-only.  Any active
+        scheme, with or without Held-Suarez, belongs to the operator-split
+        lane; reaching here with one is a dispatch bug and raises rather than
+        silently dropping the configured physics."""
         cfg = self.config
-        if cfg.held_suarez_forcing:
-            from legoesm.atmosphere.forcing.idealized.held_suarez import held_suarez_forcing_latlon
-            return held_suarez_forcing_latlon
         active = {
             name: val for name, val in (
                 ("radiation", cfg.radiation),
@@ -15587,14 +15586,17 @@ class ModelDriver:
                 ("cloud_scheme", cfg.cloud_scheme),
             ) if val not in (None, "none")
         }
-        if not active:
-            return None                     # dynamics-only (dry)
-        raise NotImplementedError(
-            "enable_latlon_spmd supports dynamics-only (all parameterizations "
-            f"'none') or held_suarez_forcing=True; the stateful unified physics "
-            f"{active} is not yet SPMD-routed — its PhysicsState carry needs the "
-            "lat-major reshape-aware shard (see run_atm_latlon_spmd_segment). "
-            "Set those schemes to 'none' or use held_suarez_forcing=True.")
+        if active:
+            raise RuntimeError(
+                f"stateless lat-band SPMD lane reached with active schemes "
+                f"{active} (held_suarez_forcing={cfg.held_suarez_forcing}); "
+                "they must route to the operator-split lane "
+                "(_operator_split_spmd_active) — the stateless closure would "
+                "silently drop them.")
+        if cfg.held_suarez_forcing:
+            from legoesm.atmosphere.forcing.idealized.held_suarez import held_suarez_forcing_latlon
+            return held_suarez_forcing_latlon
+        return None                         # dynamics-only (dry)
 
     def _reject_unconsumed_flux_override(self, lane: str) -> None:
         """Refuse a coupler flux handback (``get_sfc_flux_override``, set by
@@ -15617,7 +15619,7 @@ class ModelDriver:
 
         The coupled drivers read ``held_sw_net_sfc`` / ``held_lw_net_sfc`` /
         ``seg_precip`` out of ``self._carry_aux``.  The STATELESS lat-lon SPMD
-        sub-lane (dynamics-only / Held-Suarez) and the sub-face-tiled cube
+        sub-lane (dynamics-only / pure Held-Suarez) and the sub-face-tiled cube
         lanes never write them, so the coupled
         ocean/land/ice tiles would be forced with ``sw_down=0`` and
         ``precip=0`` -- perpetual polar night plus an evaporation-only
@@ -15654,9 +15656,11 @@ class ModelDriver:
         a host-side NaN-blowup guard. A dedicated path, NOT the jitted
         ``compiled_segments`` scan (zero surgical risk to the shared hot loop).
 
-        Supports DYNAMICS-ONLY or stateless Held-Suarez. Stateful physics and the
-        diagnostics/checkpoint writers are follow-ups (rejected loudly); a coupled
-        driver consumes the per-segment state via ``segment_callback``.
+        Pure Held-Suarez and dynamics-only run on the stateless sub-lane; any
+        active column physics (with or without Held-Suarez) dispatches to the
+        operator-split sub-lane. The diagnostics/checkpoint writers are
+        follow-ups (rejected loudly); a coupled driver consumes the
+        per-segment state via ``segment_callback``.
         """
         import time
         from legoesm.atmosphere.dynamics.gcm.sharded_atm_latlon_step import (
@@ -15674,8 +15678,9 @@ class ModelDriver:
         # (radiation / turbulence / convection / microphysics / GWD / cloud) is
         # active — route to the sharded operator-split integration (dynamics ->
         # mass fixer -> step_unified physics -> tail), a faithful multi-device
-        # twin of _run_compiled.  Held-Suarez and dynamics-only fall through to
-        # the stateless run_atm_latlon_spmd lane below.
+        # twin of _run_compiled; Held-Suarez, if on, is added there on top of
+        # the schemes.  Pure Held-Suarez (all schemes 'none') and dynamics-only
+        # fall through to the stateless run_atm_latlon_spmd lane below.
         if self._operator_split_spmd_active():
             if getattr(cfg, "latlon_spmd_compiled_segments", False):
                 # Never a silent no-op: the operator-split unified-physics
@@ -15683,13 +15688,13 @@ class ModelDriver:
                 # so a set flag would silently change nothing there.
                 raise NotImplementedError(
                     "latlon_spmd_compiled_segments=True applies to the "
-                    "STATELESS lat-lon SPMD lane (dynamics-only / "
+                    "STATELESS lat-lon SPMD lane (dynamics-only / pure "
                     "Held-Suarez via run_atm_latlon_spmd); the operator-"
                     "split unified-physics SPMD lane does not run compiled "
-                    "scan segments yet. Unset the flag, or set the "
-                    "parameterizations to 'none' / use held_suarez_forcing.")
+                    "scan segments yet. Unset the flag, or set every "
+                    "parameterization to 'none'.")
             return self._run_operator_split_spmd(start_step, start_day, mesh)
-        # STATELESS sub-lane only (dynamics-only / Held-Suarez): no radiation,
+        # STATELESS sub-lane only (dynamics-only / pure Held-Suarez): no radiation,
         # no microphysics, so nothing ever writes held_sw_net_sfc /
         # held_lw_net_sfc / seg_precip into _carry_aux.  The operator-split
         # sub-lane above DOES stash them and returned already, so the refusal
@@ -15699,12 +15704,12 @@ class ModelDriver:
             "the stateless lat-band SPMD sub-lane")
         self._reject_coupled_lane(
             "enable_latlon_spmd (stateless lat-band SPMD)",
-            "a dynamics-only / Held-Suarez envelope with no radiation or "
+            "a dynamics-only / pure Held-Suarez envelope with no radiation or "
             "precipitation source",
             "Configure the general unified physics so the operator-split SPMD "
             "sub-lane is selected (it stashes the held fields), or run the "
             "coupled case single-device (enable_latlon_spmd=False).")
-        physics_fn = self._latlon_spmd_physics_fn()      # None / HS / raise
+        physics_fn = self._latlon_spmd_physics_fn()      # None / pure HS / raise
         DT = cfg.dycore.dt
         n_steps_total = int(cfg.days * 86400.0 / DT)
         START_DAY = start_day if start_day is not None else cfg.start_day
@@ -16339,18 +16344,18 @@ class ModelDriver:
 
     def _operator_split_spmd_active(self) -> bool:
         """True when the lat-band SPMD run must use the OPERATOR-SPLIT lane — the
-        general run_amip COLUMN-LOCAL unified physics is active.
+        general run_amip COLUMN-LOCAL unified physics is active, with or without
+        ``held_suarez_forcing`` (the operator-split statics add the HS
+        Newtonian relaxation on top of the schemes, as every other lane does).
 
-        False for ``held_suarez_forcing`` and dynamics-only (all schemes
-        ``'none'``), which the stateless :func:`run_atm_latlon_spmd` lane handles.
+        False for pure Held-Suarez and dynamics-only (all schemes ``'none'``),
+        which the stateless :func:`run_atm_latlon_spmd` lane handles.
         The only decomposition-VARIANT unified physics — stochastic Bechtold
         (``enable_stochastic=True``, a per-column PRNG keyed by global column) —
         is refused UPSTREAM at pipeline build (``physics_pipeline`` raises before
         this lane runs), and every radiation scheme (gray / rrtmgp / rrtmg) is
         1-D column, so no extra column-locality guard is needed here."""
         cfg = self.config
-        if cfg.held_suarez_forcing:
-            return False
         return any(v not in (None, "none") for v in (
             cfg.radiation, cfg.convection, cfg.turbulence,
             cfg.microphysics, cfg.gravity_wave_drag, cfg.cloud_scheme))

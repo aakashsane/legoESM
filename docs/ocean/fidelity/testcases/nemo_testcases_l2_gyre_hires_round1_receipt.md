@@ -3,7 +3,8 @@
 **Date:** 2026-10-12  
 **Incoming tip:** `f04f9f1d8`  
 **Preregistration commit:** `489780795`  
-**Card/acquisition commit:** `57242281c`
+**Card/acquisition commit:** `57242281c`  
+**Driver/instrument commit:** `e3d2d4245`
 
 ## Verdict
 
@@ -108,8 +109,10 @@ Evidence lives under
   1.81e-10 (surface T), and 1.10e-14/1.09e-14 (barotropic U/V).  Recompiling
   the forced step as a shared inner call produced the identical residual, so
   the result is recorded rather than hidden by relaxing the bar.
-- Shipped and r4 acquisition preflights: PENDING CLEAN-COMMIT RUN.
-- Receipt-specific citation gate: PENDING FINAL RECEIPT.
+- Shipped and r4 acquisition preflights: PASS at `e3d2d4245`, including the
+  pinned writer hash, derived names, exact deck rows, and clean worktree.
+- Receipt-specific citation gate: PASS after mechanical re-anchoring of the
+  cumulative gate necessitated by the recipe's added resolved-card lines.
 
 Every new Python entry point has a direct test.  The one-ULP ladder plants are
 non-vacuity controls.  The acquisition scripts themselves are tested for both
@@ -154,6 +157,6 @@ Coriolis from those coordinates in
 The compiled surface routine constructs the seasonal clock and first cosines
 in `cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90:84-107`, evaluates latitude-dependent
 temperature, shortwave, and zero-mean freshwater fields in
-`cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90:115-145`, and evaluates the seasonal
+`cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90:115-144`, and evaluates the seasonal
 wind on the same latitude grid in
 `cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90:161-176`.

@@ -31,11 +31,24 @@ def test_none_is_a_valid_scheme_on_a_dry_config():
     {"slab_land_active": True},
     {"use_multilayer_land": True},
     {"surface_tiled": True, "turbulence": "louis"},
+    {"C_H": 0.002},
+    {"C_E": 0.002},
+    {"surface_gustiness_zi": 600.0},
+    {"surface_thermo_convention": "aerobulk"},
+    {"surface_z_ref_model_level": True},
+    {"surface_ocean_q_sfc_saline": True},
 ])
 def test_none_rejected_next_to_a_surface_flux_owner(over):
     cfg = ExperimentConfig(surface_bulk_scheme="none", **{**_DRY, **over})
     with pytest.raises(ValueError, match="surface_bulk_scheme='none'"):
         cfg.validate_strict()
+
+
+def test_none_cannot_be_coupled_to_an_ocean():
+    from legoesm.driver.air_sea_consistency import validate_air_sea_consistency
+    with pytest.raises(ValueError, match="cannot be coupled"):
+        validate_air_sea_consistency(
+            ExperimentConfig(surface_bulk_scheme="none", **_DRY), None)
 
 
 def test_held_suarez_template_selects_none():

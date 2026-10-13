@@ -2954,11 +2954,19 @@ class ExperimentConfig(NamedTuple):
                     ("slab_land_active=True", self.slab_land_active),
                     ("use_multilayer_land=True", self.use_multilayer_land),
                 ) if on]
+            # Knobs that only shape the bulk exchange are inert under "none".
+            _defaults = type(self)._field_defaults
+            _sfc_consumers += [
+                f"{k}={getattr(self, k)!r}" for k in (
+                    "C_H", "C_E", "surface_gustiness_zi",
+                    "surface_thermo_convention", "surface_z_ref_model_level",
+                    "surface_ocean_q_sfc_saline")
+                if getattr(self, k) != _defaults[k]]
             if _sfc_consumers:
                 errors.append(
                     "surface_bulk_scheme='none' (no surface fluxes) is "
                     "incompatible with " + ", ".join(_sfc_consumers) +
-                    ": each runs its own surface exchange.")
+                    ": each runs or shapes a surface exchange.")
         # A non-"constant" surface scheme upgrades the ATMOSPHERE surface layer
         # (via _resolve_turbulence on the turbulence config).  With
         # turbulence="none" there is no SurfaceLayerConfig to update, so the

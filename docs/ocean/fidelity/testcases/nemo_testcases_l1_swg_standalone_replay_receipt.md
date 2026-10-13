@@ -76,7 +76,7 @@ plain text so the receipt gate does not mistake them for current claims.
 |---|---|---|---|
 | GYRE round-8 receipt | ocean_pe_latlon_cgrid.py:5643-5644 | ocean_pe_latlon_cgrid.py:5655-5656 | SWG shared source insertion |
 | GYRE round-8 receipt | ocean_pe_latlon_cgrid.py:5666 | ocean_pe_latlon_cgrid.py:5678 | same +12 shift |
-| GYRE round-8 receipt | provenance.py:106 | provenance.py:107 | main moved the helper by one line |
+| GYRE round-8 receipt | provenance.py:106 | provenance.py:149 | main moved the helper by one line; Round C later added 42 checkout-verification lines above it |
 | GYRE round-8 receipt | ocean_pe_latlon_cgrid.py:3561-3564 | ocean_pe_latlon_cgrid.py:3568-3571 | SWG shared source insertion |
 | GYRE round-8 receipt | ocean_pe_latlon_cgrid.py:3269-3295 | ocean_pe_latlon_cgrid.py:3276-3302 | SWG shared source insertion |
 | conflict map | ocean_model_latlon_cgrid.py:5779-5781 | ocean_model_latlon_cgrid.py:5771-5773 | unmerged GYRE base had eight extra lines |

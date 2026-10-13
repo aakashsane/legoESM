@@ -6355,7 +6355,7 @@ source.  Measured, not assumed: `legoesm_git_sha` is absent from all five of
 `round30_post_ldf_after.json` and `round30_zdf_calibration.json`.
 
 The repo already had the right helper and it was reused rather than rebuilt:
-`provenance.py:107`'s `git_sha` fails closed on tracked dirt for exactly this
+`provenance.py:149`'s `git_sha` fails closed on tracked dirt for exactly this
 reason.  What it could not answer is whether `HEAD` was describing this code at
 all.  `worktree_stamp` adds the branch (or `DETACHED`), whether the tree is
 clean, and, when it is not, the SHA-256 of the full `git diff HEAD`.  Detached

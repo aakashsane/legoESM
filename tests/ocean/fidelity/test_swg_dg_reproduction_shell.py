@@ -159,7 +159,12 @@ def test_shell_entry_points_bind_this_checkout_ahead_of_decoy(tmp_path):
     )
     for command in commands:
         result = subprocess.run(command, env=env, capture_output=True, text=True)
-        assert result.returncode != 0
+        if command[1] == str(ROOT / "scripts/run/run_swg_double_gyre_gpu.sh"):
+            # The wrapper reaches driver --help on a clean tree and refuses
+            # tracked/untracked dirt after binding on a development tree.
+            assert result.returncode in {0, 66}, result.stderr
+        else:
+            assert result.returncode != 0
         assert f"CHECKOUT_IMPORT_OK root={ROOT}" in result.stdout
         assert str(ROOT / "packages/ocean/legoesm/ocean/__init__.py") in result.stdout
 

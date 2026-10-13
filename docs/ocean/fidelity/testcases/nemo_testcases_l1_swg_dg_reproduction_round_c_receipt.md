@@ -19,7 +19,8 @@ Round-C evidence is under
 - `e9221475f`: launch ffmpeg before JAX worker threads and atomically publish
   a complete movie, after a measured Python 3.13 fork-after-JAX deadlock.
 
-Later documentation/evidence commits are listed in the final receipt block.
+- `22dd7e2e8`: reconstructable environment guide, stranger runbook, cost
+  artifact, review-disposition receipt, and runbook completeness guard.
 
 ## Independent-review findings
 
@@ -123,15 +124,26 @@ agent's inference:
 | Rank command | exit 1 after both NEMO runs; measured packaging import failure | fresh log and 8 s/2 s `run.log` files |
 | Rank scorer rerun | `all_bit_identical=True variables=21` | report SHA-256 `113fe89f7e3530bff1232ec84eb244423ff857b6baa37334d2f2fdb6dd6ebb44` |
 | 30-day smoke | exit 0, `WALL_SECONDS=504` | `dg_smoke/run.log`, SHA-256 `97a87bca3c2035b1764e7baf21422aa271f7257b14d276bd2f56df0705c2ad81` |
-| Three-year NEMO | **in progress**, not claimed complete | `operator_acquisition/nemo/dg_3yr`; current step is recorded at final receipt time |
+| Three-year NEMO | **in progress**, not claimed complete; step 809,702 observed while closing this evidence commit | `operator_acquisition/nemo/dg_3yr/time.step` |
 | Fresh GPU/comparisons/movie | not started | acquisition commands below |
 
 ## Tests and evidence boundary
 
 Portable fixture tests do not skip when the oracle tree is absent. Tests that
 exercise external operator evidence remain visibly classified as such and are
-not counted as package guards. The final clean battery and citation-gate
-results are added after the documentation commit.
+not counted as package guards. The combined focused package run passed 56/56
+in 178.50 seconds.
+
+The first complete requested battery ran from clean commit `22dd7e2e8` and
+recorded 349 passed, one registered six-step LLVM-memory skip, and four failed
+in 3215.77 seconds; log SHA-256 is
+`d52b05bf28e86889885f93efb063b665e2be34763b63f4bf787d9c570222ccdf`.
+Three failures had one cause: the new checkout helper shifted `git_sha` from
+line 107 to 149 without re-anchoring its campaign receipt/map entry. The
+fourth caught a test-harness error: the decoy test expected the clean GPU
+wrapper's `--help` to fail, although success is correct after it binds this
+checkout. Both are corrected in the next evidence commit; final clean rerun
+results follow there. No model/card/gradient/comparator assertion failed.
 
 The movie repair arose during this round's permitted CPU execution. The first
 attempt left only a 48-byte partial after Python warned that ffmpeg's fork
@@ -139,7 +151,15 @@ could deadlock with JAX threads. It was stopped and retained as
 `swg_dg_year1_daily_mean.deadlock-partial.mp4`. Commit `e9221475f` starts
 ffmpeg before any JAX work, writes to a hidden partial path, and renames only
 after all frames close successfully. A test proves encoder start precedes
-provider/model work. Final movie hash/time follow after completion.
+provider/model work. The rerun printed
+`SWG_DG_MOVIE COMPLETE frames=365`, took 1,794 seconds including fail-closed
+input hashing, and produced a 5,348,065-byte MP4 with SHA-256
+`a7b06ec4c01de35b1ee35cb96f7ee08050e9953effc49e540156feb0faee1eaa`.
+The completion log SHA-256 is
+`7c154a1b6d9aac0653da2f52ccb9b78580cbc72e7c3a47664231cca1260d1351`.
+An independent ffmpeg decode count reported 365 frames and 30.41 seconds;
+that log's SHA-256 is
+`2c8231eec25db5fc953bebc448a0d601b1d7cecc0524931fd629ad30bf9ad9b6`.
 
 ## Remaining operator acquisition
 

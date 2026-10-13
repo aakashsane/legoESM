@@ -859,9 +859,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # (constant / 0 / None / off) keep the prior AMIP behaviour byte-identical.
     parser.add_argument("--surface-bulk-scheme", type=str, default="constant",
                         choices=["constant", "coare3", "large_yeager",
-                                 "large_yeager_cesm"],
+                                 "large_yeager_cesm", "none"],
                         help="Surface-layer bulk-flux scheme (coare3 = COARE 3.0 "
-                             "MOST with convective gustiness; the tuned slab value). "
+                             "MOST with convective gustiness; the tuned slab value; "
+                             "none = no surface fluxes, needs --turbulence none "
+                             "and no land model). "
                              "Matches ExperimentConfig.validate_strict — 'most' is "
                              "not an accepted AMIP surface scheme (coare3 is the "
                              "MOST-with-gustiness variant).")

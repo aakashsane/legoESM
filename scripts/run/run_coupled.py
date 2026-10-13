@@ -708,7 +708,8 @@ def build_parser():
     # "large_yeager") only, so an accepted "most" would SILENTLY fall through to
     # the constant-coefficient branch -- trading a loud crash for wrong physics.
     parser.add_argument("--surface-bulk-scheme", default="constant",
-                        choices=list(VALID_SURFACE_BULK),
+                        # "none" (no surface fluxes) cannot drive an ocean.
+                        choices=[s for s in VALID_SURFACE_BULK if s != "none"],
                         help="AIR-SEA surface bulk-flux algorithm for the "
                              "atmosphere surface layer + the coupler OCEAN tile "
                              "(the 3D-ocean air-sea flux). 'coare3' is the "

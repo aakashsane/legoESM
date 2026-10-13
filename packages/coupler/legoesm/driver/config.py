@@ -559,7 +559,11 @@ def parse_gwd_spec(value: str) -> str:
 # "large_yeager") only, so an accepted "most" would silently degrade to the
 # constant-coefficient branch — a loud rejection is better than wrong physics.
 # See driver/air_sea_consistency.py.
-VALID_SURFACE_BULK = ("constant", "coare3", "large_yeager", "large_yeager_cesm")
+# "none" = no interactive surface bulk exchange at all (no sensible, latent,
+# moisture or momentum flux from the bulk law) — the dry idealized benchmarks
+# (Held-Suarez, Jablonowski-Williamson) need it explicitly.
+VALID_SURFACE_BULK = ("constant", "coare3", "large_yeager", "large_yeager_cesm",
+                      "none")
 
 
 # Hard ceiling of ``morrison_sed_cfl_substeps_max``, imported from the leaf
@@ -2922,7 +2926,7 @@ class ExperimentConfig(NamedTuple):
         # A knob that changes only the diagnostic is worse than an inert one
         # (codex review P2) — reject it, unless _tiled_with_real_land above.
         elif (self.surface_stability_scheme != "dyer1974"
-                and self.surface_bulk_scheme == "constant"
+                and self.surface_bulk_scheme in ("constant", "none")
                 and not _tiled_with_real_land):
             errors.append(
                 f"surface_stability_scheme="
@@ -2935,13 +2939,42 @@ class ExperimentConfig(NamedTuple):
                 f"ignore the stable branch entirely and only the 2 m "
                 f"diagnostic would move."
             )
+        # "none" is honoured only where the bulk BL kick is the sole surface
+        # exchange: a turbulence scheme, the learned parameterization, or a land
+        # model/tile would still run its own surface fluxes (or lose its energy
+        # balance), so reject those pairings rather than half-apply "none".
+        if self.surface_bulk_scheme == "none":
+            _sfc_consumers = [
+                name for name, on in (
+                    (f"turbulence={self.turbulence!r}", self.turbulence != "none"),
+                    ("physics_parameterization="
+                     f"{self.physics_parameterization!r}",
+                     self.physics_parameterization != "none"),
+                    ("surface_tiled=True", self.surface_tiled),
+                    ("slab_land_active=True", self.slab_land_active),
+                    ("use_multilayer_land=True", self.use_multilayer_land),
+                ) if on]
+            # Knobs that only shape the bulk exchange are inert under "none".
+            _defaults = type(self)._field_defaults
+            _sfc_consumers += [
+                f"{k}={getattr(self, k)!r}" for k in (
+                    "C_H", "C_E", "surface_gustiness_zi",
+                    "surface_thermo_convention", "surface_z_ref_model_level",
+                    "surface_ocean_q_sfc_saline")
+                if getattr(self, k) != _defaults[k]]
+            if _sfc_consumers:
+                errors.append(
+                    "surface_bulk_scheme='none' (no surface fluxes) is "
+                    "incompatible with " + ", ".join(_sfc_consumers) +
+                    ": each runs or shapes a surface exchange.")
         # A non-"constant" surface scheme upgrades the ATMOSPHERE surface layer
         # (via _resolve_turbulence on the turbulence config).  With
         # turbulence="none" there is no SurfaceLayerConfig to update, so the
         # atmosphere would silently stay on its fallback fluxes while the
         # ocean/coupler tiles switch to MOST — an inconsistent interface.  Reject
         # loudly (codex review HIGH#2).
-        if self.surface_bulk_scheme != "constant" and self.turbulence == "none":
+        if (self.surface_bulk_scheme not in ("constant", "none")
+                and self.turbulence == "none"):
             errors.append(
                 f"surface_bulk_scheme={self.surface_bulk_scheme!r} requires a "
                 f"turbulence scheme (turbulence != 'none') so the atmosphere "

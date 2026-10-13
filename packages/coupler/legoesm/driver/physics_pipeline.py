@@ -164,8 +164,10 @@ class PhysicsPipeline:
         physics_parameterization=None,
         column_mesh=None,
         co2_ppmv=None,
+        surface_bulk_scheme="constant",
     ):
         self.adapter = adapter
+        self.surface_bulk_scheme = surface_bulk_scheme
         # The run's fixed CO2 [ppmv] (radiation's, when no GHG file drives it);
         # the land canopy reads the same value (land_co2_ppmv).
         self.co2_ppmv = co2_ppmv
@@ -1951,6 +1953,18 @@ class PhysicsPipeline:
                 "prescribed as a pair (sfc_taux_override AND "
                 "sfc_tauy_override) — only one component was given."
             )
+        if self.surface_bulk_scheme == "none":
+            # ExperimentConfig.surface_bulk_scheme="none": no surface exchange.
+            # validate_strict rejects it next to any scheme that owns surface
+            # fluxes; a prescribed flux here would be a second, contradicting
+            # surface choice, so refuse it rather than pick one.
+            if _prescribed_sfc_flux or turb_owns_surface:
+                raise ValueError(
+                    "surface_bulk_scheme='none' but this step was given "
+                    "prescribed surface fluxes or a scheme that owns surface "
+                    "exchange; 'none' means no surface fluxes at all.")
+            shflx = jnp.zeros_like(shflx)
+            lhflx = jnp.zeros_like(lhflx)
         if _flux_override and not turb_owns_surface:
             # Bulk path only.  With a turbulence scheme the config fold below
             # makes the prescribed flux the kernel's lower BC, and the
@@ -5158,6 +5172,7 @@ def build_physics_pipeline(grid, sigma, config, spacing_grid=None):
         physics_parameterization=physics_parameterization,
         column_mesh=column_mesh,
         co2_ppmv=config.co2_ppmv,
+        surface_bulk_scheme=config.surface_bulk_scheme,
     )
     from legoesm.atmosphere.physics.radiation.solar import earth_orbit
     pipeline.orbit = (earth_orbit()

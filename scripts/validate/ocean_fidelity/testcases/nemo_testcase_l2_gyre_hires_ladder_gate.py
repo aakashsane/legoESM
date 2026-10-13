@@ -27,7 +27,6 @@ from nemo_testcase_l2_gyre_phase3_gate import (  # noqa: E402
     read_stage,
     read_bt_substeps,
     read_tracer_stage12,
-    read_tracer_stage3,
     read_zdf_entry,
 )
 from nemo_testcase_state_ulp_probe import ulp_distance  # noqa: E402
@@ -282,6 +281,39 @@ def accumulated_component_score(
 def _full_xyz(values: np.ndarray, dims=NEMO_DIMS) -> np.ndarray:
     nx, ny, nz = dims
     return values.reshape((nx, ny, nz), order="F")[2:-2, 2:-2].transpose(1, 0, 2)
+
+
+def read_tracer_stage3_hires(path: Path, *, dims=NEMO_DIMS) -> dict:
+    """Read the P3 stage-3 tracer accumulator at the selected resolution."""
+    with path.open("rb") as handle:
+        magic = handle.read(16).decode("ascii").rstrip()
+        header = struct.unpack("=11i", handle.read(44))
+        values = np.fromfile(handle, dtype=np.float64)
+    version, kt, stage, kbb, kmm, krhs, kaa, nx, ny, nz, bits = header
+    if magic != "NEMO_L2_RKTR3_1":
+        raise ValueError(f"{path}: bad stage-3 tracer magic")
+    if ((version, kt, stage, kbb, kmm, krhs, kaa, nx, ny, nz, bits)
+            != (1, 1, 3, 1, 2, 3, 3, *dims, 64)):
+        raise ValueError(f"{path}: bad stage-3 tracer header")
+    n3, n2 = nx * ny * nz, nx * ny
+    if values.size != 16 * n3 + 3 * n2 or not np.all(np.isfinite(values)):
+        raise ValueError(f"{path}: bad stage-3 tracer payload")
+    names = (
+        "zero_T", "zero_S", "after_advection_T", "after_advection_S",
+        "after_sbc_T", "after_sbc_S", "after_qsr_T", "after_qsr_S",
+        "after_ldf_T", "after_ldf_S", "Kbb_T", "Kbb_S", "Kmm_T",
+        "Kmm_S", "Kaa_T", "Kaa_S",
+    )
+    result = {
+        name: _full_xyz(values[index * n3:(index + 1) * n3], dims)
+        for index, name in enumerate(names)
+    }
+    offset = 16 * n3
+    for index, name in enumerate(("r3t_Kbb", "r3t_Kmm", "r3t_Kaa")):
+        block = values[offset + index * n2:offset + (index + 1) * n2]
+        result[name] = block.reshape((nx, ny), order="F")[2:-2, 2:-2].T
+    result.update({"Kbb": kbb, "Kmm": kmm, "Krhs": krhs, "Kaa": kaa})
+    return result
 
 
 def _native_f_to_vertex(native: np.ndarray) -> np.ndarray:
@@ -1508,8 +1540,10 @@ def run_stage2_composition_only(
     # Exhaust the already-acquired step-1 temperature record before asking
     # for step-2 operands. NEMO stores RHS accumulators; convert each one to
     # the same after-level concentration returned by the process trace.
-    tracer_stage3 = read_tracer_stage3(
-        oracle_root / "oracle_rktracer_stage3_kt00000001.bin")
+    tracer_stage3 = read_tracer_stage3_hires(
+        oracle_root / "oracle_rktracer_stage3_kt00000001.bin",
+        dims=NEMO_DIMS,
+    )
     trace = run_model(tracer_process_trace=())
     b0, badv, bsbc, bqsr, bldf, bpre = trace.boundaries
     rbb = np.float64(1.0) + tracer_stage3["r3t_Kbb"]

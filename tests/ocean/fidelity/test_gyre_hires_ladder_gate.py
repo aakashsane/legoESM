@@ -380,3 +380,24 @@ def test_stage2_composition_reader_separates_raw_and_post_mean(tmp_path):
     assert record["raw_Kaa_u"].shape == (2, 2, 3)
     assert record["post_mean_Kaa_v"].shape == (2, 2, 3)
     assert not np.array_equal(record["raw_Kaa_u"], record["post_mean_Kaa_u"])
+
+
+def test_stage3_tracer_reader_accepts_selected_resolution(tmp_path):
+    dims = (6, 6, 3)
+    n3 = int(np.prod(dims))
+    n2 = dims[0] * dims[1]
+    payload = np.arange(16 * n3 + 3 * n2, dtype=np.float64)
+    path = tmp_path / "oracle_rktracer_stage3_kt00000001.bin"
+    with path.open("wb") as stream:
+        stream.write(b"NEMO_L2_RKTR3_1 ")
+        stream.write(struct.pack(
+            "=11i", 1, 1, 3, 1, 2, 3, 3, *dims, 64))
+        payload.tofile(stream)
+    record = GATE.read_tracer_stage3_hires(path, dims=dims)
+    assert record["after_qsr_T"].shape == (2, 2, 3)
+    assert record["r3t_Kaa"].shape == (2, 2)
+
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(path.read_bytes()[:-8])
+    with pytest.raises(ValueError, match="payload"):
+        GATE.read_tracer_stage3_hires(bad, dims=dims)

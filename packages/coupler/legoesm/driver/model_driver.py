@@ -6971,7 +6971,8 @@ class ModelDriver:
                 "eddy kinetic energy within a day.  Run single-process "
                 "(one device, or the lat-band enable_latlon_spmd lanes).")
         from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
-            LatLonFaceWindState, hydrostatic_to_facewind,
+            LatLonFaceWindState, facewind_to_hydrostatic,
+            hydrostatic_to_facewind,
         )
         aux = self._carry_aux if isinstance(self._carry_aux, dict) else {}
         faces = [aux.pop(k, None) for k in self._FACE_WIND_KEYS]
@@ -6996,6 +6997,18 @@ class ModelDriver:
             lifted = lifted._replace(
                 u_f=lifted.u_f.replace(data=u_f.astype(dt_)),
                 v_f=lifted.v_f.replace(data=v_f.astype(dt_)))
+            # The checkpoint's cell-centre winds were written as the average
+            # of these faces; anything else means faces from another state.
+            view = facewind_to_hydrostatic(lifted, self.grid)
+            for name in ("u", "v"):
+                a = np.asarray(getattr(view, name).data, np.float64)
+                b = np.asarray(getattr(self.state, name).data, np.float64)
+                err = float(np.abs(a - b).max())
+                if not err <= 1e-5 * (1.0 + float(np.abs(b).max())):
+                    raise ValueError(
+                        f"checkpoint face winds do not average to its "
+                        f"cell-centre {name} (max diff {err:.3g} m/s): they "
+                        "belong to a different state")
         elif getattr(self, "_loaded_checkpoint_step_day", None) is not None:
             logger.warning(
                 "restart checkpoint has no saved face winds (a zarr "

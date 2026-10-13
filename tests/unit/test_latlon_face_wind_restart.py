@@ -118,6 +118,18 @@ def test_zarr_restart_lifts_face_winds_with_a_warning(tmp_path, caplog):
     assert np.abs(_winds(z1)[0] - _winds(d)[0]).max() > 0.0
 
 
+def test_faces_from_another_state_are_refused(leg1):
+    tmp, b1, ckpt = leg1
+    with np.load(ckpt, allow_pickle=True) as z:
+        data = {k: z[k] for k in z.keys()}
+    key = next(k for k in data if "latlon_u_face" in k)
+    data[key] = data[key] * 1.1
+    bad = tmp / "bad_checkpoint_day_0001.npz"
+    np.savez(bad, **data)
+    with pytest.raises(ValueError, match="do not average"):
+        _resume(tmp, str(bad), "leg2_bad")
+
+
 def test_unsupported_lanes_refuse(tmp_path):
     ens = ModelDriver(_cfg(tmp_path / "ens", 1, ensemble_size=2))
     ens.setup()

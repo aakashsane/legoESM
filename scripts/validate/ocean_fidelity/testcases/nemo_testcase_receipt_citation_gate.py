@@ -1430,7 +1430,7 @@ CITATION_MAP = {
         '!- horizontal transport (zFu,zFv) -!',
         'zFw(ji,jj,jk) = e1e2t(ji,jj) * ww(ji,jj,jk)', 43],
     'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:453-476': [
-        '!* Update or Compute (VIF) advective transport',
+        ('!* Update or Compute (VIF) advective transport', 2),
         'CALL tra_sbc_RK3( kstp, Kbb, Kmm,      ts, Krhs,                kstg )',
         24],
     'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:604-634': [

@@ -1651,6 +1651,131 @@ def run_stage2_composition_only(
     return report
 
 
+def run_stage3_geometry_only(
+    oracle_root: Path, output: Path, *, math_flavour: str = "scalar",
+) -> dict:
+    """Split the first stage-3 temperature boundary into inputs/composition."""
+    import jax
+    from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        LatLonCGridOceanModel,
+        _NEMOWSRK3TestHooks,
+    )
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        GYRE_R4_NAMELIST,
+        build_nemo_testcase_card,
+        gyre_surface_forcings,
+    )
+    from legoesm.ocean.fidelity.provenance import worktree_stamp
+
+    if jax.default_backend() != "cpu":
+        raise RuntimeError("quarter-degree geometry gate requires CPU")
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    admission = admit_oracle("r4", math_flavour, oracle_root)
+    card = build_nemo_testcase_card(
+        "GYRE-zco",
+        namelist=GYRE_R4_NAMELIST._replace(
+            nn_itend=10, nn_stock=10, nn_write=10),
+    )
+    state = card.recipe.initial_state
+    freshwater, surface = gyre_surface_forcings(card, state, 1)
+    model = LatLonCGridOceanModel(
+        card.recipe.grid,
+        card.recipe.z_coord,
+        card.recipe.model_config,
+        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(tracer_process_trace=()),
+    )
+    trace = model.step(
+        state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+    trace = jax.tree_util.tree_map(
+        lambda leaf: np.asarray(leaf)
+        if isinstance(leaf, jax.Array) else leaf,
+        trace,
+    )
+    oracle = read_tracer_stage3_hires(
+        oracle_root / "oracle_rktracer_stage3_kt00000001.bin",
+        dims=NEMO_DIMS,
+    )
+    masks = expected_masks(card)
+    mask3 = masks["T"]
+    mask2 = np.any(mask3, axis=-1)
+    tbb = np.asarray(trace.Tbb)[..., :30]
+    qbb = np.asarray(trace.q_Kbb)
+    qmm = np.asarray(trace.q_Kmm)
+    qaa = np.asarray(trace.q_Kaa)
+    oracle_tbb = oracle["Kbb_T"][..., :30]
+    oracle_qbb = np.float64(1.0) + oracle["r3t_Kbb"]
+    oracle_qmm = np.float64(1.0) + oracle["r3t_Kmm"]
+    oracle_qaa = np.float64(1.0) + oracle["r3t_Kaa"]
+    operand_rows = [
+        exact_score("stage3.geometry.Tbb", oracle_tbb, tbb, mask3),
+        exact_score("stage3.geometry.q_Kbb", oracle_qbb, qbb, mask2),
+        exact_score("stage3.geometry.q_Kmm", oracle_qmm, qmm, mask2),
+        exact_score("stage3.geometry.q_Kaa", oracle_qaa, qaa, mask2),
+    ]
+    oracle_geometry = (
+        oracle_qbb[..., None] * oracle_tbb / oracle_qaa[..., None])
+    literal_ratio = qbb[..., None] * tbb / qaa[..., None]
+    e3t_0 = np.asarray(card.recipe.z_coord.nemo_e3t_0)[..., :30]
+    thickness_association = (
+        (e3t_0 * qbb[..., None]) * tbb
+        / (e3t_0 * qaa[..., None]))
+    production_geometry = np.asarray(trace.boundaries[0])[..., :30]
+    composition_rows = [
+        exact_score(
+            "stage3.geometry.literal_ratio_replay",
+            oracle_geometry, literal_ratio, mask3),
+        exact_score(
+            "stage3.geometry.production_reference_thickness",
+            oracle_geometry, production_geometry, mask3),
+        exact_score(
+            "stage3.geometry.reference_thickness_reconstruction",
+            production_geometry, thickness_association, mask3),
+    ]
+    planted_qbb = np.array(qbb, copy=True)
+    plant_index = tuple(int(value) for value in np.argwhere(mask2)[0])
+    planted_qbb[plant_index] = np.nextafter(
+        planted_qbb[plant_index], np.inf)
+    planted_literal = planted_qbb[..., None] * tbb / qaa[..., None]
+    plant = exact_score(
+        "control.one_ulp.q_Kbb_replay",
+        literal_ratio, planted_literal, mask3)
+    owner_localized = (
+        all(row["status"] == "AT-BAR" for row in operand_rows)
+        and composition_rows[0]["status"] == "AT-BAR"
+        and composition_rows[1]["status"] == "DEBT"
+        and composition_rows[2]["status"] == "AT-BAR"
+        and plant["status"] == "DEBT"
+    )
+    report = {
+        "format": "nemo-testcase-l2-gyre-r4-stage3-geometry-v1",
+        "worktree": worktree_stamp(),
+        "oracle_admission": admission,
+        "policy": "fp64/x64/cpu/libm certified",
+        "operand_rows": operand_rows,
+        "composition_rows": composition_rows,
+        "one_variable_replay": {
+            "changed_expression": (
+                "remove the algebraically cancelling e3t_0 factor from the "
+                "stage-3 Kbb-to-Kaa geometry association"
+            ),
+            "control": {
+                **plant,
+                "status": "FIRED" if plant["status"] == "DEBT" else "MISSED",
+                "index": list(plant_index),
+            },
+        },
+        "owner": (
+            "REFERENCE_THICKNESS_FLOATING_COMPOSITION"
+            if owner_localized else "OPEN"
+        ),
+        "verdict": "OWNER_LOCALIZED" if owner_localized else "DEBT",
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
+    return report
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck", choices=tuple(DEFAULT_ORACLES), default="r4")
@@ -1659,14 +1784,24 @@ def main(argv=None) -> int:
     parser.add_argument("--oracle-root", type=Path)
     parser.add_argument("--ahm-root", type=Path, default=DEFAULT_AHM_ROOT)
     parser.add_argument("--stage2-composition-only", action="store_true")
+    parser.add_argument("--stage3-geometry-only", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         admission = admit_oracle(args.deck, args.math_flavour, args.oracle_root)
+        if args.stage2_composition_only and args.stage3_geometry_only:
+            raise ValueError("choose only one narrow discriminator")
         if args.stage2_composition_only:
             if args.deck != "r4":
                 raise ValueError("stage-2 composition-only gate requires deck r4")
             report = run_stage2_composition_only(
+                Path(admission["root"]), args.output,
+                math_flavour=args.math_flavour,
+            )
+        elif args.stage3_geometry_only:
+            if args.deck != "r4":
+                raise ValueError("stage-3 geometry discriminator requires deck r4")
+            report = run_stage3_geometry_only(
                 Path(admission["root"]), args.output,
                 math_flavour=args.math_flavour,
             )
@@ -1679,7 +1814,8 @@ def main(argv=None) -> int:
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    return 0 if report["verdict"] in ("PASS", "RAW_UPDATE_AT_BAR") else 1
+    return 0 if report["verdict"] in (
+        "PASS", "RAW_UPDATE_AT_BAR", "OWNER_LOCALIZED") else 1
 
 
 if __name__ == "__main__":

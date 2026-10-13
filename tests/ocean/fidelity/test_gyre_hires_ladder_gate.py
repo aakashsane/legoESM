@@ -3,6 +3,7 @@ import struct
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = (
@@ -22,6 +23,22 @@ def test_ladder_decks_have_distinct_preregistered_oracle_roots():
         GATE.DEFAULT_ORACLES["r4_smag"])
 
 
+def test_admitted_usrdef_binary_exposes_vector_and_scalar_sin():
+    executable = GATE.DEFAULT_ORACLES["r4"] / "nemo"
+    if not executable.is_file():
+        pytest.skip("admitted r4 NEMO executable is unavailable")
+    program = GATE.compiled_usrdef_math_program(executable)
+    assert program["sha256"] == (
+        "974dc326b4f5237a0e8dfe50ba0ae8a4573507d57429fb82069ff3c20abfad41")
+    assert any(name.endswith("sin") for name in program["vector_sin_calls"])
+    assert program["scalar_sin_calls"] == ["sin"]
+
+
+def test_usrdef_math_inventory_refuses_missing_binary(tmp_path):
+    with pytest.raises(FileNotFoundError, match="admitted NEMO executable"):
+        GATE.compiled_usrdef_math_program(tmp_path / "nemo")
+
+
 def test_exact_score_one_ulp_control_fires():
     values = np.array([[0.0, 1.0], [-2.0, 3.0]], dtype=np.float64)
     mask = np.ones_like(values, dtype=bool)
@@ -32,6 +49,135 @@ def test_exact_score_one_ulp_control_fires():
     assert planted["n_unequal"] == 1
     assert planted["max_ulp"] == 1
     assert planted["ulp_at_max_abs"] == 1
+
+
+def test_wind_expression_arms_preserve_compiled_association_and_reciprocal():
+    rho = np.float64(1.0 / 1026.0)
+    stress = np.array([[-0.2, 0.0]], dtype=np.float64)
+    depth = np.array([[4194.0, 1.0]], dtype=np.float64)
+    mask = np.array([[1.0, 0.0]], dtype=np.float64)
+    current = np.array([[np.float64(1.0) / depth[0, 0], 0.0]])
+    arms = GATE.wind_expression_arms(rho, stress, current, depth, mask)
+    expected = (rho * stress[0, 0]) * (
+        mask[0, 0] / ((depth[0, 0] + 1.0) - mask[0, 0]))
+    assert arms["nemo_written"][0, 0].view(np.uint64) == expected.view(np.uint64)
+    assert (
+        arms["right_associated"][0, 0].view(np.uint64)
+        != arms["nemo_written"][0, 0].view(np.uint64)
+    )
+    assert np.array_equal(arms["stored_reciprocal"][:, 1], np.zeros(1))
+
+
+def test_smagorinsky_branch_census_is_exhaustive_and_upper_owns_final_min():
+    diagnostics = {
+        "t_lower_clamped": np.array([True, False, True, False]),
+        "t_upper_clamped": np.array([False, False, True, True]),
+        "f_lower_clamped": np.array([True, False, False]),
+        "f_upper_clamped": np.array([False, False, True]),
+    }
+    census = GATE.coefficient_branch_census(
+        diagnostics, np.ones(4, dtype=bool), np.ones(3, dtype=bool))
+    assert census["T"]["counts"] == {
+        "lower_limit": 1, "deformation": 1, "upper_limit": 2}
+    assert census["F"]["counts"] == {
+        "lower_limit": 1, "deformation": 1, "upper_limit": 1}
+    assert sum(census["T"]["fractions"].values()) == 1.0
+
+
+@pytest.mark.timeout(900)
+def test_r4_wind_grouping_does_not_explain_oracle_slow_debt():
+    import jax.numpy as jnp
+
+    from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.ocean.dynamics.latlon_cgrid_operators import (
+        compute_face_masks_3d,
+    )
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        LatLonCGridOceanModel,
+        _NEMOWSRK3TestHooks,
+    )
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        GYRE_R4_NAMELIST,
+        build_nemo_testcase_card,
+        gyre_surface_forcings,
+    )
+    from legoesm.ocean.vertical import (
+        compute_layer_thickness,
+        nemo_qco_card_mesh_operands,
+        nemo_qco_live_face_geometry_from_operands,
+    )
+
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    card = build_nemo_testcase_card(
+        "GYRE-zco", namelist=GYRE_R4_NAMELIST._replace(
+            nn_itend=1, nn_stock=1, nn_write=1))
+    state = card.recipe.initial_state
+    model = LatLonCGridOceanModel(
+        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config,
+        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+            expose_barotropic_substeps=True))
+    freshwater, surface = gyre_surface_forcings(card, state, 1)
+    trace = model.step(
+        state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+
+    dtype = state.u.data.dtype
+    h_ref = compute_layer_thickness(
+        jnp.zeros_like(state.eta.data), state.H_bathy.data,
+        card.recipe.z_coord,
+        min_water_column_m=card.recipe.model_config.min_water_column_m,
+    ).astype(dtype)
+    umask3, vmask3 = compute_face_masks_3d(
+        card.recipe.z_coord.is_active, card.recipe.grid)
+    ops = nemo_qco_card_mesh_operands(
+        h_ref, umask3.astype(dtype), vmask3.astype(dtype),
+        card.recipe.grid, dtype)
+    live = nemo_qco_live_face_geometry_from_operands(
+        state.eta.data, ops.e3u_0, ops.e3v_0, ops.umask3, ops.vmask3,
+        ops.hu_0, ops.hv_0, ops.area_t, ops.area_u, ops.area_v)
+
+    got_u = np.asarray(trace.slow_forcing_operands["wind_r1_hu"])[:, 1:]
+    got_v = np.asarray(trace.slow_forcing_operands["wind_r1_hv"])[1:, :]
+    expected_u = np.asarray(live.r1_hu)
+    expected_v = np.asarray(live.r1_hv)
+    wet_u = np.asarray(state.u_mask.data[:, 1:], dtype=bool)
+    wet_v = np.asarray(state.v_mask.data[1:, :], dtype=bool)
+    assert np.array_equal(
+        got_u[wet_u].view(np.uint64), expected_u[wet_u].view(np.uint64))
+    assert np.array_equal(
+        got_v[wet_v].view(np.uint64), expected_v[wet_v].view(np.uint64))
+
+    # At the rest state the algebraic reciprocal happens to round identically;
+    # this is measured explicitly rather than used as a non-vacuous plant.
+    old_u = np.asarray(1.0 / trace.slow_forcing_operands["H_u"])[:, 1:]
+    assert np.array_equal(
+        old_u[wet_u].view(np.uint64), expected_u[wet_u].view(np.uint64))
+
+    oracle = GATE.read_bt_substeps(
+        GATE.DEFAULT_ORACLES["r4"] / "oracle_bt_substeps_kt00000001.bin",
+        expected_dims=GATE.NEMO_DIMS[:2])
+    actual_slow = np.asarray(trace.slow_forcing[1])[:, 1:]
+    arms = GATE.wind_expression_arms(
+        trace.slow_forcing_operands["wind_r1_rho0"],
+        np.asarray(trace.slow_forcing_operands["wind_tau_u"])[:, 1:],
+        got_u,
+        np.asarray(trace.slow_forcing_operands["H_u"])[:, 1:],
+        wet_u,
+    )
+    scores = {
+        name: GATE.exact_score(name, oracle["slow_u"][0], value, wet_u)
+        for name, value in {
+            "production_slow": actual_slow,
+            "left_associated_wind": arms["nemo_written"],
+            "right_associated_wind": arms["right_associated"],
+            "reciprocal_first_wind": arms["reciprocal_first"],
+        }.items()
+    }
+    assert np.array_equal(
+        actual_slow[wet_u].view(np.uint64),
+        arms["nemo_written"][wet_u].view(np.uint64))
+    assert all(row["status"] == "DEBT" for row in scores.values())
+    assert scores["production_slow"]["n_unequal"] == 4158
+    assert scores["production_slow"]["ulp_at_max_abs"] == 2
 
 
 def test_shared_entry_reader_accepts_runtime_high_resolution_dimensions(tmp_path):

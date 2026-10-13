@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -44,6 +47,82 @@ DEFAULT_AHM_ROOT = Path(
     "round4/oracle_gyre_r4_smag_ahm/run"
 )
 FIELDS = ("T", "S", "u", "v", "ssh")
+
+
+def compiled_usrdef_math_program(executable: Path) -> dict:
+    """Inventory transcendental calls in the admitted usrdef_sbc routine."""
+    if not executable.is_file():
+        raise FileNotFoundError(f"missing admitted NEMO executable: {executable}")
+    completed = subprocess.run(
+        ["objdump", "-d", "--demangle",
+         "--disassemble=__usrdef_sbc_MOD_usrdef_sbc_oce", str(executable)],
+        check=False, text=True, capture_output=True)
+    if completed.returncode != 0:
+        raise ValueError(f"objdump failed for {executable}: {completed.stderr.strip()}")
+    calls = sorted(set(re.findall(
+        r"callq?\s+[^<]*<([^>@]+)(?:@[^>]*)?>", completed.stdout)))
+    vector_sin = [name for name in calls if "_ZGV" in name and name.endswith("sin")]
+    scalar_sin = [name for name in calls if name == "sin"]
+    if not vector_sin or not scalar_sin:
+        raise ValueError(
+            "admitted usrdef_sbc program did not expose both scalar and vector sin")
+    return {
+        "executable": str(executable),
+        "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+        "routine": "__usrdef_sbc_MOD_usrdef_sbc_oce",
+        "transcendental_calls": calls,
+        "vector_sin_calls": vector_sin,
+        "scalar_sin_calls": scalar_sin,
+    }
+
+
+def wind_expression_arms(r1_rho0, stress, current_reciprocal, depth_ref, mask):
+    """Replay the compiled ``stp2d`` wind expression and two discriminators."""
+    rho = np.float64(r1_rho0)
+    tau = np.asarray(stress, dtype=np.float64)
+    live_reciprocal = np.asarray(current_reciprocal, dtype=np.float64)
+    depth = np.asarray(depth_ref, dtype=np.float64)
+    wet = np.asarray(mask, dtype=np.float64)
+    if not (tau.shape == live_reciprocal.shape == depth.shape == wet.shape):
+        raise ValueError("wind-expression operand shape mismatch")
+    one = np.float64(1.0)
+    stored_reciprocal = wet / ((depth + one) - wet)
+    return {
+        # GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stp2d.f90:198-199.
+        "nemo_written": (rho * tau) * stored_reciprocal,
+        "right_associated": rho * (tau * stored_reciprocal),
+        "reciprocal_first": (rho * stored_reciprocal) * tau,
+        "current_reciprocal": (rho * tau) * live_reciprocal,
+        "stored_reciprocal": stored_reciprocal,
+    }
+
+
+def coefficient_branch_census(diagnostics, t_active, f_active):
+    """Classify the final max/min arm on active T and F coefficient points."""
+    result = {}
+    for point, active in (("T", t_active), ("F", f_active)):
+        wet = np.asarray(active, dtype=bool)
+        lower = np.asarray(diagnostics[f"{point.lower()}_lower_clamped"], dtype=bool)
+        upper = np.asarray(diagnostics[f"{point.lower()}_upper_clamped"], dtype=bool)
+        if wet.shape != lower.shape or lower.shape != upper.shape or not wet.any():
+            raise ValueError(f"{point}: invalid Smagorinsky branch mask")
+        # The source evaluates MIN(MAX(deformation, lower), upper), so an
+        # upper clamp owns a cell even if the intermediate MAX chose lower.
+        arms = {
+            "lower_limit": wet & lower & ~upper,
+            "deformation": wet & ~lower & ~upper,
+            "upper_limit": wet & upper,
+        }
+        count = int(np.count_nonzero(wet))
+        counts = {name: int(np.count_nonzero(mask)) for name, mask in arms.items()}
+        if sum(counts.values()) != count:
+            raise ValueError(f"{point}: Smagorinsky branch census is not exhaustive")
+        result[point] = {
+            "active_count": count,
+            "counts": counts,
+            "fractions": {name: value / count for name, value in counts.items()},
+        }
+    return result
 
 
 def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> dict:
@@ -209,6 +288,7 @@ def run(
     vertical_candidate = None
     barotropic_resolution_walk = None
     smagorinsky_coefficients = []
+    smagorinsky_branch_census = []
     smagorinsky_operator = None
     ahm_records = {}
     if deck == "r4_smag":
@@ -251,12 +331,7 @@ def run(
                     }
                 )
         steps.append({"kt": kt, "Nbb": oracle["Nbb"], "rows": rows})
-        if deck == "r4_smag" and kt in (2, 3):
-            ahm_path = ahm_root / f"oracle_ahm_kt{kt:08d}.bin"
-            if not ahm_path.is_file():
-                raise FileNotFoundError(f"ACQUISITION_NEEDED: {ahm_path}")
-            ahm = read_ahm(ahm_path, expected_kt=kt)
-            ahm_records[kt] = ahm
+        if deck == "r4_smag" and kt in (2, 3, 10):
             # Rule 12: score the changed coefficient on NEMO's own Kbb
             # velocity input, not legoESM's already-diverged trajectory.
             u_input = np.concatenate(
@@ -279,6 +354,27 @@ def run(
             )
             got_t, got_f, diagnostics = host_and_clear(
                 (got_t, got_f, diagnostics))
+            vertex_mask_host = np.asarray(coefficient_vertex_mask, dtype=bool)
+            smagorinsky_branch_census.append({
+                "kt": kt,
+                "input_time_level": "Nbb before velocity",
+                "active_definition": (
+                    "wet T cells use cell_mask; F cells use the mode-32 "
+                    "nonzero coefficient support, including free-slip walls"
+                ),
+                "branches": coefficient_branch_census(
+                    diagnostics,
+                    np.asarray(cell3, dtype=bool),
+                    np.asarray(got_f != 0.0, dtype=bool),
+                ),
+            })
+            if kt == 10:
+                continue
+            ahm_path = ahm_root / f"oracle_ahm_kt{kt:08d}.bin"
+            if not ahm_path.is_file():
+                raise FileNotFoundError(f"ACQUISITION_NEEDED: {ahm_path}")
+            ahm = read_ahm(ahm_path, expected_kt=kt)
+            ahm_records[kt] = ahm
             full_t = np.ones_like(ahm["ahmt"], dtype=bool)
             full_f = np.ones_like(ahm["ahmf"], dtype=bool)
             spatial = np.any(ahm["ahmf"] != 0.0, axis=-1)
@@ -305,8 +401,8 @@ def run(
                 "corners": np.broadcast_to(corner2[..., None], full_f.shape),
                 "outside": np.broadcast_to((~spatial)[..., None], full_f.shape),
             }
-            vertex_mask_host = np.asarray(coefficient_vertex_mask, dtype=np.float64)
-            legacy_f = got_f * vertex_mask_host
+            vertex_mask_float = np.asarray(coefficient_vertex_mask, dtype=np.float64)
+            legacy_f = got_f * vertex_mask_float
             smagorinsky_coefficients.append({
                 "kt": kt,
                 "Kbb": ahm["Kbb"],
@@ -725,6 +821,39 @@ def run(
                     ))
                 depth_only_u = np.asarray(trace.slow_forcing_operands["depth_u"])[:, 1:]
                 depth_only_v = np.asarray(trace.slow_forcing_operands["depth_v"])[1:, :]
+                operand_u = trace.slow_forcing_operands
+                wind_arms = {}
+                for face, native, active in (
+                    ("u", lambda value: np.asarray(value)[:, 1:], masks["u"][..., 0]),
+                    ("v", lambda value: np.asarray(value)[1:, :], masks["v"][..., 0]),
+                ):
+                    arms = wind_expression_arms(
+                        operand_u["wind_r1_rho0"],
+                        native(operand_u[f"wind_tau_{face}"]),
+                        native(operand_u[f"wind_r1_h{face}"]),
+                        native(operand_u[f"H_{face}"]),
+                        active,
+                    )
+                    wind_arms[face] = {
+                        name: exact_score(
+                            f"{case}.kt1.wind.{face}.{name}",
+                            bt_oracle[f"slow_{face}"][0], value, active,
+                        )
+                        for name, value in arms.items()
+                        if name != "stored_reciprocal"
+                    }
+                    production_slow = native(
+                        trace.slow_forcing[1 if face == "u" else 2])
+                    wind_arms[face]["production_slow"] = exact_score(
+                        f"{case}.kt1.wind.{face}.production_slow",
+                        bt_oracle[f"slow_{face}"][0], production_slow, active)
+                    wind_arms[face]["reciprocal"] = exact_score(
+                        f"{case}.kt1.wind.{face}.stored_vs_current_reciprocal",
+                        arms["stored_reciprocal"],
+                        native(operand_u[f"wind_r1_h{face}"]),
+                        active,
+                    )
+                math_program = compiled_usrdef_math_program(oracle_root / "nemo")
                 barotropic_resolution_walk = {
                     "first_difference": first,
                     "term": (
@@ -732,14 +861,19 @@ def run(
                         "inside frozen Ue_rhs/Ve_rhs before dynspg_ts substep 1"
                     ),
                     "raw_operand_ownership": (
-                        "UNMEASURED: the existing record stores only the composite "
-                        "slow_u/slow_v, not utau or r1_hu_0 separately"
+                        "UPSTREAM_TAU_POLICY: production slow equals the reconstructed "
+                        "left-associated scalar-libm composite, but all three product "
+                        "associations remain in debt to NEMO; r1rho and the rest-state "
+                        "stored/current depth reciprocals are bit-identical, while the "
+                        "admitted usrdef_sbc routine calls GNU vector sin"
                     ),
                     "rest_state_discriminator": {
                         "depth_only_u_max_abs": float(np.max(np.abs(depth_only_u))),
                         "depth_only_v_max_abs": float(np.max(np.abs(depth_only_v))),
                         "oracle_slow_override_rows": control_rows,
                     },
+                    "wind_expression_discriminator": wind_arms,
+                    "compiled_usrdef_math_program": math_program,
                     "arithmetic": {
                         "rn_Dt_s": card.dt_s,
                         "nn_e": card.recipe.model_config.barotropic.n_barotropic_substeps,
@@ -779,6 +913,7 @@ def run(
         "vertical_candidate": vertical_candidate,
         "barotropic_resolution_walk": barotropic_resolution_walk,
         "smagorinsky_coefficients": smagorinsky_coefficients,
+        "smagorinsky_branch_census": smagorinsky_branch_census,
         "smagorinsky_operator": smagorinsky_operator,
         "controls": controls,
         "verdict": "PASS" if passed else "DEBT",

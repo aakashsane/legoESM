@@ -119,3 +119,64 @@ def test_ahm_operator_recipes_pin_components_registration_inputs_and_one_rank():
     result = _bash(f"RANKS=8 bash {TOOL / 'run_ahm.sh'}")
     assert result.returncode == 64
     assert "REFUSE_RANKS" in result.stderr
+
+
+def test_daily_writer_patch_selects_exact_day_boundaries(tmp_path):
+    source = Path(
+        "/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2/"
+        "cfgs/GYRE_OMIP_L2_P3/MY_SRC/stprk3.F90"
+    )
+    if not source.is_file():
+        import pytest
+        pytest.skip("local NEMO P3 writer source is unavailable")
+    shutil.copy(source, tmp_path / "stprk3.F90")
+    with (TOOL / "gyre_p3_daily_writer.patch").open("rb") as patch:
+        result = subprocess.run(
+            ["patch", "-s", "--fuzz=0", "-d", str(tmp_path), "-p1"],
+            stdin=patch, check=False, capture_output=True)
+    assert result.returncode == 0, result.stderr.decode()
+    text = (tmp_path / "stprk3.F90").read_text()
+    assert "kstp <= nit000 + 720" in text
+    assert "MOD( kstp - nit000, 24 ) == 0" in text
+    assert "LANE1_STEP_ENTRY_DUMP" in text
+
+
+def test_daily_duration_patch_is_exact_r4_smag_extension(tmp_path):
+    target = tmp_path / "namelist_cfg"
+    shutil.copy(TOOL.parent / "configs/gyre_omip_l2_phase3_namelist_cfg", target)
+    for patch_name in (
+        "namelist_cfg_r4_smag_kt10.patch",
+        "namelist_cfg_r4_smag_30d.patch",
+    ):
+        with (TOOL / patch_name).open("rb") as patch:
+            result = subprocess.run(
+                ["patch", "-s", "--fuzz=0", str(target)], stdin=patch,
+                check=False, capture_output=True)
+        assert result.returncode == 0, result.stderr.decode()
+    text = target.read_text()
+    assert 'cn_exp      =  "GYRE_OMIP_L2_P3_R4_SMAG_30D"' in text
+    assert "nn_itend    =     721" in text
+    assert "nn_stock    =     721" in text
+    assert "nn_write    =      24" in text
+    assert "nn_GYRE     =     4" in text
+    assert "nn_ahm_ijk_t  = 32" in text
+
+
+def test_daily_operator_recipes_pin_components_registration_and_one_rank():
+    build = (TOOL / "build_daily_writer.sh").read_text()
+    run = (TOOL / "run_daily.sh").read_text()
+    assert '-d "OCE"' in build
+    assert "work_cfgs.txt" in build and "printf '%s OCE" in build
+    assert "GYRE_OMIP_L2_P3/EXP00" in run
+    assert "RANKS=${RANKS:-1}" in run
+    assert "RANKS must be 1" in run
+    assert "rg " not in build and "rg " not in run
+
+
+def test_daily_writer_builder_read_only_preflight_applies_pinned_patch():
+    result = subprocess.run(
+        ["bash", str(TOOL / "build_daily_writer.sh")],
+        check=False, text=True, capture_output=True, cwd=ROOT)
+    assert result.returncode == 0, result.stderr
+    assert "GYRE_OMIP_L2_P3_DAILY" in result.stdout
+    assert "PREFLIGHT_OK" in result.stdout

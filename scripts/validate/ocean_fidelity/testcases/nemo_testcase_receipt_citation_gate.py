@@ -98,6 +98,14 @@ FILES = {
     # cannot bind to one of the _SM_ probe builds.
     "GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90"),
+    "GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3.f90"),
+    "GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stp2d.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stp2d.f90"),
+    "GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/usrdef_sbc.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/usrdef_sbc.f90"),
+    "GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/sbcmod.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/sbcmod.f90"),
     "stp2d.F90": _OCE / "stp2d.F90",
     "oce.F90": _OCE / "oce.F90",
     "DOM/istate.F90": _OCE / "DOM/istate.F90",
@@ -1395,6 +1403,22 @@ FILES = {
 # recurring symbol is refused now, and every multi-line citation states its
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
+    # --- GYRE high-resolution round 6: first r4 external-mode owner ---
+    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3.f90:182-190': [
+        'IF( l_ldfdyn_time                    )   CALL ldf_dyn( kstp, Nbb )',
+        'CALL stp_2D( kstp, Nbb, Nbb, Naa, Nrhs )', 9],
+    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stp2d.f90:174-199': [
+        'Ue_rhs(ji,jj) = SUM( e3u_3d(ji,jj,1:jpkm1)*uu(ji,jj,1:jpkm1,Krhs)*umask(ji,jj,1:jpkm1) ) * r1_hu_0(ji,jj)',
+        'Ve_rhs(ji,jj) =  Ve_rhs(ji,jj) + r1_rho0 * vtauV(ji,jj) * (r1_hv_0(ji,jj) /(1._wp+r3v(ji,jj,Kbb)))',
+        26],
+    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/usrdef_sbc.f90:176-191': [
+        'ztime = REAL( kt, wp ) * rn_Dt / (rmmss * rhhmm)',
+        'vtau(ji,jj) =   ztaun * SIN( rpi * (gphit(ji,jj) - 15.) / (29.-15.) )',
+        16],
+    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/sbcmod.f90:550-559': [
+        "CALL lbc_lnk( 'sbcmod', utau, 'T', -1.0_wp, vtau  , 'T', -1.0_wp, emp, 'T', 1.0_wp, qns, 'T',  1.0_wp, ldfull=.TRUE. )",
+        '&                      ( 2. - vmask(ji,jj,1) ) * MAX( tmask(ji,jj,1), tmask(ji,jj+1,1) )',
+        10],
     # --- GYRE high-resolution round 1: grid and forcing dependencies ---
     'cfgs/GYRE_OMIP_L2/WORK/usrdef_nam.F90:64-80': [
         'NAMELIST/namusr_def/ nn_GYRE, ln_bench, jpkglo',

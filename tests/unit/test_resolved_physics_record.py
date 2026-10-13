@@ -544,9 +544,9 @@ def test_run_tells_the_record_whether_conv_precip_reaches_radiation(
     seen = []
     real = ModelDriver._record_pipeline_physics
 
-    def spy(self, pipeline, conv_precip_threaded=True):
+    def spy(self, pipeline, conv_precip_threaded=True, **kw):
         seen.append(conv_precip_threaded)
-        return real(self, pipeline, conv_precip_threaded)
+        return real(self, pipeline, conv_precip_threaded, **kw)
     monkeypatch.setattr(ModelDriver, "_record_pipeline_physics", spy)
     cfg = ExperimentConfig(
         grid=GridConfig(grid_type="cubed_sphere", resolution=4, nlev=5),
@@ -597,3 +597,22 @@ def test_reproduce_reruns_the_rollout_and_reapplies_post_setup_schemes(
     _reproduce(ref, tmp_path / "rerun")
     assert "MATCH" in caplog.text
     assert seen == [compiled]
+
+
+def test_reproduce_refuses_an_unreplayable_pipeline_scheme(
+        tmp_path: Path, monkeypatch, caplog) -> None:
+    """A recorded pipeline scheme that cannot be rebuilt (e.g. an array leaf
+    stored only as a digest) is a clean refusal, not a traceback."""
+    from legoesm.driver.model_driver import ModelDriver
+    monkeypatch.setattr(ModelDriver, "setup", lambda self: None)
+    path = write_run_manifest(tmp_path, ExperimentConfig())
+    m = json.loads(path.read_text())
+    m["config"]["resolved_physics"] = {k: None for k in RESOLVED_PHYSICS_KEYS}
+    m["config"]["resolved_physics"].update(
+        rollout="compiled", turbulence={"__array_summary__": {}})
+    path.write_text(json.dumps(m))
+    caplog.set_level(logging.INFO)
+    with pytest.raises(SystemExit) as exc:
+        _reproduce(tmp_path, tmp_path / "out")
+    assert exc.value.code == 2
+    assert "cannot reapply the recorded pipeline schemes" in caplog.text

@@ -336,7 +336,12 @@ def cmd_reproduce(args):
         # reapply the scheme configs a driver replaced after setup.
         rollout = recorded_physics["rollout"]
         if rollout is not None:
-            driver.apply_recorded_pipeline_physics(recorded_physics)
+            try:
+                driver.apply_recorded_pipeline_physics(recorded_physics)
+            except (ValueError, TypeError, AttributeError, ImportError) as exc:
+                logger.error(f"Refusing to reproduce: cannot reapply the "
+                             f"recorded pipeline schemes: {exc}")
+                sys.exit(2)
         status = driver.run(compiled=rollout != "per_step")
         logger.info(f"  Rerun status: {status}")
         rc = status_to_exit_code(status)

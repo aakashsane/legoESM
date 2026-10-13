@@ -3152,6 +3152,22 @@ class ExperimentConfig(NamedTuple):
                     f"physics_update_steps={_pus} (>= it) so radiation is "
                     "recomputed on physics steps; a held-physics step cannot "
                     "solve radiation")
+        # R-ex (D-REX-1): the column loop does not checkpoint the held
+        # radiation fluxes, so every checkpoint must sit on a radiation
+        # boundary -- the checkpoint cadence is an integer multiple of the
+        # radiation cadence (the run loop refuses a restart anywhere else).
+        _rus_ck = self.rad_update_steps
+        _ck_days = self.output.checkpoint_days
+        if (_is_mpas and isinstance(_rus_ck, int) and _rus_ck > 1
+                and _ck_days and _ck_days > 0 and self.dycore.dt > 0):
+            _ck_steps = _ck_days * 86400.0 / self.dycore.dt
+            if _ck_steps % _rus_ck != 0:
+                errors.append(
+                    f"checkpoint_days={_ck_days} ({_ck_steps:g} steps at "
+                    f"dt={self.dycore.dt:g} s) is not an integer multiple of "
+                    f"rad_update_steps={_rus_ck}: the held radiation fluxes "
+                    "are not checkpointed, so every checkpoint must sit on a "
+                    "radiation boundary")
         _nmm = self.cld_macmic_num_steps
         if not isinstance(_nmm, int) or isinstance(_nmm, bool) or _nmm < 1:
             errors.append(

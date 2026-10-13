@@ -539,7 +539,12 @@ class FV3DuoColumnModel:
             # slot-wise merge as the MPAS model does: sw/lw refresh only
             # on a radiation step, precip every step -- keep the last
             # non-None value per slot
-            prev = self._sfc_diag or (None,) * len(sfc_diag)
+            prev = self._sfc_diag or ()
+            # pad the shorter tuple (as the MPAS model does): a zip would
+            # TRUNCATE to the shorter one and silently drop held slots
+            n = max(len(sfc_diag), len(prev))
+            prev = prev + (None,) * (n - len(prev))
+            sfc_diag = sfc_diag + (None,) * (n - len(sfc_diag))
             self._sfc_diag = tuple(
                 new if new is not None else old
                 for new, old in zip(sfc_diag, prev))

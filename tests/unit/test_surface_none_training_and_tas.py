@@ -44,6 +44,20 @@ def test_none_prescribes_zero_surface_exchange_for_every_scheme(turb):
     assert getattr(ref.turbulence, turb).surface.prescribed_shflx_w_m2 is None
 
 
+def test_none_survives_the_spatial_surface_path():
+    from tests.unit.test_aimip_surface_bulk_scheme import (
+        _assemble_physics_config)
+    from legoesm.grids.gaussian import create_gaussian_grid
+    from legoesm.training.aimip_params import AIMIPClassicalParams
+    grid = create_gaussian_grid(11, dealiasing="quadratic")
+    cfg = _assemble_physics_config(
+        AIMIPClassicalParams.from_defaults(spatial_surface=True), grid,
+        turbulence_scheme="louis", surface_bulk_scheme="none",
+        land_mask=jnp.ones((grid.n_lat, grid.n_lon)))
+    for name in _ZERO_PRESCRIBED:
+        assert getattr(cfg.turbulence.louis.surface, name) == 0.0, name
+
+
 @pytest.mark.parametrize("turb", ["mynn25", "clubb"])
 def test_none_reaches_schemes_spectral_physics_refuses(turb, monkeypatch):
     """mynn25 / clubb: the spectral make_physics refuses them, so stop the

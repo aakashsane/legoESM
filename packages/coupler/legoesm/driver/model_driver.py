@@ -2256,6 +2256,14 @@ class ModelDriver:
         self._create_grid()
         self._create_topography()
         self._create_dycore()
+        # D-REX-1 on the EFFECTIVE timestep: _create_dycore may have clamped
+        # dt (CFL / factory), and checkpoint-radiation alignment is a
+        # property of the steps the run actually takes.  Config-only, so
+        # every rank raises alike.
+        from legoesm.driver.config import checkpoint_radiation_cadence_error
+        _ck_rad_err = checkpoint_radiation_cadence_error(self.config)
+        if _ck_rad_err is not None:
+            raise ValueError(_ck_rad_err)
         self._create_forcing()
         self._init_state()
         self._create_ensemble()

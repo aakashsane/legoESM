@@ -131,6 +131,13 @@ def test_swg_card_requires_the_explicit_constant_ldf_dispatch(card, field, value
         validate_nemo_testcase_card(bad)
 
 
+def test_swg_card_requires_libm_certification_transcendentals(card):
+    validate_nemo_testcase_card(card)
+    bad = card._replace(transcendentals="native")
+    with pytest.raises(ValueError, match="scalar-libm certification"):
+        validate_nemo_testcase_card(bad)
+
+
 def test_ens_vorticity_config_has_no_mask_default():
     from legoesm.ocean.state import ENSVorticityConfig
 

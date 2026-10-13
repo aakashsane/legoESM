@@ -4295,6 +4295,12 @@ _validate_pre_swg_testcase_card = validate_nemo_testcase_card
 
 def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
     if card.case == "SWG-zco":
+        # The SWG branch returns before the legacy validator, so the
+        # certification-policy precondition every card shares is restated here.
+        if card.transcendentals != "libm":
+            raise ValueError(
+                f"{card.case} requires scalar-libm certification "
+                f"transcendentals, got {card.transcendentals!r}")
         _validate_swg_card(card)
         return
     _validate_pre_swg_testcase_card(card)

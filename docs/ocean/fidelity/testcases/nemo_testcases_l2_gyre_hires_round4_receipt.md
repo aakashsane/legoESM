@@ -1,7 +1,7 @@
 # NEMO testcase L2 GYRE high-resolution round 4 receipt
 
-**Date:** 2026-10-13  
-**Incoming tip:** `be90847c4`  
+**Date:** 2026-10-13
+**Incoming tip:** `be90847c4`
 **Disposition:** **HELD for one operator acquisition; no physics changed**
 
 ## Verdict

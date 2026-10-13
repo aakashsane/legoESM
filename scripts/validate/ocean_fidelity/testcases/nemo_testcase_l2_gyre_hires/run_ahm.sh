@@ -26,7 +26,7 @@ for path in "$BASE_DECK" "$DECK_PATCH" "$WRITER" "$EXP00/namelist_ref" \
   [[ -f $path ]] || { printf 'REFUSE_MISSING_INPUT: %s\n' "$path" >&2; exit 67; }
 done
 [[ $(sha256sum "$SOURCE_CFG/MY_SRC/stprk3.F90" | awk '{print $1}') == b2b73a7899dfd06c9eaf8106d0c332d0d51f93a3e8bad1c44b2d58353caa6a9a \
-   && $(sha256sum "$SOURCE_CFG/MY_SRC/stprk3_stg.F90" | awk '{print $1}') == 1c62190a2e1c2d9e28929adfc7ff2458305c2700c7c85293263e6db8fa12f5ca ]] || {
+   && $(sha256sum "$SOURCE_CFG/MY_SRC/stprk3_stg.F90" | awk '{print $1}') == f65546e500ccd0b4d84e9641eeeb11d7e9160fe36a1339c1a2426425322d07e7 ]] || {
   printf 'REFUSE_WRITER_SOURCE: AHM sources differ\n' >&2; exit 68; }
 for token in NEMO_L4_AHMTF__1 NEMO_L4_DYNLDF_1; do
   rg -q "$token" "$SOURCE_CFG/BLD/ppsrc/nemo/stprk3.f90" \

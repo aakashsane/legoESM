@@ -66,6 +66,7 @@ _ATMOSPHERE_KEYS: frozenset[str] = frozenset({
     "time_integrator",
     "dt_seconds",
     "hyperdiff_scale",
+    "persistent_dgrid",
     # Live LOWEST-precedence fallback for the radiation scheme, behind the
     # top-level ``radiation.scheme`` block and ``physics.radiation``.  It is
     # mapped (unlike the retired keys), so it must be allowed -- omitting it
@@ -396,6 +397,12 @@ class Config:
                 f"time.output_interval_hours must be > 0, got {_out_h!r}; "
                 "it sets the diagnostic output cadence.")
 
+        _pdgrid = atm.get("persistent_dgrid", False)
+        if not isinstance(_pdgrid, bool):
+            raise ValueError(
+                "atmosphere.persistent_dgrid must be true or false, got "
+                f"{_pdgrid!r}")
+
         canonical = {
             "grid": {
                 "grid_type": grid.get("type", "cubed_sphere"),
@@ -427,6 +434,9 @@ class Config:
                 # and then silently discarded the answer.  "auto" resolves
                 # grid-aware in the driver factory.
                 "time_integrator": atm.get("time_integrator", "auto"),
+                # Cube winds stay in D staggering between steps (#1028); every
+                # other lane refuses it at run start rather than run damped.
+                "persistent_dgrid": _pdgrid,
             },
             "output": {
                 "output_dir": output_cfg.get("path", ""),

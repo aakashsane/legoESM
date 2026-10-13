@@ -1270,6 +1270,12 @@ FILES = {
     # cited by those receipts), the shared LBC template, and the bridge. ---
     "cfgs/DINO/BLD/ppsrc/nemo/nemogcm.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/nemogcm.f90",
     "cfgs/DINO/BLD/ppsrc/nemo/dynspg_ts.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/dynspg_ts.f90",
+    "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90"),
+    "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90"),
+    "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90"),
     "nemogcm.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/nemogcm.f90",
     "dynspg_ts.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/dynspg_ts.f90",
     "lbclnk.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/lbclnk.f90",
@@ -1405,6 +1411,25 @@ CITATION_MAP = {
     'cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90:161-176': [
         'ztime = REAL( kt, wp ) * rn_Dt / (rmmss * rhhmm)',
         'vtau(ji,jj) =   ztaun * SIN( rpi * (gphit(ji,jj) - 15.) / (29.-15.) )', 16],
+    # --- GYRE high-resolution round 2: mode-32 Smagorinsky bilaplacian ---
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90:368-380': [
+        'CASE(  32  )       !==  time varying 3D field  ==!',
+        'esqf(ji,jj) = ( 2._wp * e1e2f(ji,jj) / ( e1f(ji,jj) + e2f(ji,jj) ) )**2', 13],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90:462-529': [
+        'CASE(  32  )       !==  time varying 3D field  ==!   = F( local deformation rate and gridscale ) (Smagorinsky)',
+        'ahmf(ji,jj,jk) = SQRT( r1_8 * esqf(ji,jj) * ahmf(ji,jj,jk) )', 68],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:159-183': [
+        'CALL eos_rab( ts(:,:,:,:,Nbb), rab_b, Nbb )',
+        'IF( l_ldfdyn_time                    )   CALL ldf_dyn( kstp, Nbb )', 25],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90:218-229': [
+        'SUBROUTINE dynldf_lev_blp( kt, Kbb, Kmm, pu, pv, Krhs )',
+        '!! ** Action :   pt(:,:,:,:,Krhs)   updated with the before rotated bilaplacian diffusion', 12],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90:271-290': [
+        'DO jj = ntsj-( 1), ntej+(  1+1 ) ; DO ji = ntsi-( 1), ntei+(  1+1)',
+        '&              + ( zwt(ji,jj+1) - zwt(ji  ,jj) ) * r1_e2v(ji,jj)                      )', 20],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90:311-330': [
+        'DO jj = ntsj-( 0), ntej+(  0+1 ) ; DO ji = ntsi-( 0), ntei+(  0+1)',
+        '&              + ( zwt(ji,jj+1) - zwt(ji  ,jj) ) * r1_e2v(ji,jj)                      )', 20],
     # --- GYRE gradient-gate round 6: exact program and oracle statements ---
     'nemo_testcase_recipe.py:3582': 'def build_nemo_testcase_card(',
     'ocean_model_latlon_cgrid.py:13219': 'def _step_jitted(',

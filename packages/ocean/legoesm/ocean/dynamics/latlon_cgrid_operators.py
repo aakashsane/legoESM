@@ -1931,8 +1931,8 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
     """
     if is_tripolar(grid):
         raise ValueError("NEMO Smagorinsky mode 32 is not implemented on tripolar grids")
-    if c_smag <= 0.0 or dt_s <= 0.0:
-        raise ValueError("NEMO Smagorinsky requires positive rn_csmc and rn_Dt")
+    if c_smag <= 0.0:
+        raise ValueError("NEMO Smagorinsky requires positive rn_csmc")
     if minfac < 0.0 or maxfac <= 0.0:
         raise ValueError("NEMO Smagorinsky requires rn_minfac>=0 and rn_maxfac>0")
     is_3d = u.ndim == 3

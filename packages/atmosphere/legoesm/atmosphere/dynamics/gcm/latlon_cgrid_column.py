@@ -105,11 +105,11 @@ class LatLonCGridColumnModel:
     # layouts
     # ------------------------------------------------------------------
 
-    def _cols(self, a):
+    def columns_of(self, a):
         """``(n_lat, n_lon[, k])`` -> ``(n_lat * n_lon[, k])``."""
         return jnp.reshape(a, (self.n_lat * self.n_lon,) + tuple(a.shape[2:]))
 
-    def _grid2d(self, a):
+    def grid_of(self, a):
         """``(n_lat * n_lon[, k])`` -> ``(n_lat, n_lon[, k])``."""
         return jnp.reshape(a, (self.n_lat, self.n_lon) + tuple(a.shape[1:]))
 
@@ -117,7 +117,7 @@ class LatLonCGridColumnModel:
         """A gridded ``HydrostaticState`` as columns."""
         def f(x):
             return (None if x is None
-                    else x.replace(data=self._cols(x.data), dims=()))
+                    else x.replace(data=self.columns_of(x.data), dims=()))
         tr = (None if hs.tracers is None
               else {k: f(v) for k, v in hs.tracers.items()})
         return LatLonColumnState(u=f(hs.u), T=f(hs.T), p_s=f(hs.p_s),
@@ -129,7 +129,7 @@ class LatLonCGridColumnModel:
         dycore's increment applier reads)."""
         def g(x):
             return (None if x is None
-                    else x.replace(data=self._grid2d(x.data), dims=()))
+                    else x.replace(data=self.grid_of(x.data), dims=()))
         if tend.dv_dt is None:
             raise ValueError(
                 "LatLonCGridColumnModel: physics returned dv_dt=None; the "
@@ -139,8 +139,11 @@ class LatLonCGridColumnModel:
                      name="dp_s_dt", units="Pa/s"))
         tt = (None if tend.tracer_tendencies is None
               else {k: g(v) for k, v in tend.tracer_tendencies.items()})
+        # the surface diagnostics (sw/lw/precip/...) stay column-shaped:
+        # the column loop reads them off ``_sfc_diag``, not the dycore
         return tend._replace(du_dt=g(tend.du_dt), dv_dt=g(tend.dv_dt),
                              dT_dt=g(tend.dT_dt), dp_s_dt=g(dps),
+                             dphis_dt=g(tend.dphis_dt),
                              tracer_tendencies=tt)
 
     def _view(self, native):
@@ -195,7 +198,7 @@ class LatLonCGridColumnModel:
         native = state.native
         if state.T is last.T and state.tracers is last.tracers:
             return native
-        T = native.T if state.T is last.T else self._grid2d(state.T.data)
+        T = native.T if state.T is last.T else self.grid_of(state.T.data)
         tracers = dict(native.tracers)
         if state.tracers is not last.tracers:
             if set(state.tracers) != set(native.tracers):
@@ -205,7 +208,7 @@ class LatLonCGridColumnModel:
                     f"{sorted(native.tracers)}")
             for nm in native.tracers:
                 if state.tracers[nm] is not last.tracers[nm]:
-                    tracers[nm] = self._grid2d(state.tracers[nm].data)
+                    tracers[nm] = self.grid_of(state.tracers[nm].data)
         return native._replace(T=T, tracers=tracers)
 
     def _anchor(self, native):

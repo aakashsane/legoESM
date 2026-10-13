@@ -2202,6 +2202,11 @@ class ExperimentConfig(NamedTuple):
                 # lat-lon form); the lat-lon lane's own smoother lives in
                 # the PhysicsPipeline step factories, which this lane does
                 # not run
+                if self.output.budget_ledger:
+                    errors.append(
+                        "output.budget_ledger on the lat-lon column lane: its "
+                        "dycore publishes no per-step ledger, so no ledger "
+                        "would be written")
                 for _k in ("mpas_qv_smooth_del2_m2s", "mpas_qv_smooth_del4_m4s"):
                     if float(getattr(self, _k, 0.0) or 0.0) != 0.0:
                         errors.append(
@@ -3604,11 +3609,13 @@ class ExperimentConfig(NamedTuple):
                     "only modifies the active drain — it would be silently "
                     "inert)."
                 )
-            if not self.column_loop_lane:
+            if not (normalize_grid_type(self.grid.grid_type) == "mpas"
+                    or (self.dycore.column_lane
+                        and self.dycore.discretization == "latlon_cgrid")):
                 errors.append(
                     "hard_sat_ice_curve=True requires the column loop (MPAS "
-                    "or a column lane: the ice-curve drain is only wired "
-                    "into its post-step hook; on grid_type="
+                    "or the lat-lon column lane: the ice-curve drain is only "
+                    "wired into its post-step hook; on grid_type="
                     f"{self.grid.grid_type!r} it would be silently inert)."
                 )
             if self.microphysics != "morrison":

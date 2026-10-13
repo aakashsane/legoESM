@@ -195,10 +195,14 @@ def test_driver_column_lane_steps_the_native_dycore(tmp_path):
 
 
 def test_driver_refusals(tmp_path):
+    from legoesm.driver.config import OutputConfig
     from legoesm.driver.model_driver import ModelDriver
+    ledger = OutputConfig(diag_days=0, checkpoint_days=0,
+                          output_dir=str(tmp_path), budget_ledger=True)
     for over, frag in ((dict(sponge_enabled=True), "sponge_enabled"),
                        (dict(mpas_qv_smooth_del4_m4s=1e14), "Voronoi mesh"),
                        (dict(ensemble_size=2), "single device"),
+                       (dict(output=ledger), "budget_ledger"),
                        (dict(convection="kuo"), "grid operator")):
         drv = ModelDriver(_driver_cfg(tmp_path, **over), output_dir=tmp_path)
         with pytest.raises(ValueError, match=frag):
@@ -242,6 +246,9 @@ def test_driver_restart_is_bitwise(tmp_path, phys):
     for nm in a.tracers:
         assert _same(a.tracers[nm], b.tracers[nm]), nm
     assert not _same(u_mid, a.u)        # the second day moved the state
+    # the driver's lat-lon dycore fixes dry mass step to step (no anchor:
+    # the factory never sets anchor_mass_to_initial), so nothing to restore
+    assert drv_a.model._target_mass is None and drv_b.model._target_mass is None
 
 
 def test_driver_refuses_a_checkpoint_without_the_cgrid_state(tmp_path):
@@ -250,6 +257,11 @@ def test_driver_refuses_a_checkpoint_without_the_cgrid_state(tmp_path):
     np.savez(bad, u=np.zeros(1), T=np.zeros(1), p_s=np.zeros(1),
              phis=np.zeros(1), step=np.asarray(3), day=np.asarray(0.1))
     with pytest.raises(ValueError, match="carries no lat-lon C-grid state"):
+        drv.load_checkpoint(bad)
+    np.savez(bad, u=np.zeros(1), T=np.zeros(1), p_s=np.zeros(1),
+             phis=np.zeros(1), step=np.asarray(3), day=np.asarray(0.1),
+             latloncol_schema=np.asarray("latloncol_ckpt_v0"))
+    with pytest.raises(ValueError, match="unknown lat-lon column schema"):
         drv.load_checkpoint(bad)
 
 
@@ -319,3 +331,47 @@ def test_ice_curve_drain_is_admitted_on_the_column_lane(tmp_path):
     _driver_cfg(tmp_path, **over).validate_strict()
     with pytest.raises(ValueError, match="requires the column loop"):
         _driver_cfg(tmp_path, column=False, **over).validate_strict()
+
+
+def test_driver_restart_carries_clubb_moments_and_land(tmp_path, monkeypatch):
+    """Restart with the two carries this lane exists for: CLUBB's prognostic
+    moments (PhysicsState) and the multilayer land state.  Run A: 2 days,
+    checkpoint each day; run B from A's day-1 checkpoint.  Native state and
+    CLUBB moments must be bitwise equal, and the moments must have evolved
+    after the checkpoint (else the comparison has no power)."""
+    from legoesm.driver.model_driver import ModelDriver
+    from legoesm.land.config import biophysics_lmip_two_leaf_setup
+    from tests._land_surfdata import require_surfdata
+    from tests.unit.test_mpas_multilayer_land_port import _patch_land_loaders
+    _patch_land_loaders(monkeypatch)
+    cal = biophysics_lmip_two_leaf_setup()["soil_grid"]
+    over = dict(
+        dataset="analytical", radiation="gray", turbulence="clubb",
+        clubb_prognostic=True, land_mask_path="synthetic.nc",
+        use_multilayer_land=True, multilayer_n_layers=cal.n_layers,
+        multilayer_soil_depth=cal.total_depth, land_beta_soil=True,
+        land_surface_scheme="two_leaf", land_stomatal_beta=False,
+        land_calibrated_physics=True, snow_albedo_feedback=True,
+        surfdata_path=require_surfdata())
+    dir_a, dir_b = tmp_path / "a", tmp_path / "b"
+    dir_a.mkdir(), dir_b.mkdir()
+    cfg_a = _driver_cfg(dir_a, days=2, **over)
+    cfg_a = cfg_a._replace(output=cfg_a.output._replace(checkpoint_days=1))
+    drv_a = ModelDriver(cfg_a, output_dir=dir_a)
+    drv_a.setup()
+    assert drv_a.run() == "COMPLETED"
+    mid = dir_a / "checkpoint_day_0001.npz"
+    with np.load(mid) as d:
+        mom_mid = np.asarray(d["physstate_clubb_moments"])
+    drv_b = ModelDriver(_driver_cfg(dir_b, days=1, **over), output_dir=dir_b)
+    drv_b.setup()
+    step, day = drv_b.load_checkpoint(mid)
+    assert drv_b.run(start_step=step, start_day=day) == "COMPLETED"
+    a, b = drv_a.state.native, drv_b.state.native
+    for k in ("u", "v", "T", "p_s"):
+        assert _same(getattr(a, k), getattr(b, k)), k
+    for nm in a.tracers:
+        assert _same(a.tracers[nm], b.tracers[nm]), nm
+    mom_a = np.asarray(drv_a._mpas_phys_state.clubb_moments)
+    assert _same(mom_a, drv_b._mpas_phys_state.clubb_moments)
+    assert mom_mid.tobytes() != mom_a.tobytes()

@@ -2596,7 +2596,13 @@ class ModelDriver:
                 )
             else:
                 from legoesm.grids.topography import load_subgrid_orography
-                sso = load_subgrid_orography(self.grid, sso_path).astype(_sd)
+                _nat_g = getattr(self, "_latlon_native_grid", None)
+                # lat-lon column lane: the native grid (its own spacing for
+                # the file's scale check), flattened to the mesh's columns
+                sso = (load_subgrid_orography(self.grid, sso_path)
+                       if _nat_g is None else jnp.reshape(
+                           load_subgrid_orography(_nat_g, sso_path), (-1,))
+                       ).astype(_sd)
                 try:
                     self.grid = self.grid._replace(subgrid_topo_stddev=sso)
                 # NamedTuple._replace raises TypeError ("Got unexpected field
@@ -8039,6 +8045,11 @@ class ModelDriver:
                 self._fv3_duo_column_restored = True
             elif self._latlon_column_model() is not None:
                 _llc = self._latlon_column_model()
+                if ("latloncol_schema" in d.files
+                        and str(d["latloncol_schema"]) != "latloncol_ckpt_v1"):
+                    raise ValueError(
+                        f"MPAS checkpoint {path.name}: unknown lat-lon column "
+                        f"schema {str(d['latloncol_schema'])!r}")
                 if "latloncol_schema" not in d.files:
                     raise ValueError(
                         f"MPAS checkpoint {path.name} carries no lat-lon "
@@ -8062,12 +8073,15 @@ class ModelDriver:
                     tracers={_nm: jnp.asarray(d[f"latloncol_q_{_i}"],
                                               dtype=_cur.tracers[_nm].dtype)
                              for _i, _nm in enumerate(_names)})
-                for _k in ("u", "v", "T", "p_s", "phis"):
-                    if getattr(_nat, _k).shape != getattr(_cur, _k).shape:
+                for _k, _a, _b in (
+                        [(_k, getattr(_nat, _k), getattr(_cur, _k))
+                         for _k in ("u", "v", "T", "p_s", "phis")]
+                        + [(f"q {_nm}", _nat.tracers[_nm], _cur.tracers[_nm])
+                           for _nm in _names]):
+                    if _a.shape != _b.shape:
                         raise ValueError(
                             f"MPAS checkpoint {path.name}: lat-lon {_k} shape "
-                            f"{getattr(_nat, _k).shape} != the run's "
-                            f"{getattr(_cur, _k).shape}")
+                            f"{_a.shape} != the run's {_b.shape}")
                 if not np.array_equal(np.asarray(_nat.phis),
                                       np.asarray(_cur.phis)):
                     raise RuntimeError(
@@ -10971,7 +10985,7 @@ class ModelDriver:
         mesh, phis_cols, model = self.grid, self._phis_data, self.model
         self.grid, self.model = col.grid, col.dyn
         self._phis_data = (None if phis_cols is None
-                           else col._grid2d(jnp.asarray(phis_cols)))
+                           else col.grid_of(jnp.asarray(phis_cols)))
         try:
             self._init_state()
             hs = self.state

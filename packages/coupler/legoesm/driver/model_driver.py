@@ -15619,7 +15619,7 @@ class ModelDriver:
 
         The coupled drivers read ``held_sw_net_sfc`` / ``held_lw_net_sfc`` /
         ``seg_precip`` out of ``self._carry_aux``.  The STATELESS lat-lon SPMD
-        sub-lane (dynamics-only / Held-Suarez) and the sub-face-tiled cube
+        sub-lane (dynamics-only / pure Held-Suarez) and the sub-face-tiled cube
         lanes never write them, so the coupled
         ocean/land/ice tiles would be forced with ``sw_down=0`` and
         ``precip=0`` -- perpetual polar night plus an evaporation-only
@@ -15656,9 +15656,11 @@ class ModelDriver:
         a host-side NaN-blowup guard. A dedicated path, NOT the jitted
         ``compiled_segments`` scan (zero surgical risk to the shared hot loop).
 
-        Supports DYNAMICS-ONLY or stateless Held-Suarez. Stateful physics and the
-        diagnostics/checkpoint writers are follow-ups (rejected loudly); a coupled
-        driver consumes the per-segment state via ``segment_callback``.
+        Pure Held-Suarez and dynamics-only run on the stateless sub-lane; any
+        active column physics (with or without Held-Suarez) dispatches to the
+        operator-split sub-lane. The diagnostics/checkpoint writers are
+        follow-ups (rejected loudly); a coupled driver consumes the
+        per-segment state via ``segment_callback``.
         """
         import time
         from legoesm.atmosphere.dynamics.gcm.sharded_atm_latlon_step import (

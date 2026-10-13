@@ -14,10 +14,13 @@ SPEC.loader.exec_module(DRIVER)
 def test_resolved_daily_decks_keep_declared_resolution_and_cadence():
     shipped = DRIVER.resolved_daily_namelist("shipped", 2)
     r4 = DRIVER.resolved_daily_namelist("r4", 1095)
+    smag = DRIVER.resolved_daily_namelist("r4_smag", 1095)
     assert (shipped.nn_GYRE, shipped.rn_Dt_s, shipped.nn_itend,
             shipped.nn_write) == (1, 14400.0, 12, 6)
     assert (r4.nn_GYRE, r4.rn_Dt_s, r4.nn_itend, r4.nn_write,
             r4.nn_stock) == (4, 3600.0, 26280, 24, 8760)
+    assert (smag.nn_GYRE, smag.ln_dynldf_blp, smag.nn_ahm_ijk_t,
+            smag.rn_Uv_m_s, smag.rn_Lv_m) == (4, True, 32, None, None)
     with pytest.raises(ValueError, match="deck must"):
         DRIVER.resolved_daily_namelist("invented", 1)
 
@@ -38,6 +41,10 @@ def test_tiny_real_gyre_two_day_scan_matches_certified_loop():
     assert report["days"] == 2
     assert report["steps"] == 12
     assert report["differences"]["all_finite"] is True
+    assert report["forcing_transcription"]["clock_and_phase_bit_equal"] is True
+    assert report["classification"] == "COMPOSITION"
+    assert report["first_difference"]["step"] == 3
+    assert report["first_difference"]["first_field"] == "ssh_m"
     # Measured refutation: enclosing the same production step in a day scan
     # changes XLA's fused floating-point program.  Keep the failed 1e-12 bar
     # visible rather than silently relaxing it after seeing the residual.

@@ -17,4 +17,4 @@ repo_root=$(git -C "$here" rev-parse --show-toplevel)
 }
 export PYTHONPATH=$repo_root/packages/core:$repo_root/packages/ocean:$repo_root/packages/atmosphere:$repo_root/packages/coupler:$repo_root/packages/ice:$repo_root/packages/land:$repo_root/packages/ml:$repo_root/packages/tools:$repo_root/src
 exec /home/dbalwada/legoESM/.venv/bin/python "$here/run_gyre_hires.py" \
-  --deck r4 --days 1095 --mode gpu-native --daily-means "$@"
+  --deck r4_smag --days 1095 --mode gpu-native --daily-means "$@"

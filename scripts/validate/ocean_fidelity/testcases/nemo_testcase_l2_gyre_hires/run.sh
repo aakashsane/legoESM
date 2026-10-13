@@ -14,7 +14,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --run) do_run=1 ;;
-    *) printf 'REFUSE_USAGE: expected [--deck shipped|r4] [--run]\n' >&2; exit 64 ;;
+    *) printf 'REFUSE_USAGE: expected [--deck shipped|r4|r4_smag] [--run]\n' >&2; exit 64 ;;
   esac
   shift
 done

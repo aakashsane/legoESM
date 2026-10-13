@@ -130,10 +130,14 @@ class GyreResolvedNamelist(NamedTuple):
     ln_bt_auto: bool = True
     rn_bt_cmax: float = 0.8
     ln_dynldf_lap: bool = True
+    ln_dynldf_blp: bool = False
     ln_dynldf_lev: bool = True
     nn_ahm_ijk_t: int = 0
-    rn_Uv_m_s: float = 2.0  # noqa: N815 - exact NEMO namelist spelling
-    rn_Lv_m: float = 100000.0  # noqa: N815 - exact NEMO namelist spelling
+    rn_Uv_m_s: float | None = 2.0  # noqa: N815 - NEMO spelling
+    rn_Lv_m: float | None = 100000.0  # noqa: N815 - NEMO spelling
+    rn_csmc: float = 3.5
+    rn_minfac: float = 1.0
+    rn_maxfac: float = 1.0
     ln_zdftke: bool = True
     ln_zdfevd: bool = True
     nn_evdm: int = 1
@@ -159,11 +163,22 @@ GYRE_R4_NAMELIST = GYRE_SHIPPED_NAMELIST._replace(
     nn_write=24,
     l_runstat=True,
 )
+GYRE_R4_SMAG_NAMELIST = GYRE_R4_NAMELIST._replace(
+    ln_dynldf_lap=False,
+    ln_dynldf_blp=True,
+    nn_ahm_ijk_t=32,
+    rn_Uv_m_s=None,
+    rn_Lv_m=None,
+)
 
 
 _GYRE_RUNTIME_FIELDS = frozenset({
-    "nn_GYRE", "rn_Dt_s", "rn_Ld_m", "rn_Lv_m", "nn_itend",
+    "nn_GYRE", "rn_Dt_s", "rn_Ld_m", "nn_itend",
     "nn_stock", "nn_write", "ln_meshmask", "l_runstat", "ptimincr",
+})
+_GYRE_MOMENTUM_LDF_FIELDS = frozenset({
+    "ln_dynldf_lap", "ln_dynldf_blp", "ln_dynldf_lev", "nn_ahm_ijk_t",
+    "rn_Uv_m_s", "rn_Lv_m", "rn_csmc", "rn_minfac", "rn_maxfac",
 })
 
 
@@ -174,7 +189,9 @@ def validate_gyre_namelist(namelist: GyreResolvedNamelist) -> None:
         raise TypeError("GYRE namelist must be a GyreResolvedNamelist")
     fixed = GYRE_SHIPPED_NAMELIST._asdict()
     for name, value in namelist._asdict().items():
-        if name not in _GYRE_RUNTIME_FIELDS and value != fixed[name]:
+        if (name not in _GYRE_RUNTIME_FIELDS
+                and name not in _GYRE_MOMENTUM_LDF_FIELDS
+                and value != fixed[name]):
             raise ValueError(
                 f"unsupported GYRE namelist value {name}={value!r}; "
                 f"certified value is {fixed[name]!r}"
@@ -183,8 +200,39 @@ def validate_gyre_namelist(namelist: GyreResolvedNamelist) -> None:
         raise ValueError("GYRE nn_GYRE must be a positive integer")
     if namelist.rn_Dt_s <= 0.0:
         raise ValueError("GYRE rn_Dt must be positive")
-    if namelist.rn_Ld_m <= 0.0 or namelist.rn_Lv_m <= 0.0:
-        raise ValueError("GYRE rn_Ld/rn_Lv must be positive")
+    if namelist.rn_Ld_m <= 0.0:
+        raise ValueError("GYRE rn_Ld must be positive")
+    lap = (
+        namelist.ln_dynldf_lap,
+        namelist.ln_dynldf_blp,
+        namelist.ln_dynldf_lev,
+        namelist.nn_ahm_ijk_t,
+    ) == (True, False, True, 0)
+    smag_blp = (
+        namelist.ln_dynldf_lap,
+        namelist.ln_dynldf_blp,
+        namelist.ln_dynldf_lev,
+        namelist.nn_ahm_ijk_t,
+    ) == (False, True, True, 32)
+    if not (lap or smag_blp):
+        raise ValueError(
+            "unsupported GYRE momentum lateral diffusion: implemented decks "
+            "are level Laplacian mode 0 and level Smagorinsky bilaplacian "
+            "mode 32")
+    if lap:
+        if namelist.rn_Uv_m_s is None or namelist.rn_Uv_m_s <= 0.0:
+            raise ValueError("GYRE Laplacian mode 0 requires positive rn_Uv")
+        if namelist.rn_Lv_m is None or namelist.rn_Lv_m <= 0.0:
+            raise ValueError("GYRE Laplacian mode 0 requires positive rn_Lv")
+    else:
+        if namelist.rn_Uv_m_s is not None or namelist.rn_Lv_m is not None:
+            raise ValueError(
+                "GYRE Smagorinsky mode 32 requires rn_Uv/rn_Lv absent")
+        if (namelist.rn_csmc, namelist.rn_minfac, namelist.rn_maxfac) != (
+                3.5, 1.0, 1.0):
+            raise ValueError(
+                "GYRE Smagorinsky mode 32 currently implements exactly "
+                "rn_csmc=3.5 and rn_minfac=rn_maxfac=1.0")
     if namelist.nn_it000 != 1 or namelist.nn_itend < namelist.nn_it000:
         raise ValueError("GYRE card supports nn_it000=1 and nn_itend >= 1")
     if namelist.nn_stock < 1 or namelist.nn_write < 1:
@@ -1328,9 +1376,24 @@ def build_gyre_zco_card(
     # field in zdf_mxl, and then passes the same rn2b to ldf_slp.  Keep the
     # mixed-layer recurrence and the slope denominator on that one carried
     # step-entry field instead of evaluating eosbn2 a second time.
+    if namelist.ln_dynldf_lap:
+        assert namelist.rn_Uv_m_s is not None
+        assert namelist.rn_Lv_m is not None
+        lateral_viscosity = model_config.lateral_viscosity._replace(
+            A_h=0.5 * namelist.rn_Uv_m_s * namelist.rn_Lv_m)
+        coefficient_source = "nemo_ldf_c2d"
+    else:
+        lateral_viscosity = model_config.lateral_viscosity._replace(
+            A_h=0.0,
+            B_h=0.0,
+            C_smag=namelist.rn_csmc,
+            C_smag_lap=0.0,
+            C_leith=0.0,
+        )
+        coefficient_source = "nemo_smag_blp"
     model_config = model_config._replace(
-        lateral_viscosity=model_config.lateral_viscosity._replace(
-            A_h=0.5 * namelist.rn_Uv_m_s * namelist.rn_Lv_m),
+        lateral_viscosity=lateral_viscosity,
+        lateral_viscosity_coefficient_source=coefficient_source,
         gm_redi=model_config.gm_redi._replace(
             kappa_Redi=0.5 * namelist.rn_Ud_m_s * namelist.rn_Ld_m,
             slope_n2_evaluation="carried_step_entry"),
@@ -1419,7 +1482,10 @@ def gyre_surface_forcings(card: NEMOTestcaseCard, state, kt):
     from legoesm.ocean.freshwater import FreshwaterForcing
     from legoesm.ocean.state import OceanSurfaceForcing
 
-    sbc = gyre_surface_boundary_condition(card, kt * card.dt_s)
+    step = jnp.asarray(kt, dtype=jnp.float64)
+    clock = nemo_source_round(
+        step * jnp.asarray(card.dt_s, dtype=jnp.float64))
+    sbc = gyre_surface_boundary_condition(card, clock)
     sst = state.T.data[..., 0]
     sst_m = nemo_potential_temperature_from_conservative(
         sst, state.S.data[..., 0])
@@ -3229,7 +3295,8 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
             expected_resolved = (
                 nml.rn_Dt_s,
                 nml.nn_itend,
-                0.5 * nml.rn_Uv_m_s * nml.rn_Lv_m,
+                (0.5 * nml.rn_Uv_m_s * nml.rn_Lv_m
+                 if nml.ln_dynldf_lap else 0.0),
                 0.5 * nml.rn_Ud_m_s * nml.rn_Ld_m,
                 nml.rn_Dt_s,
             )
@@ -3238,6 +3305,23 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
                     "GYRE-zco card fields do not resolve from its namelist: "
                     f"got {resolved!r}, expected {expected_resolved!r}"
                 )
+            if nml.ln_dynldf_blp:
+                lv = cfg.lateral_viscosity
+                smag = (
+                    cfg.lateral_viscosity_operator,
+                    cfg.lateral_viscosity_e3_weighting,
+                    cfg.lateral_viscosity_coefficient_source,
+                    lv.A_h, lv.B_h, lv.C_smag, lv.C_smag_lap, lv.C_leith,
+                )
+                expected_smag = (
+                    "nemo_div_curl", "nemo_e3", "nemo_smag_blp",
+                    0.0, 0.0, nml.rn_csmc, 0.0, 0.0,
+                )
+                if smag != expected_smag:
+                    raise ValueError(
+                        "GYRE-zco Smagorinsky bilaplacian does not resolve "
+                        f"from its namelist: got {smag!r}, expected "
+                        f"{expected_smag!r}")
             expected_shape = (
                 20 * nml.nn_GYRE + 2, 30 * nml.nn_GYRE + 2)
             if wet.shape != expected_shape:

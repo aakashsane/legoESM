@@ -15,6 +15,13 @@ GATE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GATE)
 
 
+def test_ladder_decks_have_distinct_preregistered_oracle_roots():
+    assert set(GATE.DEFAULT_ORACLES) == {"r4", "r4_smag"}
+    assert "round1/oracle_gyre_r4_stage" in str(GATE.DEFAULT_ORACLES["r4"])
+    assert "round2/oracle_gyre_r4_smag_stage" in str(
+        GATE.DEFAULT_ORACLES["r4_smag"])
+
+
 def test_exact_score_one_ulp_control_fires():
     values = np.array([[0.0, 1.0], [-2.0, 3.0]], dtype=np.float64)
     mask = np.ones_like(values, dtype=bool)

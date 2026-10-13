@@ -13,6 +13,7 @@ from legoesm.ocean.fidelity.nemo_recipe import (
 )
 from legoesm.ocean.fidelity.nemo_testcase_recipe import (
     GYRE_R4_NAMELIST,
+    GYRE_R4_SMAG_NAMELIST,
     GYRE_SHIPPED_NAMELIST,
     _orca2_depth_ladder,
     _orca2_masks,
@@ -445,6 +446,34 @@ def test_gyre_r4_card_resolves_grid_clock_and_mixing_from_namelist():
         np.asarray(card.recipe.grid.dx_T), np.full((82, 122), 26500.0))
     sbc = gyre_surface_boundary_condition(card, card.dt_s)
     assert sbc.qsr_w_m2.shape == (82, 122)
+
+
+def test_gyre_r4_smag_card_resolves_exact_mode32_operator_block():
+    set_policy(PrecisionPolicy.fp64())
+    card = build_nemo_testcase_card(
+        "GYRE-zco", namelist=GYRE_R4_SMAG_NAMELIST)
+    cfg = card.recipe.model_config
+    lv = cfg.lateral_viscosity
+    assert card.resolved_namelist == GYRE_R4_SMAG_NAMELIST
+    assert cfg.lateral_viscosity_operator == "nemo_div_curl"
+    assert cfg.lateral_viscosity_e3_weighting == "nemo_e3"
+    assert cfg.lateral_viscosity_coefficient_source == "nemo_smag_blp"
+    assert (lv.A_h, lv.B_h, lv.C_smag, lv.C_smag_lap, lv.C_leith) == (
+        0.0, 0.0, 3.5, 0.0, 0.0)
+    assert GYRE_R4_SMAG_NAMELIST.rn_Uv_m_s is None
+    assert GYRE_R4_SMAG_NAMELIST.rn_Lv_m is None
+
+
+def test_gyre_r4_smag_dispatch_rejects_unimplemented_hybrids():
+    with pytest.raises(ValueError, match="implemented decks"):
+        validate_gyre_namelist(
+            GYRE_R4_SMAG_NAMELIST._replace(ln_dynldf_lap=True))
+    with pytest.raises(ValueError, match="requires rn_Uv/rn_Lv absent"):
+        validate_gyre_namelist(
+            GYRE_R4_SMAG_NAMELIST._replace(rn_Lv_m=25_000.0))
+    with pytest.raises(ValueError, match="implements exactly"):
+        validate_gyre_namelist(
+            GYRE_R4_SMAG_NAMELIST._replace(rn_csmc=3.4))
 
 
 def test_gyre_parameterised_dispatch_fails_closed_on_unsupported_values():

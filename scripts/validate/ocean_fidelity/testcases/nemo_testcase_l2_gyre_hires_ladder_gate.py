@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exact ten-step CPU gate for the quarter-degree GYRE stage ladder."""
+
 from __future__ import annotations
 
 import argparse
@@ -19,12 +20,17 @@ from nemo_testcase_l2_gyre_phase3_gate import (  # noqa: E402
     read_entry,
 )
 
-CASE = "GYRE-zco-r4"
 NEMO_DIMS = (126, 86, 31)
-DEFAULT_ORACLE = Path(
-    "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/"
-    "round1/oracle_gyre_r4_stage/run"
-)
+DEFAULT_ORACLES = {
+    "r4": Path(
+        "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/"
+        "round1/oracle_gyre_r4_stage/run"
+    ),
+    "r4_smag": Path(
+        "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/"
+        "round2/oracle_gyre_r4_smag_stage/run"
+    ),
+}
 FIELDS = ("T", "S", "u", "v", "ssh")
 
 
@@ -42,8 +48,9 @@ def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> d
         index = tuple(np.argwhere(active)[0])
         toward = np.inf if value[index] >= 0.0 else -np.inf
         value[index] = np.nextafter(value[index], toward)
-    unequal = int(np.count_nonzero(
-        reference[active].view(np.uint64) != value[active].view(np.uint64)))
+    unequal = int(
+        np.count_nonzero(reference[active].view(np.uint64) != value[active].view(np.uint64))
+    )
     return {
         "name": name,
         "status": "AT-BAR" if unequal == 0 else "DEBT",
@@ -55,12 +62,13 @@ def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> d
     }
 
 
-def run(oracle_root: Path, output: Path) -> dict:
+def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
     import jax
     from legoesm.core.precision import PrecisionPolicy, set_policy
     from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import LatLonCGridOceanModel
     from legoesm.ocean.fidelity.nemo_testcase_recipe import (
         GYRE_R4_NAMELIST,
+        GYRE_R4_SMAG_NAMELIST,
         build_nemo_testcase_card,
         gyre_surface_forcings,
     )
@@ -69,11 +77,13 @@ def run(oracle_root: Path, output: Path) -> dict:
     if jax.default_backend() != "cpu":
         raise RuntimeError("quarter-degree ladder certification requires CPU")
     set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
-    namelist = GYRE_R4_NAMELIST._replace(
-        nn_itend=10, nn_stock=10, nn_write=10)
+    if deck not in DEFAULT_ORACLES:
+        raise ValueError(f"unknown ladder deck {deck!r}")
+    base = GYRE_R4_NAMELIST if deck == "r4" else GYRE_R4_SMAG_NAMELIST
+    case = f"GYRE-zco-{deck}"
+    namelist = base._replace(nn_itend=10, nn_stock=10, nn_write=10)
     card = build_nemo_testcase_card("GYRE-zco", namelist=namelist)
-    model = LatLonCGridOceanModel(
-        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+    model = LatLonCGridOceanModel(card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
     masks = expected_masks(card)
     state = card.recipe.initial_state
     steps = []
@@ -89,33 +99,36 @@ def run(oracle_root: Path, output: Path) -> dict:
         candidate = lego_fields(state)
         rows = []
         for field in FIELDS:
-            reference = (
-                oracle[field] if field == "ssh" else oracle[field][..., :30])
+            reference = oracle[field] if field == "ssh" else oracle[field][..., :30]
             row = exact_score(
-                f"{CASE}.kt{kt}.before.{field}", reference,
-                candidate[field], masks[field])
+                f"{case}.kt{kt}.before.{field}", reference, candidate[field], masks[field]
+            )
             rows.append(row)
             if kt == 1:
                 planted = exact_score(
-                    f"control.one_ulp.{field}", reference,
-                    candidate[field], masks[field], plant_one_ulp=True)
-                controls.append({
-                    **planted,
-                    "status": "FIRED" if planted["n_unequal"] > 0 else "MISSED",
-                })
+                    f"control.one_ulp.{field}",
+                    reference,
+                    candidate[field],
+                    masks[field],
+                    plant_one_ulp=True,
+                )
+                controls.append(
+                    {
+                        **planted,
+                        "status": "FIRED" if planted["n_unequal"] > 0 else "MISSED",
+                    }
+                )
         steps.append({"kt": kt, "Nbb": oracle["Nbb"], "rows": rows})
         freshwater, surface = gyre_surface_forcings(card, state, kt)
-        state = model.step(
-            state, card.dt_s, freshwater=freshwater,
-            surface_forcing=surface)
-    passed = (
-        all(row["status"] == "AT-BAR" for step in steps for row in step["rows"])
-        and all(control["status"] == "FIRED" for control in controls)
+        state = model.step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+    passed = all(row["status"] == "AT-BAR" for step in steps for row in step["rows"]) and all(
+        control["status"] == "FIRED" for control in controls
     )
     report = {
         "format": "nemo-testcase-l2-gyre-r4-exact-ladder-v1",
         "worktree": worktree_stamp(),
-        "case": CASE,
+        "case": case,
+        "deck": deck,
         "oracle_root": str(oracle_root),
         "policy": "fp64/x64/cpu/libm certified",
         "acceptance": "zero unequal active float64 values in every field/step",
@@ -131,11 +144,12 @@ def run(oracle_root: Path, output: Path) -> dict:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--oracle-root", type=Path, default=DEFAULT_ORACLE)
+    parser.add_argument("--deck", choices=tuple(DEFAULT_ORACLES), default="r4")
+    parser.add_argument("--oracle-root", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        report = run(args.oracle_root, args.output)
+        report = run(args.oracle_root or DEFAULT_ORACLES[args.deck], args.output, deck=args.deck)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Run a resolved GYRE deck with daily snapshots and daily means."""
+
 from __future__ import annotations
 
 import argparse
@@ -13,8 +14,12 @@ import numpy as np
 
 SECONDS_PER_DAY = 86_400
 FIELD_NAMES = (
-    "ssh_m", "surface_u_m_s", "surface_v_m_s", "surface_temperature_c",
-    "barotropic_u_m_s", "barotropic_v_m_s",
+    "ssh_m",
+    "surface_u_m_s",
+    "surface_v_m_s",
+    "surface_temperature_c",
+    "barotropic_u_m_s",
+    "barotropic_v_m_s",
 )
 SCAN_PARITY_ATOL = 1.0e-12
 
@@ -27,8 +32,7 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
 
 def _write_hashes_atomic(path: Path, hashes: dict[str, str]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        "".join(f"{digest}  {name}\n" for name, digest in hashes.items()))
+    temporary.write_text("".join(f"{digest}  {name}\n" for name, digest in hashes.items()))
     temporary.replace(path)
 
 
@@ -36,14 +40,19 @@ def resolved_daily_namelist(deck: str, days: int):
     """Resolve a named certified deck for an exact whole-day run length."""
     from legoesm.ocean.fidelity.nemo_testcase_recipe import (
         GYRE_R4_NAMELIST,
+        GYRE_R4_SMAG_NAMELIST,
         GYRE_SHIPPED_NAMELIST,
     )
 
-    if deck not in ("shipped", "r4"):
-        raise ValueError("deck must be 'shipped' or 'r4'")
+    if deck not in ("shipped", "r4", "r4_smag"):
+        raise ValueError("deck must be 'shipped', 'r4', or 'r4_smag'")
     if type(days) is not int or days <= 0:
         raise ValueError("days must be a positive integer")
-    base = GYRE_SHIPPED_NAMELIST if deck == "shipped" else GYRE_R4_NAMELIST
+    base = {
+        "shipped": GYRE_SHIPPED_NAMELIST,
+        "r4": GYRE_R4_NAMELIST,
+        "r4_smag": GYRE_R4_SMAG_NAMELIST,
+    }[deck]
     steps_per_day = SECONDS_PER_DAY / base.rn_Dt_s
     if not float(steps_per_day).is_integer():
         raise ValueError(f"rn_Dt={base.rn_Dt_s} does not divide one model day")
@@ -65,6 +74,29 @@ def _state_arrays(state):
     )
 
 
+def _mean_accumulators(state, card):
+    """IOIPSL-order samples; surface T is accumulated as T*e3t plus e3t."""
+    from legoesm.ocean.vertical import compute_layer_thickness
+
+    values = list(_state_arrays(state))
+    h_surface = compute_layer_thickness(state.eta.data, state.H_bathy.data, card.recipe.z_coord)[
+        ..., 0
+    ]
+    values[3] = values[3] * h_surface
+    values.append(h_surface)
+    return tuple(values)
+
+
+def _finalize_means(accumulators):
+    """Convert mean(T*e3t), mean(e3t) to the NEMO-comparable T mean."""
+    import jax.numpy as jnp
+
+    means = list(accumulators[:-1])
+    thickness = accumulators[-1]
+    means[3] = jnp.where(thickness > 0.0, means[3] / thickness, 0.0)
+    return tuple(means)
+
+
 def cold_start_scan_state(model, card, state):
     """Run NEMO's required cold-start step, then stabilize the scan carry.
 
@@ -76,12 +108,10 @@ def cold_start_scan_state(model, card, state):
     from legoesm.ocean.fidelity.nemo_testcase_recipe import gyre_surface_forcings
 
     freshwater, surface = gyre_surface_forcings(card, state, 1)
-    state = model.step(
-        state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+    state = model.step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
     freshwater, surface = gyre_surface_forcings(card, state, 2)
-    state = model.seed_scan_carry(
-        state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
-    return state, _state_arrays(state)
+    state = model.seed_scan_carry(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+    return state, _mean_accumulators(state, card)
 
 
 def build_scanned_day_mean_stepper(model, card, n_steps: int):
@@ -97,36 +127,28 @@ def build_scanned_day_mean_stepper(model, card, n_steps: int):
         state, means = carry
         kt, count = values
         freshwater, surface = gyre_surface_forcings(card, state, kt)
-        state = model.step(
-            state, card.dt_s, freshwater=freshwater,
-            surface_forcing=surface)
-        sample = _state_arrays(state)
+        state = model.step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+        sample = _mean_accumulators(state, card)
         old_count = count - jnp.asarray(1, dtype=count.dtype)
-        means = tuple(
-            (mean * old_count + value) / count
-            for mean, value in zip(means, sample)
-        )
+        means = tuple((mean * old_count + value) / count for mean, value in zip(means, sample))
         return (state, means), None
 
     @jax.jit
     def compiled(state, first_kt, means, initial_count):
         steps = jnp.arange(n_steps, dtype=jnp.int64) + first_kt
-        counts = (
-            jnp.arange(1, n_steps + 1, dtype=state.eta.data.dtype)
-            + initial_count
-        )
-        (state, means), _ = jax.lax.scan(
-            scan_body, (state, means), (steps, counts))
-        return state, means
+        counts = jnp.arange(1, n_steps + 1, dtype=state.eta.data.dtype) + initial_count
+        (state, means), _ = jax.lax.scan(scan_body, (state, means), (steps, counts))
+        return state, _finalize_means(means)
 
     def scanned(state, first_kt, initial_means=None, initial_count=0):
         means = (
-            tuple(jnp.zeros_like(value) for value in _state_arrays(state))
-            if initial_means is None else initial_means
+            tuple(jnp.zeros_like(value) for value in _mean_accumulators(state, card))
+            if initial_means is None
+            else initial_means
         )
         return compiled(
-            state, first_kt, means,
-            jnp.asarray(initial_count, dtype=state.eta.data.dtype))
+            state, first_kt, means, jnp.asarray(initial_count, dtype=state.eta.data.dtype)
+        )
 
     return scanned
 
@@ -138,19 +160,16 @@ def run_python_day(model, card, state, first_kt: int, n_steps: int):
 
     if type(n_steps) is not int or n_steps <= 0:
         raise ValueError("Python day n_steps must be a positive integer")
-    means = tuple(jnp.zeros_like(value) for value in _state_arrays(state))
+    means = tuple(jnp.zeros_like(value) for value in _mean_accumulators(state, card))
     for offset in range(n_steps):
-        freshwater, surface = gyre_surface_forcings(
-            card, state, first_kt + offset)
-        state = model.step(
-            state, card.dt_s, freshwater=freshwater,
-            surface_forcing=surface)
+        freshwater, surface = gyre_surface_forcings(card, state, first_kt + offset)
+        state = model.step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
         count = float(offset + 1)
         means = tuple(
             (mean * (count - 1.0) + value) / count
-            for mean, value in zip(means, _state_arrays(state))
+            for mean, value in zip(means, _mean_accumulators(state, card))
         )
-    return state, means
+    return state, _finalize_means(means)
 
 
 def prognostic_differences(left, right) -> dict[str, float | int | bool]:
@@ -168,11 +187,70 @@ def prognostic_differences(left, right) -> dict[str, float | int | bool]:
     result["all_finite"] = all_finite
     result["atol"] = SCAN_PARITY_ATOL
     result["within_atol"] = bool(
-        all_finite
-        and all(result[f"{name}_max_abs"] <= SCAN_PARITY_ATOL
-                for name in FIELD_NAMES)
+        all_finite and all(result[f"{name}_max_abs"] <= SCAN_PARITY_ATOL for name in FIELD_NAMES)
     )
     return result
+
+
+def _forcing_differences(card, state, kt: int) -> dict[str, object]:
+    """Test Python-step versus traced-step seasonal forcing bit identity."""
+    import jax
+    import jax.numpy as jnp
+    from legoesm.core.source_rounding import nemo_source_round
+    from legoesm.ocean.fidelity.nemo_recipe import nemo_gyre_seasonal_cosines
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import gyre_surface_forcings
+
+    def clock_and_phase(step):
+        clock = nemo_source_round(
+            jnp.asarray(step, dtype=jnp.float64) * jnp.asarray(card.dt_s, dtype=jnp.float64)
+        )
+        return (clock, *nemo_gyre_seasonal_cosines(clock))
+
+    eager_clock = clock_and_phase(kt)
+    traced_clock = jax.jit(clock_and_phase)(jnp.asarray(kt, dtype=jnp.int64))
+    clock_rows = []
+    for name, a_raw, b_raw in zip(
+        ("clock_seconds", "seasonal_cosine_1", "seasonal_cosine_2"), eager_clock, traced_clock
+    ):
+        a = np.asarray(a_raw, dtype=np.float64)
+        b = np.asarray(b_raw, dtype=np.float64)
+        clock_rows.append(
+            {
+                "name": name,
+                "n_unequal": int(np.count_nonzero(a != b)),
+                "max_abs": float(np.max(np.abs(a - b))),
+            }
+        )
+
+    eager = gyre_surface_forcings(card, state, kt)
+
+    @jax.jit
+    def traced(step):
+        return gyre_surface_forcings(card, state, step)
+
+    compiled = traced(jnp.asarray(kt, dtype=jnp.int64))
+    eager_paths = jax.tree_util.tree_flatten_with_path(eager)[0]
+    compiled_paths = jax.tree_util.tree_flatten_with_path(compiled)[0]
+    rows = []
+    for index, ((path, a_raw), (_, b_raw)) in enumerate(zip(eager_paths, compiled_paths)):
+        a = np.asarray(a_raw, dtype=np.float64)
+        b = np.asarray(b_raw, dtype=np.float64)
+        rows.append(
+            {
+                "leaf": index,
+                "path": jax.tree_util.keystr(path),
+                "shape": list(a.shape),
+                "n_unequal": int(np.count_nonzero(a != b)),
+                "max_abs": float(np.max(np.abs(a - b))),
+            }
+        )
+    return {
+        "step": kt,
+        "clock_and_phase_bit_equal": all(row["n_unequal"] == 0 for row in clock_rows),
+        "clock_and_phase": clock_rows,
+        "all_bit_equal": all(row["n_unequal"] == 0 for row in rows),
+        "leaves": rows,
+    }
 
 
 def cpu_scan_parity(namelist, *, days: int = 2) -> dict:
@@ -189,28 +267,55 @@ def cpu_scan_parity(namelist, *, days: int = 2) -> dict:
     set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
     card = build_gyre_zco_card(namelist)
     steps_per_day = int(SECONDS_PER_DAY / card.dt_s)
-    model = LatLonCGridOceanModel(
-        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
-    initial, _ = cold_start_scan_state(
-        model, card, card.recipe.initial_state)
+    model = LatLonCGridOceanModel(card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+    initial, _ = cold_start_scan_state(model, card, card.recipe.initial_state)
+    forcing_check = _forcing_differences(card, initial, 2)
+    prefix_steps = 2
+    prefix_loop, _ = run_python_day(model, card, initial, 2, prefix_steps)
+    prefix_scan_step = build_scanned_day_mean_stepper(model, card, prefix_steps)
+    prefix_scan, _ = prefix_scan_step(initial, 2)
+    jax.block_until_ready(prefix_scan.eta.data)
+    first_step_differences = prognostic_differences(prefix_loop, prefix_scan)
+    first_fields = [name for name in FIELD_NAMES if first_step_differences[f"{name}_unequal"] > 0]
     loop_state = initial
-    loop_state, _ = run_python_day(
-        model, card, loop_state, 2, steps_per_day - 1)
+    loop_state, _ = run_python_day(model, card, loop_state, 2, steps_per_day - 1)
     for day in range(1, days):
         loop_state, _ = run_python_day(
-            model, card, loop_state, day * steps_per_day + 1, steps_per_day)
-    cold_tail = build_scanned_day_mean_stepper(
-        model, card, steps_per_day - 1)
+            model, card, loop_state, day * steps_per_day + 1, steps_per_day
+        )
+    cold_tail = build_scanned_day_mean_stepper(model, card, steps_per_day - 1)
     scanned = build_scanned_day_mean_stepper(model, card, steps_per_day)
     scan_state, _ = cold_tail(initial, 2)
     for day in range(1, days):
         scan_state, _ = scanned(scan_state, day * steps_per_day + 1)
     jax.block_until_ready(scan_state.eta.data)
     differences = prognostic_differences(loop_state, scan_state)
+    classification = (
+        "TRANSCRIPTION"
+        if not forcing_check["clock_and_phase_bit_equal"]
+        else "COMPOSITION"
+        if (first_fields or not forcing_check["all_bit_equal"])
+        else "UNRESOLVED"
+    )
     return {
         "days": days,
         "steps": days * steps_per_day,
         "common_cold_start_steps": 1,
+        "forcing_transcription": forcing_check,
+        "first_difference": {
+            "step": 3 if first_fields else None,
+            "first_field": first_fields[0] if first_fields else None,
+            "fields": first_fields,
+            "differences": first_step_differences,
+        },
+        "classification": classification,
+        "disposition": (
+            "measured composition debt; climate long run may proceed"
+            if classification == "COMPOSITION"
+            else "fix forcing transcription before the climate long run"
+            if classification == "TRANSCRIPTION"
+            else "first differing step not isolated"
+        ),
         "differences": differences,
     }
 
@@ -253,21 +358,18 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
         raise RuntimeError("JAX x64 is disabled")
     if jax.default_backend() != expected_backend:
         raise RuntimeError(
-            f"{mode} requires JAX backend {expected_backend}, got "
-            f"{jax.default_backend()}")
+            f"{mode} requires JAX backend {expected_backend}, got {jax.default_backend()}"
+        )
 
     card = build_gyre_zco_card(namelist)
-    model = LatLonCGridOceanModel(
-        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+    model = LatLonCGridOceanModel(card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
     state = card.recipe.initial_state
     cold_tail = None
     cold_sample = None
     if mode == "gpu-native":
         state, cold_sample = cold_start_scan_state(model, card, state)
-        cold_tail = build_scanned_day_mean_stepper(
-            model, card, steps_per_day - 1)
-        scanned_day = build_scanned_day_mean_stepper(
-            model, card, steps_per_day)
+        cold_tail = build_scanned_day_mean_stepper(model, card, steps_per_day - 1)
+        scanned_day = build_scanned_day_mean_stepper(model, card, steps_per_day)
     else:
         scanned_day = None
     output.mkdir(parents=True)
@@ -278,8 +380,8 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
         "certified_policy": certified_policy,
         "certification_scope": (
             "CPU per-step ladder eligible for certification"
-            if certified_policy else
-            "NON-CERTIFIED climate run; native GPU transcendentals"
+            if certified_policy
+            else "NON-CERTIFIED climate run; native GPU transcendentals"
         ),
         "backend": jax.default_backend(),
         "precision_policy": "fp64",
@@ -289,7 +391,8 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
         "integration": (
             "one required eager AB3/AM4 cold-start step, then compiled "
             "lax.scan days; seasonal forcing inside scan"
-            if scanned_day is not None else "certified per-step Python loop"
+            if scanned_day is not None
+            else "certified per-step Python loop"
         ),
         "sampling": ["end_of_day_snapshot", "daily_mean"],
         "namelist": namelist._asdict(),
@@ -301,22 +404,26 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
             "barotropic_u_m_s": "prognostic native U depth-mean velocity",
             "barotropic_v_m_s": "prognostic native V depth-mean velocity",
         },
+        "daily_mean_convention": {
+            "surface_temperature_c": (
+                "thickness weighted: mean(T*e3t)/mean(e3t), matching NEMO IOIPSL votemper/vovvle3t"
+            ),
+            "other_fields": "arithmetic mean of per-step end states",
+        },
     }
     pending = output / "manifest.pending.json"
     hashes: dict[str, str] = {}
     _write_json_atomic(
-        pending, manifest | {"status": "pending", "completed_days": 0,
-                             "daily_sha256": hashes})
+        pending, manifest | {"status": "pending", "completed_days": 0, "daily_sha256": hashes}
+    )
 
     for day in range(1, days + 1):
         first_kt = (day - 1) * steps_per_day + 1
         if scanned_day is None:
-            state, means = run_python_day(
-                model, card, state, first_kt, steps_per_day)
+            state, means = run_python_day(model, card, state, first_kt, steps_per_day)
         elif day == 1:
             assert cold_tail is not None and cold_sample is not None
-            state, means = cold_tail(
-                state, 2, initial_means=cold_sample, initial_count=1)
+            state, means = cold_tail(state, 2, initial_means=cold_sample, initial_count=1)
         else:
             state, means = scanned_day(state, first_kt)
         jax.block_until_ready(state.eta.data)
@@ -342,11 +449,11 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
         _write_hashes_atomic(output / "daily.sha256", hashes)
         _write_json_atomic(
             pending,
-            manifest | {"status": "pending", "completed_days": day,
-                        "daily_sha256": hashes},
+            manifest | {"status": "pending", "completed_days": day, "daily_sha256": hashes},
         )
     completed = manifest | {
-        "status": "complete", "completed_days": days,
+        "status": "complete",
+        "completed_days": days,
         "daily_sha256": hashes,
     }
     _write_json_atomic(pending, completed)
@@ -356,14 +463,15 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--deck", choices=("shipped", "r4"), required=True)
+    parser.add_argument("--deck", choices=("shipped", "r4", "r4_smag"), required=True)
     parser.add_argument("--days", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--mode", choices=("gpu-native", "cpu-certified"), required=True)
     parser.add_argument(
-        "--mode", choices=("gpu-native", "cpu-certified"), required=True)
-    parser.add_argument(
-        "--daily-means", action="store_true",
-        help="required acknowledgement: emit daily means beside snapshots")
+        "--daily-means",
+        action="store_true",
+        help="required acknowledgement: emit daily means beside snapshots",
+    )
     args = parser.parse_args(argv)
     if not args.daily_means:
         parser.error("--daily-means is required for this climate driver")
@@ -371,9 +479,7 @@ def main(argv=None) -> int:
         from legoesm.ocean.fidelity.provenance import git_sha
 
         namelist = resolved_daily_namelist(args.deck, args.days)
-        manifest = run_long(
-            namelist, args.output, days=args.days, mode=args.mode,
-            commit=git_sha())
+        manifest = run_long(namelist, args.output, days=args.days, mode=args.mode, commit=git_sha())
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"REFUSE: {exc}", file=sys.stderr)
         return 2

@@ -3448,7 +3448,9 @@ class ModelDriver:
 
     def _create_physics(self) -> None:
         """Build the physics pipeline."""
-        self.physics = build_physics_pipeline(self.grid, self.sigma, self.config)
+        self.physics = build_physics_pipeline(
+            self.grid, self.sigma, self.config,
+            spacing_grid=self._coeff_grid())
         rad_str = self.config.radiation or "none"
         conv_str = self.config.convection or "none"
         logger.info(f"  Physics: radiation={rad_str}, convection={conv_str}")
@@ -16437,7 +16439,8 @@ class ModelDriver:
         # its ColumnAdapter bakes the band ncol (bands are uniform, so one build
         # serves every band — the make_sharded_operator_split_step CONTRACT). ---
         band_grid = build_band_grids_atm(self.grid, n_dev)[0]
-        band_physics = build_physics_pipeline(band_grid, self.sigma, cfg)
+        band_physics = build_physics_pipeline(
+            band_grid, self.sigma, cfg, spacing_grid=self.grid)
         # Radiation cadence.  ``make_sharded_operator_split_step`` computes the
         # serial prologue's predicate per step (``_need_rad_and_time``,
         # sharded_operator_split_step.py:202) and passes it in as ``need_rad``,

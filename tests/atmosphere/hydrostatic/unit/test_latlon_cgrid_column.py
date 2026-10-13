@@ -440,3 +440,25 @@ def test_driver_subgrid_orography_uses_the_native_grid_spacing(tmp_path,
                        output_dir=tmp_path / "pipe")
     with pytest.raises(ValueError, match="no subgrid_topo_stddev field"):
         pipe.setup()
+
+
+def test_ice_curve_drain_acts_on_the_column_lane(tmp_path):
+    """The mixed-phase drain runs through the column view: with it on, the
+    post-step T / water edits reach the native state (the run differs from
+    the same run with the drain off)."""
+    base = dict(days=3 * DT / 86400.0, microphysics="morrison",
+                hard_saturation_adjustment=True, ic="standard", rh_init=1.0)
+    on = _driver(tmp_path / "on", hard_sat_ice_curve=True, **base)
+    off = _driver(tmp_path / "off", hard_sat_ice_curve=False, **base)
+    for d in (on, off):
+        # supersaturate (a driver-side column edit, written back by the
+        # model) so the drain has something to remove
+        st = d.state
+        tr = dict(st.tracers)
+        tr["q_v"] = tr["q_v"].replace(data=3.0 * tr["q_v"].data)
+        d.state = st._replace(tracers=tr)
+    assert on.run() == "COMPLETED" and off.run() == "COMPLETED"
+    d_T = np.abs(np.asarray(on.state.native.T) - np.asarray(off.state.native.T)).max()
+    d_qi = np.abs(np.asarray(on.state.native.tracers["q_i"])
+                  - np.asarray(off.state.native.tracers["q_i"])).max()
+    assert d_T > 0.0 and d_qi > 0.0

@@ -63,6 +63,7 @@ def test_held_suarez_template_selects_none():
         _REPO / "config/templates/3d_idealized/held_suarez.yaml"
     ).to_experiment_config()
     assert cfg.surface_bulk_scheme == "none"
+    cfg.validate_strict()
 
 
 def test_run_amip_cli_round_trips_none():

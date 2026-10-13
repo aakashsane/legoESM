@@ -12,7 +12,7 @@ debt.  Both decks are identical through the kt=2 before state; at kt=3 the
 Smagorinsky deck has approximately `2.99e-5 m/s` U/V error versus
 `1.3e-11 m/s` on `r4`, and by kt=10 its T error is `1.219e-2 K`.  NEMO calls
 `dyn_ldf` only in RK stage 3, at
-`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:386-398`, so the first
+`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:387-398`, so the first
 possible port-specific movement is the step-2 stage-3 momentum-LDF increment.
 
 The existing operator records contain neither NEMO `ahmt`/`ahmf` nor the

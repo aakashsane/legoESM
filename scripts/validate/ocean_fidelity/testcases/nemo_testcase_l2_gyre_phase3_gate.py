@@ -464,6 +464,37 @@ def read_tracer_stage3(path: Path) -> dict:
     return result
 
 
+def read_tracer_stage12(path: Path, expected_stage: int, dims=DIMS) -> dict:
+    """Read the source-ordered stage-1/2 tracer accumulator and update."""
+    level = _registered(path, "now")
+    with path.open("rb") as handle:
+        magic = handle.read(16).decode("ascii").rstrip()
+        header = struct.unpack("=11i", handle.read(44))
+        values = np.fromfile(handle, dtype=np.float64)
+    version, kt, stage, kbb, kmm, krhs, kaa, nx, ny, nz, bits = header
+    require(magic == "NEMO_L2_RKTRA_1", f"{path}: bad magic")
+    require(
+        (version, kt, stage, nx, ny, nz, bits)
+        == (1, 1, expected_stage, *dims, 64),
+        f"{path}: bad header",
+    )
+    count = nx * ny * nz
+    require(values.size == 15 * count + 3 * nx * ny, f"{path}: bad payload")
+    names = (
+        "zero_T", "zero_S", "zFu", "zFv", "zFw",
+        "after_advection_T", "after_advection_S",
+        "after_sbc_T", "after_sbc_S", "Kbb_T", "Kbb_S",
+        "Kmm_T", "Kmm_S", "Kaa_T", "Kaa_S",
+    )
+    result = {
+        name: _xyz(values[index * count:(index + 1) * count], nx, ny, nz)
+        for index, name in enumerate(names)
+    }
+    result.update({"stage": stage, "Kbb": kbb, "Kmm": kmm,
+                   "Krhs": krhs, "Kaa": kaa, "registry_level": level})
+    return result
+
+
 # The solver returns ONE keyed barotropic substep frame (see
 # barotropic_latlon_cgrid._run_substep_loop); this map is the mimicry-only glue
 # from THIS oracle dump's field names to that frame's keys, and it lives in the

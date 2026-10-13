@@ -68,3 +68,16 @@ def test_shared_stage_and_zdf_readers_accept_runtime_dimensions(tmp_path):
     zdf = GATE.read_zdf_entry(zdf_path, dims=dims)
     assert zdf["avm"].shape == (2, 2, 2)
     assert zdf["avt"].shape == (2, 2, 2)
+
+
+def test_shared_tracer_stage_reader_accepts_runtime_dimensions(tmp_path):
+    dims = (6, 6, 2)
+    count = np.prod(dims)
+    path = tmp_path / "oracle_rktracer_operands_kt00000001_s1.bin"
+    with path.open("wb") as stream:
+        stream.write(b"NEMO_L2_RKTRA_1 ")
+        stream.write(struct.pack("=11i", 1, 1, 1, 1, 1, 3, 3, *dims, 64))
+        np.arange(15 * count + 3 * dims[0] * dims[1], dtype=np.float64).tofile(stream)
+    record = GATE.read_tracer_stage12(path, 1, dims=dims)
+    assert record["after_advection_T"].shape == (2, 2, 2)
+    assert record["after_sbc_S"].shape == (2, 2, 2)

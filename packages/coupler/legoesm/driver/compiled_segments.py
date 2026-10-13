@@ -3648,8 +3648,11 @@ def _rebuild_state(carry: SegmentCarry, model, advect_moisture: bool = False,
     _wname, _vname = (("u_d", "v_d") if persistent_dgrid else
                       ("u_f", "v_f") if persistent_cgrid else ("u", "v"))
     # Build Fields with minimal metadata
-    u_f = Field(carry.u, name=_wname, dims=("face", "x", "y", "level"), units="m/s")
-    v_f = Field(carry.v, name=_vname, dims=("face", "x", "y", "level"), units="m/s")
+    _wdims = ((("lat", "lon_face", "level"), ("lat_face", "lon", "level"))
+              if persistent_cgrid else
+              (("face", "x", "y", "level"), ("face", "x", "y", "level")))
+    u_f = Field(carry.u, name=_wname, dims=_wdims[0], units="m/s")
+    v_f = Field(carry.v, name=_vname, dims=_wdims[1], units="m/s")
     T_f = Field(carry.T, name="T", dims=("face", "x", "y", "level"), units="K")
     p_s_f = Field(carry.p_s, name="p_s", dims=("face", "x", "y"), units="Pa")
     phis_f = Field(carry.phis, name="phis", dims=("face", "x", "y"), units="m2/s2")

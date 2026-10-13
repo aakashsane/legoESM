@@ -361,6 +361,13 @@ def make_sharded_operator_split_step(
     # by latitude band -- instead of cell-centre winds re-projected every step.
     _perm_north = (latlon_band_perms(mesh.devices.size)[0]
                    if (persistent_cgrid and mesh is not None) else None)
+    if persistent_cgrid and (tuple(model.config.pole_v_bc) != (True, True)
+                             or model.config.pole_v_bc_offset != 0):
+        raise ValueError(
+            "persistent_cgrid carries v in the v_lower layout, which drops the "
+            "north pole face as the v=0 wall; that needs pole_v_bc=(True, True) "
+            f"and pole_v_bc_offset=0, got {model.config.pole_v_bc} / "
+            f"{model.config.pole_v_bc_offset}")
 
     def _v_faces(v_lower):
         if mesh is None:                     # serial: append the pole wall
@@ -412,7 +419,9 @@ def make_sharded_operator_split_step(
                 du_f, dv_f = model.lift_wind_increment(
                     du, dv, grid=band_geom, polar_mask=polar_mask,
                     polar_mask_v=polar_mask_v,
-                    own_polar_masks=polar_mask is None)
+                    # serial path: the model's own (global) masks; band path:
+                    # the band slices passed in (None there = filter off)
+                    own_polar_masks=mesh is None)
                 return du_f, to_vface_lower(
                     model.wall_v(dv_f, spmd_pole_end_masks()))
         else:

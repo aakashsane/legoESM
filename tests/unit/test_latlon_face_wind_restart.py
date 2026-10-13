@@ -104,3 +104,13 @@ def test_unsupported_lanes_refuse(tmp_path):
     trn.setup()
     with pytest.raises(NotImplementedError, match="face"):
         trn.build_training_segment(4)
+
+
+def test_checkpoint_with_one_face_wind_is_refused(leg1):
+    tmp, _b1, ckpt = leg1
+    with np.load(ckpt, allow_pickle=True) as z:
+        data = {k: z[k] for k in z.keys() if "latlon_v_face" not in k}
+    half = tmp / "half_checkpoint_day_0001.npz"
+    np.savez(half, **data)
+    with pytest.raises(ValueError, match="only one of the face winds"):
+        _resume(tmp, str(half), "leg2_half")

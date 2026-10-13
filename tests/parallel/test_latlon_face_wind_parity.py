@@ -63,7 +63,6 @@ def test_serial_driver_carries_face_winds_like_a_bare_loop(tmp_path):
     """The compiled driver ends on the face-wind state and matches a bare
     ``model.step`` loop fed its own face winds back each step."""
     d = _run(_cfg(tmp_path, "drv"))
-    assert isinstance(d.state, LatLonFaceWindState)
     ref = ModelDriver(_cfg(tmp_path, "ref"), output_dir=str(tmp_path / "ref"))
     ref.setup()
     st = hydrostatic_to_facewind(ref.state, ref.grid)
@@ -79,6 +78,7 @@ def test_serial_driver_carries_face_winds_like_a_bare_loop(tmp_path):
     # 0.23 m/s / 143 Pa here.
     assert np.abs(a["u"] - b["u"]).max() < 0.03
     assert np.abs(a["p_s"] - b["p_s"]).max() < 20.0
+    assert isinstance(d.state, LatLonFaceWindState)
 
 
 @pytest.mark.parametrize("turbulence", ["none", "louis"])
@@ -92,6 +92,8 @@ def test_one_vs_two_devices_wind_path(tmp_path, turbulence):
                             turbulence=turbulence)))
     umax = np.abs(one["u"]).max()
     assert umax > 0.05, umax          # winds must have developed
-    assert np.abs(one["u"] - two["u"]).max() < 0.02 * umax
-    assert np.abs(one["v"] - two["v"]).max() < 0.02 * umax
+    # The per-step rebuild gave 0.23 m/s / 143 Pa here; rounding-level lane
+    # differences are far below these absolute bounds.
+    assert np.abs(one["u"] - two["u"]).max() < 0.01
+    assert np.abs(one["v"] - two["v"]).max() < 0.01
     assert np.abs(one["p_s"] - two["p_s"]).max() < 5.0

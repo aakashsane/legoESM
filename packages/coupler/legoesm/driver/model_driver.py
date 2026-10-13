@@ -6982,6 +6982,11 @@ class ModelDriver:
             self._persistent_cgrid = True
             return
         lifted = hydrostatic_to_facewind(self.state, self.grid)
+        if sum(f is not None for f in faces) == 1:
+            raise ValueError(
+                "checkpoint carries only one of the face winds "
+                f"{self._FACE_WIND_KEYS}; refusing to lift the other from "
+                "cell centres and mix the two")
         if all(f is not None for f in faces):
             u_f, v_f = (jnp.asarray(f) for f in faces)
             if (u_f.shape != lifted.u_f.data.shape

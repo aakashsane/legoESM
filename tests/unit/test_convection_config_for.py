@@ -87,7 +87,6 @@ def test_pipeline_fills_bechtold_dx_from_grid():
     assert explicit.convection_config.dx_m == 50e3
 
 
-
 def test_tile_pipeline_builds_without_tile_cell_areas():
     """#1967: the tiled-cube lane builds physics on a shape-only tile view
     that has no cell areas; the Bechtold spacing fill read them for every

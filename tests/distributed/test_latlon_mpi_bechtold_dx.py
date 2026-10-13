@@ -2,7 +2,7 @@
 
 Run under MPI::
 
-    mpirun -n 2 python -m pytest tests/distributed/test_latlon_mpi_bechtold_dx.py
+    mpirun -n 4 python -m pytest tests/distributed/test_latlon_mpi_bechtold_dx.py
 
 Under lat-lon band MPI ``self.grid`` is this rank's latitude band, so a
 spacing filled from it differs per rank (polar bands have smaller cells).
@@ -48,8 +48,10 @@ def _latlon_band_backend():
 def test_bechtold_dx_is_global_on_every_rank(_latlon_band_backend):
     comm = MPI.COMM_WORLD
     n_ranks = comm.Get_size()
-    if n_ranks < 2:
-        pytest.skip("needs >= 2 MPI ranks")
+    if n_ranks < 4:
+        # Two hemispheric bands have the global mean cell area, so the
+        # band-local fill cannot be told apart from the global one.
+        pytest.skip("needs >= 4 MPI ranks")
     if N_LAT % n_ranks != 0:
         pytest.skip(f"N_LAT={N_LAT} not divisible by n_ranks={n_ranks}")
     import tempfile
@@ -72,7 +74,12 @@ def test_bechtold_dx_is_global_on_every_rank(_latlon_band_backend):
     driver.setup()
     assert driver.grid.grid_lat.shape[0] == N_LAT // n_ranks  # band-local
 
+    dx_global = mean_grid_spacing_m(create_grid("latlon", N_LAT))
+    local_off = comm.allgather(
+        abs(mean_grid_spacing_m(driver.grid) - dx_global) > 1.0e3)
+    assert any(local_off), "bands do not discriminate; test is vacuous"
+
     dx = driver.physics.convection_config.dx_m
     all_dx = comm.allgather(dx)
-    assert dx == mean_grid_spacing_m(create_grid("latlon", N_LAT)), all_dx
+    assert dx == dx_global, all_dx
     assert len(set(all_dx)) == 1, all_dx

@@ -209,6 +209,7 @@ def test_band_physics_takes_bechtold_dx_from_global_grid(tmp_path, monkeypatch):
     driver.setup()
     with pytest.raises(_Stop):
         driver.run(compiled=True)
+    assert len(built) == 2
     band = built[1]
     assert band.adapter.ncol == (RES // n_dev) * 2 * RES  # band ncol
     assert band.convection_config.dx_m == mean_grid_spacing_m(

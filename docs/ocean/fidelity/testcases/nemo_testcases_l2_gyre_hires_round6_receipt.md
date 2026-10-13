@@ -138,12 +138,14 @@ shipped card too, and was not made.
 Evidence is under
 `/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round6/`.
 
-- focused ladder/acquisition/30-day tests: 32 passed, 65 deselected;
+- focused ladder/acquisition/30-day tests: 25 passed; certified-card digest
+  tests: 3 passed;
 - daily-writer dry build preflight: PASS;
 - r4 and r4_smag ladders: DEBT as preregistered, artifacts written from clean
   commit `8bbe2f2ae` and all one-ULP controls FIRED;
-- shipped digest and trajectory no-movement gate: pending final run;
-- receipt citation gate and shifted-citation plant: pending final run.
+- shipped digest and trajectory no-movement gate: PASS, 70 rows, no worsened
+  cell and no legoESM field movement versus the round-1 control;
+- receipt citation gate and shifted-citation plant: PASS / FIRED.
 
 ## Inherited pins / OPEN
 

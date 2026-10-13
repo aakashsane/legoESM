@@ -1404,13 +1404,13 @@ FILES = {
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
     # --- GYRE high-resolution round 6: first r4 external-mode owner ---
-    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3.f90:182-190': [
+    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3.f90:184-190': [
         'IF( l_ldfdyn_time                    )   CALL ldf_dyn( kstp, Nbb )',
-        'CALL stp_2D( kstp, Nbb, Nbb, Naa, Nrhs )', 9],
-    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stp2d.f90:174-199': [
+        'CALL stp_2D( kstp, Nbb, Nbb, Naa, Nrhs )', 7],
+    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stp2d.f90:178-199': [
         'Ue_rhs(ji,jj) = SUM( e3u_3d(ji,jj,1:jpkm1)*uu(ji,jj,1:jpkm1,Krhs)*umask(ji,jj,1:jpkm1) ) * r1_hu_0(ji,jj)',
         'Ve_rhs(ji,jj) =  Ve_rhs(ji,jj) + r1_rho0 * vtauV(ji,jj) * (r1_hv_0(ji,jj) /(1._wp+r3v(ji,jj,Kbb)))',
-        26],
+        22],
     'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/usrdef_sbc.f90:176-191': [
         'ztime = REAL( kt, wp ) * rn_Dt / (rmmss * rhhmm)',
         'vtau(ji,jj) =   ztaun * SIN( rpi * (gphit(ji,jj) - 15.) / (29.-15.) )',

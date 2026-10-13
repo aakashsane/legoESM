@@ -24,12 +24,12 @@ single-domain acquisition recipe.  It does not run NEMO, MPI, or a GPU.
 
 The executed RK3 driver updates a time-varying viscosity, then calls `stp_2D`
 with the before level `Nbb` and RHS level `Nrhs` at
-`GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3.f90:182-190`.  In the external-mode
+`GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3.f90:184-190`.  In the external-mode
 entry, the vector-form slow RHS is the reference-thickness vertical sum times
 the stored reference reciprocal.  The wind is then added as
 `r1_rho0 * utauU * (r1_hu_0 / (1 + r3u(Kbb)))`, with the V twin written in the
 same order; there is no one-half factor or mask in this statement
-(`GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stp2d.f90:174-199`).  Thus:
+(`GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stp2d.f90:178-199`).  Thus:
 
 - velocity time level: before, `Nbb`;
 - thickness reciprocal time level: reference reciprocal divided by the
@@ -57,13 +57,16 @@ operand cannot move substep 1.
 The admitted NEMO executable has SHA-256
 `974dc326b4f5237a0e8dfe50ba0ae8a4573507d57429fb82069ff3c20abfad41`.
 The instrument disassembles only `__usrdef_sbc_MOD_usrdef_sbc_oce` and records
-both scalar `sin` and GNU two-lane vector `_ZGVbN2v_sin` calls.  The certified
+both scalar `sin` and GNU two-lane vector `_ZGVbN2v_sin` calls: the vector call
+serves the optimized loop and the scalar call its remainder.  The certified
 legoesm policy deliberately evaluates scalar system `sin` once per element.
-The r4 oracle therefore consumes a different transcendental program before
-the otherwise faithful face average and barotropic product.  This is a
-policy/composition difference, not a legal source regrouping.  Replacing it
-only for `nn_GYRE=4` would be the forbidden deck special case.  The round's
-explicit stop rule therefore fires.
+Together with the eliminated density/depth factors and all product
+associations, this localizes the first owner left open to NEMO's vectorized
+surface-stress transcendental; the present record does not dump raw `utau`, so
+that attribution is an elimination result rather than a direct raw-operand
+comparison.  This is a policy/composition difference, not a legal source
+regrouping.  Replacing it only for `nn_GYRE=4` would be the forbidden deck
+special case.  The round's explicit stop rule therefore fires.
 
 ## Ten-step ladders
 
@@ -87,7 +90,16 @@ the round-5 discriminator bar.
 
 The instrument now evaluates the final `MIN(MAX(deformation, lower), upper)`
 owner on NEMO's own before-level velocity at `kt=2`, `3`, and `10`.  The final
-measured T/F fractions are recorded in `round6/r4_smag_ladder.json`.
+measured fractions are:
+
+| kt | T deformation | T lower | T upper | F deformation | F lower | F upper |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 60.4826% | 39.5174% | 0% | 62.4463% | 37.5537% | 0% |
+| 3 | 42.8660% | 57.1340% | 0% | 45.1825% | 54.8175% | 0% |
+| 10 | 47.6986% | 52.3014% | 0% | 48.6345% | 51.3655% | 0% |
+
+T counts use 288,000 wet cells.  F counts use the 294,030 nonzero mode-32
+coefficient points, including free-slip wall points.
 
 Before acquisition, the day-30 prediction is frozen as follows: relative to
 `kt=10`, the lower-limit fraction decreases, the deformation-owned fraction
@@ -115,17 +127,21 @@ No production physics file differs from the incoming tip.  The default card
 digest remains `99b2dfce324b0f77`; the ten-step shipped trajectory remains
 byte-identical to the registered round-1 legoESM control.  This is the
 required no-movement claim, not a claim that every shipped NEMO residual is
-zero.  A vector-transcendental patch would move the shipped card too, and was
-not made.
+zero.  The proposed “old versus NEMO” grouping premise is refuted by the
+compiled source: both already evaluate `(r1_rho0*utau)*depth_reciprocal`.
+There is consequently no second grouping whose one-degree coincidence needs
+an exact-operand explanation.  A vector-transcendental patch would move the
+shipped card too, and was not made.
 
 ## Tests and evidence
 
 Evidence is under
 `/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round6/`.
 
-- focused ladder/acquisition/30-day tests: pending final run;
+- focused ladder/acquisition/30-day tests: 32 passed, 65 deselected;
 - daily-writer dry build preflight: PASS;
-- r4 and r4_smag ladders: pending final round-6 artifact write;
+- r4 and r4_smag ladders: DEBT as preregistered, artifacts written from clean
+  commit `8bbe2f2ae` and all one-ULP controls FIRED;
 - shipped digest and trajectory no-movement gate: pending final run;
 - receipt citation gate and shifted-citation plant: pending final run.
 

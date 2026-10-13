@@ -5516,10 +5516,10 @@ class ModelDriver:
             turbulence=pipeline.turbulence_config,
             gravity_wave_drag=pipeline.gwd_config,
             radiation=pipeline.radiation_config,
-            # Cloud knobs reach the optics only with a cloud scheme; the snow
-            # albedo config only with snow-albedo feedback.
-            cloud=({k[1:]: v for k, v in sorted(vars(pipeline).items())
-                    if k.startswith("_cloud_")}
+            # The CloudConfig the radiation path builds (only with a cloud
+            # scheme); the snow albedo config only with snow-albedo feedback.
+            cloud=(pipeline.resolved_cloud_config(
+                       pipeline._cloud_scheme, pipeline._cloud_convective)
                    if pipeline._cloud_scheme != "none" else None),
             land=pipeline.land_ml_cfg,
             land_albedo=(pipeline.land_albedo_config
@@ -15018,8 +15018,9 @@ class ModelDriver:
         if not _full_physics:
             # The dry legacy path: the default gray config above + Rayleigh
             # friction, with the solar forcing; no scheme from the config.
-            self._record_resolved_physics(radiation=gray_config,
-                                          solar=self._solar_config)
+            self._record_resolved_physics(
+                radiation={"scheme": gray_config, "orbit": _orbit_params},
+                solar=self._solar_config)
         _phys_fn_loop = _spectral_physics_fn
         _ext_forcing = False
         # #405 prognostic-physics carry (leapfrog path only); stays False/None

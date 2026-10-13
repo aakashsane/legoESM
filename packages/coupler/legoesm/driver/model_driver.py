@@ -6958,9 +6958,6 @@ class ModelDriver:
                     "cell-centre (n_lat) arrays")
         elif self._is_spmd_multiprocess():
             _why = "multi-process SPMD (the face sharding is unvalidated)"
-        elif getattr(self, "_requires_surface_flux_export", False):
-            _why = ("a COUPLED run: the coupled driver reads the atmosphere's "
-                    "lowest-level winds straight off the cell-centre state")
         elif (self._device_config is not None
               and getattr(self._device_config, "mesh", None) is not None
               and tuple(getattr(self._device_config, "tiling", (1, 1)))
@@ -7007,6 +7004,10 @@ class ModelDriver:
                 "to an uninterrupted run.")
         self.state = lifted
         self._persistent_cgrid = True
+        logger.info(
+            "lat-lon C-grid face winds are carried between steps "
+            "(u_f %s, v_f %s)", tuple(lifted.u_f.data.shape),
+            tuple(lifted.v_f.data.shape))
 
     def save_checkpoint(self, step: int, day: float) -> None:
         """Save checkpoint to output directory using unified restart API.

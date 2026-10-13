@@ -277,9 +277,5 @@ def test_stateless_spmd_sublane_still_refuses_a_coupled_run(tmp_path):
     driver = ModelDriver(cfg, output_dir=str(tmp_path / "dry"))
     driver.setup()
     driver._requires_surface_flux_export = True     # the coupled-driver marker
-    # Lat-lon C-grid runs now refuse a coupled run even earlier, at run start
-    # (they carry face winds the coupled driver cannot read); either refusal
-    # keeps the silent sw_down=0 run from happening.
-    with pytest.raises((NotImplementedError, SystemExit),
-                       match="sw_down=0|COUPLED"):
+    with pytest.raises(NotImplementedError, match="sw_down=0"):
         driver.run(compiled=True)

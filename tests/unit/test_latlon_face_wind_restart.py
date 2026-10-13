@@ -94,12 +94,6 @@ def test_unsupported_lanes_refuse(tmp_path):
     with pytest.raises(SystemExit, match="ensemble"):
         ens.run(compiled=True)
 
-    cpl = ModelDriver(_cfg(tmp_path / "cpl", 1))
-    cpl.setup()
-    cpl._requires_surface_flux_export = True
-    with pytest.raises(SystemExit, match="COUPLED"):
-        cpl.run(compiled=True)
-
     trn = ModelDriver(_cfg(tmp_path / "trn", 1))
     trn.setup()
     with pytest.raises(NotImplementedError, match="face"):

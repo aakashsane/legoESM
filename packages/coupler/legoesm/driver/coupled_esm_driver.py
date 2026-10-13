@@ -1687,7 +1687,8 @@ class CoupledESMDriver:
             surface_temperature_for_lw_boundary,
         )
 
-        state = self._atm.state
+        # Cell-centre view: a lat-lon C-grid atmosphere carries its face winds.
+        state = self._atm._state_cc()
         # Low-level winds/T/q/p_s for the ocean surface stress + bulk turbulent
         # fluxes.  Three atm-state layouts:
         #   * cube/latlon  -> cell-centered u/v/T/p_s Fields, read directly.

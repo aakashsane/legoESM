@@ -46,6 +46,10 @@ surface:
   # that q_v in place as a passive tracer that still perturbs the dynamics
   # through virtual temperature -> density.  Start genuinely dry.
   rh_init: 0.0
+  # Held-Suarez has no surface heat or moisture exchange (its only surface
+  # term is the Rayleigh drag).  Without this the single-device lat-lon/cube
+  # pipeline applies the constant-coefficient bulk fluxes.
+  bulk_scheme: none
 conservation:
   fix_mass: true
 time:

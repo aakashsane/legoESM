@@ -464,6 +464,7 @@ class Config:
             "held_suarez_forcing": _forcing == "held_suarez",
             "T_init": float(surface.get("T_init", 300.0)),
             "rh_init": float(surface.get("rh_init", surface.get("RH_init", 0.7))),
+            "surface_bulk_scheme": surface.get("bulk_scheme", "constant"),
             "distributed": bool(
                 hardware.get("parallelism", {}).get("distributed", False)
             ),

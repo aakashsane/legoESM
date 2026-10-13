@@ -6998,8 +6998,9 @@ class ModelDriver:
                 v_f=lifted.v_f.replace(data=v_f.astype(dt_)))
         elif getattr(self, "_loaded_checkpoint_step_day", None) is not None:
             logger.warning(
-                "restart checkpoint has no saved face winds (written before "
-                "they were checkpointed): lifting the cell-centre winds to "
+                "restart checkpoint has no saved face winds (a zarr "
+                "checkpoint, or one written before they were checkpointed): "
+                "lifting the cell-centre winds to "
                 "the C-grid faces once.  This restart is not bit-identical "
                 "to an uninterrupted run.")
         self.state = lifted

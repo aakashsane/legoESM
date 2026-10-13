@@ -40,3 +40,17 @@ def test_coupled_latlon_run_carries_face_winds(tmp_path):
     # the faces are the native shapes, not the cell-centre ones
     assert st.u_f.data.shape[1] == u.shape[1] + 1
     assert st.v_f.data.shape[0] == u.shape[0] + 1
+
+
+def test_earth_system_latlon_run_carries_face_winds(tmp_path):
+    from legoesm.driver.earth_system_driver import EarthSystemDriver
+    cfg = ExperimentConfig(
+        grid=GridConfig(grid_type="latlon", resolution=8, nlev=5),
+        dycore=DycoreConfig(model_type="hydrostatic",
+                            discretization="latlon_cgrid", dt=600.0),
+        output=OutputConfig(diag_days=1),
+        radiation="gray", days=1, dataset="analytical", precision="fp64")
+    drv = EarthSystemDriver(cfg, output_dir=tmp_path)
+    drv.setup()
+    assert drv.run() == "COMPLETED"
+    assert isinstance(drv.state, LatLonFaceWindState)

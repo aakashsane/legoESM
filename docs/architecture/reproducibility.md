@@ -430,8 +430,12 @@ emits v2. Old manifests keep loading.
    config when that feedback is on, and the solar, ozone, aerosol and GHG
    forcing configs. `turbulence_override` and `gravity_wave_drag_override` are
    recorded too. An entry the lane does not run is recorded as `null`, e.g.
-   the idealized FV3-duo / simple tiled lanes record only the default Kessler
-   they run, and the dry spectral path records its default gray radiation.
+   the idealized FV3-duo / simple tiled lanes record only the Kessler config
+   they run, and the dry spectral path records its default gray radiation
+   and orbit. The pipeline cloud entry is the `CloudConfig` the radiation path
+   builds; its convective-cloud term is recorded on only where the lane passes
+   the lagged convective precip (compiled and operator-split lanes, not the
+   per-step lane).
    Pipeline lanes record at the start of `run()`; the MPAS / column,
    spectral, FV3-duo, lat-band and tiled-cube lanes record their own build.
    Process 0's resolution is recorded and checked; the outcome is broadcast

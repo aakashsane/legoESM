@@ -98,3 +98,53 @@ def test_single_device_driver_applies_no_surface_flux_under_none(tmp_path):
     assert np.abs(drv - bare).max() < 1e-4
     drv_c, bare_c = _one_step_T(tmp_path, "constant")
     assert np.abs(drv_c - bare_c).max() > 1e-3
+
+
+# ------------------------------------------------- pipeline step, every grid
+
+def _grids():
+    from legoesm.grids.cubed_sphere import create_cubed_sphere
+    from legoesm.grids.latlon import create_latlon_grid
+    from legoesm.grids.voronoi import create_voronoi_mesh
+    return {"cubed_sphere": lambda: create_cubed_sphere(4),
+            "latlon": lambda: create_latlon_grid(8, 16),
+            "mpas": lambda: create_voronoi_mesh(3, lloyd_iterations=8)}
+
+
+@pytest.fixture(scope="module", params=["cubed_sphere", "latlon", "mpas"])
+def pipe_grid(request):
+    return _grids()[request.param]()
+
+
+def _pipe(grid, sbs, **over):
+    from tests.unit.test_prescribed_surface_fluxes_driver_path import _sigma
+    from legoesm.driver.physics_pipeline import build_physics_pipeline
+    cfg = ExperimentConfig(diurnal_cycle=False, surface_bulk_scheme=sbs,
+                           **{**_DRY, **over})
+    return build_physics_pipeline(grid, _sigma(), cfg)
+
+
+def test_pipeline_step_has_no_surface_exchange_under_none(pipe_grid):
+    """Warm, moist-deficient surface: "constant" heats and moistens the bottom
+    level, "none" leaves every tendency and surface flux at exactly zero."""
+    from tests.unit.test_prescribed_surface_fluxes_driver_path import _step
+    out = _step(_pipe(pipe_grid, "none"))
+    for name in ("shflx", "lhflx", "evap_sfc", "dT_dt", "dq_v_dt",
+                 "du_dt", "dv_dt"):
+        assert np.all(np.asarray(getattr(out, name)) == 0.0), name
+    ref = _step(_pipe(pipe_grid, "constant"))
+    assert float(np.abs(np.asarray(ref.dT_dt)[..., -1]).max()) > 0.0
+    assert float(np.abs(np.asarray(ref.dq_v_dt)[..., -1]).max()) > 0.0
+
+
+def test_pipeline_step_refuses_a_second_surface_source_under_none(pipe_grid):
+    import jax.numpy as jnp
+    from tests.unit.test_prescribed_surface_fluxes_driver_path import (
+        _inputs, _step)
+    pipe = _pipe(pipe_grid, "none")
+    _, s2 = _inputs(pipe)
+    with pytest.raises(ValueError, match="no surface fluxes at all"):
+        _step(pipe, sfc_shflx_override=jnp.zeros(s2),
+              sfc_lhflx_override=jnp.zeros(s2))
+    with pytest.raises(ValueError, match="no surface fluxes at all"):
+        _step(_pipe(pipe_grid, "none", turbulence="louis"))

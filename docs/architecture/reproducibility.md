@@ -452,7 +452,14 @@ emits v2. Old manifests keep loading.
    Bechtold's diurnal CAPE correction is switched off when no surface-flux
    source exists); per-process differences (only process 0's resolution is
    recorded); array-valued overrides (stored as a digest, so they cannot be
-   replayed). The ocean, land (LMIP), DINO and coupled drivers record their
+   replayed).
+   Open limits (pending decisions): `reproduce` always reruns the compiled
+   rollout, so a `--per-step-rollout` run is rerun in the other mode (with
+   convective clouds the closure check refuses it); and `run_amip.py` changes
+   scheme configs after `setup()` (`--params` routed onto the pipeline, the
+   AIMIP trained configs, the Sundqvist command-line overrides). The record
+   captures those, but `reproduce` does not reapply them, so the closure check
+   refuses such runs. The ocean, land (LMIP), DINO and coupled drivers record their
    runtime configs in `resolved_config`, but `reproduce` does not rerun them,
    so they have no strict replay or closure check yet.
 2. Commit check plus a drift diff table in `reproduce` and restart-chain

@@ -5484,7 +5484,7 @@ class ModelDriver:
         if cfg.grid.grid_type == "mpas":
             return True
         if disc == "spectral":
-            return _spectral_full_physics(cfg)
+            return True                     # unified physics / dry gray path
         if cfg.enable_latlon_spmd and cfg.grid.grid_type == "latlon":
             return True                     # band pipeline / no schemes
         dc = self._device_config
@@ -5498,16 +5498,16 @@ class ModelDriver:
     def _record_default_kessler_physics(self, kessler_on: bool) -> None:
         """The idealized lanes (FV3 duo, simple tiled cube) run Kessler with
         its DEFAULT ``KesslerConfig`` (they pass no config), whatever the
-        run's microphysics flags say; record that, not the setup pipeline's
-        resolved leaf."""
+        run's microphysics flags say, and no other scheme; record that."""
         from legoesm.atmosphere.physics.microphysics.config import KesslerConfig
-        p = self.physics
         self._record_resolved_physics(
-            convection=p.convection_config,
-            microphysics=KesslerConfig() if kessler_on else p.micro_config,
-            turbulence=p.turbulence_config,
-            gravity_wave_drag=p.gwd_config,
-        )
+            microphysics=KesslerConfig() if kessler_on else None)
+
+    def _forcing_configs(self) -> dict:
+        """External-forcing configs (set in ``_setup_external_forcing``) the
+        full-physics lanes sample their solar / ozone / aerosol / GHG from."""
+        return dict(solar=self._solar_config, ozone=self._ozone_ext_config,
+                    aerosol=self._aerosol_config, ghg=self._ghg_config)
 
     def _record_pipeline_physics(self, pipeline) -> None:
         self._record_resolved_physics(
@@ -5515,6 +5515,16 @@ class ModelDriver:
             microphysics=pipeline.micro_config,
             turbulence=pipeline.turbulence_config,
             gravity_wave_drag=pipeline.gwd_config,
+            radiation=pipeline.radiation_config,
+            # Cloud knobs reach the optics only with a cloud scheme; the snow
+            # albedo config only with snow-albedo feedback.
+            cloud=({k[1:]: v for k, v in sorted(vars(pipeline).items())
+                    if k.startswith("_cloud_")}
+                   if pipeline._cloud_scheme != "none" else None),
+            land=pipeline.land_ml_cfg,
+            land_albedo=(pipeline.land_albedo_config
+                         if pipeline.snow_albedo_feedback else None),
+            **self._forcing_configs(),
         )
 
     def _record_resolved_physics(self, **configs) -> None:
@@ -5526,6 +5536,7 @@ class ModelDriver:
         every process refuses together.  Process 0's resolution is the one
         recorded."""
         from legoesm.driver.restart import (
+            RESOLVED_PHYSICS_KEYS,
             RUN_MANIFEST_FILENAME,
             collective_root_gate,
             format_drift_rows,
@@ -5533,11 +5544,16 @@ class ModelDriver:
             record_resolved_physics,
             resolved_physics_record,
         )
-        record = resolved_physics_record({
+        configs = {
+            **dict.fromkeys(RESOLVED_PHYSICS_KEYS),   # a scheme this lane does not run
             **configs,
             "turbulence_override": self.config.turbulence_override,
             "gravity_wave_drag_override": self.config.gravity_wave_drag_override,
-        })
+        }
+        if set(configs) != set(RESOLVED_PHYSICS_KEYS):
+            raise ValueError(f"unknown resolved-physics entries "
+                             f"{sorted(set(configs) - set(RESOLVED_PHYSICS_KEYS))}")
+        record = resolved_physics_record(configs)
         manifest_file = self._output_dir / RUN_MANIFEST_FILENAME
 
         def check_and_write():
@@ -11795,6 +11811,9 @@ class ModelDriver:
             microphysics=phys_cfg.microphysics,
             turbulence=phys_cfg.turbulence,
             gravity_wave_drag=phys_cfg.gravity_wave_drag,
+            radiation=phys_cfg.radiation,     # carries cloud_config
+            land=self.physics.land_ml_cfg,
+            **self._forcing_configs(),
         )
         # Phase D perf: shard the per-column RRTMGP workload across all local
         # devices (issue #273 ``column_mesh``).  rrtmgp is the dominant MPAS
@@ -14996,6 +15015,11 @@ class ModelDriver:
         # channel (the deck-driver "spectral path bypasses external
         # forcing" warning).
         _full_physics = _spectral_full_physics(cfg)
+        if not _full_physics:
+            # The dry legacy path: the default gray config above + Rayleigh
+            # friction, with the solar forcing; no scheme from the config.
+            self._record_resolved_physics(radiation=gray_config,
+                                          solar=self._solar_config)
         _phys_fn_loop = _spectral_physics_fn
         _ext_forcing = False
         # #405 prognostic-physics carry (leapfrog path only); stays False/None
@@ -15074,6 +15098,8 @@ class ModelDriver:
                 microphysics=phys_cfg.microphysics,
                 turbulence=phys_cfg.turbulence,
                 gravity_wave_drag=phys_cfg.gravity_wave_drag,
+                radiation=phys_cfg.radiation,     # carries cloud_config
+                **self._forcing_configs(),
             )
             _combined_fn = make_physics(
                 phys_cfg, model_type="spectral_pe", dt=DT,
@@ -15792,8 +15818,7 @@ class ModelDriver:
                     "parameterizations to 'none' / use held_suarez_forcing.")
             return self._run_operator_split_spmd(start_step, start_day, mesh)
         # The stateless lane runs Held-Suarez or nothing; no scheme reaches it.
-        self._record_resolved_physics(convection=None, microphysics=None,
-                                      turbulence=None, gravity_wave_drag=None)
+        self._record_resolved_physics()
         # STATELESS sub-lane only (dynamics-only / Held-Suarez): no radiation,
         # no microphysics, so nothing ever writes held_sw_net_sfc /
         # held_lw_net_sfc / seg_precip into _carry_aux.  The operator-split

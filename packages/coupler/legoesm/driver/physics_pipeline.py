@@ -3395,7 +3395,7 @@ def _build_none_radiation_fn(config):
             sw_heating_rate=z_full,
         )
 
-    return radiation_fn
+    return radiation_fn, None
 
 
 def _build_gray_radiation_fn(config):
@@ -3483,7 +3483,7 @@ def _build_gray_radiation_fn(config):
             sfc_albedo=albedo_col,
         )
 
-    return radiation_fn
+    return radiation_fn, gray_config
 
 
 def _build_rrtmgp_radiation_fn(config):
@@ -3648,7 +3648,7 @@ def _build_rrtmgp_radiation_fn(config):
         result = result._replace(toa_insolation=insol)
         return result
 
-    return radiation_fn
+    return radiation_fn, rrtmg_config
 
 
 # Map radiation scheme names to builder functions.
@@ -4996,7 +4996,7 @@ def build_physics_pipeline(grid, sigma, config):
             f"{sorted(_RADIATION_BUILDERS)}. (Previously this silently defaulted "
             "to rrtmgp, masking typos and running full RRTMGP for 'none'.)"
         )
-    radiation_fn = _RADIATION_BUILDERS[rad_scheme](config)
+    radiation_fn, radiation_config = _RADIATION_BUILDERS[rad_scheme](config)
 
     # Resolve convection via registry
     convection_fn, convection_config = _resolve_convection(config)
@@ -5174,6 +5174,8 @@ def build_physics_pipeline(grid, sigma, config):
             "that surface layer IS the unified land-air interface flux law. "
             f"Got turbulence={getattr(config, 'turbulence', 'none')!r}."
         )
+    # The radiation scheme config the builder baked into radiation_fn.
+    pipeline.radiation_config = radiation_config
     pipeline._cloud_scheme = getattr(config, 'cloud_scheme', 'none')
     # CLUBB sub-grid cloud fraction -> radiation (marine-Sc albedo lever).  Route
     # diagnostic CLUBB's PDF cloud fraction (carried out of physics_step_no_rad on

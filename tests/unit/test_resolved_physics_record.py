@@ -78,8 +78,8 @@ def test_record_resolved_physics_writes_once_and_refuses_a_different_record(
 
 
 def _full_record(**configs):
-    return resolved_physics_record({**configs, "turbulence_override": None,
-                                    "gravity_wave_drag_override": None})
+    return resolved_physics_record({**dict.fromkeys(RESOLVED_PHYSICS_KEYS),
+                                    **configs})
 
 
 def _driver_at(tmp_path: Path, **kw):
@@ -189,13 +189,20 @@ def test_pipeline_lane_records_at_run_start_including_the_override(
     # The override is dropped from resolved_config but kept here.
     assert m["config"]["resolved_config"]["turbulence_override"] is None
     assert json.dumps(rec["turbulence"]).count("137.0") >= 1
+    assert rec["radiation"]["__type__"].endswith(":GrayRadiationConfig")
+    assert rec["radiation"] == resolved_physics_record(
+        {"r": d.physics.radiation_config})["r"]
+    assert rec["cloud"] is None and rec["land"] is None   # none configured
+    for k, t in (("solar", "SolarConfig"), ("ozone", "OzoneConfig"),
+                 ("aerosol", "AerosolConfig"), ("ghg", "GHGConfig")):
+        assert rec[k]["__type__"].endswith(":" + t)
     assert physics_config_from_record(rec["turbulence_override"]) == _turb(
         l_mix_max=137.0)
 
 
 def _spectral(tmp: Path, cfg_extra=None, **kw):
     from legoesm.driver.model_driver import ModelDriver
-    cfg = ExperimentConfig(**(cfg_extra or {}),
+    fields = dict(
         grid=GridConfig(grid_type="gaussian", resolution=8, nlev=8),
         dycore=DycoreConfig(energy_fixer=False, model_type="hydrostatic",
                             discretization="spectral", dt=600.0),
@@ -203,7 +210,8 @@ def _spectral(tmp: Path, cfg_extra=None, **kw):
         days=DAYS_2_STEPS, dataset="analytical", radiation="gray",
         convection="none", turbulence="louis", precision="fp64",
         distributed=False)
-    return ModelDriver(cfg, output_dir=str(tmp), **kw)
+    fields.update(cfg_extra or {})
+    return ModelDriver(ExperimentConfig(**fields), output_dir=str(tmp), **kw)
 
 
 def _reproduce(manifest_dir: Path, out: Path) -> None:
@@ -225,6 +233,8 @@ def test_spectral_lane_records_and_reproduce_closes(tmp_path: Path,
     assert d.run() == "COMPLETED"
     rec = read_run_manifest(ref)["config"]["resolved_physics"]
     assert rec["turbulence"]["__type__"].endswith(":TurbulenceConfig")
+    assert rec["radiation"]["__type__"].endswith(":RadiationConfig")
+    assert rec["solar"]["__type__"].endswith(":SolarConfig")
 
     caplog.set_level(logging.INFO)
     _reproduce(ref, tmp_path / "rerun")
@@ -280,6 +290,8 @@ def test_mpas_lane_records_and_closure_refuses(tmp_path: Path) -> None:
     d.setup()
     assert d.run() == "COMPLETED"
     rec = read_run_manifest(tmp_path / "a")["config"]["resolved_physics"]
+    assert rec["radiation"]["__type__"].endswith(":RadiationConfig")
+    assert rec["ghg"]["__type__"].endswith(":GHGConfig")
     bad = copy.deepcopy(rec)
     bad["turbulence"]["louis"]["l_mix_max"] = -1.0
     d2 = ModelDriver(cfg(), output_dir=str(tmp_path / "b"),
@@ -354,10 +366,11 @@ def _spy_pipelines(monkeypatch, module):
 
 
 def _pipeline_record(p):
-    return _full_record(convection=p.convection_config,
-                        microphysics=p.micro_config,
-                        turbulence=p.turbulence_config,
-                        gravity_wave_drag=p.gwd_config)
+    return resolved_physics_record(dict(convection=p.convection_config,
+                                        microphysics=p.micro_config,
+                                        turbulence=p.turbulence_config,
+                                        gravity_wave_drag=p.gwd_config,
+                                        radiation=p.radiation_config))
 
 
 def _sharded_cfg(grid, n_devices, **dyc):
@@ -382,7 +395,9 @@ def _assert_records_lane_pipeline(tmp_path, cfg, built) -> None:
     lane = built[-1]
     assert lane is not d.physics          # the lane's own build, not setup's
     rec = read_run_manifest(tmp_path)["config"]["resolved_physics"]
-    assert rec == _pipeline_record(lane)
+    want = _pipeline_record(lane)
+    assert {k: rec[k] for k in want} == want
+    assert rec["solar"]["__type__"].endswith(":SolarConfig")
 
 
 def test_lat_band_lane_records_its_band_pipeline(tmp_path: Path,
@@ -473,3 +488,17 @@ def test_stateless_lat_band_lane_records_no_schemes(tmp_path: Path) -> None:
     rec = read_run_manifest(tmp_path)["config"]["resolved_physics"]
     assert rec == _full_record(convection=None, microphysics=None,
                                turbulence=None, gravity_wave_drag=None)
+
+
+def test_dry_spectral_path_records_its_default_gray_radiation(
+        tmp_path: Path) -> None:
+    """With no scheme configured the spectral lane runs a default gray
+    radiation + Rayleigh friction, not the setup pipeline."""
+    from legoesm.atmosphere.physics.radiation.config import GrayRadiationConfig
+    d = _spectral(tmp_path, cfg_extra=dict(turbulence="none"))
+    d.setup()
+    assert d.run() == "COMPLETED"
+    rec = read_run_manifest(tmp_path)["config"]["resolved_physics"]
+    assert rec["radiation"] == resolved_physics_record(
+        {"r": GrayRadiationConfig()})["r"]
+    assert rec["turbulence"] is None and rec["convection"] is None

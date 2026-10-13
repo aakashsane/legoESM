@@ -578,13 +578,13 @@ The production drivers (`legoesm run`, `run_amip.py`, `run_omip.py`,
 `run_omip_core2.py`, `run_lmip.py`, `run_coupled.py`, `run_dino.py`) write a
 `run_manifest.json` (resolved config + `state_digest` + legoESM commit +
 jax/numpy versions); extend it rather than adding a parallel tag/provenance
-system. Atmosphere (`ModelDriver`) runs also record the convection,
-microphysics, turbulence and gravity-wave-drag configs their kernels were
-built with, including full overrides. `legoesm reproduce` refuses to rerun on
+system. Atmosphere (`ModelDriver`) runs also record every scheme config their
+kernels run with (convection, microphysics, turbulence, gravity-wave drag,
+radiation and clouds, land, forcing), including full overrides. `legoesm reproduce` refuses to rerun on
 different code unless `--allow-version-drift` is given, and refuses in every
 case when today's code does not rebuild the recorded configuration exactly or
-resolves different physics. The record is still incomplete: radiation, cloud,
-land and surface settings are not recorded, ocean physics is not, and a bitwise
+resolves different physics. The ocean, land, DINO and coupled drivers record
+their configs but `reproduce` does not rerun them yet, and a bitwise
 `--check` match can only be expected on identical software, hardware and device
 layout. See
 [docs/architecture/reproducibility.md](docs/architecture/reproducibility.md)

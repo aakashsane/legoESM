@@ -24,6 +24,25 @@ FIELD_NAMES = (
 SCAN_PARITY_ATOL = 1.0e-12
 
 
+def validate_physical_gpu(mode: str, physical_gpu: int | None, environ=None) -> None:
+    """Require an explicit, provenance-bearing physical GPU selection."""
+    environ = os.environ if environ is None else environ
+    if mode == "gpu-native":
+        if type(physical_gpu) is not int or physical_gpu < 0:
+            raise ValueError("gpu-native mode requires --physical-gpu with a non-negative index")
+        visible = environ.get("CUDA_VISIBLE_DEVICES")
+        if visible != str(physical_gpu):
+            raise RuntimeError(
+                "CUDA_VISIBLE_DEVICES must equal the explicit --physical-gpu index "
+                f"({physical_gpu}), got {visible!r}"
+            )
+    elif mode == "cpu-certified":
+        if physical_gpu is not None:
+            raise ValueError("cpu-certified mode does not accept --physical-gpu")
+    else:
+        raise ValueError("mode must be 'gpu-native' or 'cpu-certified'")
+
+
 def _write_json_atomic(path: Path, payload: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -343,7 +362,10 @@ def cpu_scan_parity(namelist, *, days: int = 2, commit: str | None = None) -> di
     }
 
 
-def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> dict:
+def run_long(
+    namelist, output: Path, *, days: int, mode: str, commit: str,
+    physical_gpu: int | None = None,
+) -> dict:
     """Integrate a resolved GYRE deck and atomically write each model day."""
     import jax
     from legoesm.core.precision import PrecisionPolicy, set_policy
@@ -354,8 +376,7 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
     )
 
     validate_gyre_namelist(namelist)
-    if mode not in ("gpu-native", "cpu-certified"):
-        raise ValueError("mode must be 'gpu-native' or 'cpu-certified'")
+    validate_physical_gpu(mode, physical_gpu)
     if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
         raise ValueError("commit must be a forty-character lowercase Git SHA")
     steps_per_day_f = SECONDS_PER_DAY / namelist.rn_Dt_s
@@ -368,8 +389,6 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
         raise FileExistsError(f"refusing to overwrite output directory {output}")
 
     if mode == "gpu-native":
-        if os.environ.get("CUDA_VISIBLE_DEVICES") != "1":
-            raise RuntimeError("gpu-native mode requires CUDA_VISIBLE_DEVICES=1")
         set_policy(PrecisionPolicy.fp64(transcendentals="native"))
         certified_policy = False
         expected_backend = "gpu"
@@ -407,6 +426,7 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
             else "NON-CERTIFIED climate run; native GPU transcendentals"
         ),
         "backend": jax.default_backend(),
+        "physical_gpu_index": physical_gpu,
         "precision_policy": "fp64",
         "transcendentals": "native" if mode == "gpu-native" else "libm",
         "days": days,
@@ -455,6 +475,7 @@ def run_long(namelist, output: Path, *, days: int, mode: str, commit: str) -> di
             "legoesm_git_sha": np.str_(commit),
             "mode": np.str_(mode),
             "certified_policy": np.bool_(certified_policy),
+            "physical_gpu_index": np.int64(-1 if physical_gpu is None else physical_gpu),
             "day": np.int64(day),
             "step": np.int64(day * steps_per_day),
             "dt_s": np.float64(card.dt_s),
@@ -491,6 +512,10 @@ def main(argv=None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("gpu-native", "cpu-certified"), required=True)
     parser.add_argument(
+        "--physical-gpu", type=int,
+        help="required physical device index for gpu-native mode; forbidden for CPU mode",
+    )
+    parser.add_argument(
         "--daily-means",
         action="store_true",
         help="required acknowledgement: emit daily means beside snapshots",
@@ -502,7 +527,10 @@ def main(argv=None) -> int:
         from legoesm.ocean.fidelity.provenance import git_sha
 
         namelist = resolved_daily_namelist(args.deck, args.days)
-        manifest = run_long(namelist, args.output, days=args.days, mode=args.mode, commit=git_sha())
+        manifest = run_long(
+            namelist, args.output, days=args.days, mode=args.mode,
+            commit=git_sha(), physical_gpu=args.physical_gpu,
+        )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"REFUSE: {exc}", file=sys.stderr)
         return 2

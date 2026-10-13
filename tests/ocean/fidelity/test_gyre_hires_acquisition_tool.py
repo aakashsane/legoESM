@@ -73,3 +73,36 @@ def test_selector_refuses_unknown_deck():
     )
     assert result.returncode == 64
     assert "REFUSE_DECK" in result.stderr
+
+
+def test_ahm_writer_patch_only_changes_the_two_p3_steppers(tmp_path):
+    source = Path(
+        "/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2/"
+        "cfgs/GYRE_OMIP_L2_P3/MY_SRC"
+    )
+    if not source.is_dir():
+        import pytest
+        pytest.skip("local NEMO P3 writer source is unavailable")
+    for name in ("stprk3.F90", "stprk3_stg.F90"):
+        shutil.copy(source / name, tmp_path / name)
+    with (TOOL / "gyre_p3_ahm_writer.patch").open("rb") as patch:
+        result = subprocess.run(
+            ["patch", "-s", "--fuzz=0", "-d", str(tmp_path), "-p1"], stdin=patch,
+            check=False, capture_output=True,
+        )
+    assert result.returncode == 0, result.stderr.decode()
+    assert "NEMO_L4_AHMTF__1" in (tmp_path / "stprk3.F90").read_text()
+    stage = (tmp_path / "stprk3_stg.F90").read_text()
+    assert "NEMO_L4_DYNLDF_1" in stage
+    assert stage.index("l4_uu_before(:,:,:) =") < stage.index("CALL dyn_ldf")
+    assert stage.index("CALL dyn_ldf") < stage.index("WRITE(l4_unit)")
+
+
+def test_ahm_builder_read_only_preflight_applies_pinned_patch():
+    result = subprocess.run(
+        ["bash", str(TOOL / "build_ahm_writer.sh")],
+        check=False, text=True, capture_output=True, cwd=ROOT,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "PREFLIGHT_OK" in result.stdout
+    assert "GYRE_OMIP_L2_P3_AHM" in result.stdout

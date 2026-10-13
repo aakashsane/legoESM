@@ -1278,6 +1278,10 @@ FILES = {
         NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90"),
     "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90"),
+    "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stp2d.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stp2d.f90"),
+    "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynspg_ts.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynspg_ts.f90"),
     "nemogcm.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/nemogcm.f90",
     "dynspg_ts.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/dynspg_ts.f90",
     "lbclnk.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/lbclnk.f90",
@@ -1433,6 +1437,16 @@ CITATION_MAP = {
         ('!* Update or Compute (VIF) advective transport', 2),
         'CALL tra_sbc_RK3( kstp, Kbb, Kmm,      ts, Krhs,                kstg )',
         24],
+    # --- GYRE high-resolution round 4: external-mode and LDF boundaries ---
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stp2d.f90:174-199': [
+        '!*  vertical averaging  *!',
+        'Ve_rhs(ji,jj) =  Ve_rhs(ji,jj) + r1_rho0 * vtauV(ji,jj)', 26],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynspg_ts.f90:284-292': [
+        'CALL dyn_cor_2D_init( Kmm )',
+        'zv_frc(ji,jj) = zv_frc(ji,jj) - zv_trd(ji,jj) * ssvmask(ji,jj)', 9],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:386-398': [
+        'CASE ( 3 )        !==  Stage 3  ==!',
+        'CALL dyn_dmp( kstp, Kbb, Kmm', 13],
     'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:604-634': [
         'Phase-3 L2 WRITE-only tracer-stage operand stream',
         ('& WRITE(l1_unit) ts(:,:,:,jp_tem,Krhs), ts(:,:,:,jp_sal,Krhs)', 2), 31],

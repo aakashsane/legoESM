@@ -29,7 +29,7 @@ NEMO_MANIFEST = {
     "namelist_cfg": "97956dbbf895842f8728ba408167ac0875bef691215a851ecfc5fd6a73b5dbec",
     "namelist_ref": "b04f2ce4d12aa247ae3b707483d25cf2d38d0b3cf8817d71d33e66918fd81cfd",
 }
-LEGOESM_RUN_COMMIT = "7b772afb86681cc61536faa4fc766cdbe6098e9d"
+RUN_REGISTRY = HERE / "gyre_hires_registered_runs.json"
 LEGOESM_SST_CONVENTION = (
     "thickness weighted: mean(T*e3t)/mean(e3t), matching NEMO IOIPSL "
     "votemper/vovvle3t"
@@ -248,14 +248,35 @@ def _require_legoesm_deck(namelist: dict) -> None:
                 f"legoESM manifest differs from r4_smag at {field}")
 
 
-def _require_legoesm_run_metadata(manifest: dict) -> None:
-    require(manifest.get("legoesm_git_sha") == LEGOESM_RUN_COMMIT,
-            "legoESM run commit is not the operator-launched commit")
-    require(manifest.get("mode") == "gpu-native"
-            and manifest.get("backend") == "gpu"
-            and manifest.get("transcendentals") == "native"
-            and manifest.get("certified_policy") is False,
-            "legoESM run is not the registered non-certified native GPU mode")
+def load_registered_legoesm_run(label: str, registry_path: Path = RUN_REGISTRY) -> dict:
+    """Resolve an immutable, labelled run registration or refuse."""
+    require(registry_path.is_file(), f"missing run registry {registry_path}")
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    require(registry.get("schema") == "gyre-hires-registered-runs-v1",
+            "unknown GYRE run-registry schema")
+    runs = registry.get("runs", {})
+    require(label in runs, f"unregistered legoESM run label: {label}")
+    registration = dict(runs[label])
+    require(registration.get("label") == label, "registered run label mismatch")
+    root = Path(registration.get("run_directory", ""))
+    require(root.is_absolute(), "registered run directory must be absolute")
+    commit = registration.get("commit", "")
+    require(re.fullmatch(r"[0-9a-f]{40}", commit) is not None,
+            "registered run commit is not a full Git SHA")
+    require(registration.get("deck") == "r4_smag", "registered run is not r4_smag")
+    return registration
+
+
+def _require_legoesm_run_metadata(manifest: dict, registration: dict) -> None:
+    require(manifest.get("legoesm_git_sha") == registration["commit"],
+            "legoESM run commit differs from its registration")
+    for field in ("mode", "backend", "transcendentals", "certified_policy"):
+        require(manifest.get(field) == registration[field],
+                f"legoESM run {field} differs from its registration")
+    registered_gpu = registration.get("physical_gpu_index")
+    if registered_gpu is not None:
+        require(manifest.get("physical_gpu_index") == registered_gpu,
+                "legoESM run physical GPU differs from its registration")
     require(
         manifest.get("daily_mean_convention", {}).get("surface_temperature_c")
         == LEGOESM_SST_CONVENTION,
@@ -263,7 +284,11 @@ def _require_legoesm_run_metadata(manifest: dict) -> None:
     )
 
 
-def legoesm_npz_provider(root: Path, days: int, *, start_day: int) -> DailyProvider:
+def legoesm_npz_provider(
+    label: str, days: int, *, start_day: int, registry_path: Path = RUN_REGISTRY,
+) -> DailyProvider:
+    registration = load_registered_legoesm_run(label, registry_path)
+    root = Path(registration["run_directory"])
     require(start_day > 0 and days > 0, "legoESM window must be positive")
     manifest_path = root / "manifest.json"
     require(manifest_path.is_file(), f"missing complete manifest {manifest_path}")
@@ -276,7 +301,7 @@ def legoesm_npz_provider(root: Path, days: int, *, start_day: int) -> DailyProvi
     require(manifest.get("sampling") == ["end_of_day_snapshot", "daily_mean"],
             "legoESM run does not contain daily means")
     _require_legoesm_deck(manifest.get("namelist", {}))
-    _require_legoesm_run_metadata(manifest)
+    _require_legoesm_run_metadata(manifest, registration)
     pins = manifest.get("daily_sha256", {})
     fields = (
         "ssh_m_daily_mean", "surface_u_m_s_daily_mean",
@@ -307,6 +332,7 @@ def legoesm_npz_provider(root: Path, days: int, *, start_day: int) -> DailyProvi
     return DailyProvider(
         "legoESM", "daily_mean",
         {"root": str(root.resolve()), "window_days": [start_day, stop],
+         "registration": registration,
          "manifest_sha256": sha256(manifest_path),
          "legoesm_git_sha": manifest.get("legoesm_git_sha"),
          "mode": manifest.get("mode"), "backend": manifest.get("backend"),
@@ -640,7 +666,8 @@ def write_outputs(
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nemo-root", type=Path, required=True)
-    parser.add_argument("--legoesm-root", type=Path, required=True)
+    parser.add_argument("--legoesm-run-label", required=True)
+    parser.add_argument("--run-registry", type=Path, default=RUN_REGISTRY)
     parser.add_argument("--start-day", type=int, default=1461)
     parser.add_argument("--days", type=int, default=365)
     parser.add_argument("--output", type=Path, required=True)
@@ -651,7 +678,10 @@ def main(argv=None) -> int:
         context_days = args.start_day + args.days - context_start
         providers = (
             nemo_ioipsl_provider(args.nemo_root, context_days, start_day=context_start),
-            legoesm_npz_provider(args.legoesm_root, context_days, start_day=context_start),
+            legoesm_npz_provider(
+                args.legoesm_run_label, context_days, start_day=context_start,
+                registry_path=args.run_registry,
+            ),
         )
         require(providers[0].sampling == providers[1].sampling == "daily_mean",
                 "model sampling conventions differ")

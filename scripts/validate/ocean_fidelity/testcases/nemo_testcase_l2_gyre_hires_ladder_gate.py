@@ -15,10 +15,13 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from nemo_testcase_l2_gyre_phase3_gate import (  # noqa: E402
+    _trace_native,
+    bt_frame,
     expected_masks,
     lego_fields,
     read_entry,
     read_stage,
+    read_bt_substeps,
     read_tracer_stage12,
     read_zdf_entry,
 )
@@ -114,6 +117,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
     tracer_stage1_transport = []
     tracer_stage1_walk = []
     vertical_candidate = None
+    barotropic_resolution_walk = None
     for kt in range(1, 11):
         path = oracle_root / f"oracle_step_entry_kt{kt:08d}.bin"
         if not path.is_file():
@@ -349,6 +353,141 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
                     "coefficient_rows": coefficient_rows,
                     "one_variable_arm": arm_rows,
                 }
+
+            if deck == "r4":
+                bt_oracle = read_bt_substeps(
+                    oracle_root / "oracle_bt_substeps_kt00000001.bin",
+                    expected_dims=NEMO_DIMS[:2],
+                )
+                trace_model = LatLonCGridOceanModel(
+                    card.recipe.grid,
+                    card.recipe.z_coord,
+                    card.recipe.model_config,
+                    _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                        expose_barotropic_substeps=True,
+                    ),
+                )
+                trace = trace_model.step(
+                    state_before,
+                    card.dt_s,
+                    freshwater=freshwater,
+                    surface_forcing=surface,
+                )
+                trace = host_and_clear(trace)
+                ordered = (
+                    "eta_entry", "u_entry", "v_entry",
+                    "eta_mid", "u_mid", "v_mid", "eta_exit", "eta_pgf",
+                    "pgf_u", "pgf_v", "cor_u", "cor_v", "trd_u", "trd_v",
+                    "slow_u", "slow_v", "u_exit", "v_exit",
+                    "transport_metric_u", "transport_metric_v",
+                )
+
+                def bt_mask(name):
+                    if name.startswith("eta"):
+                        return masks["ssh"]
+                    if name.startswith("u_") or name.endswith("_u"):
+                        return masks["u"][..., 0]
+                    return masks["v"][..., 0]
+
+                first = None
+                for substep in range(bt_oracle["ncycle"]):
+                    for name in ordered:
+                        reference = bt_oracle[name][substep]
+                        candidate = _trace_native(bt_frame(trace.substeps, name), name)[substep]
+                        row = exact_score(
+                            f"{case}.kt1.bt.jn{substep + 1:02d}.{name}",
+                            reference, candidate, bt_mask(name),
+                        )
+                        if row["status"] == "DEBT":
+                            active = bt_mask(name)
+                            unequal = reference[active].view(np.uint64) != candidate[active].view(np.uint64)
+                            first_index = tuple(np.argwhere(active)[np.flatnonzero(unequal)[0]])
+                            first = {
+                                "substep": substep + 1,
+                                "field": name,
+                                "row": row,
+                                "first_active_index": list(first_index),
+                                "first_ulp": int(ulp_distance(
+                                    np.asarray([reference[first_index]]),
+                                    np.asarray([candidate[first_index]]),
+                                )[0]),
+                            }
+                            break
+                    if first is not None:
+                        break
+
+                # One-variable discriminator: replace only the frozen slow
+                # forcing at the external-solver boundary with NEMO's recorded
+                # value.  This is a private test hook, not a card selector.
+                oracle_slow_u = np.asarray(trace.slow_forcing[1]).copy()
+                oracle_slow_v = np.asarray(trace.slow_forcing[2]).copy()
+                oracle_slow_u[:, 1:] = bt_oracle["slow_u"][0]
+                oracle_slow_v[1:, :] = bt_oracle["slow_v"][0]
+                control_model = LatLonCGridOceanModel(
+                    card.recipe.grid,
+                    card.recipe.z_coord,
+                    card.recipe.model_config,
+                    _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                        expose_barotropic_substeps=True,
+                        barotropic_slow_forcing_override=(
+                            jnp.asarray(oracle_slow_u), jnp.asarray(oracle_slow_v),
+                        ),
+                    ),
+                )
+                controlled = control_model.step(
+                    state_before,
+                    card.dt_s,
+                    freshwater=freshwater,
+                    surface_forcing=surface,
+                )
+                controlled = host_and_clear(controlled)
+                control_rows = []
+                for name in (
+                    "slow_u", "slow_v", "u_exit", "v_exit",
+                    "transport_metric_u", "transport_metric_v",
+                ):
+                    control_rows.append(exact_score(
+                        f"{case}.kt1.bt.jn01.oracle_slow_override.{name}",
+                        bt_oracle[name][0],
+                        _trace_native(bt_frame(controlled.substeps, name), name)[0],
+                        bt_mask(name),
+                    ))
+                depth_only_u = np.asarray(trace.slow_forcing_operands["depth_u"])[:, 1:]
+                depth_only_v = np.asarray(trace.slow_forcing_operands["depth_v"])[1:, :]
+                barotropic_resolution_walk = {
+                    "first_difference": first,
+                    "term": (
+                        "stp2d wind term (r1_rho0 * utau) * r1_hu_0, already "
+                        "inside frozen Ue_rhs/Ve_rhs before dynspg_ts substep 1"
+                    ),
+                    "raw_operand_ownership": (
+                        "UNMEASURED: the existing record stores only the composite "
+                        "slow_u/slow_v, not utau or r1_hu_0 separately"
+                    ),
+                    "rest_state_discriminator": {
+                        "depth_only_u_max_abs": float(np.max(np.abs(depth_only_u))),
+                        "depth_only_v_max_abs": float(np.max(np.abs(depth_only_v))),
+                        "oracle_slow_override_rows": control_rows,
+                    },
+                    "arithmetic": {
+                        "rn_Dt_s": card.dt_s,
+                        "nn_e": card.recipe.model_config.barotropic.n_barotropic_substeps,
+                        "substep_dt_s": card.dt_s / card.recipe.model_config.barotropic.n_barotropic_substeps,
+                        "substep_reciprocal": 1.0 / (
+                            card.dt_s / card.recipe.model_config.barotropic.n_barotropic_substeps
+                        ),
+                        "shipped_substep_dt_s": 14400.0 / 50.0,
+                        "shipped_substep_reciprocal": 1.0 / (14400.0 / 50.0),
+                        "grid_spacing_expression_m": 106000.0 / 4.0,
+                        "grid_spacing_reciprocal": 1.0 / (106000.0 / 4.0),
+                        "transport_weight_first_three": np.asarray(
+                            trace.substeps["transport_weight"]
+                        )[:3].tolist(),
+                        "transport_weight_normalization": "r1_wgt2s from sum(wgtbtp2)",
+                        "bottom_drag_at_substep1": "zero: entry velocity is rest",
+                        "pgf_at_substep1": "bit-equal through pgf_u/pgf_v before slow_u/slow_v",
+                    },
+                }
     passed = all(row["status"] == "AT-BAR" for step in steps for row in step["rows"]) and all(
         control["status"] == "FIRED" for control in controls
     )
@@ -366,6 +505,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
         "tracer_stage1_transport": tracer_stage1_transport,
         "tracer_stage1_walk": tracer_stage1_walk,
         "vertical_candidate": vertical_candidate,
+        "barotropic_resolution_walk": barotropic_resolution_walk,
         "controls": controls,
         "verdict": "PASS" if passed else "DEBT",
     }

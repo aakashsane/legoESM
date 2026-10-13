@@ -1,0 +1,96 @@
+--- a/stprk3.F90
++++ b/stprk3.F90
+@@ -197,6 +197,8 @@
+       IF( l_ldftra_time .OR. l_ldfeiv_time )   CALL ldf_tra( kstp, Nbb, Nbb )  !       and/or eiv coeff.
+       IF( l_ldfeke                         )   CALL ldf_eke_eiv( kstp, Nbb )   ! GEOMETRIC param. (update of eiv coefficient)
+       IF( l_ldfdyn_time                    )   CALL ldf_dyn( kstp, Nbb )       ! eddy viscosity coeff.
++      IF( l_ldfdyn_time .AND. kstp >= nit000 + 1 .AND. kstp <= nit000 + 2 )   &
++         &   CALL l4_dump_ahm( kstp, Nbb )
+ 
+ 
+       !>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+@@ -410,6 +412,25 @@
+    END SUBROUTINE l2_dump_zdf
+ 
+ 
++   SUBROUTINE l4_dump_ahm( kstp, klevel )
++      INTEGER, INTENT(in) :: kstp, klevel
++      INTEGER :: iunit, ios
++      CHARACTER(LEN=96) :: filename
++      CHARACTER(LEN=16) :: magic
++      IF( .NOT. lwp )   RETURN
++      IF( STORAGE_SIZE( 1._wp ) /= 64 )   CALL ctl_stop( 'lane4 AHM dump requires 64-bit wp' )
++      WRITE(filename,'("oracle_ahm_kt",I8.8,".bin")') kstp
++      OPEN( NEWUNIT=iunit, FILE=TRIM(filename), ACCESS='STREAM', FORM='UNFORMATTED', &
++         &  STATUS='REPLACE', ACTION='WRITE', IOSTAT=ios )
++      IF( ios /= 0 )   CALL ctl_stop( 'cannot open lane4 AHM file' )
++      magic = 'NEMO_L4_AHMTF__1'
++      WRITE(iunit) magic, 1, kstp, klevel, jpi, jpj, jpk, STORAGE_SIZE(1._wp)
++      WRITE(iunit) ahmt(:,:,:), ahmf(:,:,:)
++      CLOSE(iunit)
++      WRITE(numout,*) 'LANE4_AHM_DUMP ', kstp, klevel, TRIM(filename)
++   END SUBROUTINE l4_dump_ahm
++
++
+    SUBROUTINE rk3_dia( kswitch )
+       !!----------------------------------------------------------------------
+       !!----------------------------------------------------------------------
+--- a/stprk3_stg.F90
++++ b/stprk3_stg.F90
+@@ -88,8 +88,12 @@
+       !
+       INTEGER  ::   ji, jj, jk, jn, jtile    ! dummy loop indices
+       INTEGER  ::   l1_unit, l1_ios, l2_tracer_unit, l2_tracer_ios
++      INTEGER  ::   l4_unit, l4_ios
+       CHARACTER(LEN=96) :: l1_filename
+       CHARACTER(LEN=16) :: l1_magic
++      CHARACTER(LEN=96) :: l4_filename
++      CHARACTER(LEN=16) :: l4_magic
++      LOGICAL :: l4_dump_ldf
+       REAL(wp) ::   ze3Tb, ze3Tr, z1_e3t     ! local scalars
+       REAL(wp) ::   ze3Sb, ze3Sr             !   -      -
+ #if ! defined key_PSYCLONE_2p5p0
+@@ -97,6 +101,7 @@
+       REAL(wp), ALLOCATABLE, DIMENSION(:,:,:) ::   zFu, zFv, zFw   ! advective transport
+       REAL(wp), ALLOCATABLE, DIMENSION(:,:,:) ::   l2_qsr_before   ! L2 write-only qsr increment control
+       REAL(wp), ALLOCATABLE, DIMENSION(:,:,:) ::   l2_e3u, l2_e3v  ! L2 write-only live face thickness
++      REAL(wp), ALLOCATABLE, DIMENSION(:,:,:) ::   l4_uu_before, l4_vv_before
+ #else
+       REAL(wp), DIMENSION(T2D(nn_hls)) ::   zub, zvb        ! barotropic velocity correction at Kmm
+       REAL(wp), DIMENSION(jpi,jpj,jpk) ::   zFu, zFv, zFw   ! advective transport
+@@ -104,6 +109,8 @@
+       !! ---------------------------------------------------------------------
+ 
+       IF( ln_timing )   CALL timing_start('stp_RK3_stg')
++      l4_dump_ldf = lwp .AND. .NOT. ln_tile .AND. kstg == 3   &
++         &          .AND. kstp >= nit000 + 1 .AND. kstp <= nit000 + 2
+       !
+       IF( kstp == nit000 ) THEN
+          IF(lwp) WRITE(numout,*)
+@@ -490,7 +497,25 @@
+             !
+             !                  !*  complete the momentum RHS *!   except ZDF (implicit)
+             !
+-                               CALL dyn_ldf( kstp, Kbb, Kmm, uu, vv, Krhs )     ! lateral mixing    
++            IF( l4_dump_ldf ) THEN
++               IF( STORAGE_SIZE( 1._wp ) /= 64 )   CALL ctl_stop( 'lane4 dynldf dump requires 64-bit wp' )
++               ALLOCATE( l4_uu_before(jpi,jpj,jpk), l4_vv_before(jpi,jpj,jpk) )
++               l4_uu_before(:,:,:) = uu(:,:,:,Krhs)
++               l4_vv_before(:,:,:) = vv(:,:,:,Krhs)
++            ENDIF
++                               CALL dyn_ldf( kstp, Kbb, Kmm, uu, vv, Krhs )     ! lateral mixing
++            IF( l4_dump_ldf ) THEN
++               WRITE(l4_filename,'("oracle_dynldf_kt",I8.8,".bin")') kstp
++               OPEN( NEWUNIT=l4_unit, FILE=TRIM(l4_filename), ACCESS='STREAM', FORM='UNFORMATTED', &
++                  &  STATUS='REPLACE', ACTION='WRITE', IOSTAT=l4_ios )
++               IF( l4_ios /= 0 )   CALL ctl_stop( 'cannot open lane4 dynldf file' )
++               l4_magic = 'NEMO_L4_DYNLDF_1'
++               WRITE(l4_unit) l4_magic, 1, kstp, kstg, Kbb, Kmm, Krhs, jpi, jpj, jpk, STORAGE_SIZE(1._wp)
++               WRITE(l4_unit) l4_uu_before, l4_vv_before, uu(:,:,:,Krhs), vv(:,:,:,Krhs)
++               CLOSE(l4_unit)
++               DEALLOCATE( l4_uu_before, l4_vv_before )
++               WRITE(numout,*) 'LANE4_DYNLDF_DUMP ', kstp, kstg, Kbb, Kmm, Krhs, TRIM(l4_filename)
++            ENDIF
+             !
+             IF( ln_zdfosm  )   CALL dyn_osm( kstp,      Kmm, uu, vv, Krhs )     ! OSMOSIS non-local velocity fluxes
+             !

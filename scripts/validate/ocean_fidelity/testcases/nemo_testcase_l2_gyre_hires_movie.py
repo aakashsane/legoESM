@@ -92,7 +92,10 @@ def render_frame(
     return rgb
 
 
-def render_year(nemo_root: Path, lego_root: Path, output: Path, *, year: int, fps: int) -> dict:
+def render_year(
+    nemo_root: Path, lego_run_label: str, output: Path, *, year: int, fps: int,
+    registry_path: Path,
+) -> dict:
     import imageio_ffmpeg
     from legoesm.ocean.fidelity.nemo_testcase_recipe import (
         GYRE_R4_SMAG_NAMELIST,
@@ -103,7 +106,9 @@ def render_year(nemo_root: Path, lego_root: Path, output: Path, *, year: int, fp
     start = 1 + (year - 1) * 365
     providers = (
         nemo_ioipsl_provider(nemo_root, 365, start_day=start),
-        legoesm_npz_provider(lego_root, 365, start_day=start),
+        legoesm_npz_provider(
+            lego_run_label, 365, start_day=start, registry_path=registry_path,
+        ),
     )
     geom = geometry()
     grid = build_gyre_zco_card(GYRE_R4_SMAG_NAMELIST).recipe.grid
@@ -139,7 +144,11 @@ def render_year(nemo_root: Path, lego_root: Path, output: Path, *, year: int, fp
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nemo-root", type=Path, required=True)
-    parser.add_argument("--legoesm-root", type=Path, required=True)
+    parser.add_argument("--legoesm-run-label", required=True)
+    parser.add_argument(
+        "--run-registry", type=Path,
+        default=HERE / "gyre_hires_registered_runs.json",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--years", type=int, nargs="+", choices=(1, 5), default=(1, 5))
     parser.add_argument("--fps", type=int, default=15)
@@ -150,8 +159,9 @@ def main(argv=None) -> int:
         reports = []
         for year in args.years:
             reports.append(render_year(
-                args.nemo_root, args.legoesm_root,
+                args.nemo_root, args.legoesm_run_label,
                 args.output / f"gyre_r4_smag_year{year}.mp4", year=year, fps=args.fps,
+                registry_path=args.run_registry,
             ))
         report = {"schema": "gyre-r4-smag-side-by-side-movies-v1",
                   "models": ["NEMO", "legoESM"],

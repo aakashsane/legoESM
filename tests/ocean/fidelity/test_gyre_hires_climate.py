@@ -101,8 +101,9 @@ def test_preregistered_window_and_gpu_run_metadata_fail_closed():
     CLIMATE.require_registered_window(1461, 365)
     with pytest.raises(Exception, match="preregistered"):
         CLIMATE.require_registered_window(1, 365)
+    registration = CLIMATE.load_registered_legoesm_run("pre_fix_7b772afb8")
     manifest = {
-        "legoesm_git_sha": CLIMATE.LEGOESM_RUN_COMMIT,
+        "legoesm_git_sha": registration["commit"],
         "mode": "gpu-native",
         "backend": "gpu",
         "transcendentals": "native",
@@ -111,7 +112,7 @@ def test_preregistered_window_and_gpu_run_metadata_fail_closed():
             "surface_temperature_c": CLIMATE.LEGOESM_SST_CONVENTION,
         },
     }
-    CLIMATE._require_legoesm_run_metadata(manifest)
+    CLIMATE._require_legoesm_run_metadata(manifest, registration)
     for field, bad_value in (
         ("legoesm_git_sha", "wrong"),
         ("backend", "cpu"),
@@ -121,7 +122,34 @@ def test_preregistered_window_and_gpu_run_metadata_fail_closed():
         candidate = dict(manifest)
         candidate[field] = bad_value
         with pytest.raises(Exception):
-            CLIMATE._require_legoesm_run_metadata(candidate)
+            CLIMATE._require_legoesm_run_metadata(candidate, registration)
+
+
+def test_run_registry_refuses_unknown_label_and_metadata_mismatch(tmp_path):
+    with pytest.raises(Exception, match="unregistered"):
+        CLIMATE.load_registered_legoesm_run("post_fix_not_yet_acquired")
+    registry = {
+        "schema": "gyre-hires-registered-runs-v1",
+        "runs": {
+            "test": {
+                "run_directory": str(tmp_path),
+                "commit": "a" * 40,
+                "deck": "r4_smag",
+                "mode": "gpu-native",
+                "backend": "gpu",
+                "transcendentals": "native",
+                "certified_policy": False,
+                "physical_gpu_index": 2,
+                "label": "test",
+            }
+        },
+    }
+    path = tmp_path / "registry.json"
+    path.write_text(__import__("json").dumps(registry))
+    registered = CLIMATE.load_registered_legoesm_run("test", path)
+    bad_manifest = dict(registered, legoesm_git_sha="a" * 40, physical_gpu_index=1)
+    with pytest.raises(Exception, match="physical GPU"):
+        CLIMATE._require_legoesm_run_metadata(bad_manifest, registered)
 
 
 def test_report_only_pattern_comparison_uses_common_finite_support():

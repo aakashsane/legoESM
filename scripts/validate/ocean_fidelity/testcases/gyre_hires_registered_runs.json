@@ -1,0 +1,17 @@
+{
+  "schema": "gyre-hires-registered-runs-v1",
+  "runs": {
+    "pre_fix_7b772afb8": {
+      "run_directory": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/legoesm_runs/r4_smag_gpu_1825d",
+      "commit": "7b772afb86681cc61536faa4fc766cdbe6098e9d",
+      "deck": "r4_smag",
+      "mode": "gpu-native",
+      "backend": "gpu",
+      "transcendentals": "native",
+      "certified_policy": false,
+      "physical_gpu_index": null,
+      "label": "pre_fix_7b772afb8",
+      "disposition": "pre-fix Smagorinsky-port comparison; never substitute for a post-fix run"
+    }
+  }
+}

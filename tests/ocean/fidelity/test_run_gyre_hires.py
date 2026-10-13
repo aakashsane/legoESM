@@ -1,4 +1,5 @@
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,27 @@ SPEC = importlib.util.spec_from_file_location("run_gyre_hires", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 DRIVER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(DRIVER)
+
+
+def test_gpu_selection_is_explicit_exact_and_cpu_forbids_it():
+    DRIVER.validate_physical_gpu("gpu-native", 0, {"CUDA_VISIBLE_DEVICES": "0"})
+    DRIVER.validate_physical_gpu("gpu-native", 3, {"CUDA_VISIBLE_DEVICES": "3"})
+    DRIVER.validate_physical_gpu("cpu-certified", None, {})
+    with pytest.raises(ValueError, match="requires --physical-gpu"):
+        DRIVER.validate_physical_gpu("gpu-native", None, {})
+    with pytest.raises(RuntimeError, match="must equal"):
+        DRIVER.validate_physical_gpu("gpu-native", 1, {"CUDA_VISIBLE_DEVICES": "0"})
+    with pytest.raises(ValueError, match="does not accept"):
+        DRIVER.validate_physical_gpu("cpu-certified", 1, {})
+
+
+def test_gpu_wrapper_has_no_default_device():
+    wrapper = ROOT / "scripts/run/run_gyre_hires_gpu.sh"
+    result = subprocess.run(
+        ["bash", str(wrapper)], check=False, text=True, capture_output=True,
+    )
+    assert result.returncode == 64
+    assert "--physical-gpu PHYSICAL_INDEX" in result.stderr
 
 
 def test_resolved_daily_decks_keep_declared_resolution_and_cadence():

@@ -12,7 +12,7 @@ environment. The machine-readable counterpart is
 | MPI | Open MPI 5.0.10 |
 | NEMO composition | no XIOS; `cpp -Dkey_nosignedzero`; scalar-math FCFLAGS in the JSON and reference arch; CFLAGS `-O0` |
 | Python | 3.13.0 |
-| Python packages | JAX 0.10.0, jaxlib 0.10.0, CUDA 12 plugin 0.10.0, NumPy 2.4.4, Equinox 0.13.7 |
+| Python packages | JAX 0.10.0, jaxlib 0.10.0, CUDA 12 plugin 0.10.0, NumPy 2.4.4, Equinox 0.13.7, imageio-ffmpeg 0.6.0 |
 | GPU | Tesla V100S-PCIE-32GB, driver 580.126.20 |
 | CPU | Intel Xeon Gold 6242R |
 | OS | Linux 5.14.0-611.36.1.el9_7.x86_64 |

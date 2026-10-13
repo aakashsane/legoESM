@@ -23,6 +23,7 @@
     "version": "3.13.0",
     "packages": {
       "equinox": "0.13.7",
+      "imageio-ffmpeg": "0.6.0",
       "jax": "0.10.0",
       "jax-cuda12-plugin": "0.10.0",
       "jaxlib": "0.10.0",

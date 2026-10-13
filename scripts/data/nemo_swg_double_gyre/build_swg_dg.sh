@@ -87,6 +87,11 @@ sed "s|@CONDA_PREFIX@|$conda_prefix|g" "$arch_template" >"$dry/arch-$arch_name.f
 
 revision=$(git -C "$nemo_root" rev-parse HEAD 2>/dev/null) || {
   printf 'REFUSE_NEMO_REVISION: %s is not a Git checkout\n' "$nemo_root" >&2; exit 68; }
+expected_revision=dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796
+[[ "$revision" == "$expected_revision" ]] || {
+  printf 'REFUSE_NEMO_REVISION: expected %s, got %s\n' "$expected_revision" "$revision" >&2; exit 68; }
+[[ -z "$(git -C "$nemo_root" status --porcelain --untracked-files=no)" ]] || {
+  printf 'REFUSE_DIRTY_NEMO: tracked changes under %s\n' "$nemo_root" >&2; exit 68; }
 printf 'PREFLIGHT NEMO=%s revision=%s source=SWG target=SWG_DG arch=%s\n' \
   "$nemo_root" "$revision" "$arch_name"
 printf 'WOULD_BUILD: ./makenemo -a SWG -n SWG_DG -m %s del_key key_xios\n' "$arch_name"
@@ -111,18 +116,15 @@ touch "$target_case"/MY_SRC/*.F90
        "$target_case/BLD/ppsrc/nemo/usrdef_zgr.f90")" -eq 2 ]] || {
   printf 'REFUSE_COMPILED_PATCH: patched limits absent\n' >&2; exit 70; }
 
-{
-  printf '%s  tests/SWG_DG/BLD/bin/nemo.exe\n' \
-    "$(sha256sum "$target_case/BLD/bin/nemo.exe" | awk '{print $1}')"
-  for source in "$target_case"/MY_SRC/*.F90; do
-    printf '%s  tests/SWG_DG/MY_SRC/%s\n' \
-      "$(sha256sum "$source" | awk '{print $1}')" "$(basename "$source")"
-  done
-  printf '%s  scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg/usrdef_zgr_domsiz.patch\n' \
-    "$(sha256sum "$source_patch" | awk '{print $1}')"
-  printf '%s  arch/arch-%s.fcm\n' \
-    "$(sha256sum "$arch_path" | awk '{print $1}')" "$arch_name"
-} >"$manifest_dir/swg_dg_build_manifest.sha256"
+mkdir -p "$manifest_dir/artifacts/MY_SRC"
+cp "$target_case/BLD/bin/nemo.exe" "$manifest_dir/artifacts/nemo.exe"
+cp "$source_patch" "$manifest_dir/artifacts/usrdef_zgr_domsiz.patch"
+cp "$arch_path" "$manifest_dir/artifacts/arch-$arch_name.fcm"
+cp "$target_case"/MY_SRC/*.F90 "$manifest_dir/artifacts/MY_SRC/"
+(
+  cd "$manifest_dir"
+  find artifacts -type f -print0 | sort -z | xargs -0 sha256sum
+) >"$manifest_dir/swg_dg_build_manifest.sha256"
 {
   printf 'schema=swg-dg-build-manifest-v1\n'
   printf 'nemo_revision=%s\n' "$revision"
@@ -130,6 +132,8 @@ touch "$target_case"/MY_SRC/*.F90
   printf 'source_case=SWG\n'
   printf 'target_case=SWG_DG\n'
   printf 'arch_name=%s\n' "$arch_name"
+  printf 'hash_inventory_root=%s\n' "$manifest_dir"
+  printf 'hash_inventory_check=cd %s && sha256sum -c swg_dg_build_manifest.sha256\n' "$manifest_dir"
   printf 'cpp=cpp -Dkey_nosignedzero\n'
   printf 'fcflags=-fdefault-real-8 -O3 -funroll-all-loops -fcray-pointer -ffree-line-length-none -fallow-argument-mismatch -fno-tree-vectorize\n'
   printf 'cflags=-O0\n'

@@ -666,6 +666,8 @@ def main(argv=None) -> int:
               f"variables={len(payload['rows'])}")
     else:
         print(f"classification={payload['classification']}")
+    if args.command == "rank-check" and not payload["all_bit_identical"]:
+        return 1
     return 0
 
 

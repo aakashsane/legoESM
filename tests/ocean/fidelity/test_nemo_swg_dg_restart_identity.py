@@ -110,6 +110,77 @@ def test_restart_tile_loader_maps_un_vn_level_zero_and_reports_workspace(
     assert provenance["excluded_restart_fields"]["uu_n"]["nonzero_words"] == 0
 
 
+def test_restart_loader_refuses_non_fp64_prognostic_storage(tmp_path):
+    import netCDF4
+
+    path = tmp_path / "SWG_00001728_restart.nc"
+    with netCDF4.Dataset(path, "w") as ds:
+        ds.createDimension("t", 1)
+        ds.createDimension("z", 2)
+        ds.createDimension("y", 1)
+        ds.createDimension("x", 1)
+        ds.createVariable("kt", "f8").assignValue(1728.0)
+        ds.createVariable("rdt", "f8").assignValue(50.0)
+        ds.createVariable("nav_lon", "f4", ("y", "x"))[:] = 0.0
+        ds.createVariable("nav_lat", "f4", ("y", "x"))[:] = 0.0
+        ds.createVariable("sshn", "f4", ("t", "y", "x"))[:] = 0.0
+        for name in ("uu_n", "vv_n"):
+            ds.createVariable(name, "f8", ("t", "y", "x"))[:] = 0.0
+        for name in ("un", "vn"):
+            ds.createVariable(name, "f8", ("t", "z", "y", "x"))[:] = 0.0
+    coordinates = {kind: (np.zeros((1, 1)), np.zeros((1, 1))) for kind in "TUV"}
+    with pytest.raises(RuntimeError, match="sshn restart storage is not float64"):
+        identity.load_nemo_restart(tmp_path, 1_728, coordinates)
+
+
+def test_mesh_loader_assembles_all_three_masks_and_refuses_bad_values(tmp_path):
+    import netCDF4
+
+    path = tmp_path / "mesh_mask.nc"
+    with netCDF4.Dataset(path, "w") as ds:
+        ds.createDimension("t", 1)
+        ds.createDimension("z", 2)
+        ds.createDimension("y", 1)
+        ds.createDimension("x", 2)
+        ds.createVariable("nav_lon", "f4", ("y", "x"))[:] = [[0.0, 1.0]]
+        ds.createVariable("nav_lat", "f4", ("y", "x"))[:] = [[0.0, 0.0]]
+        for name in ("tmask", "umask", "vmask"):
+            variable = ds.createVariable(name, "i1", ("t", "z", "y", "x"))
+            variable[:] = 0
+            variable[0, 0] = [[1, 0]]
+    coordinates = {
+        kind: (np.asarray([[0.0, 1.0]]), np.asarray([[0.0, 0.0]]))
+        for kind in "TUV"
+    }
+    masks, provenance = identity.load_nemo_mesh_masks(tmp_path, coordinates)
+    assert all(np.array_equal(mask, [[True, False]]) for mask in masks.values())
+    assert provenance["rank_files"] == 1
+    with netCDF4.Dataset(path, "a") as ds:
+        ds["vmask"][0, 0, 0, 0] = 2
+    with pytest.raises(RuntimeError, match="other than zero or one"):
+        identity.load_nemo_mesh_masks(tmp_path, coordinates)
+
+
+def test_legoesm_loader_refuses_fp32_even_when_other_admission_checks_pass(
+        tmp_path, monkeypatch):
+    endpoint = tmp_path / "day0001.npz"
+    np.savez(
+        endpoint, day=np.asarray(1), step=np.asarray(1_728),
+        dt_s=np.asarray(50.0),
+        **{name: np.ones((1, 1), dtype=np.float32)
+           for name in identity.FIELD_MAPPING})
+    manifest = {
+        "status": "complete", "mode": "gpu-native",
+        "integration": "one-jitted-scan-per-day", "steps_per_day": 1_728,
+        "daily_sha256": {endpoint.name: identity.sha256(endpoint)},
+        "namelist": {},
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    monkeypatch.setattr(identity, "_require_legoesm_deck", lambda _: None)
+    with pytest.raises(RuntimeError, match="endpoint storage is not float64"):
+        identity.load_legoesm_endpoint(endpoint, day=1, step=1_728)
+
+
 @pytest.mark.parametrize(("year", "day", "step"), (
     (1, 365, 630_720),
     (2, 730, 1_261_440),

@@ -56,6 +56,20 @@ def test_json_writer_handles_numpy_scalars_and_refuses_overwrite(tmp_path):
         round6._write_json(path, {"count": np.int64(4)})
 
 
+def test_rank_check_cli_returns_nonzero_for_planted_mismatch(tmp_path, monkeypatch):
+    payload = {
+        "label": "synthetic-rank-control",
+        "all_bit_identical": False,
+        "rows": {"sshn": {"bit_identical": False}},
+    }
+    monkeypatch.setattr(round6, "compare_rank_restarts", lambda root: payload)
+    report = tmp_path / "rank.json"
+    status = round6.main([
+        "rank-check", "--root", str(tmp_path), "--json", str(report)])
+    assert status == 1
+    assert report.is_file()
+
+
 def test_exposure_classifier_distinguishes_zero_from_magnitude():
     names = (
         "zonal_difference", "numerator", "area_product",

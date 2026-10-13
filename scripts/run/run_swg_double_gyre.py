@@ -320,7 +320,9 @@ def run_long(
         "legoesm_git_sha": commit,
         "mode": mode,
         "certified_policy": certified_policy,
-        "deck_certification": "pending NEMO ladder acquisition",
+        "deck_certification": (
+            "reference evidence on pinned 2026-10-13 toolchain: daily scan "
+            "exact; formal per-step program carries last-bit debt"),
         "backend": jax.default_backend(),
         "device_selection": device_selection | {
             "jax_devices": [str(device) for device in jax.devices()],
@@ -448,7 +450,8 @@ def main(argv=None) -> int:
         f"COMPLETED days={manifest['days']} backend={manifest['backend']} "
         f"certified_policy={manifest['certified_policy']} "
         f"wall_seconds={manifest['wall_seconds']:.3f} "
-        f"deck_certification=pending output={args.output.resolve()}")
+        "deck_certification=reference-evidence-composition-dependent "
+        f"output={args.output.resolve()}")
     if manifest["profile"] is not None:
         profile = manifest["profile"]
         print(

@@ -14,6 +14,8 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from nemo_testcase_l1_swg_dg_climate import (  # noqa: E402
+    _require_legoesm_deck,
+    _require_nemo_deck,
     assemble_coordinate_tiles,
 )
 from nemo_testcase_l1_swg_dg_round6 import bit_summary  # noqa: E402
@@ -40,6 +42,15 @@ def _restart_paths(root: Path, step: int) -> list[Path]:
     require(not (tiled and single.exists()), "mixed tiled and single restart files")
     paths = tiled or ([single] if single.is_file() else [])
     require(bool(paths), f"no NEMO restart files for step {step} under {root}")
+    return paths
+
+
+def _mesh_paths(root: Path) -> list[Path]:
+    tiled = sorted(root.glob("mesh_mask_[0-9][0-9][0-9][0-9].nc"))
+    single = root / "mesh_mask.nc"
+    require(not (tiled and single.exists()), "mixed tiled and single mesh files")
+    paths = tiled or ([single] if single.is_file() else [])
+    require(bool(paths), f"no NEMO mesh-mask files under {root}")
     return paths
 
 
@@ -85,6 +96,9 @@ def load_nemo_restart(
                     f"restart kt differs from requested step {step}")
             require(float(np.asarray(ds["rdt"][:])) == 50.0,
                     "restart rdt differs from the 50 s deck")
+            for name in ("sshn", "un", "vn", "uu_n", "vv_n"):
+                require(np.dtype(ds[name].dtype) == np.dtype("float64"),
+                        f"{name} restart storage is not float64")
         for lego_name, mapping in FIELD_MAPPING.items():
             nemo_name = mapping["nemo"]
             tiles = []
@@ -130,6 +144,47 @@ def load_nemo_restart(
     return fields, provenance
 
 
+def load_nemo_mesh_masks(
+        root: Path,
+        coordinates: dict[str, tuple[np.ndarray, np.ndarray]],
+) -> tuple[dict[str, np.ndarray], dict]:
+    """Assemble and content-pin the wet masks used by the NEMO run."""
+    import netCDF4
+
+    paths = _mesh_paths(root)
+    fields = {"T": "tmask", "U": "umask", "V": "vmask"}
+    masks = {}
+    with ExitStack() as stack:
+        datasets = [stack.enter_context(netCDF4.Dataset(path)) for path in paths]
+        for ds in datasets:
+            ds.set_auto_mask(False)
+            for name in (*fields.values(), "nav_lon", "nav_lat"):
+                require(name in ds.variables, f"mesh tile is missing {name}")
+        for kind, name in fields.items():
+            tiles = []
+            for ds in datasets:
+                values = np.asarray(ds[name][:])
+                require(values.ndim == 4 and values.shape[:2] == (1, 2),
+                        f"{name} mesh layout differs")
+                require(np.all(values[0, 1] == 0),
+                        f"{name} dummy level is not dry")
+                require(np.all((values[0, 0] == 0) | (values[0, 0] == 1)),
+                        f"{name} contains a value other than zero or one")
+                tiles.append((np.asarray(ds["nav_lon"][:]),
+                              np.asarray(ds["nav_lat"][:]), values[0, 0]))
+            masks[kind] = assemble_coordinate_tiles(
+                tiles, *coordinates[kind], word_exact=True).astype(bool)
+    provenance = {
+        "rank_files": len(paths),
+        "mesh_files_sha256": {path.name: sha256(path) for path in paths},
+        "mask_sha256": {
+            kind: hashlib.sha256(np.ascontiguousarray(mask).tobytes()).hexdigest()
+            for kind, mask in masks.items()
+        },
+    }
+    return masks, provenance
+
+
 def load_legoesm_endpoint(path: Path, *, day: int, step: int) -> tuple[dict, dict]:
     """Load one content-pinned end-of-day instantaneous legoESM state."""
     require(path.is_file(), f"missing legoESM endpoint {path}")
@@ -142,16 +197,21 @@ def load_legoesm_endpoint(path: Path, *, day: int, step: int) -> tuple[dict, dic
             "endpoint did not use the one-JIT-per-day composition")
     require(manifest.get("steps_per_day") == 1_728,
             "legoESM daily cadence differs")
+    _require_legoesm_deck(manifest.get("namelist", {}))
     require(manifest.get("daily_sha256", {}).get(path.name) == sha256(path),
             "legoESM endpoint digest differs from its manifest")
     with np.load(path, allow_pickle=False) as saved:
         require(int(saved["day"]) == day, "embedded legoESM day differs")
         require(int(saved["step"]) == step, "embedded legoESM step differs")
         require(float(saved["dt_s"]) == 50.0, "embedded legoESM dt differs")
-        fields = {
-            name: np.asarray(saved[name], dtype=np.float64)
-            for name in FIELD_MAPPING
-        }
+        fields = {}
+        for name in FIELD_MAPPING:
+            value = np.asarray(saved[name])
+            require(value.dtype == np.dtype("float64"),
+                    f"{name} endpoint storage is not float64")
+            require(np.all(np.isfinite(value)),
+                    f"{name} endpoint has non-finite values")
+            fields[name] = value
     return fields, {
         "path": str(path.resolve()),
         "sha256": sha256(path),
@@ -233,9 +293,16 @@ def build_report(
 
 
 def run(nemo_root: Path, lego_npz: Path, *, day: int, step: int) -> dict:
+    deck_provenance = _require_nemo_deck(nemo_root)
     coordinates, masks = _card_geometry()
+    nemo_masks, mesh_provenance = load_nemo_mesh_masks(nemo_root, coordinates)
+    for kind in "TUV":
+        require(np.array_equal(nemo_masks[kind], masks[kind]),
+                f"NEMO and legoESM {kind}-grid wet masks differ")
     nemo_fields, nemo_provenance = load_nemo_restart(
         nemo_root, step, coordinates)
+    nemo_provenance["deck"] = deck_provenance
+    nemo_provenance["mesh"] = mesh_provenance
     lego_fields, lego_provenance = load_legoesm_endpoint(
         lego_npz, day=day, step=step)
     rows = compare_fields(nemo_fields, lego_fields, masks)

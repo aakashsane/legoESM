@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import struct
 import sys
 from pathlib import Path
@@ -95,6 +96,36 @@ def compare_outputs(run: Path, reference: Path) -> dict:
     return result
 
 
+def require_completed_step(root: Path, expected: int) -> dict:
+    """Require NEMO's always-written step stamp to reach the requested step."""
+    time_path, stat_path = root / "time.step", root / "run.stat"
+    if not time_path.is_file():
+        raise Refusal(f"{root}: time.step is missing")
+    try:
+        time_step = int(time_path.read_text().strip())
+    except ValueError as exc:
+        raise Refusal(f"{time_path}: invalid completed step") from exc
+    stat_steps = []
+    if stat_path.is_file():
+        stat_steps = [
+            int(match.group(1))
+            for match in re.finditer(
+                r"^\s*it\s*:\s*([0-9]+)\b", stat_path.read_text(), re.MULTILINE)
+        ]
+        if not stat_steps:
+            raise Refusal(f"{stat_path}: no completed-step records")
+    if time_step != expected or (stat_steps and stat_steps[-1] != expected):
+        raise Refusal(
+            f"{root}: completion is time.step={time_step}, "
+            f"run.stat={stat_steps[-1] if stat_steps else 'missing'}, "
+            f"expected {expected}")
+    return {
+        "expected_step": expected,
+        "time_step": time_step,
+        "run_stat_final_step": stat_steps[-1] if stat_steps else None,
+    }
+
+
 def compare_restarts(run: Path, reference: Path, steps: tuple[int, ...]) -> dict:
     """Require each requested daily restart to exist and match field bits."""
     result = {}
@@ -164,6 +195,7 @@ def main(argv=None) -> int:
     p.add_argument("--json", type=Path, required=True)
     p.add_argument("--outputs-only", action="store_true")
     p.add_argument("--expected-variable-count", type=int)
+    p.add_argument("--expected-completed-step", type=int)
     p.add_argument("--record-kts", type=_int_csv,
                    default=tuple(range(1, STEPS + 1)))
     p.add_argument("--stages", type=_int_csv, default=STAGES)
@@ -171,6 +203,14 @@ def main(argv=None) -> int:
     a = p.parse_args(argv)
     try:
         if a.outputs_only:
+            completion = None
+            if a.expected_completed_step is not None:
+                completion = {
+                    "reference": require_completed_step(
+                        a.reference, a.expected_completed_step),
+                    "candidate": require_completed_step(
+                        a.evidence, a.expected_completed_step),
+                }
             identity = compare_outputs(a.evidence, a.reference)
             variable_count = sum(len(names) for names in identity.values())
             if (a.expected_variable_count is not None
@@ -187,6 +227,8 @@ def main(argv=None) -> int:
                 "differing_variables": 0,
                 "bit_identical": True,
             }
+            if completion is not None:
+                out["completion"] = completion
         else:
             out = check(a.evidence, a.reference, record_kts=a.record_kts,
                         stages=a.stages, restart_kts=a.restart_kts)

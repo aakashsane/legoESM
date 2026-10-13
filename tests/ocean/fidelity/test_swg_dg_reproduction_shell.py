@@ -1,6 +1,7 @@
 """Portable preflight tests for the committed NEMO SWG_DG shell tools."""
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 TOOLS = ROOT / "scripts/data/nemo_swg_double_gyre"
-MOUNTED_NEMO = Path("/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2")
+MOUNTED_NEMO = Path(os.environ.get("LEGOESM_TEST_NEMO_ROOT", "/nonexistent"))
 
 
 @pytest.mark.parametrize("name", (
@@ -51,6 +52,15 @@ def test_nemo_run_and_controls_preflight_without_mpi_or_makenemo(tmp_path):
     assert "nn_stock=630720" in run.stdout
     assert run.stdout.endswith("PREFLIGHT_OK\n")
     assert not (tmp_path / "portable").exists()
+
+    escaped = subprocess.run([
+        "bash", str(TOOLS / "swg_md_run.sh"),
+        "--nemo-cfg", str(cfg), "--output-root", str(tmp_path),
+        "--smoke", "../escaped", "1",
+    ], capture_output=True, text=True)
+    assert escaped.returncode != 0
+    assert "REFUSE_LABEL" in escaped.stderr
+    assert not (tmp_path.parent / "escaped").exists()
 
     identity = subprocess.run([
         "bash", str(TOOLS / "check_swg_dg_identity.sh"),

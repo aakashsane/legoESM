@@ -68,6 +68,8 @@ case "$mode" in
     nswg=16; dt=50; steps=1892160; stock=630720
     ;;
 esac
+[[ "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$label" != "." && "$label" != ".." ]] || {
+  printf 'REFUSE_LABEL: expected one safe output-directory component, got %s\n' "$label" >&2; exit 64; }
 for pair in "nn_SWG:$nswg" "steps:$steps" "ranks:$ranks" "nn_stock:$stock"; do
   name=${pair%%:*}; value=${pair#*:}
   [[ "$value" =~ ^[1-9][0-9]*$ ]] || {
@@ -117,6 +119,7 @@ fi
 
 mkdir -p "$run_dir"
 cp "$dry/namelist_cfg" "$nemo_cfg/EXP00/namelist_ref" "$run_dir/"
+cp "$deck_patch" "$run_dir/committed_maddison_deck.patch"
 cp "$nemo_cfg/BLD/bin/nemo.exe" "$run_dir/nemo"
 for xml in "$nemo_cfg"/EXP00/*.xml; do
   [[ ! -e "$xml" ]] || cp -L "$xml" "$run_dir/"
@@ -126,8 +129,7 @@ grep -nE 'nn_SWG|rn_domsiz|rn_tau|rn_modified_grav|rn_rfr|rn_beta|rn_f0|rn_Uv|rn
   namelist_cfg | grep -vE '^\S*:\s*!' >resolved_namelist_lines.txt
 {
   sha256sum nemo namelist_cfg namelist_ref
-  printf '%s  committed_maddison_deck.patch\n' \
-    "$(sha256sum "$deck_patch" | awk '{print $1}')"
+  sha256sum committed_maddison_deck.patch
 } >manifest.sha256
 export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -138,5 +140,12 @@ printf 'WALL_SECONDS=%s\nRUN_FINISHED_UTC=%s\n' "$SECONDS" \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>run.log
 [[ -s time.step && -s run.stat ]] || {
   printf 'REFUSE_INCOMPLETE_RUN: time.step or run.stat missing\n' >&2; exit 70; }
+completed_step=$(tr -d '[:space:]' <time.step)
+runstat_step=$(awk '$1 == "it" && $2 == ":" { step=$3 } END { print step }' run.stat)
+[[ "$completed_step" == "$steps" && "$runstat_step" == "$steps" ]] || {
+  printf 'REFUSE_INCOMPLETE_RUN: requested=%s time.step=%s run.stat=%s\n' \
+    "$steps" "${completed_step:-missing}" "${runstat_step:-missing}" >&2
+  exit 70
+}
 printf 'NEMO_RUN_COMPLETE label=%s steps=%s ranks=%s wall_seconds=%s\n' \
   "$label" "$steps" "$ranks" "$SECONDS"

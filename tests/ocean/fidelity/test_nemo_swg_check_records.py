@@ -119,6 +119,20 @@ def test_output_passivity_refuses_one_changed_bit(tmp_path):
         cr.compare_outputs(run, ref)
 
 
+def test_completion_guard_binds_time_step_and_run_stat(tmp_path):
+    (tmp_path / "time.step").write_text("  10\n")
+    (tmp_path / "run.stat").write_text(
+        " it :       1 value\n it :      10 value\n")
+    assert cr.require_completed_step(tmp_path, 10) == {
+        "expected_step": 10, "time_step": 10, "run_stat_final_step": 10}
+    (tmp_path / "time.step").write_text("9\n")
+    with pytest.raises(cr.Refusal, match="expected 10"):
+        cr.require_completed_step(tmp_path, 10)
+    (tmp_path / "time.step").write_text("10\n")
+    (tmp_path / "run.stat").unlink()
+    assert cr.require_completed_step(tmp_path, 10)["run_stat_final_step"] is None
+
+
 def test_daily_restart_passivity_refuses_one_changed_bit(tmp_path):
     netCDF4 = pytest.importorskip("netCDF4")
     run, ref = tmp_path / "run", tmp_path / "ref"

@@ -82,4 +82,5 @@ for arm in reference variant; do
 done
 "$python" -I "$checker" --outputs-only \
   --reference "$output/reference" --evidence "$output/variant" \
-  --expected-variable-count 41 --json "$output/swg_dg_identity.json"
+  --expected-variable-count 41 --expected-completed-step 10 \
+  --json "$output/swg_dg_identity.json"

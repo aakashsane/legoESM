@@ -34,7 +34,9 @@ def test_tiny_cpu_driver_writes_daily_native_state_with_provenance(tmp_path):
     manifest = driver.run_long(
         tiny, output, days=1, mode="cpu-certified", commit="a" * 40)
     assert manifest["certified_policy"] is True
-    assert manifest["deck_certification"] == "pending NEMO ladder acquisition"
+    assert manifest["deck_certification"] == (
+        "reference evidence on pinned 2026-10-13 toolchain: daily scan exact; "
+        "formal per-step program carries last-bit debt")
     assert manifest["status"] == "complete"
     assert manifest["completed_days"] == 1
     assert manifest["transcendentals"] == "libm"

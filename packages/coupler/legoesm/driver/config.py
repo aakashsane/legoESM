@@ -5199,13 +5199,17 @@ def checkpoint_radiation_cadence_error(cfg) -> str | None:
     rus = cfg.rad_update_steps
     ck_days = cfg.output.checkpoint_days
     dt = cfg.dycore.dt
+    # Same predicate as the run loop's guard: radiation sub-cycles only when
+    # it runs at all, and the checkpoint interval is the loop's integer
+    # step count, int(checkpoint_days * 86400 / dt).
     if not (cfg.column_loop_lane and isinstance(rus, int) and rus > 1
+            and cfg.radiation != "none"
             and ck_days and ck_days > 0 and dt > 0):
         return None
-    ck_steps = ck_days * 86400.0 / dt
+    ck_steps = int(ck_days * 86400.0 / dt)
     if ck_steps % rus == 0:
         return None
-    return (f"checkpoint_days={ck_days} ({ck_steps:g} steps at "
+    return (f"checkpoint_days={ck_days} ({ck_steps} steps at "
             f"dt={dt:g} s) is not an integer multiple of "
             f"rad_update_steps={rus}: the held radiation fluxes "
             "are not checkpointed, so every checkpoint must sit on a "

@@ -1160,7 +1160,8 @@ def test_land_stress_from_land_reaches_the_boundary_layer_on_the_duo_columns(
     assert getattr(off, "_land_stress_last", None) is None
 
 
-def test_checkpoint_radiation_cadence_is_judged_on_the_clamped_dt(tmp_path):
+def test_checkpoint_radiation_cadence_is_judged_on_the_clamped_dt(
+        tmp_path, monkeypatch):
     """D-REX-1 alignment is a property of the steps the run TAKES: the
     requested 1920 s clamps (CFL) to 600 s on C12, so one-day checkpoints
     are 144 steps.  Radiation every 4 steps aligns (setup passes, though 45
@@ -1171,7 +1172,8 @@ def test_checkpoint_radiation_cadence_is_judged_on_the_clamped_dt(tmp_path):
     def drv(name, rus):
         d = tmp_path / name
         d.mkdir()
-        c = _driver_cfg(d, dt=1920.0, rad_update_steps=rus)
+        c = _land_stress_cfg(d, monkeypatch, stress=None, days=1,
+                             dt=1920.0, rad_update_steps=rus)
         return ModelDriver(
             c._replace(output=c.output._replace(checkpoint_days=1)),
             output_dir=d)

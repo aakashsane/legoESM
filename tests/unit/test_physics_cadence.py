@@ -421,6 +421,12 @@ def test_checkpoint_cadence_off_the_radiation_cadence_is_refused():
     assert "checkpoint_days=1" in msg and "288 steps" in msg
     assert "rad_update_steps=5" in msg
     assert checkpoint_radiation_cadence_error(cfg(4)) is None
+    # the run loop's predicate: no radiation, nothing to align; the
+    # interval is the loop's int(checkpoint_days*86400/dt) (599 s -> 144)
+    assert checkpoint_radiation_cadence_error(
+        cfg(5)._replace(radiation="none")) is None
+    assert checkpoint_radiation_cadence_error(cfg(4)._replace(
+        dycore=DycoreConfig(discretization="mpas", dt=599.0))) is None
     # requested-dt validation leaves it to setup
     cfg(5).validate_strict()
     # no checkpoints: nothing to align

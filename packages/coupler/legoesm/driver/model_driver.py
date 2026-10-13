@@ -1221,8 +1221,8 @@ _LAND_ML_CACHE_FIELDS = ("canopy_x",)
 # Restart-exactness payload of the column loop (R-ex), beyond the land
 # cadence window below (which carries the land boundary outputs the loop
 # holds between land steps).  The held RADIATION slots are NOT persisted
-# (D-REX-1): a checkpoint sits on a radiation boundary (validate_strict + the
-# restart guard), so the first resumed step re-solves radiation as the
+# (D-REX-1): a checkpoint sits on a radiation boundary (the setup check on the
+# effective dt + the run loop's restart guard), so the first resumed step re-solves radiation as the
 # unbroken run does.  The two TURBULENT surface fluxes ARE persisted
 # (D-REX-2): the CAPE-diurnal forcing reads the previous step's shflx/lhflx
 # BEFORE the step, so a cold start hands it zeros where the unbroken run had
@@ -1915,12 +1915,9 @@ class ModelDriver:
                 # Optional fields (TgC, surface_water) may be None — np.asarray
                 # would pickle a 0-d object array into the npz and crash the
                 # load-side jnp.asarray. Skip; restore only replaces saved keys.
-                # The canopy warm start (``canopy_x``) is written too: the
-                # next solve starts from it and the result is seed-dependent,
-                # so a restart without it is not bitwise.  Readers treat it
-                # as optional (``_LAND_ML_CACHE_FIELDS``), so a checkpoint
-                # from before it was written still restarts.
-                if _v is not None:
+                # Cache fields (the canopy warm start) are skipped too: they
+                # carry no physics and an older reader would refuse the key.
+                if _v is not None and _f not in _LAND_ML_CACHE_FIELDS:
                     base[f"land_ml_{_f}"] = np.asarray(_v)
         return base if base else None
 
@@ -13631,6 +13628,14 @@ class ModelDriver:
                 _land_lhflx_cells, _land_evap_cells = _lw_lh, _lw_ev
             if _land_beta_cells is not None and _lw_beta is not None:
                 _land_beta_cells = _lw_beta
+            elif (_land_beta_cells is not None and _lw_T is not None
+                  and _land_qsfc_cells is not None):
+                logger.warning(
+                    "  MPAS land window: the checkpoint carries no held beta "
+                    "(written before it was persisted); beta is re-derived "
+                    "from the restored soil, not the unbroken run's held "
+                    "value. This restart is not bit-identical to an "
+                    "unbroken run.")
             logger.info(
                 "  MPAS land window: resumed from checkpoint (%d pending "
                 "sample(s) of %d; held land outputs %s)", _land_a2s_n,

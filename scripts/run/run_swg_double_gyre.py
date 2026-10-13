@@ -18,8 +18,6 @@ CHECKOUT_TOOLS = (
 sys.path.insert(0, str(CHECKOUT_TOOLS))
 from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-CHECKOUT_IMPORT = bootstrap_checkout(__file__)
-
 SECONDS_PER_DAY = 86_400
 SCAN_PARITY_ATOL = 1.0e-12
 GPU_TARGET_MS_PER_STEP = 5.0
@@ -460,6 +458,11 @@ def run_long(
 
 
 def main(argv=None) -> int:
+    argument_vector = sys.argv[1:] if argv is None else list(argv)
+    if "-h" in argument_vector or "--help" in argument_vector:
+        # Help is itself a tested entry-point path.  Bind it to this checkout
+        # without requiring a GPU merely to display usage.
+        bootstrap_checkout(__file__, jax_platform="cpu")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--days", type=int, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -478,8 +481,13 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--daily-means", action="store_true",
         help="also accumulate every post-step state inside the compiled day")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argument_vector)
     try:
+        requested_platform = (
+            "gpu" if args.mode == "gpu-native" else "cpu")
+        bootstrap_checkout(
+            __file__, jax_platform=requested_platform,
+            gpu_device=args.gpu_device)
         from legoesm.ocean.fidelity.provenance import git_sha
 
         namelist = resolved_daily_namelist(args.days)

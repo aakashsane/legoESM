@@ -192,4 +192,5 @@ def test_python_entry_points_bind_this_checkout_ahead_of_decoy(tmp_path, relativ
         cwd=tmp_path, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert f"CHECKOUT_IMPORT_OK root={ROOT}" in result.stdout
+    assert "JAX_PLATFORM_OK requested=cpu selected=cpu" in result.stdout
     assert str(ROOT / "packages/ocean/legoesm/ocean/__init__.py") in result.stdout

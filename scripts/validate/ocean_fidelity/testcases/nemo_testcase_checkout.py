@@ -1,6 +1,7 @@
 """Bind a standalone NEMO-fidelity entry point to its owning checkout."""
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -18,8 +19,29 @@ _PACKAGE_ROOTS = (
 )
 
 
-def bootstrap_checkout(script: str | Path) -> dict[str, str]:
-    """Put the script's Git checkout first and verify the imported package."""
+def bootstrap_checkout(
+        script: str | Path, *, jax_platform: str = "cpu",
+        gpu_device: str | None = None,
+) -> dict[str, str]:
+    """Select JAX, put the owning checkout first, and verify both choices.
+
+    Importing ``legoesm.ocean`` imports JAX.  Platform selection therefore
+    belongs here, before the checkout verification import, rather than later
+    in an entry point's model code.
+    """
+    if jax_platform not in ("cpu", "gpu"):
+        raise RuntimeError(
+            f"explicit JAX platform must be cpu or gpu, got {jax_platform!r}")
+    if jax_platform == "gpu":
+        if gpu_device is None or not gpu_device.isdigit():
+            raise RuntimeError(
+                "GPU entry point requires an explicit non-negative physical "
+                "GPU index")
+        os.environ["CUDA_VISIBLE_DEVICES"] = gpu_device
+    elif gpu_device is not None:
+        raise RuntimeError("gpu_device is valid only for the gpu platform")
+    os.environ["JAX_PLATFORMS"] = jax_platform
+
     path = Path(script).resolve()
     try:
         root = Path(subprocess.check_output(
@@ -34,4 +56,21 @@ def bootstrap_checkout(script: str | Path) -> dict[str, str]:
     sys.path[:0] = roots
     from legoesm.ocean.fidelity.provenance import require_checkout_import
 
-    return require_checkout_import(root)
+    result = require_checkout_import(root)
+    import jax
+
+    actual_platform = jax.default_backend()
+    if actual_platform != jax_platform:
+        raise RuntimeError(
+            f"JAX platform mismatch: requested {jax_platform}, selected "
+            f"{actual_platform}")
+    result.update({
+        "jax_platform": actual_platform,
+        "physical_gpu": gpu_device,
+    })
+    print(
+        f"JAX_PLATFORM_OK requested={jax_platform} selected={actual_platform} "
+        f"physical_gpu={gpu_device if gpu_device is not None else 'NONE'}",
+        flush=True,
+    )
+    return result

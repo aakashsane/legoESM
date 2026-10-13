@@ -16,8 +16,11 @@ REPO_ROOT = HERE.parents[3]
 sys.path.insert(0, str(HERE))
 from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-CHECKOUT_IMPORT = bootstrap_checkout(__file__)
-from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
+
+def require(condition: bool, message: str) -> None:
+    """Fail closed without importing legoESM before backend selection."""
+    if not condition:
+        raise RuntimeError(message)
 
 
 def _load(name: str, path: Path):
@@ -57,7 +60,8 @@ def _configure_backend(backend: str, gpu_device: str | None) -> None:
 
 
 def run(root: Path, *, composition: str, backend: str,
-        gpu_device: str | None, plant: bool = True) -> dict:
+        gpu_device: str | None, plant: bool = True,
+        checkout_import: dict | None = None) -> dict:
     _configure_backend(backend, gpu_device)
     import jax
     from legoesm.core.precision import PrecisionPolicy, set_policy
@@ -137,7 +141,7 @@ def run(root: Path, *, composition: str, backend: str,
     return {
         "schema": "swg-dg-short-restart-ladder-v1",
         "label": "SWG_DG_SHORT_LADDER",
-        "checkout_import": CHECKOUT_IMPORT,
+        "checkout_import": checkout_import,
         "legoesm_git_sha": legoesm_sha,
         "nemo_root": str(root.resolve()),
         "backend": backend,
@@ -153,6 +157,10 @@ def run(root: Path, *, composition: str, backend: str,
 
 
 def main(argv=None) -> int:
+    argument_vector = sys.argv[1:] if argv is None else list(argv)
+    if "-h" in argument_vector or "--help" in argument_vector:
+        # The decoy-checkout guard exercises help on machines without GPUs.
+        bootstrap_checkout(__file__, jax_platform="cpu")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nemo-root", type=Path, required=True)
     parser.add_argument("--composition", choices=("outer-scan", "materialized"),
@@ -161,13 +169,16 @@ def main(argv=None) -> int:
     parser.add_argument("--gpu-device")
     parser.add_argument("--json", type=Path, required=True)
     parser.add_argument("--no-plant", action="store_true")
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argument_vector)
     try:
+        checkout_import = bootstrap_checkout(
+            __file__, jax_platform=args.backend,
+            gpu_device=args.gpu_device)
         require(not args.json.exists(), f"refusing to overwrite {args.json}")
         payload = run(
             args.nemo_root, composition=args.composition,
             backend=args.backend, gpu_device=args.gpu_device,
-            plant=not args.no_plant)
+            plant=not args.no_plant, checkout_import=checkout_import)
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     except Exception as exc:  # noqa: BLE001 - fail-closed diagnostic CLI

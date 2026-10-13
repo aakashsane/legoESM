@@ -181,7 +181,12 @@ gradient matrix's clean-worktree guard: the two new documentation files were
 still untracked. No underlying gradient or package assertion failed. This
 precommit log has SHA-256
 `d0450432feb69c00f83841774f448dd932ef4464ac3ec501f7c6fc2bc7bd9653`;
-the same battery is rerun from a clean tree after the documentation commit.
+the same battery was then rerun from the clean documentation commit. The
+authoritative run recorded **334 passed, 1 registered skip** in 1926.56
+seconds. The skip is the existing six-step CPU GYRE row's LLVM section-memory
+limit; every SWG and reproduction-package test passed. The clean battery log
+SHA-256 is
+`e474781733e733aa25a3636bab6c22ec7fb67e908ed42990acb0c3a0b2d817a4`.
 
 The citation gate was rerun after this receipt was written.
 It reported PASS for 274 mapped citations, no failures, no unmapped

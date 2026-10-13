@@ -126,8 +126,12 @@ def test_faces_from_another_state_are_refused(leg1):
     data[key] = data[key] * 1.1
     bad = tmp / "bad_checkpoint_day_0001.npz"
     np.savez(bad, **data)
-    with pytest.raises(ValueError, match="do not average"):
-        _resume(tmp, str(bad), "leg2_bad")
+    d = ModelDriver(_cfg(tmp / "leg2_bad", 2))
+    d.setup()
+    d.load_checkpoint(str(bad))
+    for _ in range(2):          # a retry must refuse again, not lift
+        with pytest.raises(ValueError, match="do not average"):
+            d._enter_persistent_cgrid()
 
 
 def test_unsupported_lanes_refuse(tmp_path):

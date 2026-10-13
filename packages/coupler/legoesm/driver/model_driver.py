@@ -6975,8 +6975,12 @@ class ModelDriver:
             hydrostatic_to_facewind,
         )
         aux = self._carry_aux if isinstance(self._carry_aux, dict) else {}
-        faces = [aux.pop(k, None) for k in self._FACE_WIND_KEYS]
+        # Removed from the aux carry only once validated, so a refused restart
+        # cannot be retried into a silent lift.
+        faces = [aux.get(k) for k in self._FACE_WIND_KEYS]
         if isinstance(self.state, LatLonFaceWindState):
+            for k in self._FACE_WIND_KEYS:
+                aux.pop(k, None)
             self._persistent_cgrid = True
             return
         lifted = hydrostatic_to_facewind(self.state, self.grid)
@@ -7016,6 +7020,8 @@ class ModelDriver:
                 "lifting the cell-centre winds to "
                 "the C-grid faces once.  This restart is not bit-identical "
                 "to an uninterrupted run.")
+        for k in self._FACE_WIND_KEYS:
+            aux.pop(k, None)
         self.state = lifted
         self._persistent_cgrid = True
         logger.info(

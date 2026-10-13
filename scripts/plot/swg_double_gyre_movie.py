@@ -19,6 +19,7 @@ CHECKOUT_IMPORT = bootstrap_checkout(__file__)
 CLIMATE_PATH = (
     REPO_ROOT / "scripts/validate/ocean_fidelity/testcases/"
     "nemo_testcase_l1_swg_dg_climate.py")
+FRAME_SIZE = (1280, 720)
 
 
 def _load_climate():
@@ -110,10 +111,6 @@ def write_movie(
 ) -> None:
     """Stream matched daily means through imageio-ffmpeg without loading a year."""
     import imageio_ffmpeg
-    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
-        SWG_MADDISON_NAMELIST,
-        build_swg_card,
-    )
 
     if output.exists():
         raise FileExistsError(f"refusing to overwrite {output}")
@@ -121,28 +118,48 @@ def write_movie(
         raise ValueError("movie output must end in .mp4")
     if start_day <= 0 or days <= 0 or fps <= 0:
         raise ValueError("start-day, days, and fps must be positive")
-    climate = _load_climate()
-    providers = (
-        climate.nemo_ioipsl_provider(nemo_root, days, start_day=start_day),
-        climate.legoesm_npz_provider(legoesm_root, days, start_day=start_day),
-    )
-    if providers[0].sampling != providers[1].sampling:
-        raise RuntimeError(
-            f"sampling mismatch: NEMO={providers[0].sampling}, "
-            f"legoESM={providers[1].sampling}")
-    if providers[0].sampling != "daily_mean":
-        raise RuntimeError("side-by-side movie requires matched daily means")
-    card = build_swg_card(SWG_MADDISON_NAMELIST)
-    frames = zip(providers[0].iterate(), providers[1].iterate(), strict=True)
-    first_nemo, first_lego = next(frames)
-    first = render_frame(
-        first_nemo, first_lego, card, absolute_day=start_day)
-    height, width = first.shape[:2]
+    # Python 3.13 correctly warns that forking after JAX starts worker threads
+    # can deadlock.  Start ffmpeg first, with the renderer's fixed pixel size,
+    # and publish atomically only after all validated frames have been written.
+    temporary = output.with_name(f".{output.stem}.partial.mp4")
+    if temporary.exists():
+        raise FileExistsError(
+            f"stale partial movie exists; inspect or remove {temporary}")
     writer = imageio_ffmpeg.write_frames(
-        output, (width, height), fps=fps, codec="libx264",
+        temporary, FRAME_SIZE, fps=fps, codec="libx264",
         pix_fmt_in="rgb24", pix_fmt_out="yuv420p", quality=7)
     writer.send(None)
+    count = 0
     try:
+        from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+            SWG_MADDISON_NAMELIST,
+            build_swg_card,
+        )
+
+        climate = _load_climate()
+        providers = (
+            climate.nemo_ioipsl_provider(
+                nemo_root, days, start_day=start_day),
+            climate.legoesm_npz_provider(
+                legoesm_root, days, start_day=start_day),
+        )
+        if providers[0].sampling != providers[1].sampling:
+            raise RuntimeError(
+                f"sampling mismatch: NEMO={providers[0].sampling}, "
+                f"legoESM={providers[1].sampling}")
+        if providers[0].sampling != "daily_mean":
+            raise RuntimeError(
+                "side-by-side movie requires matched daily means")
+        card = build_swg_card(SWG_MADDISON_NAMELIST)
+        frames = zip(
+            providers[0].iterate(), providers[1].iterate(), strict=True)
+        first_nemo, first_lego = next(frames)
+        first = render_frame(
+            first_nemo, first_lego, card, absolute_day=start_day)
+        if first.shape[:2][::-1] != FRAME_SIZE:
+            raise RuntimeError(
+                f"renderer returned {first.shape[:2][::-1]}, expected "
+                f"{FRAME_SIZE}")
         writer.send(first)
         count = 1
         for count, (nemo_frame, lego_frame) in enumerate(frames, 2):
@@ -153,6 +170,7 @@ def write_movie(
         writer.close()
     if count != days:
         raise RuntimeError(f"movie provider yielded {count} frames, expected {days}")
+    temporary.replace(output)
 
 
 def main(argv=None) -> int:

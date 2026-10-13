@@ -1424,6 +1424,13 @@ CITATION_MAP = {
     'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:195-216': [
         'CALL rk3_dia( 0 )',
         'Nrhs = Nbb   ;   Nbb  = Naa   ;   Naa  = Nrhs', 22],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:260-302': [
+        '!- horizontal transport (zFu,zFv) -!',
+        'zFw(ji,jj,jk) = e1e2t(ji,jj) * ww(ji,jj,jk)', 43],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:453-476': [
+        '!* Update or Compute (VIF) advective transport',
+        'CALL tra_sbc_RK3( kstp, Kbb, Kmm,      ts, Krhs,                kstg )',
+        24],
     'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:604-634': [
         'Phase-3 L2 WRITE-only tracer-stage operand stream',
         ('& WRITE(l1_unit) ts(:,:,:,jp_tem,Krhs), ts(:,:,:,jp_sal,Krhs)', 2), 31],

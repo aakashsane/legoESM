@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-13  
 **Incoming tip:** `7b772afb8`  
-**Implementation commits:** `2215f79fe`, `f5120e1e9`, `9cdfd04c1`
+**Implementation commits:** `2215f79fe`, `f5120e1e9`, `9cdfd04c1`,
+`7e3c56d46`, `38602e64c`, `41bff60ce`
 
 ## Verdict
 
@@ -42,8 +43,9 @@ zero for both decks and all five fields.
 | kt=10 | V | 1.990153063180511e-09 | 5.351313327050338e-03 | port-specific increment |
 | kt=10 | SSH | 1.9252387011003957e-10 | 1.3831116240601085e-05 | port-specific increment |
 
-The executed NEMO step calls stages 1, 2, and 3 in that order in
-`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:195-210`.  The committed gate
+The executed NEMO step calls stages 1, 2, and 3 in that order, then swaps the
+completed stage into `Nbb`, in
+`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:195-216`.  The committed gate
 reads the acquired after-stage records and scores them with the same active
 masks and ULP implementation as the before-state ladder.
 
@@ -52,17 +54,30 @@ masks and ULP implementation as the before-state ladder.
 The first differing RK stage is **stage 1** and the first field in the gate's
 canonical T, S, U, V, SSH order is **T**: seven active T cells differ and the
 maximum is exactly **1 ULP** (`3.552713678800501e-15`).  S has six differing
-cells and is also 1 ULP.  The source-ordered tracer stream places the first
-difference in the **tracer-advection accumulator**: immediately after
-`tra_adv`, T already has 280,360 unequal accumulator values with maximum
-absolute residue `1.7724826165786277e-20`; S has 270,982 with maximum
-`2.795787752367978e-20`.  The following surface-boundary call does not change
-those counts or maxima.  The record is written around `tra_adv` and
-`tra_sbc_RK3` in
+cells and is also 1 ULP.  The earliest differing measured operands are the
+**stage-1 advective transports**, before `tra_adv`: `zFu` differs in 194,349
+active values (maximum `2.8421709430404007e-13`, 5 ULP at the maximum-absolute
+cell), `zFv` in 189,688 (maximum `3.410605131648481e-13`, 6 ULP there), and
+`zFw` in 287,138 (maximum `5.331957098064777e-12`, 24,013 ULP there).  `zFu`
+is therefore the first differing term in the record's `zFu`, `zFv`, `zFw`
+order.  NEMO forms horizontal `zFu`/`zFv` from metric, thickness, qco, velocity,
+and barotropic-correction factors and forms `zFw` from the vertical velocity in
+`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:260-302`.
+
+`tra_adv` consumes that already-different bundle: immediately afterward T has
+280,360 unequal accumulator values with maximum absolute residue
+`1.7724826165786277e-20`; S has 270,982 with maximum
+`2.795787752367978e-20`.  The following surface-boundary call changes neither
+count nor maximum.  The compiled call order is cited at
+`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:453-476`; the acquired record
+is written around those calls in
 `GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:604-634`, and the thickness-
 weighted stage update that turns the accumulator residue into the observed
 one-ULP T/S state residue is
-`GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:650-675`.
+`GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:650-675`.  This localizes the
+owner boundary to stage-transport construction/composition; it refutes the
+stronger claim that exact transports first diverge inside `tra_adv`.  Which
+multiplicand first moves inside `zFu` remains open.
 
 The preregistered first candidate, the stage-entry TKE/EVD vertical coefficient
 bundle, is **refuted as the owner**.  Its direct comparison is not exact (avt:
@@ -79,11 +94,12 @@ run resolves 50 split-explicit substeps and the card also computes 50, so the
 substep **count** is not different.  The card derives its 26.5 km metrics using
 the source sequence `106000 / REAL(nn_GYRE,wp)`, rather than a typed 26500, as
 shown in `cfgs/GYRE_OMIP_L2/WORK/usrdef_hgr.F90:84-94`.  Round 2 already proved
-the seasonal forcing clock and phase bit-equal.  The measured remaining debt
-is therefore a tracer-advection arithmetic/composition residue at the finer
-grid, not a vertical-physics, substep-count, grid-value, or forcing
-transcription difference.  No additional NEMO record is needed for this
-round's diagnosis.
+the seasonal forcing clock and phase bit-equal.  The measured remainder is
+composition debt already present in the stage-transport bundle, not ownership
+by the tested stage-entry TKE/EVD coefficient bundle, nor a substep-count,
+grid-value, forcing, or configuration transcription difference.  No additional
+NEMO record is needed for this round's required localization; isolation below
+the `zFu` expression is carried as open debt rather than guessed.
 
 ## Preregistered climate instrument
 
@@ -94,7 +110,11 @@ global 122x82 domain, daily averaging operation, 3600 s sample interval, and
 86400 s write interval.  NEMO SST is decoded as same-file
 `sosstsst/vovvle3t`; the legoESM provider requires a complete content-pinned
 manifest and reads the driver's thickness-weighted daily-temperature means.
-A real NEMO day passed this path and assembled four 82x122 fields.
+It content-pins all 24 NEMO tiles, verifies the exact operator-launched
+`7b772afb8` legoESM commit and GPU/native/non-certified policy, refuses
+non-finite daily fields or incomplete/unpinned day sequences, and refuses any
+scored window other than days 1461..1825.  A real NEMO day passed this path and
+assembled four 82x122 fields.
 
 The primary comparison window is year 5, days 1461..1825.  The 31-day
 high-pass filter is a centered uniform filter with nearest-edge treatment; it
@@ -120,6 +140,12 @@ operator reference's native masked U/V index convention.  A separately named
 time-mean speed field and the spectrum use the shared C-grid interpolation to
 T points; the two conventions are not silently interchanged.
 
+Land is NaN-masked in every reported map.  The report gives bias, mean absolute
+difference, RMSE, normalized RMSE, and spatial/spectral correlation over common
+finite support for every report-only pattern.  A content-pinned PNG places the
+two common-scale model maps next to their difference and overlays the daily KE
+series and KE spectra.
+
 ## Movie instrument
 
 `nemo_testcase_l2_gyre_hires_movie.py` renders daily-mean frames for year 1
@@ -128,7 +154,8 @@ one legoESM row with surface relative vorticity/f, SSH, surface speed, and SST.
 It uses the shared C-grid velocity and vorticity diagnostics, scans both models
 first to establish common per-year color limits, and streams 1280x640 RGB
 frames to `imageio_ffmpeg.write_frames` using H.264.  The output manifest pins
-the windows, frame count, scales, fps, and movie digests.
+provider provenance (including NEMO tile content hashes and the legoESM run
+manifest), windows, frame count, scales, fps, and movie digests.
 
 ## Tests, evidence, and controls
 
@@ -139,11 +166,14 @@ Evidence is under
   ten-step, ULP, and planted-control report.
 - `r4_smag_ladder.json` and `r4_smag_ladder.log`: final r4_smag stage and
   ten-step report against the operator-acquired round-2 records.
-- Five ladder-reader/control tests, four climate tests, and two movie tests
-  pass directly.  They cover runtime record dimensions, one-ULP firing,
+- Five ladder-reader/control tests, six climate tests, three movie tests, and
+  one driver test pass directly.  They cover runtime record dimensions,
+  one-ULP firing,
   one-based tile placement and overlap refusal, same-file weighted-SST decode,
-  31-day high-pass/statistic construction, exact registered bars, common movie
-  scales, and the encoder frame shape.
+  the exact native-U/V 31-day high-pass calculation, land masks, exact
+  registered bars and window, GPU-run metadata refusal, report-only comparison
+  arithmetic, common movie scales, the real registered-grid movie diagnostics,
+  and the encoder frame shape.
 - The real NEMO-day provider smoke check passes.  The full climate score and
   movies correctly remain unrun while the already-launched legoESM five-year
   GPU run has only a pending manifest.
@@ -167,8 +197,9 @@ OPEN:
    atomically publish `manifest.json`; this round does not relaunch it;
 2. after completion, run the committed year-5 climate gate and the year-1 and
    year-5 movie instrument against the existing five-year NEMO reference;
-3. the r4 resolution rung remains measured debt from RK-stage-1 tracer
-   advection, and r4_smag adds a separately measured port-specific increment
-   from kt=3; neither is a trajectory match;
+3. the r4 resolution rung remains measured debt already present in the
+   RK-stage-1 advective-transport bundle; the first moving multiplicand inside
+   `zFu` is not yet isolated.  r4_smag adds a separately measured port-specific
+   increment from kt=3; neither is a trajectory match;
 4. the later 1/12-degree deck, acquisitions, integrations, bars, and movies
    remain future work.

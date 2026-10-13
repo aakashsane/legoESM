@@ -48,7 +48,7 @@ from legoesm.core.conservation import conservative_positive_clip
 from legoesm.core.field import Field
 # #1028: the D-grid -> cell-centre wind view used wherever the column physics
 # reads winds while the run carries FV3 D-staggered cube winds.
-from legoesm.core.operators_cdgrid import dgrid_to_center_vector
+from legoesm.core.operators_cdgrid import center_to_dgrid_vector, dgrid_to_center_vector
 from legoesm.core.tracers import make_full_moisture_registry
 from legoesm.thermo import saturation_mixing_ratio
 from legoesm.forcing.time_utils import day_to_calendar
@@ -1424,7 +1424,8 @@ def _clear_sky_toa_pass(clear_sky_fresh, need_rad,
 
 def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
                                need_rad, doy_step, sod_step, statics,
-                               moist=None, u_cc=None, v_cc=None):
+                               moist=None, u_cc=None, v_cc=None,
+                               lift_wind_increment=None):
     """The single-rank (``owned_face_ids is None``) operator-split physics body:
     ``step_unified`` on the whole column set, then the Euler write-back +
     accumulators.  Extraction of the former ``_single_step`` ``else`` body
@@ -1692,6 +1693,17 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
     # off, so accum stays zero).
     sw_up_toa_clr_accum = carry.sw_up_toa_clr_accum + held_new[6] * statics.dt
     lw_up_toa_clr_accum = carry.lw_up_toa_clr_accum + held_new[7] * statics.dt
+
+    # Physics momentum tendencies (turbulence surface stress, GWD, ...): the
+    # same Euler increment the per-step lane adds before Rayleigh friction.
+    # Cell-centre tendencies; ``lift_wind_increment`` maps them onto the
+    # carried staggering (persistent-D cube lane), identity otherwise.
+    if phys_out.du_dt is not None:
+        _du, _dv = phys_out.du_dt, phys_out.dv_dt
+        if lift_wind_increment is not None:
+            _du, _dv = lift_wind_increment(_du, _dv)
+        u_new = u_new + statics.dt * _du
+        v_new = v_new + statics.dt * _dv
 
     return _SplitStepLocals(
         u_new=u_new, v_new=v_new, p_s_new=p_s_phys,
@@ -2648,6 +2660,11 @@ def build_segment_fn(
                 )
                 # Package the owned-face outputs into the shared bundle so the
                 # SINGLE-source finalizer runs the identical tail on both paths.
+                # Physics momentum tendencies on the owned columns (the
+                # single-rank body adds the same increment).
+                if phys_out.du_dt is not None:
+                    u_new = u_new.at[_ofi].add(_dt * phys_out.du_dt)
+                    v_new = v_new.at[_ofi].add(_dt * phys_out.dv_dt)
                 lz = _SplitStepLocals(
                     u_new=u_new, v_new=v_new, p_s_new=p_s_new,
                     T_upd=T_upd, q_v_upd=q_v_upd,
@@ -2686,7 +2703,11 @@ def build_segment_fn(
                     moist={"q_v": q_v_dyn, "q_c": q_c_dyn, "q_r": q_r_dyn,
                            "q_i": q_i_dyn, "q_s": q_s_dyn, "q_g": q_g_dyn,
                            "N_c": N_c_dyn, "N_r": N_r_dyn, "N_i": N_i_dyn},
-                    u_cc=u_cc, v_cc=v_cc)
+                    u_cc=u_cc, v_cc=v_cc,
+                    lift_wind_increment=(
+                        (lambda du, dv: center_to_dgrid_vector(
+                            du, dv, _dynamics_model.cdgrid))
+                        if persistent_dgrid else None))
 
             # Shared operator-split TAIL (sat-adjust, moisture fixer/smoothing,
             # Rayleigh, carry pack) — ONE source for both branches.

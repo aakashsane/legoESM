@@ -558,7 +558,7 @@ def main(argv: list[str] | None = None) -> int:
     _spectral = (args.grid_type == "gaussian"
                  or args.discretization == "spectral")
     if _spectral and not _extra_keys & {
-            "--discretization", "--fv3-duo-column-lane",
+            "--discretization", "--column-lane", "--fv3-duo-column-lane",
             "--energy-fixer", "--no-energy-fixer"}:
         cmd.append("--no-energy-fixer")
     # ``volcanic_active`` requires ``aerosol_active`` (see top of main()

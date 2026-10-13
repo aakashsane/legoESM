@@ -239,7 +239,7 @@ def test_unwired_lanes_refuse_the_fixer():
     on = ExperimentConfig()
     assert energy_fixer_wired(on, "mpas_primitive_equations")
     duo_col = on._replace(dycore=on.dycore._replace(
-        discretization="fv3_duo", fv3_duo_column_lane=True))
+        discretization="fv3_duo", column_lane=True))
     assert energy_fixer_wired(duo_col, "fv3_duo_primitive_equations")
     for solver in ("cdgrid_primitive_equations",
                    "latlon_cgrid_primitive_equations"):     # F15b

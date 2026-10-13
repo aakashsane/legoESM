@@ -160,7 +160,7 @@ python scripts/experiment/init_experiment.py 3d_idealized/hydrostatic_gray_1yr -
 
 # reproduce a past `legoesm run` run from its manifest (not the matrix-case templates)
 (cd ./runs/hshi && bash run.sh)
-legoesm reproduce ./runs/hshi/<output>/run_manifest.json --check
+legoesm reproduce ./runs/hshi/output/held_suarez/run_manifest.json --check
 ```
 
 ## 5. Source-guardrail harness (AI-assisted-dev tripwires)

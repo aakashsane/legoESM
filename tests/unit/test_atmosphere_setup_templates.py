@@ -37,7 +37,8 @@ def _matrix_case_pairs() -> set[tuple[str, str]]:
 class TestAtmosphereTemplates:
     def test_templates_exist(self):
         names = {p.name for p in _template_paths()}
-        assert {"williamson2_sw.yaml", "williamson_test2.yaml",
+        assert {"held_suarez.yaml", "baroclinic_wave.yaml", "williamson2_sw.yaml",
+                "williamson_test2.yaml",
                 "williamson_test5.yaml"} <= names, names
 
     @pytest.mark.parametrize("path", _template_paths(), ids=lambda p: p.name)

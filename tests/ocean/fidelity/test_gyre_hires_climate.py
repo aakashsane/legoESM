@@ -217,6 +217,13 @@ def test_run_registry_refuses_unknown_label_and_metadata_mismatch(tmp_path):
         CLIMATE._require_legoesm_run_metadata(bad_manifest, registered)
 
 
+def test_post_fix_run_registration_pins_fix_commit_and_gpu_zero():
+    registered = CLIMATE.load_registered_legoesm_run("post_fix_b401ec3f3")
+    assert registered["commit"] == "b401ec3f3b794b6e4918db372a7cacc802307e15"
+    assert registered["physical_gpu_index"] == 0
+    assert "post_fix" in registered["run_directory"]
+
+
 def test_report_only_pattern_comparison_uses_common_finite_support():
     score = CLIMATE.paired_comparison(
         np.array([1.0, 2.0, np.nan]),

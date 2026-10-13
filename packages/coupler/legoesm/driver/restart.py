@@ -470,11 +470,18 @@ def manifest_file_version_drift(path) -> list[str]:
 
 
 def collective_version_drift_gate(reasons_fn, what: str) -> None:
+    """:func:`collective_root_gate` on the version-drift refusal."""
+    collective_root_gate(
+        lambda: refuse_version_drift(reasons_fn(), what), f"version drift: {what}")
+
+
+def collective_root_gate(fn, what: str) -> None:
     """Call on EVERY process at the same point, before rank-local work.
 
-    Process 0 evaluates ``reasons_fn()`` and decides; the decision is broadcast
-    (JAX multi-controller or mpi4py, whichever this run uses) so a refusal
-    raises on every process instead of stranding the others in a collective.
+    Process 0 runs ``fn()``; whether it raised is broadcast (JAX
+    multi-controller or mpi4py, whichever this run uses) so a refusal or
+    failure raises on every process instead of stranding the others in a
+    collective.
     """
     comm = None
     if jax.process_count() > 1:
@@ -488,7 +495,7 @@ def collective_version_drift_gate(reasons_fn, what: str) -> None:
     error = None
     if root:
         try:
-            refuse_version_drift(reasons_fn(), what)
+            fn()
         except Exception as exc:  # noqa: BLE001 — re-raised after the vote
             error = exc
     failed = error is not None
@@ -501,7 +508,7 @@ def collective_version_drift_gate(reasons_fn, what: str) -> None:
     if error is not None:
         raise error
     if failed:
-        raise RuntimeError(f"version-drift gate refused on process 0 ({what})")
+        raise RuntimeError(f"refused on process 0 ({what})")
 
 
 def resolved_config_record(config, kind: str | None = None) -> dict:
@@ -521,6 +528,82 @@ def manifest_version_drift(manifest: dict) -> list[str]:
     return reasons + version_drift(
         (manifest.get("legoESM") or {}).get("commit", ""),
         dirty is True, patches or [])
+_MISSING = "<absent>"
+
+
+def config_drift_rows(stored: dict, rebuilt: dict, prefix: str = "") -> list:
+    """(dotted_field, stored, rebuilt) for every field that differs;
+    ``<absent>`` marks a field present on one side only."""
+    rows = []
+    for k in sorted(set(stored) | set(rebuilt)):
+        a, b = stored.get(k, _MISSING), rebuilt.get(k, _MISSING)
+        if isinstance(a, dict) and isinstance(b, dict):
+            rows += config_drift_rows(a, b, f"{prefix}{k}.")
+        elif json.dumps(a, sort_keys=True) != json.dumps(b, sort_keys=True):
+            rows.append((f"{prefix}{k}", a, b))   # JSON text: NaN equals NaN
+    return rows
+
+
+# Entries every lane writes into ``config.resolved_physics``.
+RESOLVED_PHYSICS_KEYS = ("convection", "microphysics", "turbulence",
+                         "gravity_wave_drag", "turbulence_override",
+                         "gravity_wave_drag_override")
+
+
+def resolved_physics_record(configs: dict) -> dict:
+    """``{name: scheme *Config}`` as a manifest's ``config.resolved_physics``
+    stores it: every NamedTuple level tagged with its type, so a scheme swap
+    or a renamed field shows up, not only a changed value."""
+    from legoesm.ocean.config import ocean_config_to_dict
+    return _json_safe({k: ocean_config_to_dict(v) for k, v in configs.items()})
+
+
+def physics_config_from_record(obj):
+    """Rebuild a scheme config from its :func:`resolved_physics_record` entry,
+    strictly: a missing or extra field, a non-``legoesm`` type, or an array
+    stored only as a summary is an error, never filled or dropped."""
+    if isinstance(obj, dict) and "__array_summary__" in obj:
+        raise ValueError("an array-valued config leaf is recorded only as a "
+                         "summary and cannot be replayed")
+    if isinstance(obj, dict) and "__type__" in obj:
+        import importlib
+        module, _, qualname = obj["__type__"].partition(":")
+        if not module.startswith("legoesm."):
+            raise ValueError(f"refusing to rebuild non-legoesm type {obj['__type__']!r}")
+        cls = importlib.import_module(module)
+        for part in qualname.split("."):
+            cls = getattr(cls, part)
+        if not (isinstance(cls, type) and issubclass(cls, tuple)
+                and hasattr(cls, "_fields")
+                and cls.__module__.startswith("legoesm.")):
+            raise ValueError(f"{obj['__type__']!r} is not a legoesm config type")
+        fields = {k: v for k, v in obj.items() if k != "__type__"}
+        if set(fields) != set(cls._fields):
+            raise ValueError(
+                f"{obj['__type__']}: recorded fields differ from today's code "
+                f"(missing {sorted(set(cls._fields) - set(fields))}, "
+                f"extra {sorted(set(fields) - set(cls._fields))})")
+        return cls(**{k: physics_config_from_record(v) for k, v in fields.items()})
+    if isinstance(obj, dict):
+        return {k: physics_config_from_record(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [physics_config_from_record(v) for v in obj]
+    return obj
+
+
+def physics_closure_rows(recorded: dict, current: dict) -> list:
+    """Rows where *current* resolved physics differs from *recorded*; empty
+    when equal.  Equality is on canonical JSON text, so a NaN leaf compares
+    equal to itself."""
+    if json.dumps(recorded, sort_keys=True) == json.dumps(current, sort_keys=True):
+        return []
+    return config_drift_rows(recorded, current) or [("resolved_physics", recorded, current)]
+
+
+def format_drift_rows(rows: list) -> str:
+    return "\n".join(f"  {k}: recorded={a!r} -> now={b!r}" for k, a, b in rows)
+
+
 RUN_MANIFEST_FILENAME = "run_manifest.json"
 
 
@@ -927,6 +1010,35 @@ def record_state_digest(manifest_path, state_digest: str, *,
     manifest["result"]["state_digest"] = state_digest
     if corner_fill_traced is not None:
         manifest["result"]["corner_fill_traced"] = list(corner_fill_traced)
+    tmp = manifest_path.with_name(f"{manifest_path.name}.{os.getpid()}.tmp")
+    with open(tmp, "w") as f:
+        json.dump(_json_safe(manifest), f, indent=2, sort_keys=True)
+    tmp.replace(manifest_path)
+    return manifest_path
+
+
+def record_resolved_physics(manifest_path, record: dict) -> Path:
+    """Store ``config.resolved_physics`` in an existing manifest.
+
+    A manifest that already holds a DIFFERENT record (a resume whose physics
+    resolved differently from the run that wrote it) is refused: one output
+    directory holds one run.  An equal record is left untouched.
+    """
+    manifest_path = Path(manifest_path)
+    if manifest_path.is_dir():
+        manifest_path = manifest_path / RUN_MANIFEST_FILENAME
+    manifest = read_run_manifest(manifest_path)
+    validate_run_manifest(manifest)
+    existing = manifest["config"].get("resolved_physics")
+    if existing is not None:
+        rows = physics_closure_rows(existing, record)
+        if rows:
+            raise RuntimeError(
+                f"{manifest_path} records different resolved physics than this "
+                f"run resolved ({len(rows)} fields); refusing to mix two runs' "
+                f"physics in one directory:\n" + format_drift_rows(rows))
+        return manifest_path
+    manifest["config"]["resolved_physics"] = record
     tmp = manifest_path.with_name(f"{manifest_path.name}.{os.getpid()}.tmp")
     with open(tmp, "w") as f:
         json.dump(_json_safe(manifest), f, indent=2, sort_keys=True)

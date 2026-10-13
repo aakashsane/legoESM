@@ -2054,13 +2054,14 @@ def nemo_smagorinsky_bilaplacian_tendency_e3_cgrid(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """NEMO level bilaplacian: two e3 div/curl passes, then minus sign.
 
-    ``dynldf_lev.f90:218-307`` stores the first Laplacian, performs the halo
+    ``dynldf_lev.f90:218-330`` stores the first Laplacian, performs the halo
     exchange between passes, and subtracts the second.  Re-entering the shared
     NEMO Laplacian twice gives that same composition; each call supplies its
     wall/periodic halo before differencing.
     """
     common = dict(
         mask=mask, u_mask=u_mask, v_mask=v_mask, vertex_mask=vertex_mask,
+        coefficient_fmask_already_applied=True,
         thickness_operands=thickness_operands,
         metric_reciprocal_operands=metric_reciprocal_operands,
     )

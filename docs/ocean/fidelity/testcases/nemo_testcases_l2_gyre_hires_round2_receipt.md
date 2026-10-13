@@ -131,8 +131,12 @@ Evidence is under
   commit and pinned writer SHA-256.
 - the two-day CPU parity control remains refuted at the unchanged 1e-12 bar;
   its committed diagnosis is COMPOSITION, first reported field `ssh_m`, step 3.
-- unit/acquisition/driver/ladder/citation results are recorded by the final
-  round-2 test logs after the receipt commit.
+- the focused non-slow suite passes 47 tests (2 slow tests deselected), including
+  unit, acquisition, driver, ladder, and certified-card fingerprint coverage.
+- both slow controls pass: the complete fp64/libm GYRE step is finite and the
+  two-day parity diagnostic identifies the measured composition debt.  The
+  citation gate passes with six compiled-source citations mapped and all nine
+  of its self-test controls firing.
 
 ## Inherited pins / OPEN
 

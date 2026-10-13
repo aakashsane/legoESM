@@ -243,7 +243,9 @@ def _require_legoesm_deck(namelist: dict) -> None:
     from legoesm.ocean.fidelity.nemo_testcase_recipe import GYRE_R4_SMAG_NAMELIST
 
     expected = json.loads(json.dumps(GYRE_R4_SMAG_NAMELIST._asdict()))
-    for field in expected.keys() - {"nn_itend", "nn_stock", "nn_write"}:
+    # Only the requested run length may move.  Daily output and yearly restart
+    # cadence are physical-deck provenance, not free climate-reader options.
+    for field in expected.keys() - {"nn_itend"}:
         require(namelist.get(field) == expected[field],
                 f"legoESM manifest differs from r4_smag at {field}")
 
@@ -270,7 +272,10 @@ def load_registered_legoesm_run(label: str, registry_path: Path = RUN_REGISTRY) 
 def _require_legoesm_run_metadata(manifest: dict, registration: dict) -> None:
     require(manifest.get("legoesm_git_sha") == registration["commit"],
             "legoESM run commit differs from its registration")
-    for field in ("mode", "backend", "transcendentals", "certified_policy"):
+    for field in (
+        "mode", "backend", "precision_policy", "transcendentals",
+        "certified_policy",
+    ):
         require(manifest.get(field) == registration[field],
                 f"legoESM run {field} differs from its registration")
     registered_gpu = registration.get("physical_gpu_index")
@@ -301,6 +306,11 @@ def legoesm_npz_provider(
     require(manifest.get("sampling") == ["end_of_day_snapshot", "daily_mean"],
             "legoESM run does not contain daily means")
     _require_legoesm_deck(manifest.get("namelist", {}))
+    require(manifest.get("steps_per_day") == 24,
+            "legoESM manifest daily cadence differs")
+    require(manifest["namelist"].get("nn_write") == 24
+            and manifest["namelist"].get("nn_itend") == 24 * manifest["days"],
+            "legoESM namelist daily cadence differs")
     _require_legoesm_run_metadata(manifest, registration)
     pins = manifest.get("daily_sha256", {})
     fields = (
@@ -322,6 +332,9 @@ def legoesm_npz_provider(
             with np.load(path, allow_pickle=False) as data:
                 require(int(data["day"]) == day and float(data["dt_s"]) == 3600.0,
                         f"{path.name}: embedded clock differs")
+                require(int(data["step"]) == day * 24
+                        and int(data["daily_mean_sample_count"]) == 24,
+                        f"{path.name}: embedded daily cadence differs")
                 values = [np.asarray(data[name], dtype=np.float64) for name in fields]
             require(all(value.shape == GLOBAL_SHAPE for value in values),
                     f"{path.name}: field shape differs")

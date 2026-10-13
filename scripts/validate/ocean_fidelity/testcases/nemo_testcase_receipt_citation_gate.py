@@ -1421,9 +1421,15 @@ CITATION_MAP = {
     'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90:368-380': [
         ('CASE(  32  )       !==  time varying 3D field  ==!', 1),
         'esqf(ji,jj) = ( 2._wp * e1e2f(ji,jj) / ( e1f(ji,jj) + e2f(ji,jj) ) )**2', 13],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90:387-394': [
+        'IF( .NOT.l_ldfdyn_time ) THEN',
+        'ahmf(:,:,1:jpkm1) = SQRT( ahmf(:,:,1:jpkm1) ) * fmask(:,:,1:jpkm1)', 8],
     'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90:462-528': [
         'CASE(  32  )       !==  time varying 3D field  ==!   = F( local deformation rate and gridscale ) (Smagorinsky)',
         'ahmf(ji,jj,jk) = SQRT( r1_8 * esqf(ji,jj) * ahmf(ji,jj,jk) )', 67],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90:503-534': [
+        'ahmf(ji,jj,jk) = MAX( ahmf(ji,jj,jk), SQRT( (zu2pv2_ij + zu2pv2_ij_p1) * zdelta * zstabf_lo ) )',
+        "CALL lbc_lnk( 'ldfdyn', ahmt, 'T', 1.0_wp , ahmf, 'F', 1.0_wp )", 32],
     'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:159-183': [
         'CALL eos_rab( ts(:,:,:,:,Nbb), rab_b, Nbb )',
         'IF( l_ldfdyn_time                    )   CALL ldf_dyn( kstp, Nbb )', 25],

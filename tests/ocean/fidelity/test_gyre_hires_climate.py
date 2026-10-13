@@ -24,10 +24,14 @@ def _write_legoesm_provider_fixture(root: Path, *, mutation: str | None = None) 
         values[4, 5] = np.nan
     day_value = 2 if mutation == "time-counter" else 1
     dt_s = 1800.0 if mutation == "cadence" else 3600.0
+    step_value = 23 if mutation == "step-counter" else 24
+    sample_count = 23 if mutation == "sample-count" else 24
     daily = run / "day0001.npz"
     np.savez_compressed(
         daily,
         day=np.int64(day_value), dt_s=np.float64(dt_s),
+        step=np.int64(step_value),
+        daily_mean_sample_count=np.int64(sample_count),
         ssh_m_daily_mean=values,
         surface_u_m_s_daily_mean=np.ones(shape),
         surface_v_m_s_daily_mean=np.ones(shape),
@@ -38,15 +42,20 @@ def _write_legoesm_provider_fixture(root: Path, *, mutation: str | None = None) 
     namelist = GYRE_R4_SMAG_NAMELIST._asdict()
     if mutation == "deck":
         namelist = dict(namelist, nn_GYRE=3)
+    run_namelist = dict(namelist, nn_itend=24, nn_write=24)
+    if mutation == "namelist-cadence":
+        run_namelist["nn_write"] = 23
     manifest = {
         "schema": "legoesm-gyre-hires-daily-v1",
         "status": "pending" if mutation == "manifest" else "complete",
         "completed_days": 1,
         "days": 1,
+        "steps_per_day": 23 if mutation == "manifest-cadence" else 24,
         "sampling": ["end_of_day_snapshot", "daily_mean"],
-        "namelist": namelist,
+        "namelist": run_namelist,
         "legoesm_git_sha": "a" * 40,
         "mode": "gpu-native", "backend": "gpu",
+        "precision_policy": "fp32" if mutation == "precision" else "fp64",
         "transcendentals": "native", "certified_policy": False,
         "physical_gpu_index": 0,
         "daily_mean_convention": {
@@ -64,6 +73,7 @@ def _write_legoesm_provider_fixture(root: Path, *, mutation: str | None = None) 
         "runs": {"test": {
             "run_directory": str(run.resolve()), "commit": "a" * 40,
             "deck": "r4_smag", "mode": "gpu-native", "backend": "gpu",
+            "precision_policy": "fp64",
             "transcendentals": "native", "certified_policy": False,
             "physical_gpu_index": 0, "label": "test",
         }},
@@ -171,6 +181,7 @@ def test_preregistered_window_and_gpu_run_metadata_fail_closed():
         "legoesm_git_sha": registration["commit"],
         "mode": "gpu-native",
         "backend": "gpu",
+        "precision_policy": "fp64",
         "transcendentals": "native",
         "certified_policy": False,
         "daily_mean_convention": {
@@ -181,6 +192,7 @@ def test_preregistered_window_and_gpu_run_metadata_fail_closed():
     for field, bad_value in (
         ("legoesm_git_sha", "wrong"),
         ("backend", "cpu"),
+        ("precision_policy", "fp32"),
         ("transcendentals", "certified"),
         ("certified_policy", True),
     ):
@@ -202,6 +214,7 @@ def test_run_registry_refuses_unknown_label_and_metadata_mismatch(tmp_path):
                 "deck": "r4_smag",
                 "mode": "gpu-native",
                 "backend": "gpu",
+                "precision_policy": "fp64",
                 "transcendentals": "native",
                 "certified_policy": False,
                 "physical_gpu_index": 2,
@@ -240,8 +253,13 @@ def test_legoesm_provider_every_registered_refusal_fires(tmp_path):
     for mutation, pattern, iterate in (
         ("manifest", "incomplete", False),
         ("deck", "r4_smag", False),
+        ("manifest-cadence", "manifest daily cadence", False),
+        ("namelist-cadence", "r4_smag at nn_write", False),
         ("cadence", "embedded clock", True),
         ("time-counter", "embedded clock", True),
+        ("step-counter", "embedded daily cadence", True),
+        ("sample-count", "embedded daily cadence", True),
+        ("precision", "precision_policy", False),
         ("file-sequence", "file sequence", False),
         ("digest", "digest mismatch", False),
         ("nonfinite", "non-finite", True),

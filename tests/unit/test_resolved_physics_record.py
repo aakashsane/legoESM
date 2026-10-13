@@ -189,7 +189,8 @@ def test_pipeline_lane_records_at_run_start_including_the_override(
     # The override is dropped from resolved_config but kept here.
     assert m["config"]["resolved_config"]["turbulence_override"] is None
     assert json.dumps(rec["turbulence"]).count("137.0") >= 1
-    assert rec["radiation"]["__type__"].endswith(":GrayRadiationConfig")
+    assert rec["radiation"]["scheme"]["__type__"].endswith(
+        ":GrayRadiationConfig")
     assert rec["radiation"] == resolved_physics_record(
         {"r": d.physics.radiation_config})["r"]
     assert rec["cloud"] is None and rec["land"] is None   # none configured
@@ -500,5 +501,30 @@ def test_dry_spectral_path_records_its_default_gray_radiation(
     assert d.run() == "COMPLETED"
     rec = read_run_manifest(tmp_path)["config"]["resolved_physics"]
     assert rec["radiation"] == resolved_physics_record(
-        {"r": GrayRadiationConfig()})["r"]
+        {"r": {"scheme": GrayRadiationConfig(), "orbit": None}})["r"]
     assert rec["turbulence"] is None and rec["convection"] is None
+
+
+def test_pipeline_records_the_cloud_config_its_radiation_builds(
+        tmp_path: Path) -> None:
+    """With a cloud scheme on, the record holds the CloudConfig that the
+    radiation path builds (knobs + library defaults), and the orbit."""
+    from legoesm.driver.model_driver import ModelDriver
+    cfg = ExperimentConfig(
+        grid=GridConfig(grid_type="cubed_sphere", resolution=4, nlev=5),
+        dycore=DycoreConfig(energy_fixer=False, dt=1800.0),
+        output=OutputConfig(output_dir="", diag_days=0, checkpoint_days=0),
+        days=1, dataset="analytical", radiation="rrtmgp",
+        cloud_scheme="sundqvist", cloud_rh_crit=0.85, orbital_insolation=True,
+        microphysics="none", convection="none", turbulence="louis",
+        precision="fp64")
+    d = ModelDriver(cfg, output_dir=str(tmp_path))
+    d.setup()                          # pipeline built; no time stepping
+    d._physics_recorded = False
+    d._record_pipeline_physics(d.physics)
+    rec = read_run_manifest(tmp_path)["config"]["resolved_physics"]
+    want = d.physics.resolved_cloud_config("sundqvist", False)
+    assert rec["cloud"] == resolved_physics_record({"c": want})["c"]
+    assert want.rh_crit == 0.85
+    assert rec["radiation"]["scheme"]["__type__"].endswith(":RRTMGPConfig")
+    assert rec["radiation"]["orbit"] is not None

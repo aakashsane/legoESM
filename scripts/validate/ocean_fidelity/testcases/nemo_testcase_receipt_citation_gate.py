@@ -1421,6 +1421,15 @@ CITATION_MAP = {
     'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:159-183': [
         'CALL eos_rab( ts(:,:,:,:,Nbb), rab_b, Nbb )',
         'IF( l_ldfdyn_time                    )   CALL ldf_dyn( kstp, Nbb )', 25],
+    'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:195-210': [
+        'CALL rk3_dia( 0 )',
+        'CALL stp_RK3_stg( 3, kstp, Nbb, Nnn, Nrhs, Naa )', 16],
+    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:604-634': [
+        'Phase-3 L2 WRITE-only tracer-stage operand stream',
+        '& WRITE(l1_unit) ts(:,:,:,jp_tem,Krhs), ts(:,:,:,jp_sal,Krhs)', 31],
+    'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:650-675': [
+        'stage 3     : time-stepping with left over RHS trends',
+        "WRITE(numout,*) 'L2_RK_TRACER_OPERAND_DUMP '", 26],
     'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90:218-229': [
         'SUBROUTINE dynldf_lev_blp( kt, Kbb, Kmm, pu, pv, Krhs )',
         '!! ** Action :   pt(:,:,:,:,Krhs)   updated with the before rotated bilaplacian diffusion', 12],

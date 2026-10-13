@@ -1,0 +1,93 @@
+{
+  "format": "gyre-hires-oracle-admissions-v1",
+  "admissions": {
+    "r4:vector": {
+      "deck": "r4",
+      "math_flavour": "vector",
+      "compiler_math": "GNU vector math (compiled loop) plus scalar-libm remainder",
+      "root": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round1/oracle_gyre_r4_stage/run",
+      "manifest": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round1/oracle_gyre_r4_stage/manifest/run.sha256",
+      "manifest_sha256": "edfb46ea2f8c69058f5b8eaaf47d3aec3817ae9b781e10303988342ee07b335e",
+      "files": {
+        "nemo": "974dc326b4f5237a0e8dfe50ba0ae8a4573507d57429fb82069ff3c20abfad41",
+        "namelist_cfg": "6aa397b7b13b8675dfaa06f12be6d777e1a8190e1dd2d8c02e5a6acd23cef78c",
+        "oracle_step_entry_kt00000001.bin": "06ec5c5fd86f4e0a4b505e7a68b66a4f075adf051d5b0b03f25bfeda367dd3d6",
+        "oracle_step_entry_kt00000002.bin": "dae3d8270d777791674f32508243753d94c420cefc959bfad270d19c4a493229",
+        "oracle_step_entry_kt00000003.bin": "d1769b5bd64a612eb10271e2aad180787fd5819067574b13260b6e3ec1583b27",
+        "oracle_step_entry_kt00000004.bin": "2ab61eb51c5bf4fa8f7261f34f093a30760e6d857266332c12a3218aacca98a7",
+        "oracle_step_entry_kt00000005.bin": "c4f786981ef1ee90cb1215e7085b58a3705b81205842638d850851273b16a4da",
+        "oracle_step_entry_kt00000006.bin": "e2d6890a478550b31fd444028844c8198de3c9fe238224e7f3fb97b45f494a5b",
+        "oracle_step_entry_kt00000007.bin": "94030d7554fbe1b1bd6423aee5a5b7116382b3b70180be03497365a58da98424",
+        "oracle_step_entry_kt00000008.bin": "c89c5feecd9b91a7a8e8c183c0ae141b785fdddb89bbd731f938e9c0f1414b59",
+        "oracle_step_entry_kt00000009.bin": "a8f2142cdf68245b9ba508229155d0e0f763d7ce10b5f262f1f80bff4cefac4f",
+        "oracle_step_entry_kt00000010.bin": "ed04f8f9b25ca5e8dbab1a62d73c473c43eba9e66d2c92bc24b6371523a55e01"
+      }
+    },
+    "r4_smag:vector": {
+      "deck": "r4_smag",
+      "math_flavour": "vector",
+      "compiler_math": "GNU vector math (compiled loop) plus scalar-libm remainder",
+      "root": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round2/oracle_gyre_r4_smag_stage/run",
+      "manifest": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round2/oracle_gyre_r4_smag_stage/manifest/run.sha256",
+      "manifest_sha256": "ffda29acfd66cc039c3898f3d250e46f5f22db4d67562e53e779215406ea4f49",
+      "files": {
+        "nemo": "974dc326b4f5237a0e8dfe50ba0ae8a4573507d57429fb82069ff3c20abfad41",
+        "namelist_cfg": "ea6bd2c4d6a4780bcad21db637b6fe8c839f3e3c70644855c92a67efe394f9de",
+        "oracle_step_entry_kt00000001.bin": "06ec5c5fd86f4e0a4b505e7a68b66a4f075adf051d5b0b03f25bfeda367dd3d6",
+        "oracle_step_entry_kt00000002.bin": "dae3d8270d777791674f32508243753d94c420cefc959bfad270d19c4a493229",
+        "oracle_step_entry_kt00000003.bin": "da6b7ec67474d29d93f4773cd0468a86d1c5de33a64529cc697418d1a6618a85",
+        "oracle_step_entry_kt00000004.bin": "219d16906ebcfa8f7eed4fd95406c35d0750d512e6b80bcf158cb2afc8bf3ed2",
+        "oracle_step_entry_kt00000005.bin": "fbcb2627ebb052ad1059e3148da81be92de207c55cd5705eb052f834c06de5f1",
+        "oracle_step_entry_kt00000006.bin": "99db2956815a9d970d640c6a05a111b21d0f8f9271a478071779e111106f7075",
+        "oracle_step_entry_kt00000007.bin": "c8d2aea3d0eacdc56f66f8dbdd856099eaf61e74d67c2bf057aaaf8419e3301f",
+        "oracle_step_entry_kt00000008.bin": "5a14581288f75f14b388d09a51506abac6073230422daf4d917c179fa06fdede",
+        "oracle_step_entry_kt00000009.bin": "a3ff4ce32959339f9632288edba8795e56d79c21932195f7926a6bd6376710e9",
+        "oracle_step_entry_kt00000010.bin": "4c474a5af73ba52a8634c15f223576002ed26cfc8101cb4be25d672ef8ba4f00"
+      }
+    },
+    "r4:scalar": {
+      "deck": "r4",
+      "math_flavour": "scalar",
+      "compiler_math": "conda-scalarmath; -fno-tree-vectorize; scalar libm",
+      "root": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round6/operator_scalarmath_r4_stage",
+      "manifest": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round6/operator_scalarmath_r4_stage/operator_manifest.sha256",
+      "manifest_sha256": "3932e798257366018d8aff3178d4c57dac03f487a331c9dafc963ce33c50570f",
+      "files": {
+        "nemo": "bbb992d9be39e6c4b57a1c7f8786241687d84dd8e6f59570107e2c2119ecdf2b",
+        "namelist_cfg": "6aa397b7b13b8675dfaa06f12be6d777e1a8190e1dd2d8c02e5a6acd23cef78c",
+        "oracle_step_entry_kt00000001.bin": "06ec5c5fd86f4e0a4b505e7a68b66a4f075adf051d5b0b03f25bfeda367dd3d6",
+        "oracle_step_entry_kt00000002.bin": "5ad84d2bf3a27b664a835933315ba2cccd79a8a7ef823d616a925d61b0466762",
+        "oracle_step_entry_kt00000003.bin": "82e9913f101c463b97eb57912d31d89012d7fa67119f8885dfc4d78aa44cd0bd",
+        "oracle_step_entry_kt00000004.bin": "3b2b2e0f1e818e06683350d4efd0b4dc8effac8c622588027bc73f5759173a8b",
+        "oracle_step_entry_kt00000005.bin": "a2518aa546d2d9a4b935b36779315ea67aebf66acaa71a4e563a0a8caa34b3e6",
+        "oracle_step_entry_kt00000006.bin": "f3740099e82cb760604fec47faea0bf693d8a8042649a20d05cf2efe97b7a1e5",
+        "oracle_step_entry_kt00000007.bin": "715124bd12e41980b858c7de7506d261f7a29c1547b9c2b21686eeb33622901d",
+        "oracle_step_entry_kt00000008.bin": "db130c637a202650d53592bf7bffff5db04bec8af006a1a0a84c2ed30eabac49",
+        "oracle_step_entry_kt00000009.bin": "0ad9fa5c892fd9e416cb1189442b88e79e3c8bfabfbab79dbb0b6f84740529c4",
+        "oracle_step_entry_kt00000010.bin": "95a2abb4ea378d6abdba6e5a2a359b6f42f7534afc76d8ee86d6abb545cdc42d"
+      }
+    },
+    "r4_smag:scalar": {
+      "deck": "r4_smag",
+      "math_flavour": "scalar",
+      "compiler_math": "conda-scalarmath; -fno-tree-vectorize; scalar libm",
+      "root": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round6/operator_scalarmath_r4_smag_stage",
+      "manifest": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round6/operator_scalarmath_r4_smag_stage/operator_manifest.sha256",
+      "manifest_sha256": "ee702b7562456f3e95400c8aaad476753270efb3aed34d226c1b6dcffb43dc7b",
+      "files": {
+        "nemo": "bbb992d9be39e6c4b57a1c7f8786241687d84dd8e6f59570107e2c2119ecdf2b",
+        "namelist_cfg": "ea6bd2c4d6a4780bcad21db637b6fe8c839f3e3c70644855c92a67efe394f9de",
+        "oracle_step_entry_kt00000001.bin": "06ec5c5fd86f4e0a4b505e7a68b66a4f075adf051d5b0b03f25bfeda367dd3d6",
+        "oracle_step_entry_kt00000002.bin": "5ad84d2bf3a27b664a835933315ba2cccd79a8a7ef823d616a925d61b0466762",
+        "oracle_step_entry_kt00000003.bin": "19fad83b50dc6184e4532fc6ff996d89f3ac97420062e49aa6edec86816e5c86",
+        "oracle_step_entry_kt00000004.bin": "0127daddbe0baaa2c6a8f43ac9351e8e55da672a66f1574637f27acb223961a1",
+        "oracle_step_entry_kt00000005.bin": "9146e5c8bb7538a1acd5301ae31c7d9b267d9003e66a6eaa90e5e2e4b072add9",
+        "oracle_step_entry_kt00000006.bin": "fc4b3b2fc97c549a165b0baf25dc31ce4dcd07ddc5c66ba4cbfc2e886573ea00",
+        "oracle_step_entry_kt00000007.bin": "f9d666e789cc132eb41f74ac1bbfa248c69628e794ff9f3956e9f9fa50a1b3b9",
+        "oracle_step_entry_kt00000008.bin": "bdbf2810611cb9212f2d76dccc846a3d0e0b5b0e6e524643b9757702e4959264",
+        "oracle_step_entry_kt00000009.bin": "8f34ff9f8dae03c90282d711dcda4bdd61752c8360191b2c8ff2b36280c83ffe",
+        "oracle_step_entry_kt00000010.bin": "ad2289454a9be1a7ac0665a861f2a44450563d439871f1c28e60fd2184677128"
+      }
+    }
+  }
+}

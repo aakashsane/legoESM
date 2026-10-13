@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import struct
 from pathlib import Path
 
@@ -23,6 +24,27 @@ def test_ladder_decks_have_distinct_preregistered_oracle_roots():
         GATE.DEFAULT_ORACLES["r4_smag"])
 
 
+def test_all_math_flavour_oracles_are_admitted_by_content():
+    for deck in ("r4", "r4_smag"):
+        for flavour in ("scalar", "vector"):
+            admitted = GATE.admit_oracle(deck, flavour)
+            assert admitted["deck"] == deck
+            assert admitted["math_flavour"] == flavour
+            assert len(admitted["checked_files"]) == 12
+
+
+def test_oracle_admission_refuses_root_and_digest_mutations(tmp_path):
+    with pytest.raises(ValueError, match="unregistered oracle root"):
+        GATE.admit_oracle("r4", "scalar", tmp_path)
+
+    registry = json.loads(GATE.ADMISSIONS_PATH.read_text(encoding="utf-8"))
+    registry["admissions"]["r4:scalar"]["files"]["nemo"] = "0" * 64
+    planted = tmp_path / "admissions.json"
+    planted.write_text(json.dumps(registry), encoding="utf-8")
+    with pytest.raises(ValueError, match="digest mismatch for nemo"):
+        GATE.admit_oracle("r4", "scalar", admissions_path=planted)
+
+
 def test_admitted_usrdef_binary_exposes_vector_and_scalar_sin():
     executable = GATE.DEFAULT_ORACLES["r4"] / "nemo"
     if not executable.is_file():
@@ -32,6 +54,18 @@ def test_admitted_usrdef_binary_exposes_vector_and_scalar_sin():
         "974dc326b4f5237a0e8dfe50ba0ae8a4573507d57429fb82069ff3c20abfad41")
     assert any(name.endswith("sin") for name in program["vector_sin_calls"])
     assert program["scalar_sin_calls"] == ["sin"]
+
+
+def test_admitted_scalar_usrdef_binary_refuses_vector_math():
+    admitted = GATE.admit_oracle("r4", "scalar")
+    program = GATE.compiled_usrdef_math_program(
+        Path(admitted["root"]) / "nemo", expected_flavour="scalar")
+    assert program["math_flavour"] == "scalar"
+    assert program["vector_sin_calls"] == []
+    assert program["scalar_sin_calls"] == ["sin"]
+    with pytest.raises(ValueError, match="vector oracle"):
+        GATE.compiled_usrdef_math_program(
+            Path(admitted["root"]) / "nemo", expected_flavour="vector")
 
 
 def test_usrdef_math_inventory_refuses_missing_binary(tmp_path):
@@ -49,6 +83,8 @@ def test_exact_score_one_ulp_control_fires():
     assert planted["n_unequal"] == 1
     assert planted["max_ulp"] == 1
     assert planted["ulp_at_max_abs"] == 1
+    assert planted["first_unequal_index"] == [0, 0]
+    assert planted["max_abs_index"] == [0, 0]
 
 
 def test_wind_expression_arms_preserve_compiled_association_and_reciprocal():

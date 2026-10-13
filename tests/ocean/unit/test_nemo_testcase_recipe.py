@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import math
 import jax.numpy as jnp
 import legoesm.ocean.fidelity.nemo_testcase_recipe as testcase_recipe
 import numpy as np
@@ -446,6 +447,42 @@ def test_gyre_r4_card_resolves_grid_clock_and_mixing_from_namelist():
         np.asarray(card.recipe.grid.dx_T), np.full((82, 122), 26500.0))
     sbc = gyre_surface_boundary_condition(card, card.dt_s)
     assert sbc.qsr_w_m2.shape == (82, 122)
+
+
+def test_gyre_five_year_clock_matches_nemo_completed_year_arithmetic():
+    """Compiled usrdef_sbc.f90:92,105-106 over the operator's full run."""
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    steps = np.arange(1, 43_801, dtype=np.float64)
+    clocks = steps * np.float64(3600.0)
+    got1, got2 = nemo_gyre_seasonal_cosines(jnp.asarray(clocks))
+
+    expected1 = np.empty(steps.size, dtype=np.float64)
+    expected2 = np.empty(steps.size, dtype=np.float64)
+    unbounded1 = np.empty(steps.size, dtype=np.float64)
+    rpi = np.float64(np.pi)
+    ztimemax1 = np.float64((5.0 * 30.0 + 21.0) * 24.0)
+    ztimemin1 = np.float64(ztimemax1 + 24.0 * 360.0 / 2.0)
+    ztimemax2 = np.float64((6.0 * 30.0 + 21.0) * 24.0)
+    ztimemin2 = np.float64(ztimemax2 - 24.0 * 360.0 / 2.0)
+    for index, kt_float in enumerate(steps):
+        kt = int(kt_float)
+        nyear = 1 + (kt - 1) // (24 * 360)
+        unbounded = np.float64(kt_float * 3600.0) / np.float64(60.0 * 60.0)
+        ztime = unbounded - np.float64(nyear - 1) * np.float64(24.0) * np.float64(360.0)
+        arg1 = np.float64(
+            np.float64((ztime - ztimemax1) / (ztimemin1 - ztimemax1)) * rpi)
+        arg2 = np.float64(
+            np.float64((ztime - ztimemax2) / (ztimemax2 - ztimemin2)) * rpi)
+        old_arg1 = np.float64(
+            np.float64((unbounded - ztimemax1) / (ztimemin1 - ztimemax1)) * rpi)
+        expected1[index] = math.cos(float(arg1))
+        expected2[index] = math.cos(float(arg2))
+        unbounded1[index] = math.cos(float(old_arg1))
+
+    np.testing.assert_array_equal(np.asarray(got1), expected1)
+    np.testing.assert_array_equal(np.asarray(got2), expected2)
+    # Non-vacuity: the superseded unbounded clock differs after year one.
+    assert np.count_nonzero(unbounded1.view(np.uint64) != expected1.view(np.uint64)) > 30_000
 
 
 def test_gyre_r4_smag_card_resolves_exact_mode32_operator_block():

@@ -86,10 +86,9 @@ def _numpy_mode32_isotropic(u, v, cell_mask, vertex_mask, c_smag, dt_s, minfac, 
         zdelta * zstab_up,
     )
     return (
-        np.sqrt(0.125 * esq * lap_t) * tmask,
-        # ldfdyn.f90:503-534 does not apply fmask to the completed mode-32
-        # coefficient.  dshesq is masked, but the independent velocity lower
-        # limit leaves the free-slip perimeter live.
+        # ldfdyn.f90:521-534 applies neither completed-point mask in dynamic
+        # mode 32; the deformation inputs above retain their source masks.
+        np.sqrt(0.125 * esq * lap_t),
         np.sqrt(0.125 * esq * lap_f),
     )
 

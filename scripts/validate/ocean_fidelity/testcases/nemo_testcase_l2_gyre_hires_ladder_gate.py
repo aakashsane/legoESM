@@ -46,10 +46,73 @@ DEFAULT_AHM_ROOT = Path(
     "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/"
     "round4/oracle_gyre_r4_smag_ahm/run"
 )
+ADMISSIONS_PATH = HERE / "gyre_hires_oracle_admissions.json"
+ORACLE_FLAVOURS = ("scalar", "vector")
 FIELDS = ("T", "S", "u", "v", "ssh")
 
 
-def compiled_usrdef_math_program(executable: Path) -> dict:
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def admit_oracle(
+    deck: str,
+    math_flavour: str,
+    oracle_root: Path | None = None,
+    *,
+    admissions_path: Path = ADMISSIONS_PATH,
+) -> dict:
+    """Fail closed unless the requested oracle matches its registered bytes."""
+    if math_flavour not in ORACLE_FLAVOURS:
+        raise ValueError(f"unknown oracle math flavour {math_flavour!r}")
+    try:
+        registry = json.loads(admissions_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read oracle admission registry: {exc}") from exc
+    if registry.get("format") != "gyre-hires-oracle-admissions-v1":
+        raise ValueError("unsupported oracle admission registry format")
+    key = f"{deck}:{math_flavour}"
+    try:
+        registered = registry["admissions"][key]
+    except KeyError as exc:
+        raise ValueError(f"unregistered oracle selection {key!r}") from exc
+    if (registered.get("deck"), registered.get("math_flavour")) != (
+        deck, math_flavour,
+    ):
+        raise ValueError(f"{key}: admission deck/flavour mismatch")
+    root = Path(registered["root"])
+    if oracle_root is not None and oracle_root.resolve() != root.resolve():
+        raise ValueError(
+            f"{key}: unregistered oracle root {oracle_root}; expected {root}"
+        )
+    manifest = Path(registered["manifest"])
+    if not manifest.is_file():
+        raise FileNotFoundError(f"ACQUISITION_NEEDED: {manifest}")
+    if _sha256(manifest) != registered["manifest_sha256"]:
+        raise ValueError(f"{key}: manifest digest mismatch")
+    checked = {}
+    for relative, expected in registered["files"].items():
+        path = root / relative
+        if not path.is_file():
+            raise FileNotFoundError(f"ACQUISITION_NEEDED: {path}")
+        actual = _sha256(path)
+        if actual != expected:
+            raise ValueError(
+                f"{key}: digest mismatch for {relative}: {actual} != {expected}"
+            )
+        checked[relative] = actual
+    return {
+        **registered,
+        "key": key,
+        "root": str(root),
+        "manifest": str(manifest),
+        "checked_files": checked,
+    }
+
+
+def compiled_usrdef_math_program(
+    executable: Path, *, expected_flavour: str = "vector"
+) -> dict:
     """Inventory transcendental calls in the admitted usrdef_sbc routine."""
     if not executable.is_file():
         raise FileNotFoundError(f"missing admitted NEMO executable: {executable}")
@@ -63,9 +126,18 @@ def compiled_usrdef_math_program(executable: Path) -> dict:
         r"callq?\s+[^<]*<([^>@]+)(?:@[^>]*)?>", completed.stdout)))
     vector_sin = [name for name in calls if "_ZGV" in name and name.endswith("sin")]
     scalar_sin = [name for name in calls if name == "sin"]
-    if not vector_sin or not scalar_sin:
-        raise ValueError(
-            "admitted usrdef_sbc program did not expose both scalar and vector sin")
+    if expected_flavour == "vector":
+        if not vector_sin or not scalar_sin:
+            raise ValueError(
+                "vector oracle usrdef_sbc did not expose both vector and scalar sin"
+            )
+    elif expected_flavour == "scalar":
+        if vector_sin or not scalar_sin:
+            raise ValueError(
+                "scalar oracle usrdef_sbc did not expose scalar-only sin"
+            )
+    else:
+        raise ValueError(f"unknown expected math flavour {expected_flavour!r}")
     return {
         "executable": str(executable),
         "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
@@ -73,6 +145,7 @@ def compiled_usrdef_math_program(executable: Path) -> dict:
         "transcendental_calls": calls,
         "vector_sin_calls": vector_sin,
         "scalar_sin_calls": scalar_sin,
+        "math_flavour": expected_flavour,
     }
 
 
@@ -145,6 +218,14 @@ def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> d
     ulps = ulp_distance(reference[active], value[active])
     absolute = np.abs(reference[active] - value[active])
     worst = int(np.argmax(absolute))
+    active_indices = np.argwhere(active)
+    unequal_bits = (
+        reference[active].view(np.uint64) != value[active].view(np.uint64)
+    )
+    first_unequal = (
+        active_indices[int(np.flatnonzero(unequal_bits)[0])]
+        if unequal else None
+    )
     return {
         "name": name,
         "status": "AT-BAR" if unequal == 0 else "DEBT",
@@ -153,6 +234,14 @@ def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> d
         "max_abs": float(absolute[worst]),
         "ulp_at_max_abs": int(ulps[worst]),
         "max_ulp": int(np.max(ulps)),
+        "max_abs_index": [int(index) for index in active_indices[worst]],
+        "first_unequal_index": (
+            [int(index) for index in first_unequal]
+            if first_unequal is not None else None
+        ),
+        "first_unequal_ulp": (
+            int(ulps[int(np.flatnonzero(unequal_bits)[0])]) if unequal else 0
+        ),
         "bit_bar": 0,
         "plant_one_ulp": plant_one_ulp,
     }
@@ -238,6 +327,7 @@ def mismatch_map(reference, candidate, regions: dict[str, np.ndarray], clamps) -
 def run(
     oracle_root: Path, output: Path, *, deck: str = "r4",
     ahm_root: Path = DEFAULT_AHM_ROOT,
+    math_flavour: str = "vector",
 ) -> dict:
     import jax
     import jax.numpy as jnp
@@ -263,6 +353,7 @@ def run(
     set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
     if deck not in DEFAULT_ORACLES:
         raise ValueError(f"unknown ladder deck {deck!r}")
+    admission = admit_oracle(deck, math_flavour, oracle_root)
     base = GYRE_R4_NAMELIST if deck == "r4" else GYRE_R4_SMAG_NAMELIST
     case = f"GYRE-zco-{deck}"
     namelist = base._replace(nn_itend=10, nn_stock=10, nn_write=10)
@@ -289,7 +380,7 @@ def run(
     barotropic_resolution_walk = None
     smagorinsky_coefficients = []
     smagorinsky_branch_census = []
-    smagorinsky_operator = None
+    smagorinsky_operator = []
     ahm_records = {}
     if deck == "r4_smag":
         cell3 = (
@@ -331,7 +422,8 @@ def run(
                     }
                 )
         steps.append({"kt": kt, "Nbb": oracle["Nbb"], "rows": rows})
-        if deck == "r4_smag" and kt in (2, 3, 10):
+        if (deck == "r4_smag" and math_flavour == "vector"
+                and kt in (2, 3, 10)):
             # Rule 12: score the changed coefficient on NEMO's own Kbb
             # velocity input, not legoESM's already-diverged trajectory.
             u_input = np.concatenate(
@@ -438,11 +530,12 @@ def run(
         freshwater, surface = gyre_surface_forcings(card, state, kt)
         state_before = state
         state = model.step(state_before, card.dt_s, freshwater=freshwater, surface_forcing=surface)
-        if deck == "r4_smag" and kt == 2:
-            dyn_path = ahm_root / "oracle_dynldf_kt00000002.bin"
+        if (deck == "r4_smag" and math_flavour == "vector"
+                and kt in (2, 3)):
+            dyn_path = ahm_root / f"oracle_dynldf_kt{kt:08d}.bin"
             if not dyn_path.is_file():
                 raise FileNotFoundError(f"ACQUISITION_NEEDED: {dyn_path}")
-            dyn = read_dynldf(dyn_path, expected_kt=2)
+            dyn = read_dynldf(dyn_path, expected_kt=kt)
 
             def exposed_stage3_rhs(kind, coefficient_override=None):
                 diagnostic_model = LatLonCGridOceanModel(
@@ -460,7 +553,7 @@ def run(
                 )
                 return host_and_clear(diagnostic)
 
-            ahm = ahm_records[2]
+            ahm = ahm_records[kt]
             nemo_pair = (jnp.asarray(ahm["ahmt"]), jnp.asarray(ahm["ahmf"]))
             legacy_pair = (
                 nemo_pair[0],
@@ -483,21 +576,22 @@ def run(
             }
             substituted_rows = [
                 exact_score(
-                    f"{case}.kt2.stage3.dynldf.NEMO_coefficient.{field}",
+                    f"{case}.kt{kt}.stage3.dynldf.NEMO_coefficient.{field}",
                     oracle_delta[field], nemo_delta[field], masks[field],
                 )
                 for field in ("u", "v")
             ]
             legacy_rows = [
                 exact_score(
-                    f"control.kt2.stage3.dynldf.legacy_fmask.{field}",
+                    f"control.kt{kt}.stage3.dynldf.legacy_fmask.{field}",
                     oracle_delta[field], legacy_delta[field], masks[field],
                 )
                 for field in ("u", "v")
             ]
             substituted_max = max(row["max_abs"] for row in substituted_rows)
             legacy_max = max(row["max_abs"] for row in legacy_rows)
-            smagorinsky_operator = {
+            smagorinsky_operator.append({
+                "kt": kt,
                 "NEMO_source": str(dyn_path),
                 "stage": dyn["stage"],
                 "Kbb": dyn["Kbb"],
@@ -510,15 +604,20 @@ def run(
                 "planted_old_fmask_override": legacy_rows,
                 "owner": (
                     "COEFFICIENT: erroneous final F-mask multiplication on mode 32"
-                    if substituted_max <= 1.0e-20 and legacy_max >= 1.0e-10
-                    else "UNRESOLVED"
+                    if (kt == 2 and substituted_max <= 1.0e-20
+                        and legacy_max >= 1.0e-10)
+                    else (
+                        "INCONCLUSIVE: prior trajectory inputs differ before kt=3"
+                        if kt == 3 else "UNRESOLVED"
+                    )
                 ),
                 "residual_disposition": (
                     "source-composition residue below 1e-20 m/s2"
-                    if substituted_max <= 1.0e-20 else
-                    "operator residual remains above the preregistered discriminator bar"
+                    if kt == 2 and substituted_max <= 1.0e-20 else
+                    "the record lacks stage-3 input operands needed to separate "
+                    "operator arithmetic from inherited trajectory debt"
                 ),
-            }
+            })
         if kt == 1:
             state = host_and_clear(state)
             for stage in (1, 2):
@@ -853,7 +952,8 @@ def run(
                         native(operand_u[f"wind_r1_h{face}"]),
                         active,
                     )
-                math_program = compiled_usrdef_math_program(oracle_root / "nemo")
+                math_program = compiled_usrdef_math_program(
+                    oracle_root / "nemo", expected_flavour=math_flavour)
                 barotropic_resolution_walk = {
                     "first_difference": first,
                     "term": (
@@ -901,6 +1001,8 @@ def run(
         "worktree": worktree_stamp(),
         "case": case,
         "deck": deck,
+        "oracle_admission": admission,
+        "oracle_math_flavour": math_flavour,
         "oracle_root": str(oracle_root),
         "ahm_oracle_root": str(ahm_root) if deck == "r4_smag" else None,
         "policy": "fp64/x64/cpu/libm certified",
@@ -926,14 +1028,18 @@ def run(
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck", choices=tuple(DEFAULT_ORACLES), default="r4")
+    parser.add_argument(
+        "--math-flavour", choices=ORACLE_FLAVOURS, default="vector")
     parser.add_argument("--oracle-root", type=Path)
     parser.add_argument("--ahm-root", type=Path, default=DEFAULT_AHM_ROOT)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        admission = admit_oracle(args.deck, args.math_flavour, args.oracle_root)
         report = run(
-            args.oracle_root or DEFAULT_ORACLES[args.deck], args.output,
+            Path(admission["root"]), args.output,
             deck=args.deck, ahm_root=args.ahm_root,
+            math_flavour=args.math_flavour,
         )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)

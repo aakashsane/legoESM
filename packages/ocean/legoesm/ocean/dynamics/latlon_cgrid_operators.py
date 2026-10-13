@@ -2067,16 +2067,11 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
     ahmf_after_lower = jnp.maximum(ahmf_unclamped, lower_f)
     ahmf_lap = jnp.minimum(ahmf_after_lower, upper_f)
 
-    ahmt = safe_sqrt(r(0.125 * _b(esqt) * ahmt_lap)) * tmask
-    # ldfdyn.f90:521-534 is deliberately asymmetric here.  Unlike the
-    # time-independent initialisation at :387-394, mode 32 does *not* multiply
-    # the completed coefficient by fmask: dshesq was masked at :479-483, but
-    # the velocity lower limit at :503-513 remains live on the free-slip
-    # perimeter before the square-root conversion and halo exchange.  Those
-    # perimeter F coefficients are consumed by both passes of
-    # dynldf_lev_blp.f90:271-331.  Applying fmask again erases one complete
-    # boundary ring (400 F points on the r4 GYRE grid) and weakens the wall
-    # bilaplacian by O(1), while leaving the basin interior deceptively exact.
+    # ldfdyn.f90:521-534 applies neither completed-point mask after the
+    # square-root conversion.  The deformation terms were masked at :473-483,
+    # while the independent velocity lower limits at :489-513 can repopulate
+    # free-slip boundary points before both coefficients are halo-filled.
+    ahmt = safe_sqrt(r(0.125 * _b(esqt) * ahmt_lap))
     ahmf = safe_sqrt(r(0.125 * _b(esqf) * ahmf_lap))
     if return_diagnostics:
         return ahmt, ahmf, {

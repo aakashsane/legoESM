@@ -5517,8 +5517,25 @@ class ModelDriver:
         return dict(solar=self._solar_config, ozone=self._ozone_ext_config,
                     aerosol=self._aerosol_config, ghg=self._ghg_config)
 
+    # Pipeline attributes run_amip may replace after setup (--params routing,
+    # AIMIP trained configs, Sundqvist overrides), keyed by record entry.
+    PIPELINE_SCHEME_ATTRS = {"convection": "convection_config",
+                             "microphysics": "micro_config",
+                             "turbulence": "turbulence_config",
+                             "gravity_wave_drag": "gwd_config"}
+
+    def apply_recorded_pipeline_physics(self, record: dict) -> None:
+        """Reapply a recorded run's pipeline scheme configs after ``setup()``
+        (``legoesm reproduce``): the scheme configs a driver replaced after
+        setup are not rebuilt from the configuration.  Strict decode; the
+        closure check at ``run()`` start still compares the whole record."""
+        from legoesm.driver.restart import physics_config_from_record
+        for key, attr in self.PIPELINE_SCHEME_ATTRS.items():
+            setattr(self.physics, attr, physics_config_from_record(record[key]))
+
     def _record_pipeline_physics(self, pipeline,
-                                 conv_precip_threaded: bool = True) -> None:
+                                 conv_precip_threaded: bool = True,
+                                 rollout: str | None = None) -> None:
         """*conv_precip_threaded*: whether the lane passes the lagged
         convective precip to radiation (compiled and operator-split lanes do,
         the per-step lane does not), which decides whether the convective
@@ -5538,6 +5555,7 @@ class ModelDriver:
             land=pipeline.land_ml_cfg,
             land_albedo=(pipeline.land_albedo_config
                          if pipeline.snow_albedo_feedback else None),
+            rollout=rollout,
             **self._forcing_configs(),
         )
 
@@ -8682,8 +8700,9 @@ class ModelDriver:
         self._physics_recorded = False
         if self.physics is not None and not self._lane_builds_own_physics():
             # Only _run_compiled and _run_per_step remain for these runs.
-            self._record_pipeline_physics(self.physics,
-                                          conv_precip_threaded=compiled)
+            self._record_pipeline_physics(
+                self.physics, conv_precip_threaded=compiled,
+                rollout="compiled" if compiled else "per_step")
         self._run_wallclock_start = time.time()
         if (self.config.output.max_wallclock_seconds > 0
                 and self._mpi_world_size not in (None, 1)):

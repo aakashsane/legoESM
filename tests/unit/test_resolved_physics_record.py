@@ -559,3 +559,41 @@ def test_run_tells_the_record_whether_conv_precip_reaches_radiation(
     d.setup()
     assert d.run(compiled=compiled) == "COMPLETED"
     assert seen == [compiled]
+
+
+@pytest.mark.parametrize("compiled", [True, False])
+def test_reproduce_reruns_the_rollout_and_reapplies_post_setup_schemes(
+        tmp_path: Path, monkeypatch, caplog, compiled) -> None:
+    """A driver that replaces a pipeline scheme config after setup (as
+    run_amip does for --params / trained configs) is reproduced: the rerun
+    uses the recorded rollout and the recorded scheme configs, and the
+    closure check passes."""
+    from legoesm.driver.model_driver import ModelDriver
+    cfg = ExperimentConfig(
+        grid=GridConfig(grid_type="cubed_sphere", resolution=4, nlev=5),
+        dycore=DycoreConfig(energy_fixer=False, dt=1800.0),
+        output=OutputConfig(output_dir="", diag_days=0, checkpoint_days=0),
+        days=3601.0 / 86400.0, dataset="analytical", radiation="gray",
+        microphysics="none", convection="none", turbulence="louis",
+        precision="fp64")
+    ref = tmp_path / "ref"
+    d = ModelDriver(cfg, output_dir=str(ref))
+    d.setup()
+    tuned = d.physics.turbulence_config._replace(l_mix_max=137.0)
+    d.physics.turbulence_config = tuned                 # post-setup change
+    assert d.run(compiled=compiled) == "COMPLETED"
+    rec = read_run_manifest(ref)["config"]["resolved_physics"]
+    assert rec["rollout"] == ("compiled" if compiled else "per_step")
+    assert rec["turbulence"] == resolved_physics_record({"t": tuned})["t"]
+
+    seen = []
+    real_run = ModelDriver.run
+
+    def spy(self, *a, **k):
+        seen.append(k.get("compiled", True))
+        return real_run(self, *a, **k)
+    monkeypatch.setattr(ModelDriver, "run", spy)
+    caplog.set_level(logging.INFO)
+    _reproduce(ref, tmp_path / "rerun")
+    assert "MATCH" in caplog.text
+    assert seen == [compiled]

@@ -548,7 +548,8 @@ def config_drift_rows(stored: dict, rebuilt: dict, prefix: str = "") -> list:
 RESOLVED_PHYSICS_KEYS = ("convection", "microphysics", "turbulence",
                          "gravity_wave_drag", "radiation", "cloud", "land",
                          "land_albedo", "solar", "ozone", "aerosol", "ghg",
-                         "turbulence_override", "gravity_wave_drag_override")
+                         "rollout", "turbulence_override",
+                         "gravity_wave_drag_override")
 
 
 def resolved_physics_record(configs: dict) -> dict:

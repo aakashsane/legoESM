@@ -332,7 +332,12 @@ def cmd_reproduce(args):
         driver = ModelDriver(config, output_dir=out_dir,
                              expected_resolved_physics=recorded_physics)
         driver.setup()
-        status = driver.run()
+        # Pipeline lanes (rollout recorded): rerun in the recorded rollout and
+        # reapply the scheme configs a driver replaced after setup.
+        rollout = recorded_physics["rollout"]
+        if rollout is not None:
+            driver.apply_recorded_pipeline_physics(recorded_physics)
+        status = driver.run(compiled=rollout != "per_step")
         logger.info(f"  Rerun status: {status}")
         rc = status_to_exit_code(status)
         if rc != 0:

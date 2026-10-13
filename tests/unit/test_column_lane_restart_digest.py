@@ -249,6 +249,22 @@ def test_mpas_restart_refuses_a_start_day_the_saved_origin_does_not_imply(
     assert repr(day + 1.0) in str(exc.value)
     assert repr(dB._clock_day_origin_ckpt + step * DT / 86400.0) in \
         str(exc.value)
+    # The saved origin DRIVES the clock: plant one a day off the config
+    # start day; the start day it implies resumes, and the run's clock
+    # origin is the planted one (an origin rebuilt from cfg.start_day would
+    # refuse here, or record the config's).
+    with np.load(ckpt) as z:
+        origin = float(z["clock_day_origin"])
+        planted = tmp_path / "planted" / ckpt.name
+        planted.parent.mkdir()
+        np.savez(planted, **{**{k: z[k] for k in z.files},
+                             "clock_day_origin": np.float64(origin + 1.0)})
+    dP = _drive(_build_driver, str(tmp_path / "p"), ONE_STEP_DAYS, **_LS_KW,
+                land_stress_from_land=True)
+    step, day = _drive(dP.load_checkpoint, planted)
+    _require(dP._clock_day_origin_ckpt == origin + 1.0, "origin not planted")
+    assert _drive(dP.run, start_step=step, start_day=day + 1.0) == "COMPLETED"
+    assert dP._clock_day_origin == origin + 1.0
     legacy = tmp_path / "legacy" / ckpt.name
     legacy.parent.mkdir()
     with np.load(ckpt) as z:

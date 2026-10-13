@@ -195,3 +195,22 @@ def test_the_stamp_never_writes_the_index(tmp_path):
     subprocess.run(("git", "-C", str(repo), "status", "--porcelain"),
                    check=True, capture_output=True)
     assert index.stat().st_mtime_ns != before  # control: plain status writes
+
+
+def test_a_dirty_stamp_never_writes_the_index(tmp_path, monkeypatch):
+    """The dirty path also hashes the diff; porcelain `git diff` rewrites the
+    index even under --no-optional-locks, so the stamp must not use it."""
+    import os
+    repo = _repo(tmp_path)
+    (repo / "g.txt").write_text("g\n")
+    subprocess.run(("git", "-C", str(repo), "add", "g.txt"), check=True)
+    subprocess.run(("git", "-C", str(repo), "commit", "-qm", "g"), check=True,
+                   capture_output=True)
+    (repo / "g.txt").write_text("g\nchanged\n")
+    os.utime(repo / "f.txt", (1_000_000_000, 1_000_000_000))
+    index = repo / ".git" / "index"
+    os.utime(index, (1_100_000_000, 1_100_000_000))
+    before = index.stat().st_mtime_ns
+    stamp = worktree_stamp(repo=repo, allow_dirty=True)
+    assert stamp["clean"] is False and stamp["diff_sha256"]
+    assert index.stat().st_mtime_ns == before

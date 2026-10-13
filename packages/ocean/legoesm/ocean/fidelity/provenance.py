@@ -215,7 +215,10 @@ def worktree_stamp(*, repo: str | Path | None = None,
         "clean": clean,
         "dirty_paths": dirty,
         "diff_sha256": (None if clean else
-                        hashlib.sha256(_git("diff", "HEAD").encode()).hexdigest()),
+                        # Plumbing: porcelain `diff` writes the index even
+                        # under --no-optional-locks; -M keeps its rename output.
+                        hashlib.sha256(_git("diff-index", "-p", "-M", "HEAD")
+                                       .encode()).hexdigest()),
         "untracked_count": len(untracked),
         "allow_dirty_escape_used": (not clean) and allow_dirty,
     }

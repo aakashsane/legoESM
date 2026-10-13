@@ -124,17 +124,29 @@ def compiled_usrdef_math_program(
         raise ValueError(f"objdump failed for {executable}: {completed.stderr.strip()}")
     calls = sorted(set(re.findall(
         r"callq?\s+[^<]*<([^>@]+)(?:@[^>]*)?>", completed.stdout)))
-    vector_sin = [name for name in calls if "_ZGV" in name and name.endswith("sin")]
-    scalar_sin = [name for name in calls if name == "sin"]
+    transcendental_names = ("sin", "cos", "exp")
+    vector_transcendentals = [
+        name for name in calls
+        if "_ZGV" in name and name.endswith(transcendental_names)
+    ]
+    scalar_transcendentals = [
+        name for name in calls if name in transcendental_names
+    ]
+    vector_sin = [name for name in vector_transcendentals if name.endswith("sin")]
+    scalar_sin = [name for name in scalar_transcendentals if name == "sin"]
     if expected_flavour == "vector":
-        if not vector_sin or not scalar_sin:
+        if ({name.rsplit("_", 1)[-1] for name in vector_transcendentals}
+                != {"sin", "cos"}
+                or set(scalar_transcendentals) != {"sin", "cos"}):
             raise ValueError(
-                "vector oracle usrdef_sbc did not expose both vector and scalar sin"
+                "vector oracle usrdef_sbc did not expose vector and scalar "
+                "sin/cos with no exp"
             )
     elif expected_flavour == "scalar":
-        if vector_sin or not scalar_sin:
+        if vector_transcendentals or set(scalar_transcendentals) != {"sin", "cos"}:
             raise ValueError(
-                "scalar oracle usrdef_sbc did not expose scalar-only sin"
+                "scalar oracle usrdef_sbc did not expose scalar-only sin/cos "
+                "with no exp"
             )
     else:
         raise ValueError(f"unknown expected math flavour {expected_flavour!r}")
@@ -143,6 +155,8 @@ def compiled_usrdef_math_program(
         "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
         "routine": "__usrdef_sbc_MOD_usrdef_sbc_oce",
         "transcendental_calls": calls,
+        "vector_transcendental_calls": vector_transcendentals,
+        "scalar_transcendental_calls": scalar_transcendentals,
         "vector_sin_calls": vector_sin,
         "scalar_sin_calls": scalar_sin,
         "math_flavour": expected_flavour,

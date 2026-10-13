@@ -112,6 +112,8 @@ FILES = {
         NEMO / "cfgs/GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3.f90"),
     "GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90"),
+    "GYRE_OMIP_L2_P3_DAILY/BLD/ppsrc/nemo/stprk3.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_DAILY/BLD/ppsrc/nemo/stprk3.f90"),
     "stp2d.F90": _OCE / "stp2d.F90",
     "oce.F90": _OCE / "oce.F90",
     "DOM/istate.F90": _OCE / "DOM/istate.F90",
@@ -1430,6 +1432,10 @@ CITATION_MAP = {
     'GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:691-725': [
         'IF( ln_traqsr  ) THEN',
         'CALL tra_zdf( kstp, Kbb, Kmm, Krhs, ts    , Kaa  )', 35],
+    'GYRE_OMIP_L2_P3_DAILY/BLD/ppsrc/nemo/stprk3.f90:90-100': [
+        'IF( lwp .AND. kstp >= nit000 .AND. kstp <= nit000 + 720 .AND.',
+        'WRITE(itraj) ts(:,:,:,:,Nbb), uu(:,:,:,Nbb), vv(:,:,:,Nbb), ssh(:,:,Nbb)',
+        11],
     # --- GYRE high-resolution round 6: first r4 external-mode owner ---
     'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3.f90:184-190': [
         'IF( l_ldfdyn_time                    )   CALL ldf_dyn( kstp, Nbb )',

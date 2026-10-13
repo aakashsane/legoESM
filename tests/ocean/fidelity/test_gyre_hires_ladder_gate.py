@@ -45,7 +45,7 @@ def test_oracle_admission_refuses_root_and_digest_mutations(tmp_path):
         GATE.admit_oracle("r4", "scalar", admissions_path=planted)
 
 
-def test_admitted_usrdef_binary_exposes_vector_and_scalar_sin():
+def test_admitted_usrdef_binary_exposes_vector_and_scalar_sin_cos_no_exp():
     executable = GATE.DEFAULT_ORACLES["r4"] / "nemo"
     if not executable.is_file():
         pytest.skip("admitted r4 NEMO executable is unavailable")
@@ -54,6 +54,9 @@ def test_admitted_usrdef_binary_exposes_vector_and_scalar_sin():
         "974dc326b4f5237a0e8dfe50ba0ae8a4573507d57429fb82069ff3c20abfad41")
     assert any(name.endswith("sin") for name in program["vector_sin_calls"])
     assert program["scalar_sin_calls"] == ["sin"]
+    assert {name.rsplit("_", 1)[-1]
+            for name in program["vector_transcendental_calls"]} == {"sin", "cos"}
+    assert set(program["scalar_transcendental_calls"]) == {"sin", "cos"}
 
 
 def test_admitted_scalar_usrdef_binary_refuses_vector_math():
@@ -63,6 +66,8 @@ def test_admitted_scalar_usrdef_binary_refuses_vector_math():
     assert program["math_flavour"] == "scalar"
     assert program["vector_sin_calls"] == []
     assert program["scalar_sin_calls"] == ["sin"]
+    assert program["vector_transcendental_calls"] == []
+    assert set(program["scalar_transcendental_calls"]) == {"sin", "cos"}
     with pytest.raises(ValueError, match="vector oracle"):
         GATE.compiled_usrdef_math_program(
             Path(admitted["root"]) / "nemo", expected_flavour="vector")

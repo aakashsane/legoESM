@@ -41,7 +41,7 @@ def _tend(T, p_s, *, du=1e-4, dT=1e-4, precip=None, lat=None, lon=None):
     z, z2 = jnp.zeros_like(T), jnp.zeros_like(p_s)
     if lat is not None:
         # cell-dependent, so a mis-ordered column<->grid map is visible
-        z = z + (jnp.sin(lat) * jnp.cos(lon))[..., None]
+        z = z + 1e-4 * (jnp.sin(lat) * jnp.cos(lon))[..., None]
     f = lambda a, n: Field(data=a, name=n)  # noqa: E731
     return HydrostaticTendencies(
         du_dt=f(z + du, "du"), dT_dt=f(z + dT, "dT"), dp_s_dt=f(z2, "dps"),
@@ -91,7 +91,10 @@ def test_column_physics_is_the_native_operator_split_bitwise(setup):
                      lat=mesh.latCell, lon=mesh.lonCell)
 
     def grid_phys(hs, grid, sigma):
-        return _tend(hs.T.data, hs.p_s.data, lat=grid.lat2d, lon=grid.lon2d)
+        # the mesh holds the grid's coordinates in fp64
+        return _tend(hs.T.data, hs.p_s.data,
+                     lat=jnp.asarray(grid.lat2d, jnp.float64),
+                     lon=jnp.asarray(grid.lon2d, jnp.float64))
 
     ref = _dyn(g, s).step(nat, DT, physics_fn=grid_phys)
     col = LatLonCGridColumnModel(_dyn(g, s))

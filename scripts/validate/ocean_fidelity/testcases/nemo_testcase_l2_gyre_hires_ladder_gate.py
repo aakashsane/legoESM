@@ -1306,6 +1306,103 @@ def run(
     return report
 
 
+def run_stage2_composition_only(
+    oracle_root: Path, output: Path, *, math_flavour: str = "scalar",
+) -> dict:
+    """Run only the unresolved NEMO-RHS/raw-stage-update discriminator."""
+    import jax
+    import jax.numpy as jnp
+    from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        LatLonCGridOceanModel,
+        _NEMOWSRK3TestHooks,
+    )
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        GYRE_R4_NAMELIST,
+        build_nemo_testcase_card,
+        gyre_surface_forcings,
+    )
+    from legoesm.ocean.fidelity.provenance import worktree_stamp
+
+    if jax.default_backend() != "cpu":
+        raise RuntimeError("quarter-degree composition gate requires CPU")
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    admission = admit_oracle("r4", math_flavour, oracle_root)
+    card = build_nemo_testcase_card(
+        "GYRE-zco",
+        namelist=GYRE_R4_NAMELIST._replace(
+            nn_itend=10, nn_stock=10, nn_write=10),
+    )
+    state = card.recipe.initial_state
+    freshwater, surface = gyre_surface_forcings(card, state, 1)
+    terms = read_stage2_terms(
+        oracle_root / "oracle_rkstage2_terms_kt00000001.bin",
+        dims=NEMO_DIMS,
+    )
+    composition = read_stage2_composition(
+        oracle_root / "oracle_rkstage2_operands_kt00000001.bin",
+        dims=NEMO_DIMS,
+    )
+    oracle_rhs = _redundant_faces(
+        terms["after_advection_u"], terms["after_advection_v"])
+    model = LatLonCGridOceanModel(
+        card.recipe.grid,
+        card.recipe.z_coord,
+        card.recipe.model_config,
+        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+            stage2_momentum_rhs_override=(
+                jnp.asarray(oracle_rhs[0]), jnp.asarray(oracle_rhs[1])),
+            expose_stage2_raw_momentum=True,
+        ),
+    )
+    diagnostic = model.step(
+        state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+    diagnostic = jax.tree_util.tree_map(
+        lambda leaf: np.asarray(leaf) if isinstance(leaf, jax.Array) else leaf,
+        diagnostic,
+    )
+    fields = lego_fields(diagnostic)
+    masks = expected_masks(card)
+    rows = []
+    controls = []
+    for field in ("u", "v"):
+        reference = composition[f"raw_Kaa_{field}"][..., :30]
+        rows.append(exact_score(
+            f"GYRE-zco-r4.kt1.stage2.NEMO_rhs_raw_update.{field}",
+            reference, fields[field], masks[field],
+        ))
+        planted = exact_score(
+            f"control.one_ulp.raw_update.{field}",
+            reference, reference, masks[field], plant_one_ulp=True,
+        )
+        controls.append({
+            **planted,
+            "status": "FIRED" if planted["n_unequal"] == 1 else "MISSED",
+        })
+    report = {
+        "format": "nemo-testcase-l2-gyre-r4-stage2-composition-v1",
+        "worktree": worktree_stamp(),
+        "oracle_admission": admission,
+        "policy": "fp64/x64/cpu/libm certified",
+        "changed_operand": "complete NEMO stage-2 momentum RHS only",
+        "comparison_boundary": (
+            "raw Kaa immediately after the RK update and before barotropic "
+            "mean replacement"
+        ),
+        "rows": rows,
+        "controls": controls,
+        "verdict": (
+            "RAW_UPDATE_AT_BAR"
+            if all(row["status"] == "AT-BAR" for row in rows)
+            and all(control["status"] == "FIRED" for control in controls)
+            else "DEBT"
+        ),
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
+    return report
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck", choices=tuple(DEFAULT_ORACLES), default="r4")
@@ -1313,19 +1410,28 @@ def main(argv=None) -> int:
         "--math-flavour", choices=ORACLE_FLAVOURS, default="vector")
     parser.add_argument("--oracle-root", type=Path)
     parser.add_argument("--ahm-root", type=Path, default=DEFAULT_AHM_ROOT)
+    parser.add_argument("--stage2-composition-only", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         admission = admit_oracle(args.deck, args.math_flavour, args.oracle_root)
-        report = run(
-            Path(admission["root"]), args.output,
-            deck=args.deck, ahm_root=args.ahm_root,
-            math_flavour=args.math_flavour,
-        )
+        if args.stage2_composition_only:
+            if args.deck != "r4":
+                raise ValueError("stage-2 composition-only gate requires deck r4")
+            report = run_stage2_composition_only(
+                Path(admission["root"]), args.output,
+                math_flavour=args.math_flavour,
+            )
+        else:
+            report = run(
+                Path(admission["root"]), args.output,
+                deck=args.deck, ahm_root=args.ahm_root,
+                math_flavour=args.math_flavour,
+            )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    return 0 if report["verdict"] == "PASS" else 1
+    return 0 if report["verdict"] in ("PASS", "RAW_UPDATE_AT_BAR") else 1
 
 
 if __name__ == "__main__":

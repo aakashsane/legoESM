@@ -104,6 +104,9 @@ def test_scalar_first_owner_discriminator_scores_increment_and_narrow_override()
     assert 'stage2_momentum_rhs_override=' in source
     assert 'NEMO_completed_rhs_override_rows' in source
     assert 'NEMO_completed_rhs_raw_update_rows' in source
+    assert '--stage2-composition-only' in source
+    assert 'RAW_UPDATE_AT_BAR' in source
+    assert 'control.one_ulp.raw_update.{field}' in source
 
 
 def test_wind_expression_arms_preserve_compiled_association_and_reciprocal():

@@ -467,22 +467,40 @@ def test_reproduce_refuses_an_untagged_override(tmp_path: Path,
     assert "not a tagged config record" in caplog.text
 
 
-def test_stateless_lat_band_lane_records_no_schemes(tmp_path: Path) -> None:
-    """Held-Suarez on the stateless lat-band lane runs no scheme kernel even
-    when a scheme is configured, so none is recorded."""
+def test_held_suarez_with_a_scheme_records_the_band_pipeline(
+        tmp_path: Path, monkeypatch) -> None:
+    """Held-Suarez plus a configured scheme runs the operator-split lat-band
+    lane, so its band pipeline (here Louis turbulence) is recorded."""
+    import jax
+    import legoesm.driver.model_driver as md
+    if len(jax.devices()) < 2:
+        pytest.skip("needs --xla_force_host_platform_device_count=2")
+    built = _spy_pipelines(monkeypatch, md)
+    cfg = _sharded_cfg(GridConfig(grid_type="latlon", resolution=8, nlev=4), 2,
+                       discretization="latlon_cgrid")._replace(
+        held_suarez_forcing=True, radiation="none", turbulence="louis")
+    _assert_records_lane_pipeline(tmp_path, cfg, built)
+    rec = read_run_manifest(tmp_path)["config"]["resolved_physics"]
+    assert rec["turbulence"] is not None
+
+
+def test_pure_held_suarez_lat_band_lane_records_no_schemes(
+        tmp_path: Path) -> None:
+    """Pure Held-Suarez (every scheme 'none') runs the stateless lat-band
+    lane, which runs no scheme kernel, so none is recorded."""
     import jax
     from legoesm.driver.model_driver import ModelDriver
     if len(jax.devices()) < 2:
         pytest.skip("needs --xla_force_host_platform_device_count=2")
     cfg = _sharded_cfg(GridConfig(grid_type="latlon", resolution=8, nlev=4), 2,
                        discretization="latlon_cgrid")._replace(
-        held_suarez_forcing=True, radiation="none", turbulence="louis")
+        held_suarez_forcing=True, radiation="none", turbulence="none")
     d = ModelDriver(cfg, output_dir=str(tmp_path))
     d.setup()
+    assert not d._operator_split_spmd_active()
     assert d.run(compiled=True) == "COMPLETED"
     rec = read_run_manifest(tmp_path)["config"]["resolved_physics"]
-    assert rec == _full_record(convection=None, microphysics=None,
-                               turbulence=None, gravity_wave_drag=None)
+    assert rec == _full_record()
 
 
 def test_dry_spectral_path_records_its_default_gray_radiation(

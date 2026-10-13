@@ -47,8 +47,9 @@ def _assert_carried(atm):
     """The faces are carried, not re-derived from the cell-centre average."""
     st = atm.state
     relift = hydrostatic_to_facewind(atm.cell_centre_state(), atm.grid)
-    assert np.abs(np.asarray(st.u_f.data)
-                  - np.asarray(relift.u_f.data)).max() > 0.0
+    for f in ("u_f", "v_f"):
+        assert np.abs(np.asarray(getattr(st, f).data)
+                      - np.asarray(getattr(relift, f).data)).max() > 0.0, f
 
 
 def test_earth_system_latlon_run_carries_face_winds(tmp_path):

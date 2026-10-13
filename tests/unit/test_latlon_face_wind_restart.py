@@ -74,6 +74,21 @@ def test_checkpoint_saves_face_winds_and_restart_resumes_them(leg1):
         np.testing.assert_array_equal(x, y)
 
 
+def test_resume_through_run_uses_the_saved_faces(leg1, caplog):
+    """run() enters the face-wind lane AFTER load_checkpoint staged the faces:
+    no lift warning, and the faces leave the aux carry."""
+    tmp, b1, ckpt = leg1
+    d = ModelDriver(_cfg(tmp / "leg2_run", 2))
+    d.setup()
+    step, day = d.load_checkpoint(ckpt)
+    with caplog.at_level(logging.WARNING):
+        assert d.run(start_step=step, start_day=day,
+                     compiled=True) == "COMPLETED"
+    assert "no saved face winds" not in caplog.text
+    assert isinstance(d.state, LatLonFaceWindState)
+    assert not any(k in d._carry_aux for k in d._FACE_WIND_KEYS)
+
+
 def test_old_checkpoint_is_lifted_once_with_a_warning(leg1, caplog):
     tmp, b1, ckpt = leg1
     with np.load(ckpt, allow_pickle=True) as z:

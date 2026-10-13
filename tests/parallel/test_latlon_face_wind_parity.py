@@ -69,6 +69,7 @@ def test_serial_driver_carries_face_winds_like_a_bare_loop(tmp_path):
     for _ in range(_N):
         st = ref.model.step(st, _DT, physics_fn=held_suarez_forcing_latlon)
     a = _fields(d)
+    assert np.abs(a["u"]).max() > 0.05      # winds must have developed
     cc = facewind_to_hydrostatic(st, ref.grid)
     b = {k: np.asarray(getattr(cc, k).data, np.float64)
          for k in ("T", "u", "v", "p_s")}

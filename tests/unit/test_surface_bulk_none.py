@@ -30,7 +30,7 @@ def test_none_is_a_valid_scheme_on_a_dry_config():
     {"physics_parameterization": "ml"},
     {"slab_land_active": True},
     {"use_multilayer_land": True},
-    {"surface_tiled": True, "turbulence": "louis"},
+    {"surface_tiled": True},
     {"C_H": 0.002},
     {"C_E": 0.002},
     {"surface_gustiness_zi": 600.0},
@@ -49,6 +49,12 @@ def test_none_cannot_be_coupled_to_an_ocean():
     with pytest.raises(ValueError, match="cannot be coupled"):
         validate_air_sea_consistency(
             ExperimentConfig(surface_bulk_scheme="none", **_DRY), None)
+
+
+def test_run_coupled_cli_refuses_none():
+    from scripts.run.run_coupled import build_parser
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--surface-bulk-scheme", "none"])
 
 
 def test_held_suarez_template_selects_none():

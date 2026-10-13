@@ -3613,8 +3613,8 @@ class ExperimentConfig(NamedTuple):
                     or (self.dycore.column_lane
                         and self.dycore.discretization == "latlon_cgrid")):
                 errors.append(
-                    "hard_sat_ice_curve=True requires the column loop (MPAS "
-                    "or the lat-lon column lane: the ice-curve drain is only "
+                    "hard_sat_ice_curve=True requires the column loop on MPAS "
+                    "or the lat-lon column lane (the ice-curve drain is only "
                     "wired into its post-step hook; on grid_type="
                     f"{self.grid.grid_type!r} it would be silently inert)."
                 )

@@ -263,6 +263,11 @@ def test_driver_refuses_a_checkpoint_without_the_cgrid_state(tmp_path):
              latloncol_schema=np.asarray("latloncol_ckpt_v0"))
     with pytest.raises(ValueError, match="unknown lat-lon column schema"):
         drv.load_checkpoint(bad)
+    np.savez(bad, u=np.zeros(1), T=np.zeros(1), p_s=np.zeros(1),
+             phis=np.zeros(1), step=np.asarray(3), day=np.asarray(0.1),
+             latloncol_schema=np.asarray("latloncol_ckpt_v1"))
+    with pytest.raises(ValueError, match="state incomplete"):
+        drv.load_checkpoint(bad)
 
 
 def test_driver_calibrated_land_and_prognostic_clubb_run(tmp_path, monkeypatch):

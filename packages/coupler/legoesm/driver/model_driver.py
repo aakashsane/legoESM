@@ -8058,8 +8058,9 @@ class ModelDriver:
                 _need = ["latloncol_tracer_names"] + [
                     f"latloncol_{_k}" for _k in ("u", "v", "T", "p_s", "phis")]
                 if "latloncol_schema" in d.files:
-                    _need += [f"latloncol_q_{_i}" for _i in
-                              range(len(d["latloncol_tracer_names"]))]
+                    if "latloncol_tracer_names" in d.files:
+                        _need += [f"latloncol_q_{_i}" for _i in
+                                  range(len(d["latloncol_tracer_names"]))]
                     _miss = [_k for _k in _need if _k not in d.files]
                     if _miss:
                         raise ValueError(

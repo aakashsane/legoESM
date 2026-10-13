@@ -185,6 +185,7 @@ def prognostic_differences(left, right) -> dict[str, float | int | bool]:
         result[f"{name}_max_abs"] = float(np.max(np.abs(a - b)))
         result[f"{name}_unequal"] = int(np.count_nonzero(a != b))
     result["all_finite"] = all_finite
+    result["all_bit_equal"] = bool(all(result[f"{name}_unequal"] == 0 for name in FIELD_NAMES))
     result["atol"] = SCAN_PARITY_ATOL
     result["within_atol"] = bool(
         all_finite and all(result[f"{name}_max_abs"] <= SCAN_PARITY_ATOL for name in FIELD_NAMES)
@@ -253,7 +254,7 @@ def _forcing_differences(card, state, kt: int) -> dict[str, object]:
     }
 
 
-def cpu_scan_parity(namelist, *, days: int = 2) -> dict:
+def cpu_scan_parity(namelist, *, days: int = 2, commit: str | None = None) -> dict:
     """Compare a real GYRE compiled-day scan with the certified Python loop."""
     import jax
     from legoesm.core.precision import PrecisionPolicy, set_policy
@@ -264,19 +265,35 @@ def cpu_scan_parity(namelist, *, days: int = 2) -> dict:
         raise RuntimeError("CPU scan parity requires the CPU backend")
     if type(days) is not int or days <= 0:
         raise ValueError("parity days must be a positive integer")
+    if commit is not None and (
+        len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit)
+    ):
+        raise ValueError("commit must be a forty-character lowercase Git SHA")
     set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
     card = build_gyre_zco_card(namelist)
     steps_per_day = int(SECONDS_PER_DAY / card.dt_s)
     model = LatLonCGridOceanModel(card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
     initial, _ = cold_start_scan_state(model, card, card.recipe.initial_state)
     forcing_check = _forcing_differences(card, initial, 2)
-    prefix_steps = 2
-    prefix_loop, _ = run_python_day(model, card, initial, 2, prefix_steps)
-    prefix_scan_step = build_scanned_day_mean_stepper(model, card, prefix_steps)
-    prefix_scan, _ = prefix_scan_step(initial, 2)
-    jax.block_until_ready(prefix_scan.eta.data)
-    first_step_differences = prognostic_differences(prefix_loop, prefix_scan)
-    first_fields = [name for name in FIELD_NAMES if first_step_differences[f"{name}_unequal"] > 0]
+    prefix_comparisons = []
+    for prefix_steps in (1, 2):
+        prefix_loop, _ = run_python_day(model, card, initial, 2, prefix_steps)
+        prefix_scan_step = build_scanned_day_mean_stepper(model, card, prefix_steps)
+        prefix_scan, _ = prefix_scan_step(initial, 2)
+        jax.block_until_ready(prefix_scan.eta.data)
+        prefix_differences = prognostic_differences(prefix_loop, prefix_scan)
+        prefix_fields = [name for name in FIELD_NAMES if prefix_differences[f"{name}_unequal"] > 0]
+        prefix_comparisons.append(
+            {
+                "model_step": 1 + prefix_steps,
+                "scan_steps": prefix_steps,
+                "first_field": prefix_fields[0] if prefix_fields else None,
+                "fields": prefix_fields,
+                "differences": prefix_differences,
+            }
+        )
+    differing_prefixes = [row for row in prefix_comparisons if row["fields"]]
+    first_prefix = differing_prefixes[0] if differing_prefixes else None
     loop_state = initial
     loop_state, _ = run_python_day(model, card, loop_state, 2, steps_per_day - 1)
     for day in range(1, days):
@@ -294,19 +311,25 @@ def cpu_scan_parity(namelist, *, days: int = 2) -> dict:
         "TRANSCRIPTION"
         if not forcing_check["clock_and_phase_bit_equal"]
         else "COMPOSITION"
-        if (first_fields or not forcing_check["all_bit_equal"])
+        if (first_prefix is not None or not forcing_check["all_bit_equal"])
         else "UNRESOLVED"
     )
     return {
+        "schema": "legoesm-gyre-hires-scan-parity-v1",
+        "legoesm_git_sha": commit,
+        "backend": jax.default_backend(),
+        "precision_policy": "fp64-libm-certified",
+        "resolved_namelist": namelist._asdict(),
         "days": days,
         "steps": days * steps_per_day,
         "common_cold_start_steps": 1,
         "forcing_transcription": forcing_check,
+        "prefix_comparisons": prefix_comparisons,
         "first_difference": {
-            "step": 3 if first_fields else None,
-            "first_field": first_fields[0] if first_fields else None,
-            "fields": first_fields,
-            "differences": first_step_differences,
+            "step": first_prefix["model_step"] if first_prefix else None,
+            "first_field": first_prefix["first_field"] if first_prefix else None,
+            "fields": first_prefix["fields"] if first_prefix else [],
+            "differences": first_prefix["differences"] if first_prefix else None,
         },
         "classification": classification,
         "disposition": (

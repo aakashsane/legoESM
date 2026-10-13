@@ -1926,11 +1926,24 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
 
     GYRE is an isotropic Cartesian metric represented by the lat-lon C-grid
     geometry.  T metrics are read explicitly; the F metric is therefore the
-    square root of the stored F area.  This function rejects tripolar grids:
-    no unmeasured general-curvilinear interpolation is substituted.
+    square root of the stored F area.  This function rejects tripolar and
+    anisotropic grids: no unmeasured general-curvilinear interpolation is
+    substituted.  Reciprocals are formed on the host before tracing, matching
+    NEMO's stored ``r1_e*`` operands rather than replacing their multiplication
+    by an algebraically equivalent in-graph division.
     """
     if is_tripolar(grid):
         raise ValueError("NEMO Smagorinsky mode 32 is not implemented on tripolar grids")
+    for point, e1, e2 in (
+        ("T", grid.dx_T, grid.dy_T),
+        ("U", grid.dx_u, grid.dy_u),
+        ("V", grid.dx_v, grid.dy_v),
+    ):
+        if not np.array_equal(np.asarray(e1), np.asarray(e2)):
+            raise ValueError(
+                "NEMO Smagorinsky mode 32 currently requires exact isotropic "
+                f"e1=e2 metrics at {point} points"
+            )
     if c_smag <= 0.0:
         raise ValueError("NEMO Smagorinsky requires positive rn_csmc")
     if minfac < 0.0 or maxfac <= 0.0:
@@ -1956,13 +1969,25 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
     e2u = jnp.asarray(grid.dy_u)
     e1v = jnp.asarray(grid.dx_v)
     e2v = jnp.asarray(grid.dy_v)
-    # ldfdyn.f90:474-482, retaining the source's divide/multiply order.
-    t_u = r(r(u_live[:, 1:] / _b(e2u[:, 1:]))
-            - r(u_live[:, :-1] / _b(e2u[:, :-1])))
-    t_u = r(r(t_u / _b(e1t)) * _b(e2t))
-    t_v = r(r(v_live[1:] / _b(e1v[1:]))
-            - r(v_live[:-1] / _b(e1v[:-1])))
-    t_v = r(r(t_v / _b(e2t)) * _b(e1t))
+    # NEMO stores these reciprocal arrays during domain initialisation and the
+    # compiled mode-32 statements multiply by them.  Host construction keeps
+    # that program visible to XLA; the barriers below prevent reassociation.
+    def _host_reciprocal(metric):
+        return jnp.asarray(np.float64(1.0) / np.asarray(metric, dtype=np.float64))
+
+    r1_e1t = _host_reciprocal(grid.dx_T)
+    r1_e2t = _host_reciprocal(grid.dy_T)
+    r1_e1u = _host_reciprocal(grid.dx_u)
+    r1_e2u = _host_reciprocal(grid.dy_u)
+    r1_e1v = _host_reciprocal(grid.dx_v)
+    r1_e2v = _host_reciprocal(grid.dy_v)
+    # ldfdyn.f90:474-482, retaining the source's reciprocal-multiply order.
+    t_u = r(r(u_live[:, 1:] * _b(r1_e2u[:, 1:]))
+            - r(u_live[:, :-1] * _b(r1_e2u[:, :-1])))
+    t_u = r(r(t_u * _b(r1_e1t)) * _b(e2t))
+    t_v = r(r(v_live[1:] * _b(r1_e1v[1:]))
+            - r(v_live[:-1] * _b(r1_e1v[:-1])))
+    t_v = r(r(t_v * _b(r1_e2t)) * _b(e1t))
     tension = r(t_u - t_v)
     tmask_source = cell_mask if cell_mask is not None else mask
     tmask = 1.0 if tmask_source is None else _b(tmask_source)
@@ -1973,14 +1998,19 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
     area_f = jnp.asarray(grid.area_q)
     fallback = jnp.mean(e1t)
     ef = safe_sqrt(jnp.where(area_f > 0.0, area_f, fallback * fallback))
-    du_f_int = r(r(u_live[1:] / _b(e1u[1:]))
-                 - r(u_live[:-1] / _b(e1u[:-1])))
+    r1_ef = _host_reciprocal(
+        np.sqrt(np.where(np.asarray(grid.area_q) > 0.0,
+                         np.asarray(grid.area_q),
+                         float(np.mean(np.asarray(grid.dx_T))) ** 2)))
+    du_f_int = r(r(u_live[1:] * _b(r1_e1u[1:]))
+                 - r(u_live[:-1] * _b(r1_e1u[:-1])))
     du_f = pad_ns_zero(du_f_int)
-    dv_f_core = r(r(v_live / _b(e2v))
+    dv_f_core = r(r(v_live * _b(r1_e2v))
                   - r(jnp.roll(v_live, 1, axis=1)
-                      / _b(jnp.roll(e2v, 1, axis=1))))
+                      * _b(jnp.roll(r1_e2v, 1, axis=1))))
     dv_f = jnp.concatenate([dv_f_core, dv_f_core[:, :1]], axis=1)
-    shear = r(r(du_f / _b(ef)) * _b(ef) + r(dv_f / _b(ef)) * _b(ef))
+    shear = r(r(du_f * _b(r1_ef)) * _b(ef)
+              + r(dv_f * _b(r1_ef)) * _b(ef))
     fmask = (vertex_mask if vertex_mask is not None else
              (compute_vertex_mask(mask, grid=grid) if mask is not None else
               jnp.ones_like(area_f)))
@@ -2001,10 +2031,10 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
     zdelta_t = r(zcmsmag * esqt)
     ahmt_lap = r(_b(zdelta_t) * deform_t)
     speed_t = r(
-        r(u_live[:, 1:] * u_live[:, 1:])
-        + r(v_live[1:] * v_live[1:])
-        + r(u_live[:, :-1] * u_live[:, :-1])
-        + r(v_live[:-1] * v_live[:-1]))
+        r(r(u_live[:, 1:] * u_live[:, 1:])
+          + r(v_live[1:] * v_live[1:]))
+        + r(r(u_live[:, :-1] * u_live[:, :-1])
+            + r(v_live[:-1] * v_live[:-1])))
     lower_t = safe_sqrt(r(speed_t * _b(zdelta_t) * zstab_lo))
     upper_t = _b(r(zdelta_t * zstab_up))
     ahmt_lap = jnp.minimum(jnp.maximum(ahmt_lap, lower_t), upper_t)
@@ -2026,8 +2056,8 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
     v_west = jnp.concatenate([v_west_core, v_west_core[:, :1]], axis=1)
     v_east = jnp.concatenate([v_live, v_live[:, :1]], axis=1)
     speed_f = r(
-        r(u_south * u_south) + r(v_west * v_west)
-        + r(u_north * u_north) + r(v_east * v_east))
+        r(r(u_south * u_south) + r(v_west * v_west))
+        + r(r(u_north * u_north) + r(v_east * v_east)))
     lower_f = safe_sqrt(r(speed_f * _b(zdelta_f) * zstab_lo))
     upper_f = _b(r(zdelta_f * zstab_up))
     ahmf_lap = jnp.minimum(jnp.maximum(ahmf_lap, lower_f), upper_f)
@@ -2054,10 +2084,11 @@ def nemo_smagorinsky_bilaplacian_tendency_e3_cgrid(
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """NEMO level bilaplacian: two e3 div/curl passes, then minus sign.
 
-    ``dynldf_lev.f90:218-330`` stores the first Laplacian, performs the halo
-    exchange between passes, and subtracts the second.  Re-entering the shared
-    NEMO Laplacian twice gives that same composition; each call supplies its
-    wall/periodic halo before differencing.
+    ``dynldf_lev.f90:218-330`` computes first-pass values over an extended
+    halo range, consumes them directly in the second pass, and subtracts that
+    pass.  On this unpartitioned closed GYRE grid, re-entering the shared NEMO
+    Laplacian supplies the same wall/periodic halo before the second
+    differencing and gives that composition.
     """
     common = dict(
         mask=mask, u_mask=u_mask, v_mask=v_mask, vertex_mask=vertex_mask,

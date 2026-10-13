@@ -51,9 +51,10 @@ adds no new time-level selector.
 NEMO identifies the level bilaplacian as two successive Laplacians in
 `cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90:218-229`.  The first pass uses
 the e3-weighted div/curl form and stores face Laplacians in
-`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90:271-290`; after the intervening
-halo exchange, the second pass repeats that form and enters the RHS with the
-bilaplacian minus sign in
+`cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90:271-290`; those first-pass
+values are computed over the extended halo range and consumed directly by the
+second pass, which repeats that form and enters the RHS with the bilaplacian
+minus sign in
 `cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90:311-330`.  The port reuses the
 existing source-literal e3-weighted NEMO Laplacian twice and applies that minus
 sign; it does not route through legoESM's distinct MOM stress-tensor
@@ -99,6 +100,8 @@ calculation.  XLA composition first changes the separately returned positive
 `tau_y` by `6.421189959886524e-18`; after one scanned step the six reported
 prognostic fields remain exact, and after the second scanned step (model step
 3) `ssh_m` is the first field in the driver's canonical ordering to differ.
+The diagnostic records both prefixes independently rather than inferring the
+first result from the second.
 At step 3 all differences are still below the unchanged `1e-12` control bar;
 after two days surface T reaches the measured `1.8106049992638873e-10` maximum.
 No transcription correction is applicable and the long climate run proceeds
@@ -118,7 +121,12 @@ per-file hashes.
 Direct tiny-grid controls prove that the new coefficient has exact zero flow
 values with finite reverse-mode gradients, accepts a traced dynamic timestep,
 and that its tendency is bitwise the negative of two calls to the existing
-e3-weighted NEMO Laplacian.  A one-step full GYRE dispatch on CPU is finite.
+e3-weighted NEMO Laplacian.  An independent nonzero NumPy transcription checks
+the deformation, lower-limit, and upper-limit regimes; an omitted lower-limit
+factor is a planted failure.  Exact-isotropy rejection is also planted, since
+the selected GYRE geometry is isotropic and the implemented F-point program is
+not a general anisotropic-grid operator.  A one-step full GYRE dispatch on CPU
+is finite.
 
 ## Tests and evidence
 
@@ -127,16 +135,26 @@ Evidence is under
 
 - `r4_ladder.json`: DEBT; kt=1 exact, first debt kt=2, all plants fired.
 - `shipped_trajectory_comparison.json`: PASS; 70 rows and zero field movement.
+- `scan_parity.json`: the final-SHA, fp64/libm CPU report with independently
+  scored model-step-2 and model-step-3 prefixes.
 - acquisition preflight: PASS for all three selectors at the implementation
   commit and pinned writer SHA-256.
 - the two-day CPU parity control remains refuted at the unchanged 1e-12 bar;
   its committed diagnosis is COMPOSITION, first reported field `ssh_m`, step 3.
-- the final focused non-slow suite passes 67 tests (2 slow tests deselected), including
+- the final focused non-slow suite passes 71 tests (2 slow tests deselected), including
   unit, acquisition, driver, ladder, and certified-card fingerprint coverage.
 - both slow controls pass: the complete fp64/libm GYRE step is finite and the
   two-day parity diagnostic identifies the measured composition debt.  The
   citation gate passes with six compiled-source citations mapped and all nine
   of its self-test controls firing.
+
+Two independent adversarial reviews were dispositioned before landing.  The
+physics review found the missing anisotropic-grid refusal; the tooling review
+found reciprocal-operand/source-grouping debt, the zero-only coefficient
+control, the inferred prefix result, and incorrect halo-exchange wording.  All
+five findings are fixed above and covered by controls; both reviewers found no
+selected-deck, acquisition, weighting, forcing-placement, or shipped-isolation
+defect.
 
 ## Inherited pins / OPEN
 

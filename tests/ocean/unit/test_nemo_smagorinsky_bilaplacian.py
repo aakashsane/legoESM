@@ -33,6 +33,65 @@ def _case():
     return grid, mask, u_mask[..., None], v_mask[..., None], cell3, vertex3, u3, v3
 
 
+def _numpy_mode32_isotropic(u, v, cell_mask, vertex_mask, c_smag, dt_s, minfac, maxfac):
+    """Independent source-literal mode-32 reference for the 25 km test grid."""
+    length = np.float64(25_000.0)
+    reciprocal = np.float64(1.0) / length
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    tmask = np.asarray(cell_mask, dtype=np.float64)
+    fmask = np.asarray(vertex_mask, dtype=np.float64)
+
+    tension = (u[:, 1:] * reciprocal - u[:, :-1] * reciprocal) * reciprocal * length - (
+        v[1:] * reciprocal - v[:-1] * reciprocal
+    ) * reciprocal * length
+    dtensq = tension * tension * tmask
+
+    shear = np.zeros(fmask.shape, dtype=np.float64)
+    du = (u[1:] * reciprocal - u[:-1] * reciprocal) * reciprocal * length
+    dv = (v * reciprocal - np.roll(v, 1, axis=1) * reciprocal) * reciprocal * length
+    shear[1:-1, :-1] = du[:, :-1] + dv[1:-1]
+    shear[:, -1] = shear[:, 0]
+    dshesq = shear * shear * fmask
+
+    zcmsmag = (np.float64(c_smag) / np.pi) ** 2
+    esq = length * length
+    zdelta = zcmsmag * esq
+    zstab_lo = (
+        (np.float64(16.0) / 9.0) * minfac * minfac / (np.float64(2.0) * 12.0 * 12.0 * zcmsmag)
+    )
+    zstab_up = maxfac / (np.float64(4.0) * zcmsmag * 2.0 * dt_s)
+
+    dsh_t = 0.25 * ((dshesq[:-1, :-1] + dshesq[1:, :-1]) + (dshesq[:-1, 1:] + dshesq[1:, 1:]))
+    deformation_t = np.sqrt(dtensq + dsh_t)
+    speed_t = (u[:, 1:] * u[:, 1:] + v[1:] * v[1:]) + (u[:, :-1] * u[:, :-1] + v[:-1] * v[:-1])
+    lap_t = np.minimum(
+        np.maximum(zdelta * deformation_t, np.sqrt(speed_t * zdelta * zstab_lo)),
+        zdelta * zstab_up,
+    )
+
+    dt_w = np.roll(dtensq, 1, axis=1)
+    dt_pad = np.pad(dtensq, ((1, 1), (0, 0), (0, 0)))
+    dt_w_pad = np.pad(dt_w, ((1, 1), (0, 0), (0, 0)))
+    dt_f_core = 0.25 * ((dt_pad[:-1] + dt_pad[1:]) + (dt_w_pad[:-1] + dt_w_pad[1:]))
+    dt_f = np.concatenate([dt_f_core, dt_f_core[:, :1]], axis=1)
+    deformation_f = np.sqrt(dshesq + dt_f)
+    u_pad = np.pad(u, ((1, 1), (0, 0), (0, 0)))
+    v_west = np.concatenate([np.roll(v, 1, axis=1), np.roll(v, 1, axis=1)[:, :1]], axis=1)
+    v_east = np.concatenate([v, v[:, :1]], axis=1)
+    speed_f = (u_pad[:-1] * u_pad[:-1] + v_west * v_west) + (
+        u_pad[1:] * u_pad[1:] + v_east * v_east
+    )
+    lap_f = np.minimum(
+        np.maximum(zdelta * deformation_f, np.sqrt(speed_f * zdelta * zstab_lo)),
+        zdelta * zstab_up,
+    )
+    return (
+        np.sqrt(0.125 * esq * lap_t) * tmask,
+        np.sqrt(0.125 * esq * lap_f) * fmask,
+    )
+
+
 def test_mode32_zero_flow_is_exact_zero_with_finite_gradient():
     grid, mask, um, vm, cell3, fm, u, v = _case()
     u = jnp.zeros_like(u)
@@ -75,6 +134,60 @@ def test_mode32_zero_flow_is_exact_zero_with_finite_gradient():
 
     traced_t, traced_f = traced_dynamic_dt(jnp.asarray(3600.0))
     assert float(jnp.sum(traced_t) + jnp.sum(traced_f)) == 0.0
+
+
+@pytest.mark.parametrize(
+    ("minfac", "maxfac"),
+    ((0.0, 1.0e12), (1000.0, 1.0e12), (0.0, 1.0e-9)),
+    ids=("deformation", "lower_limit", "upper_limit"),
+)
+def test_mode32_nonzero_coefficients_match_source_literal_reference(minfac, maxfac):
+    grid, mask, um, vm, cell3, fm, u_masked, v_masked = _case()
+    jj_u, ii_u, kk_u = jnp.indices(u_masked.shape)
+    jj_v, ii_v, kk_v = jnp.indices(v_masked.shape)
+    u = (0.04 * jnp.sin(0.31 * ii_u + 0.17 * jj_u + kk_u)) * u_masked
+    v = (0.03 * jnp.cos(0.27 * ii_v - 0.13 * jj_v + kk_v)) * v_masked
+    got_t, got_f = nemo_smagorinsky_bilaplacian_coefficients_cgrid(
+        u,
+        v,
+        grid,
+        3.5,
+        3600.0,
+        minfac=minfac,
+        maxfac=maxfac,
+        mask=mask,
+        cell_mask=cell3,
+        u_mask=um,
+        v_mask=vm,
+        vertex_mask=fm,
+    )
+    ref_t, ref_f = _numpy_mode32_isotropic(u, v, cell3, fm, 3.5, 3600.0, minfac, maxfac)
+    np.testing.assert_allclose(np.asarray(got_t), ref_t, rtol=2.0e-15, atol=0.0)
+    np.testing.assert_allclose(np.asarray(got_f), ref_f, rtol=2.0e-15, atol=0.0)
+
+    if minfac == 1000.0:
+        # Planted source violation: omitting the bilaplacian 16/9 lower-limit
+        # factor must move a nonzero coefficient.
+        wrong_t, wrong_f = _numpy_mode32_isotropic(u, v, cell3, fm, 3.5, 3600.0, 750.0, maxfac)
+        assert np.count_nonzero(ref_t != wrong_t) + np.count_nonzero(ref_f != wrong_f) > 0
+
+
+def test_mode32_rejects_anisotropic_regular_grid():
+    grid, mask, um, vm, cell3, fm, u, v = _case()
+    anisotropic = grid._replace(dy_T=grid.dy_T * 1.01)
+    with pytest.raises(ValueError, match="exact isotropic"):
+        nemo_smagorinsky_bilaplacian_coefficients_cgrid(
+            u,
+            v,
+            anisotropic,
+            3.5,
+            3600.0,
+            mask=mask,
+            cell_mask=cell3,
+            u_mask=um,
+            v_mask=vm,
+            vertex_mask=fm,
+        )
 
 
 def test_mode32_bilaplacian_is_two_e3_laplacians_with_negative_second_pass():

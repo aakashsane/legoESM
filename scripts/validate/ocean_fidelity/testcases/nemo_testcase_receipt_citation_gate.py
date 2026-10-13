@@ -1445,7 +1445,7 @@ CITATION_MAP = {
         'CALL dyn_cor_2D_init( Kmm )',
         'zv_frc(ji,jj) = zv_frc(ji,jj) - zv_trd(ji,jj) * ssvmask(ji,jj)', 9],
     'cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:386-398': [
-        'CASE ( 3 )        !==  Stage 3  ==!',
+        ('CASE ( 3 )        !==  Stage 3  ==!', 1),
         'CALL dyn_dmp( kstp, Kbb, Kmm', 13],
     'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:604-634': [
         'Phase-3 L2 WRITE-only tracer-stage operand stream',

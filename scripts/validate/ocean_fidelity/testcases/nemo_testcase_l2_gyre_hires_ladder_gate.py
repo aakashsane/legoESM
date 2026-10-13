@@ -323,6 +323,44 @@ def read_dynldf(path: Path, *, expected_kt: int, dims=NEMO_DIMS) -> dict:
     }
 
 
+def read_stage2_terms(path: Path, *, dims=NEMO_DIMS) -> dict:
+    """Read the scalar writer's source-ordered stage-2 momentum RHS."""
+    with path.open("rb") as handle:
+        magic = handle.read(16).decode("ascii").rstrip()
+        header = struct.unpack("=9i", handle.read(36))
+        values = np.fromfile(handle, dtype=np.float64)
+    version, kt, stage, kmm, krhs, nx, ny, nz, bits = header
+    if magic != "NEMO_L2_RKTRM_1":
+        raise ValueError(f"{path}: bad stage-2 term magic")
+    if ((version, kt, stage, kmm, krhs, nx, ny, nz, bits)
+            != (1, 1, 2, 3, 2, *dims, 64)):
+        raise ValueError(f"{path}: bad stage-2 term header")
+    count = nx * ny * nz
+    if values.size != 8 * count or not np.all(np.isfinite(values)):
+        raise ValueError(f"{path}: bad stage-2 term payload")
+    names = (
+        "before_u", "before_v", "after_hpg_u", "after_hpg_v",
+        "after_vorticity_u", "after_vorticity_v",
+        "after_advection_u", "after_advection_v",
+    )
+    result = {
+        name: _full_xyz(values[index * count:(index + 1) * count], dims)
+        for index, name in enumerate(names)
+    }
+    result.update({"stage": stage, "Kmm": kmm, "Krhs": krhs})
+    return result
+
+
+def _redundant_faces(u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Map native NEMO east/north faces to legoESM redundancy."""
+    u = np.asarray(u)[..., :30]
+    v = np.asarray(v)[..., :30]
+    return (
+        np.concatenate([u[:, -1:, :], u], axis=1),
+        np.concatenate([v[-1:, :, :], v], axis=0),
+    )
+
+
 def mismatch_map(reference, candidate, regions: dict[str, np.ndarray], clamps) -> dict:
     """Count bit differences by preregistered spatial/clamp class."""
     reference = np.asarray(reference, dtype=np.float64)
@@ -391,6 +429,7 @@ def run(
     tracer_stage1_transport = []
     tracer_stage1_walk = []
     tracer_stage1_transport_discriminator = None
+    stage2_momentum_term_walk = None
     vertical_candidate = None
     barotropic_resolution_walk = None
     smagorinsky_coefficients = []
@@ -830,6 +869,91 @@ def run(
                     "NEMO_transport_override_rows": override_rows,
                 }
 
+                # The first prognostic split against scalar NEMO is stage-2
+                # U/V, not the stage-1 tracer accumulator.  Compare NEMO's
+                # source-ordered operator increments with legoESM's own
+                # already-computed components, then substitute the complete
+                # NEMO RHS at exactly the stage update boundary.
+                term_oracle = read_stage2_terms(
+                    oracle_root / "oracle_rkstage2_terms_kt00000001.bin",
+                    dims=NEMO_DIMS,
+                )
+
+                def diagnostic_fields(**hook_args):
+                    diagnostic_model = LatLonCGridOceanModel(
+                        card.recipe.grid,
+                        card.recipe.z_coord,
+                        card.recipe.model_config,
+                        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(**hook_args),
+                    )
+                    diagnostic = diagnostic_model.step(
+                        state_before,
+                        card.dt_s,
+                        freshwater=freshwater,
+                        surface_forcing=surface,
+                    )
+                    return lego_fields(host_and_clear(diagnostic))
+
+                operator_rows = []
+                boundaries = {
+                    "hpg": ("before", "after_hpg"),
+                    "vorticity": ("after_hpg", "after_vorticity"),
+                    "advection": ("after_vorticity", "after_advection"),
+                }
+                for operator, (left, right) in boundaries.items():
+                    exposed = diagnostic_fields(
+                        expose_momentum_operator=operator,
+                        expose_momentum_operator_stage=2,
+                    )
+                    rows = []
+                    for field in ("u", "v"):
+                        increment = (
+                            term_oracle[f"{right}_{field}"][..., :30]
+                            - term_oracle[f"{left}_{field}"][..., :30]
+                        )
+                        rows.append(exact_score(
+                            f"{case}.kt1.stage2.{operator}.{field}",
+                            increment, exposed[field], masks[field],
+                        ))
+                    operator_rows.append({"operator": operator, "rows": rows})
+
+                total_fields = diagnostic_fields(expose_stage2_momentum_rhs=True)
+                total_rows = [
+                    exact_score(
+                        f"{case}.kt1.stage2.completed_rhs.{field}",
+                        term_oracle[f"after_advection_{field}"][..., :30],
+                        total_fields[field], masks[field],
+                    )
+                    for field in ("u", "v")
+                ]
+                oracle_rhs = _redundant_faces(
+                    term_oracle["after_advection_u"],
+                    term_oracle["after_advection_v"],
+                )
+                overridden_stage2 = diagnostic_fields(
+                    stage2_momentum_rhs_override=(
+                        jnp.asarray(oracle_rhs[0]), jnp.asarray(oracle_rhs[1])),
+                    expose_momentum_stage=2,
+                )
+                stage2_oracle = read_stage(
+                    oracle_root / "oracle_stage_kt00000001_s2.bin",
+                    2,
+                    dims=NEMO_DIMS,
+                )
+                override_stage_rows = [
+                    exact_score(
+                        f"{case}.kt1.stage2.NEMO_rhs_override.{field}",
+                        stage2_oracle[field][..., :30],
+                        overridden_stage2[field], masks[field],
+                    )
+                    for field in ("u", "v")
+                ]
+                stage2_momentum_term_walk = {
+                    "operator_increment_rows": operator_rows,
+                    "completed_rhs_rows": total_rows,
+                    "NEMO_completed_rhs_override_rows": override_stage_rows,
+                }
+
             if deck == "r4":
                 import jax.numpy as jnp
 
@@ -1107,6 +1231,7 @@ def run(
         "tracer_stage1_walk": tracer_stage1_walk,
         "tracer_stage1_transport_discriminator": (
             tracer_stage1_transport_discriminator),
+        "stage2_momentum_term_walk": stage2_momentum_term_walk,
         "vertical_candidate": vertical_candidate,
         "barotropic_resolution_walk": barotropic_resolution_walk,
         "smagorinsky_coefficients": smagorinsky_coefficients,

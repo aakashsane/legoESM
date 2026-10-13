@@ -100,6 +100,9 @@ def test_scalar_first_owner_discriminator_scores_increment_and_narrow_override()
     assert 'tracer_oracle["zFw"]' in source
     assert 'after_sbc_{field}' in source and 'after_advection_{field}' in source
     assert 'NEMO_stage1_transport_override' in source
+    assert 'expose_momentum_operator=operator' in source
+    assert 'stage2_momentum_rhs_override=' in source
+    assert 'NEMO_completed_rhs_override_rows' in source
 
 
 def test_wind_expression_arms_preserve_compiled_association_and_reciprocal():
@@ -306,3 +309,22 @@ def test_ahm_and_dynldf_readers_validate_headers_and_staggering(tmp_path):
     bad.write_bytes(ahm_path.read_bytes().replace(b"NEMO_L4_AHMTF__1", b"NEMO_L4_AHMTF__X", 1))
     with np.testing.assert_raises_regex(ValueError, "magic"):
         GATE.read_ahm(bad, expected_kt=2, dims=dims)
+
+
+def test_stage2_term_reader_validates_source_order_payload(tmp_path):
+    dims = (6, 6, 3)
+    count = int(np.prod(dims))
+    path = tmp_path / "oracle_rkstage2_terms_kt00000001.bin"
+    with path.open("wb") as stream:
+        stream.write(b"NEMO_L2_RKTRM_1 ")
+        stream.write(struct.pack("=9i", 1, 1, 2, 3, 2, *dims, 64))
+        np.arange(8 * count, dtype=np.float64).tofile(stream)
+    record = GATE.read_stage2_terms(path, dims=dims)
+    assert record["before_u"].shape == (2, 2, 3)
+    assert record["after_advection_v"].shape == (2, 2, 3)
+    assert record["stage"] == 2 and record["Krhs"] == 2
+
+    bad = tmp_path / "truncated.bin"
+    bad.write_bytes(path.read_bytes()[:-8])
+    with pytest.raises(ValueError, match="payload"):
+        GATE.read_stage2_terms(bad, dims=dims)

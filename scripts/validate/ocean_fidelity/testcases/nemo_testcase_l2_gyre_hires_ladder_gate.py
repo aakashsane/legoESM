@@ -27,6 +27,7 @@ from nemo_testcase_l2_gyre_phase3_gate import (  # noqa: E402
     read_stage,
     read_bt_substeps,
     read_tracer_stage12,
+    read_tracer_stage3,
     read_zdf_entry,
 )
 from nemo_testcase_state_ulp_probe import ulp_distance  # noqa: E402
@@ -259,6 +260,23 @@ def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> d
         "bit_bar": 0,
         "plant_one_ulp": plant_one_ulp,
     }
+
+
+def accumulated_component_score(
+    name: str,
+    before: np.ndarray,
+    after: np.ndarray,
+    component: np.ndarray,
+    mask: np.ndarray,
+) -> dict:
+    """Score a component at the accumulator boundary that consumed it.
+
+    NEMO records the accumulator before and after an operator, not the
+    operator addend. Floating-point endpoint subtraction is not the inverse
+    of the executed addition, so start from NEMO's exact preceding
+    accumulator and add the isolated legoESM component instead.
+    """
+    return exact_score(name, after, before + component, mask)
 
 
 def _full_xyz(values: np.ndarray, dims=NEMO_DIMS) -> np.ndarray:
@@ -944,13 +962,12 @@ def run(
                     )
                     rows = []
                     for field in ("u", "v"):
-                        increment = (
-                            term_oracle[f"{right}_{field}"][..., :30]
-                            - term_oracle[f"{left}_{field}"][..., :30]
-                        )
-                        rows.append(exact_score(
-                            f"{case}.kt1.stage2.{operator}.{field}",
-                            increment, exposed[field], masks[field],
+                        rows.append(accumulated_component_score(
+                            f"{case}.kt1.stage2."
+                            f"{operator}_accumulation.{field}",
+                            term_oracle[f"{left}_{field}"][..., :30],
+                            term_oracle[f"{right}_{field}"][..., :30],
+                            exposed[field], masks[field],
                         ))
                     operator_rows.append({"operator": operator, "rows": rows})
 
@@ -1309,7 +1326,7 @@ def run(
 def run_stage2_composition_only(
     oracle_root: Path, output: Path, *, math_flavour: str = "scalar",
 ) -> dict:
-    """Run only the unresolved NEMO-RHS/raw-stage-update discriminator."""
+    """Run the narrow source/update controls without the ten-step ladder."""
     import jax
     import jax.numpy as jnp
     from legoesm.core.precision import PrecisionPolicy, set_policy
@@ -1345,31 +1362,41 @@ def run_stage2_composition_only(
     )
     oracle_rhs = _redundant_faces(
         terms["after_advection_u"], terms["after_advection_v"])
-    model = LatLonCGridOceanModel(
-        card.recipe.grid,
-        card.recipe.z_coord,
-        card.recipe.model_config,
-        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
-            stage2_momentum_rhs_override=(
-                jnp.asarray(oracle_rhs[0]), jnp.asarray(oracle_rhs[1])),
-            expose_stage2_raw_momentum=True,
-        ),
-    )
-    diagnostic = model.step(
-        state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
-    diagnostic = jax.tree_util.tree_map(
-        lambda leaf: np.asarray(leaf) if isinstance(leaf, jax.Array) else leaf,
-        diagnostic,
-    )
-    fields = lego_fields(diagnostic)
+
+    def run_model(**hook_args):
+        model = LatLonCGridOceanModel(
+            card.recipe.grid,
+            card.recipe.z_coord,
+            card.recipe.model_config,
+            _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(**hook_args),
+        )
+        diagnostic = model.step(
+            state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+        return jax.tree_util.tree_map(
+            lambda leaf: np.asarray(leaf)
+            if isinstance(leaf, jax.Array) else leaf,
+            diagnostic,
+        )
+
     masks = expected_masks(card)
-    rows = []
+    production_raw = lego_fields(run_model(expose_stage2_raw_momentum=True))
+    overridden_raw = lego_fields(run_model(
+        stage2_momentum_rhs_override=(
+            jnp.asarray(oracle_rhs[0]), jnp.asarray(oracle_rhs[1])),
+        expose_stage2_raw_momentum=True,
+    ))
+    production_rows = []
+    override_rows = []
     controls = []
     for field in ("u", "v"):
         reference = composition[f"raw_Kaa_{field}"][..., :30]
-        rows.append(exact_score(
+        production_rows.append(exact_score(
+            f"GYRE-zco-r4.kt1.stage2.production_raw_update.{field}",
+            reference, production_raw[field], masks[field],
+        ))
+        override_rows.append(exact_score(
             f"GYRE-zco-r4.kt1.stage2.NEMO_rhs_raw_update.{field}",
-            reference, fields[field], masks[field],
+            reference, overridden_raw[field], masks[field],
         ))
         planted = exact_score(
             f"control.one_ulp.raw_update.{field}",
@@ -1379,8 +1406,175 @@ def run_stage2_composition_only(
             **planted,
             "status": "FIRED" if planted["n_unequal"] == 1 else "MISSED",
         })
+
+    # Prove the private RHS injection is consumed, rather than merely
+    # returning a coincidentally exact diagnostic. Perturb one wet native-U
+    # RHS value by a material fixed amount and require the raw update to move.
+    planted_rhs = [np.array(value, copy=True) for value in oracle_rhs]
+    wet_u_index = tuple(int(value) for value in np.argwhere(masks["u"])[0])
+    internal_u_index = (
+        wet_u_index[0], wet_u_index[1] + 1, wet_u_index[2])
+    rhs_delta = np.float64(1.0e-6)
+    planted_rhs[0][internal_u_index] += rhs_delta
+    planted_raw = lego_fields(run_model(
+        stage2_momentum_rhs_override=(
+            jnp.asarray(planted_rhs[0]), jnp.asarray(planted_rhs[1])),
+        expose_stage2_raw_momentum=True,
+    ))
+    rhs_effect_rows = [
+        exact_score(
+            f"control.material_rhs_override.{field}",
+            overridden_raw[field], planted_raw[field], masks[field],
+        )
+        for field in ("u", "v")
+    ]
+    rhs_effect_fired = any(row["n_unequal"] > 0 for row in rhs_effect_rows)
+
+    # Score each isolated legoESM term through the actual accumulator
+    # boundary. This avoids attempting to reconstruct NEMO's addend by
+    # subtracting two rounded accumulator snapshots.
+    boundaries = {
+        "hpg": ("before", "after_hpg"),
+        "vorticity": ("after_hpg", "after_vorticity"),
+        "advection": ("after_vorticity", "after_advection"),
+    }
+    accumulation_rows = []
+    for operator, (left, right) in boundaries.items():
+        exposed = lego_fields(run_model(
+            expose_momentum_operator=operator,
+            expose_momentum_operator_stage=2,
+        ))
+        rows = [
+            accumulated_component_score(
+                f"GYRE-zco-r4.kt1.stage2."
+                f"{operator}_accumulation.{field}",
+                terms[f"{left}_{field}"][..., :30],
+                terms[f"{right}_{field}"][..., :30],
+                exposed[field], masks[field],
+            )
+            for field in ("u", "v")
+        ]
+        accumulation_rows.append({"boundary": operator, "rows": rows})
+    first_accumulation_debt = next(
+        (
+            {
+                "boundary": group["boundary"],
+                "fields": [
+                    row["name"].rsplit(".", 1)[-1]
+                    for row in group["rows"] if row["status"] == "DEBT"
+                ],
+            }
+            for group in accumulation_rows
+            if any(row["status"] == "DEBT" for row in group["rows"])
+        ),
+        None,
+    )
+
+    # Prove the stage-1 zF substitution reaches the tracer consumer. The
+    # scientific arm substitutes NEMO's zFw and does not move the kt=2
+    # maxima; this control changes one active zFw by 1 m3/s and requires a
+    # downstream prognostic tracer to move.
+    tracer_stage1 = read_tracer_stage12(
+        oracle_root / "oracle_rktracer_operands_kt00000001_s1.bin",
+        1, dims=NEMO_DIMS,
+    )
+    transport = [
+        np.array(tracer_stage1[name][..., :30]
+                 if name != "zFw" else tracer_stage1[name], copy=True)
+        for name in ("zFu", "zFv", "zFw")
+    ]
+    baseline_transport_state = lego_fields(run_model(
+        stage1_tracer_transport_override=tuple(jnp.asarray(x) for x in transport),
+    ))
+    zfw_index = next(
+        tuple(int(value) for value in index)
+        for index in np.argwhere(masks["T"])
+        if index[2] > 0
+    )
+    transport[2][zfw_index] += np.float64(1.0)
+    planted_transport_state = lego_fields(run_model(
+        stage1_tracer_transport_override=tuple(jnp.asarray(x) for x in transport),
+    ))
+    zfw_effect_rows = [
+        exact_score(
+            f"control.material_zFw_override.{field}",
+            baseline_transport_state[field], planted_transport_state[field],
+            masks[field],
+        )
+        for field in ("T", "S")
+    ]
+    zfw_effect_fired = any(row["n_unequal"] > 0 for row in zfw_effect_rows)
+
+    # Exhaust the already-acquired step-1 temperature record before asking
+    # for step-2 operands. NEMO stores RHS accumulators; convert each one to
+    # the same after-level concentration returned by the process trace.
+    tracer_stage3 = read_tracer_stage3(
+        oracle_root / "oracle_rktracer_stage3_kt00000001.bin")
+    trace = run_model(tracer_process_trace=())
+    b0, badv, bsbc, bqsr, bldf, bpre = trace.boundaries
+    rbb = np.float64(1.0) + tracer_stage3["r3t_Kbb"]
+    rmm = np.float64(1.0) + tracer_stage3["r3t_Kmm"]
+    raa = np.float64(1.0) + tracer_stage3["r3t_Kaa"]
+    dt = np.float64(card.dt_s)
+    oracle_tbb = tracer_stage3["Kbb_T"][..., :30]
+    oracle_temperature_boundaries = {
+        "geometry": rbb[..., None] * oracle_tbb / raa[..., None],
+        **{
+            name: (
+                rbb[..., None] * oracle_tbb
+                + dt * rmm[..., None]
+                * tracer_stage3[f"{oracle_name}_T"][..., :30]
+            ) / raa[..., None]
+            for name, oracle_name in (
+                ("advection", "after_advection"),
+                ("sbc", "after_sbc"),
+                ("qsr", "after_qsr"),
+                ("ldf", "after_ldf"),
+                ("pre_zdf", "after_ldf"),
+            )
+        },
+        "post_zdf": tracer_stage3["Kaa_T"][..., :30],
+    }
+    candidate_temperature_boundaries = {
+        "geometry": b0[..., :30],
+        "advection": badv[..., :30],
+        "sbc": bsbc[..., :30],
+        "qsr": bqsr[..., :30],
+        "ldf": bldf[..., :30],
+        "pre_zdf": bpre[..., :30],
+        "post_zdf": trace.Taa[..., :30],
+    }
+    temperature_boundary_rows = [
+        exact_score(
+            f"GYRE-zco-r4.kt1.stage3.temperature.{name}",
+            oracle_temperature_boundaries[name],
+            candidate_temperature_boundaries[name], masks["T"],
+        )
+        for name in candidate_temperature_boundaries
+    ]
+    first_temperature_debt = next(
+        (row for row in temperature_boundary_rows if row["status"] == "DEBT"),
+        None,
+    )
+
+    controls.extend([
+        {
+            "name": "control.material_rhs_override",
+            "status": "FIRED" if rhs_effect_fired else "MISSED",
+            "delta": float(rhs_delta),
+            "index": list(internal_u_index),
+            "rows": rhs_effect_rows,
+        },
+        {
+            "name": "control.material_zFw_override",
+            "status": "FIRED" if zfw_effect_fired else "MISSED",
+            "delta_m3_s": 1.0,
+            "index": list(zfw_index),
+            "rows": zfw_effect_rows,
+        },
+    ])
     report = {
-        "format": "nemo-testcase-l2-gyre-r4-stage2-composition-v1",
+        "format": "nemo-testcase-l2-gyre-r4-narrow-discriminator-v2",
         "worktree": worktree_stamp(),
         "oracle_admission": admission,
         "policy": "fp64/x64/cpu/libm certified",
@@ -1389,11 +1583,31 @@ def run_stage2_composition_only(
             "raw Kaa immediately after the RK update and before barotropic "
             "mean replacement"
         ),
-        "rows": rows,
+        "production_raw_rows": production_rows,
+        "NEMO_rhs_override_raw_rows": override_rows,
+        "source_order_accumulation_rows": accumulation_rows,
+        "first_nonexact_accumulation_boundary": first_accumulation_debt,
+        "mean_replacement_boundary": {
+            "status": "OPEN_INPUT_VERSUS_ARITHMETIC",
+            "reason": (
+                "the NEMO-RHS raw update is exact, while the recorded post-"
+                "replacement state is not; recorded barotropic targets and "
+                "zub/zvb have not yet been substituted"
+            ),
+        },
+        "stage3_temperature_boundary_rows": temperature_boundary_rows,
+        "first_nonexact_temperature_boundary": (
+            None if first_temperature_debt is None else {
+                "name": first_temperature_debt["name"],
+                "max_abs": first_temperature_debt["max_abs"],
+                "max_abs_index": first_temperature_debt["max_abs_index"],
+                "max_ulp": first_temperature_debt["max_ulp"],
+            }
+        ),
         "controls": controls,
         "verdict": (
             "RAW_UPDATE_AT_BAR"
-            if all(row["status"] == "AT-BAR" for row in rows)
+            if all(row["status"] == "AT-BAR" for row in override_rows)
             and all(control["status"] == "FIRED" for control in controls)
             else "DEBT"
         ),

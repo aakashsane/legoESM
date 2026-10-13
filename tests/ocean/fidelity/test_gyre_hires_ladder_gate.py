@@ -25,12 +25,20 @@ def test_ladder_decks_have_distinct_preregistered_oracle_roots():
 
 
 def test_all_math_flavour_oracles_are_admitted_by_content():
+    expected_files = {
+        ("r4", "vector"): 20,
+        ("r4", "scalar"): 21,
+        ("r4_smag", "vector"): 15,
+        ("r4_smag", "scalar"): 15,
+    }
     for deck in ("r4", "r4_smag"):
         for flavour in ("scalar", "vector"):
             admitted = GATE.admit_oracle(deck, flavour)
             assert admitted["deck"] == deck
             assert admitted["math_flavour"] == flavour
-            assert len(admitted["checked_files"]) == 12
+            assert len(admitted["checked_files"]) == expected_files[
+                (deck, flavour)
+            ]
 
 
 def test_oracle_admission_refuses_root_and_digest_mutations(tmp_path):
@@ -42,6 +50,13 @@ def test_oracle_admission_refuses_root_and_digest_mutations(tmp_path):
     planted = tmp_path / "admissions.json"
     planted.write_text(json.dumps(registry), encoding="utf-8")
     with pytest.raises(ValueError, match="digest mismatch for nemo"):
+        GATE.admit_oracle("r4", "scalar", admissions_path=planted)
+
+    registry = json.loads(GATE.ADMISSIONS_PATH.read_text(encoding="utf-8"))
+    auxiliary = "oracle_rkstage2_terms_kt00000001.bin"
+    registry["admissions"]["r4:scalar"]["files"][auxiliary] = "0" * 64
+    planted.write_text(json.dumps(registry), encoding="utf-8")
+    with pytest.raises(ValueError, match=f"digest mismatch for {auxiliary}"):
         GATE.admit_oracle("r4", "scalar", admissions_path=planted)
 
 
@@ -92,6 +107,17 @@ def test_exact_score_one_ulp_control_fires():
     assert planted["max_abs_index"] == [0, 0]
 
 
+def test_component_score_replays_accumulation_not_endpoint_subtraction():
+    before = np.array([1.0e16], dtype=np.float64)
+    component = np.array([1.0], dtype=np.float64)
+    after = np.array([1.0e16], dtype=np.float64)
+    mask = np.array([True])
+    assert not np.array_equal(after - before, component)
+    row = GATE.accumulated_component_score(
+        "accumulated", before, after, component, mask)
+    assert row["status"] == "AT-BAR"
+
+
 def test_scalar_first_owner_discriminator_scores_increment_and_narrow_override():
     source = SCRIPT.read_text(encoding="utf-8")
     assert 'stage1_tracer_transport_override=oracle_transport' in source
@@ -107,6 +133,10 @@ def test_scalar_first_owner_discriminator_scores_increment_and_narrow_override()
     assert '--stage2-composition-only' in source
     assert 'RAW_UPDATE_AT_BAR' in source
     assert 'control.one_ulp.raw_update.{field}' in source
+    assert 'control.material_rhs_override' in source
+    assert 'control.material_zFw_override' in source
+    assert 'source_order_accumulation_rows' in source
+    assert 'stage3_temperature_boundary_rows' in source
 
 
 def test_wind_expression_arms_preserve_compiled_association_and_reciprocal():

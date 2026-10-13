@@ -20,7 +20,15 @@
         "oracle_step_entry_kt00000007.bin": "94030d7554fbe1b1bd6423aee5a5b7116382b3b70180be03497365a58da98424",
         "oracle_step_entry_kt00000008.bin": "c89c5feecd9b91a7a8e8c183c0ae141b785fdddb89bbd731f938e9c0f1414b59",
         "oracle_step_entry_kt00000009.bin": "a8f2142cdf68245b9ba508229155d0e0f763d7ce10b5f262f1f80bff4cefac4f",
-        "oracle_step_entry_kt00000010.bin": "ed04f8f9b25ca5e8dbab1a62d73c473c43eba9e66d2c92bc24b6371523a55e01"
+        "oracle_step_entry_kt00000010.bin": "ed04f8f9b25ca5e8dbab1a62d73c473c43eba9e66d2c92bc24b6371523a55e01",
+        "oracle_stage_kt00000001_s1.bin": "d3103654f84c270965ea9450c6648e138ce6bc4701619af40cc419afd06deea7",
+        "oracle_stage_kt00000001_s2.bin": "f74834c9b8243b42d1e26ea4daf4e44462b3c47aa6f92975db450f8ce5fc8cfb",
+        "oracle_stage_kt00000001_s3.bin": "587d951f07a3bf95476d9d2baefb88a42594c06609d7a209c5edacbacf9c2529",
+        "oracle_rktracer_operands_kt00000001_s1.bin": "3e0e29cb3257409fa774e34c3c5bf291d0b75b2750197a0aa6cdd03ef51d3d10",
+        "oracle_zdf_entry_kt00000001.bin": "357ad62b0f0db8f329411a6d8bb109bd2c00a58aeb59a88ce1a82faac04127f1",
+        "oracle_bt_substeps_kt00000001.bin": "0d97e5b4634032c7c2640306de13a7e4c202f00d41b73811c500a309ed791a46",
+        "oracle_rkstage2_terms_kt00000001.bin": "970eb9e136da9515cc6119fd3335f0c5c7b7c4fdeda4ad00f16a0b73cd875fb2",
+        "oracle_rkstage2_operands_kt00000001.bin": "33599186476f92576814294fa39188722d1986119563e101d2068b03a41a04c8"
       }
     },
     "r4_smag:vector": {
@@ -42,7 +50,10 @@
         "oracle_step_entry_kt00000007.bin": "c8d2aea3d0eacdc56f66f8dbdd856099eaf61e74d67c2bf057aaaf8419e3301f",
         "oracle_step_entry_kt00000008.bin": "5a14581288f75f14b388d09a51506abac6073230422daf4d917c179fa06fdede",
         "oracle_step_entry_kt00000009.bin": "a3ff4ce32959339f9632288edba8795e56d79c21932195f7926a6bd6376710e9",
-        "oracle_step_entry_kt00000010.bin": "4c474a5af73ba52a8634c15f223576002ed26cfc8101cb4be25d672ef8ba4f00"
+        "oracle_step_entry_kt00000010.bin": "4c474a5af73ba52a8634c15f223576002ed26cfc8101cb4be25d672ef8ba4f00",
+        "oracle_stage_kt00000001_s1.bin": "d3103654f84c270965ea9450c6648e138ce6bc4701619af40cc419afd06deea7",
+        "oracle_stage_kt00000001_s2.bin": "f74834c9b8243b42d1e26ea4daf4e44462b3c47aa6f92975db450f8ce5fc8cfb",
+        "oracle_stage_kt00000001_s3.bin": "587d951f07a3bf95476d9d2baefb88a42594c06609d7a209c5edacbacf9c2529"
       }
     },
     "r4_smag_30d:vector": {
@@ -107,7 +118,16 @@
         "oracle_step_entry_kt00000007.bin": "715124bd12e41980b858c7de7506d261f7a29c1547b9c2b21686eeb33622901d",
         "oracle_step_entry_kt00000008.bin": "db130c637a202650d53592bf7bffff5db04bec8af006a1a0a84c2ed30eabac49",
         "oracle_step_entry_kt00000009.bin": "0ad9fa5c892fd9e416cb1189442b88e79e3c8bfabfbab79dbb0b6f84740529c4",
-        "oracle_step_entry_kt00000010.bin": "95a2abb4ea378d6abdba6e5a2a359b6f42f7534afc76d8ee86d6abb545cdc42d"
+        "oracle_step_entry_kt00000010.bin": "95a2abb4ea378d6abdba6e5a2a359b6f42f7534afc76d8ee86d6abb545cdc42d",
+        "oracle_stage_kt00000001_s1.bin": "0fc5277d881246436f4a9b2741b2e1b9492eeed34f9b5c2a7f89ef9f1973cdf7",
+        "oracle_stage_kt00000001_s2.bin": "feed8e114a944b4970eb473779609d5000d52fbb77dbd7d4ad68cbd5da555a47",
+        "oracle_stage_kt00000001_s3.bin": "41466ff9916c829baf59d12a241dc1346afe8e7c4afd8f1f97478fd7a3d6e09e",
+        "oracle_rktracer_operands_kt00000001_s1.bin": "7ddad1fc677a1ab1ccb3823f0140f60b23cf193752f5e03f584c987539273898",
+        "oracle_zdf_entry_kt00000001.bin": "6689e5ed76e2c6add7ac96cd064c20edfb0e5988c16afb10b963e96edc207f28",
+        "oracle_bt_substeps_kt00000001.bin": "3dfdd7de21e4fa18d84260f408133ab4a1f0db0caba9e0071729ca31351ba087",
+        "oracle_rkstage2_terms_kt00000001.bin": "2a5fdb5e15b2e2a851532cfddecb9906bfcd8ad7fac5f5b4be8687a85b47add1",
+        "oracle_rkstage2_operands_kt00000001.bin": "d65a94035c8f60d0645a9f6e14b5ace06cbabd35b5871100c47d9e76050f28fb",
+        "oracle_rktracer_stage3_kt00000001.bin": "d7e831a5cdc7643c78d68fb706be9ea5ad1114f3b5ddd3de5088a07edd9b01c7"
       }
     },
     "r4_smag:scalar": {
@@ -129,7 +149,10 @@
         "oracle_step_entry_kt00000007.bin": "f9d666e789cc132eb41f74ac1bbfa248c69628e794ff9f3956e9f9fa50a1b3b9",
         "oracle_step_entry_kt00000008.bin": "bdbf2810611cb9212f2d76dccc846a3d0e0b5b0e6e524643b9757702e4959264",
         "oracle_step_entry_kt00000009.bin": "8f34ff9f8dae03c90282d711dcda4bdd61752c8360191b2c8ff2b36280c83ffe",
-        "oracle_step_entry_kt00000010.bin": "ad2289454a9be1a7ac0665a861f2a44450563d439871f1c28e60fd2184677128"
+        "oracle_step_entry_kt00000010.bin": "ad2289454a9be1a7ac0665a861f2a44450563d439871f1c28e60fd2184677128",
+        "oracle_stage_kt00000001_s1.bin": "0fc5277d881246436f4a9b2741b2e1b9492eeed34f9b5c2a7f89ef9f1973cdf7",
+        "oracle_stage_kt00000001_s2.bin": "feed8e114a944b4970eb473779609d5000d52fbb77dbd7d4ad68cbd5da555a47",
+        "oracle_stage_kt00000001_s3.bin": "41466ff9916c829baf59d12a241dc1346afe8e7c4afd8f1f97478fd7a3d6e09e"
       }
     }
   }

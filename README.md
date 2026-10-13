@@ -254,7 +254,7 @@ More things to try:
 | `Could not find a version that satisfies the requirement legoesm-core~=1.0.0` | Plain `pip install` cannot resolve the unpublished workspace members. Use `uv sync`, or the pip-only helper in [Installing](#installing). |
 | Run killed: `Out Of Memory` / exit 137 | Not enough RAM. Run one experiment at a time, reduce `grid.resolution`, or ask for more memory in your allocation. |
 | `ERROR: --output-dir runs/... exists and is not empty` | `init_experiment` never overwrites. Pick a new `--output-dir` or remove the old one. |
-| `ERROR: resolved config is invalid: ... grid.vertical_coord must be one of ('sigma', 'hybrid', 'cam_l32'); got 'none'` | You used one of the two broken `2d/` templates; see [Known issues](#known-issues-in-the-getting-started-path). |
+| `ERROR: resolved config is invalid: ... grid.vertical_coord must be one of ('sigma', 'hybrid', 'cam_l32'); got 'none'` | `none` is not a vertical coordinate. For shallow water use a `2d/` template, which runs the matrix case; see [Known issues](#known-issues-in-the-getting-started-path). |
 | Spectral solver fails on Apple Silicon | Metal has no `float64`; run with `JAX_PLATFORMS=cpu`. Not re-verified here; see [Apple Silicon](#apple-silicon-metalmps-backend). |
 | Run seems to hang at the start | The first segment includes JIT compilation (39–69 s for Held–Suarez C36 on 2 cores). On the CPU backend the compile cache is **off** by default, so every run compiles again; see the log's first line and [Performance & Compile-Cache](#performance--compile-cache). |
 
@@ -266,10 +266,9 @@ above.
 - **Shallow water does not run through `legoesm run`.** The
   `2d/williamson2_sw` and `2d/williamson5_sw` templates therefore name the
   matrix cases (`init_experiment.py 2d/williamson2_sw ...` writes a `run.sh`
-  that calls the matrix runner), and their grid, timestep and duration are the
+  that calls the matrix runner). Only `setup.duration_days`,
+  `setup.resolution` and `setup.quick` can be overridden; the rest is the
   matrix case's. There is no `run_manifest.json` / `legoesm reproduce` for them.
-- `config/templates/README.md` lists `1d/` and `coupled/` template folders that
-  do not exist.
 - **Held–Suarez ran at dt=200 s** although its template says
   `dt_seconds: 600`. The driver's generic time-step check reduced it, with a
   `WARNING` in the log. The first line of `results.txt` reads

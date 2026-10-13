@@ -140,9 +140,10 @@ The harness adds the *intent/ergonomics* layer:
 # idealized (no data)
 python scripts/experiment/fetch_data.py check 2d/williamson2_sw
 python scripts/experiment/init_experiment.py 2d/williamson2_sw --name w2 --output-dir ./runs/w2
-cd ./runs/w2 && bash run.sh
+(cd ./runs/w2 && bash run.sh)
 
-# longer (shallow-water templates run the matrix case; only its duration is overridable)
+# longer (shallow-water templates run the matrix case: only setup.duration_days,
+# setup.resolution and setup.quick are overridable, and no run_manifest.json is written)
 python scripts/experiment/init_experiment.py 2d/williamson2_sw --name w2long --output-dir ./runs/w2long \
     -o setup.duration_days=10
 
@@ -155,8 +156,8 @@ python scripts/experiment/init_experiment.py 3d_idealized/held_suarez --name hsh
 python scripts/experiment/fetch_data.py fetch 3d_idealized/hydrostatic_gray_1yr
 python scripts/experiment/init_experiment.py 3d_idealized/hydrostatic_gray_1yr --name hs1 --output-dir ./runs/hs1
 
-# reproduce any past run from its manifest
-legoesm reproduce ./runs/w2/<output>/run_manifest.json --check
+# reproduce a past `legoesm run` run from its manifest (not the matrix-case templates)
+legoesm reproduce ./runs/hshi/<output>/run_manifest.json --check
 ```
 
 ## 5. Source-guardrail harness (AI-assisted-dev tripwires)

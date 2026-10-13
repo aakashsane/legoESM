@@ -8,7 +8,8 @@ A template is a versioned ``legoesm run`` config YAML carrying an extra
 description / data / conservation_gates).  Validation = the metadata is
 well-formed AND the config resolves + passes the production
 ``ExperimentConfig.validate_strict`` (reusing the *same* loader ``legoesm run``
-uses, so a template that validates here is runnable):
+uses, so a template that validates here is runnable; a ``setup:`` template is
+instead checked by the shared matrix-case selector):
 
     Config.from_yaml(path).to_experiment_config().validate_strict()
 

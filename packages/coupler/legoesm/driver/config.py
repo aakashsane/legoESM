@@ -5196,13 +5196,15 @@ def checkpoint_radiation_cadence_error(cfg) -> str | None:
     actually takes, and a requested dt the clamp reduces (C12 duo: 1920 s ->
     600 s) can misalign where the effective one aligns, or vice versa.
     """
-    rus = cfg.rad_update_steps
+    # The run loop's own coercion, so a numpy / YAML-float cadence is
+    # judged here too instead of failing only once the loop starts.
+    rus = max(1, int(cfg.rad_update_steps))
     ck_days = cfg.output.checkpoint_days
     dt = cfg.dycore.dt
     # Same predicate as the run loop's guard: radiation sub-cycles only when
     # it runs at all, and the checkpoint interval is the loop's integer
     # step count, int(checkpoint_days * 86400 / dt).
-    if not (cfg.column_loop_lane and isinstance(rus, int) and rus > 1
+    if not (cfg.column_loop_lane and rus > 1
             and cfg.radiation != "none"
             and ck_days and ck_days > 0 and dt > 0):
         return None

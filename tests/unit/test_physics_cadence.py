@@ -421,6 +421,8 @@ def test_checkpoint_cadence_off_the_radiation_cadence_is_refused():
     assert "checkpoint_days=1" in msg and "288 steps" in msg
     assert "rad_update_steps=5" in msg
     assert checkpoint_radiation_cadence_error(cfg(4)) is None
+    # a numpy-typed cadence is judged too (the loop coerces with int())
+    assert checkpoint_radiation_cadence_error(cfg(np.int64(5))) is not None
     # the run loop's predicate: no radiation, nothing to align; the
     # interval is the loop's int(checkpoint_days*86400/dt) (599 s -> 144)
     assert checkpoint_radiation_cadence_error(

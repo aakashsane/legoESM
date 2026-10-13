@@ -1,12 +1,12 @@
 """A restart on the column loop reproduces the continuous run, step by step,
 on the per-step restart-set digest (``LEGOESM_DIGEST_EVERY_STEPS``): MPAS
-and the FV3-duo column lane, land on, restart at a physics-but-not-radiation
-boundary.  The instrument is validated first: the digest writer sees a
+and the FV3-duo column lane, land on, restart on a radiation boundary (as
+D-REX-1 requires of every checkpoint).  The instrument is validated first: the digest writer sees a
 change in each part and nothing else; two continuous runs of one config
 agree; a planted 1e-12 K change of one soil leaf is seen.
 
-Preconditions raise ``RuntimeError`` so only the final digest equality can
-fail as an ``AssertionError``."""
+Preconditions raise ``RuntimeError`` so only the final digest equality (and
+the persisted clock origin) can fail as an ``AssertionError``."""
 import os
 import types
 
@@ -171,7 +171,12 @@ def test_two_continuous_runs_agree_and_a_soil_nudge_is_seen(
 
 def test_mpas_restart_matches_the_continuous_digest(tmp_path, monkeypatch):
     """MPAS, land stress on, gray radiation: resume from the step-2
-    checkpoint; step 3 digests equal the continuous run's."""
+    checkpoint; step 3 digests equal the continuous run's.  The digest's
+    forcing part carries the lagged shflx/lhflx the CAPE-diurnal forcing
+    reads (on by default), so dropping D-REX-2 fails here.  The forcing-clock
+    origin is checked as written and adopted: in a same-config chain the
+    reconstructed origin snaps to the same float, so the digest alone cannot
+    see it."""
     monkeypatch.setenv("LEGOESM_DIGEST_EVERY_STEPS", "1")
     _mpas_continuous(tmp_path, "c", THREE_STEPS_DAYS, monkeypatch)
     _mpas_continuous(tmp_path, "a", TWO_STEPS_DAYS, monkeypatch)
@@ -185,6 +190,10 @@ def test_mpas_restart_matches_the_continuous_digest(tmp_path, monkeypatch):
     steps, bad = _restarted_vs_continuous(tmp_path / "c", step, tmp_path / "b")
     _require(steps == [3], steps)
     assert not bad, _mismatch(tmp_path / "c", tmp_path / "b", bad[0])
+    with np.load(ckpt) as z:
+        assert "clock_day_origin" in z.files
+        origin = float(z["clock_day_origin"])
+    assert origin == dB._clock_day_origin_ckpt == dB._clock_day_origin
 
 
 @pytest.mark.slow
@@ -213,7 +222,7 @@ def test_duo_column_lane_restart_matches_the_continuous_digest(
     _require(ckpt.exists(), ckpt)
     dB, d = build("b", 1)
     step, day = _drive(dB.load_checkpoint, ckpt)
-    _require(step == 144 and step % 5 and (step - 1) % 5, step)
+    _require(step == 144 and step % 4 == 0, step)
     _require(_drive(dB.run, start_step=step, start_day=day) == "COMPLETED",
              "b")
     steps, bad = _restarted_vs_continuous(tmp_path / "c", step, d)

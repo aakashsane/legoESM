@@ -653,7 +653,9 @@ def test_land_window_payload_roundtrip():
     rng = np.random.default_rng(3)
     a2s = AtmToSurface(*[jnp.asarray(rng.normal(size=n_cells))
                          for _ in AtmToSurface._fields])
-    held = tuple(jnp.asarray(rng.normal(size=n_cells)) for _ in range(7))
+    # all eight held outputs (T_skin, albedo, qsfc_last, qsfc, shflx, lhflx,
+    # evap, beta): a shorter tuple would zip-truncate beta off the trip
+    held = tuple(jnp.asarray(rng.normal(size=n_cells)) for _ in range(8))
     cz, w = jnp.asarray(rng.normal(size=n_cells)), jnp.ones(n_cells)
     pay = land_window_checkpoint_payload(a2s, 2, cz, w, held)
     buf = io.BytesIO()
@@ -661,8 +663,9 @@ def test_land_window_payload_roundtrip():
     buf.seek(0)
     with np.load(buf) as z:
         back = {k: z[k] for k in z.files}
+    assert "land_held_beta" in back
     a2s_b, n_b, cz_b, w_b, held_b = land_window_from_checkpoint(back, 3, n_cells)
-    assert n_b == 2
+    assert n_b == 2 and len(held_b) == len(held)
     for x, y in zip(a2s, a2s_b):
         np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
     np.testing.assert_array_equal(np.asarray(cz_b), np.asarray(cz))
@@ -675,3 +678,13 @@ def test_land_window_payload_roundtrip():
     partial = {k: v for k, v in back.items() if k != "land_held_T_skin"}
     with pytest.raises(ValueError, match="incomplete land cadence state"):
         land_window_from_checkpoint(partial, 3, n_cells)
+    # R-ex partial held sets, with NO pending samples (so only the
+    # held-set check can refuse): one flux of the quartet missing, and a
+    # held output without the skin T it was solved with.
+    empty = {k: v for k, v in back.items() if not k.startswith("land_win_")}
+    empty["land_win_n"] = np.asarray(0, dtype=np.int64)
+    land_window_from_checkpoint(empty, 3, n_cells)
+    for drop in ("land_held_evap", "land_held_T_skin"):
+        bad = {k: v for k, v in empty.items() if k != drop}
+        with pytest.raises(ValueError, match="partial held land-output set"):
+            land_window_from_checkpoint(bad, 3, n_cells)

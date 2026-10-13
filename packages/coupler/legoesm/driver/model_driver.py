@@ -6979,8 +6979,10 @@ class ModelDriver:
         # cannot be retried into a silent lift.
         faces = [aux.get(k) for k in self._FACE_WIND_KEYS]
         if isinstance(self.state, LatLonFaceWindState):
-            for k in self._FACE_WIND_KEYS:
-                aux.pop(k, None)
+            if any(f is not None for f in faces):
+                raise ValueError(
+                    "face winds are staged from a checkpoint but the state "
+                    "already carries faces; refusing to pick one silently")
             self._persistent_cgrid = True
             return
         lifted = hydrostatic_to_facewind(self.state, self.grid)
@@ -7020,10 +7022,10 @@ class ModelDriver:
                 "lifting the cell-centre winds to "
                 "the C-grid faces once.  This restart is not bit-identical "
                 "to an uninterrupted run.")
-        for k in self._FACE_WIND_KEYS:
-            aux.pop(k, None)
         self.state = lifted
         self._persistent_cgrid = True
+        for k in self._FACE_WIND_KEYS:
+            aux.pop(k, None)
         logger.info(
             "lat-lon C-grid face winds are carried between steps "
             "(u_f %s, v_f %s)", tuple(lifted.u_f.data.shape),

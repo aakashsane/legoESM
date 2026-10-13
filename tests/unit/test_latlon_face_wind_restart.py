@@ -118,20 +118,27 @@ def test_zarr_restart_lifts_face_winds_with_a_warning(tmp_path, caplog):
     assert np.abs(_winds(z1)[0] - _winds(d)[0]).max() > 0.0
 
 
-def test_faces_from_another_state_are_refused(leg1):
+@pytest.mark.parametrize("corrupt", [
+    lambda a: a * 1.1,
+    # mean-preserving: every face shifted one cell east
+    lambda a: np.roll(a, 1, axis=1),
+])
+def test_faces_from_another_state_are_refused(leg1, corrupt):
     tmp, b1, ckpt = leg1
     with np.load(ckpt, allow_pickle=True) as z:
         data = {k: z[k] for k in z.keys()}
     key = next(k for k in data if "latlon_u_face" in k)
-    data[key] = data[key] * 1.1
+    data[key] = corrupt(data[key])
     bad = tmp / "bad_checkpoint_day_0001.npz"
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_bad", 2))
     d.setup()
-    d.load_checkpoint(str(bad))
-    for _ in range(2):          # a retry must refuse again, not lift
+    step, day = d.load_checkpoint(str(bad))
+    for _ in range(2):          # a retried run must refuse again, not lift
         with pytest.raises(ValueError, match="do not average"):
-            d._enter_persistent_cgrid()
+            d.run(start_step=step, start_day=day, compiled=True)
+        assert all(k in d._carry_aux for k in d._FACE_WIND_KEYS)
+        assert not isinstance(d.state, LatLonFaceWindState)
 
 
 def test_unsupported_lanes_refuse(tmp_path):

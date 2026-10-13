@@ -1276,6 +1276,8 @@ FILES = {
         NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynldf_lev.f90"),
     "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90"),
+    "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90"),
     "nemogcm.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/nemogcm.f90",
     "dynspg_ts.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/dynspg_ts.f90",
     "lbclnk.f90": NEMO / "cfgs/DINO/BLD/ppsrc/nemo/lbclnk.f90",

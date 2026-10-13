@@ -252,6 +252,8 @@ _SURFACE_KNOBS_BY_BULK = {
     "large_yeager": ("surface_z0", "surface_most_unstable_gamma",
                      "surface_most_stable_beta"),
     "large_yeager_cesm": (),
+    # No surface exchange: every exchange knob is inert, so none is trainable.
+    "none": (),
 }
 # falls through to the constant-coefficient branch of compute_surface_fluxes
 _SURFACE_KNOBS_BY_BULK["nemo_si3_constant"] = _SURFACE_KNOBS_BY_BULK["constant"]
@@ -1356,7 +1358,13 @@ def make_aimip_classical_spectral_physics(
     # cannot silently fall back to constant-Cd bulk aerodynamics — which
     # would leave the trained MOST stability / z0h-ratio leaves dead with no
     # error.  Mirrors compute_surface_fluxes' own validate_bulk_scheme gate.
-    validate_bulk_scheme(surface_bulk_scheme)
+    # "none" = no surface exchange: the turbulence scheme still runs, but its
+    # lower boundary condition is prescribed as zero heat, moisture and stress
+    # (the same prescribed-flux path ERA5 fluxes use).  The bulk law under the
+    # prescription is irrelevant; "constant" only fills the config.
+    _no_surface_flux = surface_bulk_scheme == "none"
+    _bulk_law = "constant" if _no_surface_flux else surface_bulk_scheme
+    validate_bulk_scheme(_bulk_law)
 
     # Radiation backend toggle.  ``rrtmgp`` is the production
     # correlated-k path: it explicitly couples Xu-Randall cloud
@@ -1541,7 +1549,12 @@ def make_aimip_classical_spectral_physics(
     # For ``louis`` this is idempotent with ``to_louis_config`` (which already
     # installed the trained surface).  Schemes without a ``surface`` member
     # ("none") are returned unchanged.
-    trained_surface = params.to_surface_config(bulk_scheme=surface_bulk_scheme)
+    trained_surface = params.to_surface_config(bulk_scheme=_bulk_law)
+    if _no_surface_flux:
+        trained_surface = trained_surface._replace(
+            prescribed_shflx_w_m2=0.0, prescribed_lhflx_w_m2=0.0,
+            prescribed_evap_kg_m2_s=0.0,
+            prescribed_tau_x_pa=0.0, prescribed_tau_y_pa=0.0)
 
     def _spatial_surface_override(inner_cfg):
         if not hasattr(inner_cfg, "surface"):
@@ -1561,7 +1574,7 @@ def make_aimip_classical_spectral_physics(
 
     if turbulence_scheme == "louis":
         louis_cfg = _spatial_surface_override(
-            params.to_louis_config(bulk_scheme=surface_bulk_scheme)
+            params.to_louis_config(bulk_scheme=_bulk_law)
         )
         turb_cfg = TurbulenceConfig(scheme="louis", louis=louis_cfg)
     elif turbulence_scheme == "tke":

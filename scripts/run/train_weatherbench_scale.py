@@ -992,16 +992,15 @@ def _main(argv=None):
         # BOTH branches (idempotent on resume) and BEFORE the persist below,
         # so the saved list is the effective trainable set.
         def _policy_freeze(arr_, static_, frozen_):
-            if not bool(yml.get("era5_surface_fluxes", False)):
-                return arr_, static_, frozen_
             from legoesm.training.inert_params import (
                 apply_forced_freeze,
-                prescribed_surface_frozen_names,
+                surface_policy_frozen_names,
             )
-            forced = prescribed_surface_frozen_names(params)
+            forced, why = surface_policy_frozen_names(yml, params)
+            if why is None:
+                return arr_, static_, frozen_
             if rank == 0 and forced:
-                log.info("FROZEN BY POLICY (ERA5 surface fluxes prescribed): "
-                         "%s", ", ".join(forced))
+                log.info("FROZEN BY POLICY (%s): %s", why, ", ".join(forced))
             return apply_forced_freeze(params, frozen_, forced)
 
         if resumed_frozen is not None:

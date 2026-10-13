@@ -53,6 +53,9 @@ def maybe_run_climateeval(config: ExperimentConfig, output_dir: str) -> int | No
         cmd += ["--suite", *evaluation.suites]
     if evaluation.timerange:
         cmd += ["--timerange", evaluation.timerange]
+    if config.surface_bulk_scheme == "none":
+        # No surface layer, so no 2 m temperature was written.
+        cmd += ["--not-produced", "tas"]
     if evaluation.fail_on_missing_data:
         cmd.append("--fail-on-missing-data")
     if evaluation.download_missing_data:

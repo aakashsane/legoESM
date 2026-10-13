@@ -163,7 +163,7 @@ def _xyz(values: np.ndarray, nx: int, ny: int, nz: int) -> np.ndarray:
     return values.reshape((nx, ny, nz), order="F")[2:-2, 2:-2].transpose(1, 0, 2)
 
 
-def read_entry(path: Path) -> dict:
+def read_entry(path: Path, dims=DIMS) -> dict:
     level = _registered(path, "before")
     with path.open("rb") as handle:
         magic = handle.read(16).decode("ascii").rstrip()
@@ -171,7 +171,7 @@ def read_entry(path: Path) -> dict:
         values = np.fromfile(handle, dtype=np.float64)
     version, kt, nbb, nx, ny, nz, ntr, bits = header
     require(magic == "NEMO_L1_ENTRY_1", f"{path}: bad magic")
-    require((version, nx, ny, nz, ntr, bits) == (1, *DIMS, 2, 64), f"{path}: bad header")
+    require((version, nx, ny, nz, ntr, bits) == (1, *dims, 2, 64), f"{path}: bad header")
     count = nx * ny * nz
     require(values.size == 4 * count + nx * ny, f"{path}: bad payload")
     require(np.all(np.isfinite(values)), f"{path}: non-finite payload")

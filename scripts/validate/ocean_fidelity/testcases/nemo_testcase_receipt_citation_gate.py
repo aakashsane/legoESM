@@ -86,6 +86,12 @@ _OVERFLOW_R56UP3_COMPILED = (
 _OVERFLOW_R62ZDF_COMPILED = (
     NEMO / "tests/OVERFLOW_OMIP_L1_P3_R62ZDF/BLD/ppsrc/nemo")
 FILES = {
+    "cfgs/GYRE_OMIP_L2/WORK/usrdef_nam.F90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/WORK/usrdef_nam.F90"),
+    "cfgs/GYRE_OMIP_L2/WORK/usrdef_hgr.F90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/WORK/usrdef_hgr.F90"),
+    "cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90"),
     "stprk3.F90": _OCE / "stprk3.F90",
     "stprk3_stg.F90": _OCE / "stprk3_stg.F90",
     # round 202: the PRODUCTION GYRE build, so a GYRE resolved statement
@@ -1377,6 +1383,28 @@ FILES = {
 # recurring symbol is refused now, and every multi-line citation states its
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
+    # --- GYRE high-resolution round 1: grid and forcing dependencies ---
+    'cfgs/GYRE_OMIP_L2/WORK/usrdef_nam.F90:64-80': [
+        'NAMELIST/namusr_def/ nn_GYRE, ln_bench, jpkglo',
+        'kpj = 20 * nn_GYRE + 2', 17],
+    'cfgs/GYRE_OMIP_L2/WORK/usrdef_hgr.F90:84-94': [
+        'zlam1 = -85._wp',
+        'zphi0 = zphi1 + zsin_alpha * ze1deg * REAL( Nj0glo - 2, wp )', 11],
+    'cfgs/GYRE_OMIP_L2/WORK/usrdef_hgr.F90:119-150': [
+        'DO_2D( nn_hls, nn_hls, nn_hls, nn_hls )',
+        'pe1f(:,:) =  ze1     ;      pe2f(:,:) = ze1', 32],
+    'cfgs/GYRE_OMIP_L2/WORK/usrdef_hgr.F90:161-168': [
+        'zbeta = 2. * omega * COS( rad * zphi1 ) / ra',
+        'pff_t(:,:) = ( zf0 + zbeta * ABS( pphit(:,:) - zphi0 ) * rad * ra )', 8],
+    'cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90:84-107': [
+        'zyear0     =   ndate0 / 10000',
+        'zcos_sais2 = COS( (ztime - ztimemax2) / (ztimemax2 - ztimemin2) * rpi )', 24],
+    'cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90:115-145': [
+        't_star = zTstar * ( 1. + 1. / 50. * zcos_sais2 )',
+        'qns (ji,jj) = qns(ji,jj) - emp(ji,jj) * sst_m(ji,jj) * rcp', 31],
+    'cfgs/GYRE_OMIP_L2/WORK/usrdef_sbc.F90:161-176': [
+        'ztime = REAL( kt, wp ) * rn_Dt / (rmmss * rhhmm)',
+        'vtau(ji,jj) =   ztaun * SIN( rpi * (gphit(ji,jj) - 15.) / (29.-15.) )', 16],
     # --- GYRE gradient-gate round 6: exact program and oracle statements ---
     'nemo_testcase_recipe.py:3351': 'def build_nemo_testcase_card(',
     'ocean_model_latlon_cgrid.py:13219': 'def _step_jitted(',

@@ -95,10 +95,10 @@ class GyreResolvedNamelist(NamedTuple):
     nn_stock: int = 4320
     nn_write: int = 60
     nn_istate: int = 0
-    nn_GYRE: int = 1
+    nn_GYRE: int = 1  # noqa: N815 - exact NEMO namelist spelling
     ln_bench: bool = False
     jpkglo: int = 31
-    rn_Dt_s: float = 14400.0
+    rn_Dt_s: float = 14400.0  # noqa: N815 - exact NEMO namelist spelling
     ln_meshmask: bool = False
     l_runstat: bool = False
     ptimincr: int = 1
@@ -118,8 +118,8 @@ class GyreResolvedNamelist(NamedTuple):
     ln_traldf_lap: bool = True
     ln_traldf_iso: bool = True
     nn_aht_ijk_t: int = 0
-    rn_Ud_m_s: float = 0.02
-    rn_Ld_m: float = 100000.0
+    rn_Ud_m_s: float = 0.02  # noqa: N815 - exact NEMO namelist spelling
+    rn_Ld_m: float = 100000.0  # noqa: N815 - exact NEMO namelist spelling
     ln_dynadv_vec: bool = True
     nn_dynkeg: int = 0
     ln_dynvor_ene: bool = True
@@ -132,8 +132,8 @@ class GyreResolvedNamelist(NamedTuple):
     ln_dynldf_lap: bool = True
     ln_dynldf_lev: bool = True
     nn_ahm_ijk_t: int = 0
-    rn_Uv_m_s: float = 2.0
-    rn_Lv_m: float = 100000.0
+    rn_Uv_m_s: float = 2.0  # noqa: N815 - exact NEMO namelist spelling
+    rn_Lv_m: float = 100000.0  # noqa: N815 - exact NEMO namelist spelling
     ln_zdftke: bool = True
     ln_zdfevd: bool = True
     nn_evdm: int = 1
@@ -145,7 +145,7 @@ class GyreResolvedNamelist(NamedTuple):
     nn_etau: int = 0
     key_qco: bool = True
     key_vco_1d: bool = True
-    key_RK3: bool = True
+    key_RK3: bool = True  # noqa: N815 - exact NEMO preprocessor spelling
 
 
 GYRE_SHIPPED_NAMELIST = GyreResolvedNamelist()

@@ -54,7 +54,7 @@ def _run(cfg):
 
 
 def _fields(d):
-    st = d._state_cc()
+    st = d.cell_centre_state()
     return {k: np.asarray(getattr(st, k).data, np.float64)
             for k in ("T", "u", "v", "p_s")}
 

@@ -12,7 +12,7 @@ import jax
 import numpy as np
 
 from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
-    LatLonFaceWindState)
+    LatLonFaceWindState, hydrostatic_to_facewind)
 from legoesm.driver.config import (
     DycoreConfig, ExperimentConfig, GridConfig, OutputConfig)
 from legoesm.driver.coupled_config import PRESETS
@@ -34,12 +34,21 @@ def test_coupled_latlon_run_carries_face_winds(tmp_path):
     assert drv.run() == "COMPLETED"
     st = drv._atm.state
     assert isinstance(st, LatLonFaceWindState)
-    cc = drv._atm._state_cc()
+    cc = drv._atm.cell_centre_state()
     u = np.asarray(cc.u.data)
     assert np.isfinite(u).all() and np.abs(u).max() > 0.0
     # the faces are the native shapes, not the cell-centre ones
     assert st.u_f.data.shape[1] == u.shape[1] + 1
     assert st.v_f.data.shape[0] == u.shape[0] + 1
+    _assert_carried(drv._atm)
+
+
+def _assert_carried(atm):
+    """The faces are carried, not re-derived from the cell-centre average."""
+    st = atm.state
+    relift = hydrostatic_to_facewind(atm.cell_centre_state(), atm.grid)
+    assert np.abs(np.asarray(st.u_f.data)
+                  - np.asarray(relift.u_f.data)).max() > 0.0
 
 
 def test_earth_system_latlon_run_carries_face_winds(tmp_path):
@@ -54,3 +63,4 @@ def test_earth_system_latlon_run_carries_face_winds(tmp_path):
     drv.setup()
     assert drv.run() == "COMPLETED"
     assert isinstance(drv.state, LatLonFaceWindState)
+    _assert_carried(drv._atm)

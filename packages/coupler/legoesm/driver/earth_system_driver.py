@@ -127,8 +127,8 @@ class EarthSystemDriver:
         from legoesm.core.coupling_fields import AtmToSurface
         from legoesm.forcing.surface_utils import blend_surface_temperature
 
-        # Cell-centre view: a lat-lon C-grid atmosphere carries its face winds.
-        state = self._atm._state_cc()
+        # Cell-centre view: a lat-lon C-grid run carries face winds between steps.
+        state = self._atm.cell_centre_state()
         q_v = self._atm.q_v
         p_s = state.p_s.data
         T_low = state.T.data[..., -1]

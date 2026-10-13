@@ -360,7 +360,7 @@ def test_cc_view_is_a_view_not_a_write_back(cube):
     """``fv3_to_hydrostatic`` must not be assigned back over the D winds.
 
     Nothing enforces this mechanically, so the test states the invariant the
-    driver's ``_state_cc`` docstring promises: taking the view leaves the
+    driver's ``cell_centre_state`` docstring promises: taking the view leaves the
     D-staggered arrays untouched.  A write-back would reinstate the round trip
     one call site at a time.
     """

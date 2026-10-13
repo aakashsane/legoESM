@@ -88,6 +88,21 @@ def test_old_checkpoint_is_lifted_once_with_a_warning(leg1, caplog):
     assert du > 0.0, du
 
 
+def test_zarr_restart_lifts_face_winds_with_a_warning(tmp_path, caplog):
+    """zarr does not round-trip carry_aux, so the faces are lifted on restart
+    and the warning says so (whether zarr should refuse instead is open)."""
+    cfg = _cfg(tmp_path / "z1", 1)
+    cfg = cfg._replace(output=cfg.output._replace(checkpoint_format="zarr"))
+    z1 = ModelDriver(cfg)
+    z1.setup()
+    assert z1.run(compiled=True) == "COMPLETED"
+    ckpt = sorted(glob.glob(str(tmp_path / "z1" / "checkpoint_day_*")))[-1]
+    with caplog.at_level(logging.WARNING):
+        d = _resume(tmp_path, ckpt, "z2")
+    assert "no saved face winds (a zarr" in caplog.text
+    assert np.abs(_winds(z1)[0] - _winds(d)[0]).max() > 0.0
+
+
 def test_unsupported_lanes_refuse(tmp_path):
     ens = ModelDriver(_cfg(tmp_path / "ens", 1, ensemble_size=2))
     ens.setup()

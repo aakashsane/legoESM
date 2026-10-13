@@ -6755,7 +6755,7 @@ class ModelDriver:
     # driver that CARRIES the D state; this is that wiring.
     #
     # Everything that reads winds as cell-centred (physics inputs, CFL,
-    # diagnostics, output, checkpoints) goes through :meth:`_state_cc`, a
+    # diagnostics, output, checkpoints) goes through :meth:`cell_centre_state`, a
     # read-only view.  Nothing writes a converted state back over the native
     # winds, so the round trip never re-enters the prognostic path.
 
@@ -6831,7 +6831,7 @@ class ModelDriver:
             "staggering between steps (one cc->D lift at run start; the "
             "per-step cc round trip is gone).")
 
-    def _state_cc(self, state=None):
+    def cell_centre_state(self, state=None):
         """Cell-centre VIEW of the prognostic state — read-only.
 
         Identity when the run is not carrying D winds, so every call site is
@@ -7591,7 +7591,7 @@ class ModelDriver:
                 ckpt_path = self._output_dir / f"checkpoint_day_{int(elapsed_day):04d}.npz"
                 save_restart(
                     path=ckpt_path,
-                    state=self._state_cc(),      # #1028: cc layout on disk
+                    state=self.cell_centre_state(),      # #1028: cc layout on disk
                     q_v=self.q_v,
                     step=step,
                     day=day,
@@ -7621,7 +7621,7 @@ class ModelDriver:
         # natively (new leaf names + a format stamp) is the follow-up that
         # removes even that.
         _state, _q_v, _q_c, _q_r = (
-            self._state_cc(), self.q_v, self.q_c, self.q_r)
+            self.cell_centre_state(), self.q_v, self.q_c, self.q_r)
         _carry_aux = self._checkpoint_carry_aux()
         if self._is_spmd_multiprocess():
             # Multi-controller SPMD (cs_spmd step 5a): every process holds
@@ -15717,7 +15717,7 @@ class ModelDriver:
                     # #1028: max_wind is a cell-centre diagnostic (the #1049
                     # dead-jet gate reads it), so take the cc view -- identity
                     # unless the run carries D-staggered cube winds.
-                    _cc_ts = self._state_cc()
+                    _cc_ts = self.cell_centre_state()
                     T_arr = _cc_ts.T.data
                     u_arr = _cc_ts.u.data
                     v_arr = (_cc_ts.v.data
@@ -17089,7 +17089,7 @@ class ModelDriver:
             # rank; the selfspawn route-B gate greps this line + the finite
             # magnitudes to confirm the federation integrated without a hang.
             _maxT = float(jnp.abs(self.state.T.data).max())
-            _maxU = float(jnp.abs(self._state_cc().u.data).max())
+            _maxU = float(jnp.abs(self.cell_centre_state().u.data).max())
             logger.info(
                 "operator-split SPMD run: %s, %d steps, %d device(s) / %d "
                 "process(es), max|T|=%.3f max|u|=%.3f (%.1fs)",
@@ -18282,8 +18282,8 @@ class ModelDriver:
                     _np.savez_compressed(
                         _dump_path,
                         T=_g(self.state.T.data), p_s=_g(self.state.p_s.data),
-                        u=_g(self._state_cc().u.data),
-                        v=_g(self._state_cc().v.data),
+                        u=_g(self.cell_centre_state().u.data),
+                        v=_g(self.cell_centre_state().v.data),
                         q_v=_g(self.q_v), q_c=_g(self.q_c), q_r=_g(self.q_r),
                         q_i=_g(_tr.get("q_i")), N_c=_g(_tr.get("N_c")),
                         N_i=_g(_tr.get("N_i")),
@@ -18409,7 +18409,7 @@ class ModelDriver:
             if _is_root_seg or _spmd_mc:
                 # #1028: the stability check reads cell-centre winds.
                 error = self.diagnostics.check_stability(
-                    self._state_cc(), elapsed_day)
+                    self.cell_centre_state(), elapsed_day)
             else:
                 error = None
             if self._mpi_rank is not None and not _spmd_mc:
@@ -18514,7 +18514,7 @@ class ModelDriver:
                 diag_info = self._sync_and_collect_diagnostics(
                     elapsed_day=elapsed_day,
                     day=day,
-                    state=self._state_cc(),      # #1028: diagnostics are cc
+                    state=self.cell_centre_state(),      # #1028: diagnostics are cc
                     q_v=self.q_v,
                     q_c=self.q_c,
                     q_r=self.q_r,
@@ -18552,7 +18552,7 @@ class ModelDriver:
                 # CFL is a CELL-CENTRE number (the dx estimate is the centre
                 # spacing), so it reads the cell-centre view -- identity off
                 # the persistent-D lane (#1028).
-                _cc_cfl = self._state_cc()
+                _cc_cfl = self.cell_centre_state()
                 if self._owned_face_ids is not None:
                     _ofi = self._owned_face_ids
                     _seg_max_cfl = float(cfl_number_from_state(
@@ -18873,7 +18873,7 @@ class ModelDriver:
         # Physics reads winds at cell centres.  On the persistent-D lane this
         # is a READ-ONLY view of the corner winds (#1028); on every other lane
         # it is ``self.state`` itself, so the call below is byte-identical.
-        _cc_in = self._state_cc()
+        _cc_in = self.cell_centre_state()
 
         # Double-moment hydrometeor inputs (None unless the registry carries
         # them) so coupled radiation/microphysics see ice + droplet number.
@@ -18991,7 +18991,7 @@ class ModelDriver:
             _dycore_step()
             # Cell-centre view for the physics inputs (identity off the
             # persistent-D lane, #1028).
-            _cc_step = self._state_cc()
+            _cc_step = self.cell_centre_state()
 
             # (b) Physics with radiation sub-cycling
             need_rad_py = (RAD_UPDATE_STEPS <= 1) or ((step + 1) % RAD_UPDATE_STEPS == 0)
@@ -19147,7 +19147,7 @@ class ModelDriver:
                 diag_info = self._sync_and_collect_diagnostics(
                     elapsed_day=elapsed_day,
                     day=day,
-                    state=self._state_cc(),      # #1028: diagnostics are cc
+                    state=self.cell_centre_state(),      # #1028: diagnostics are cc
                     q_v=self.q_v,
                     q_c=self.q_c,
                     q_r=self.q_r,
@@ -19172,7 +19172,7 @@ class ModelDriver:
 
                 # Stability check (#1028: cell-centre winds)
                 error = self.diagnostics.check_stability(
-                    self._state_cc(), elapsed_day)
+                    self.cell_centre_state(), elapsed_day)
                 if error:
                     logger.warning(f"  {error}")
                     run_status = error

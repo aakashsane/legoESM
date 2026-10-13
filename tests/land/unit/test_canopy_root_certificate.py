@@ -149,21 +149,22 @@ def _stub_run(monkeypatch, seed_arr, converge_on_passes=None, soil_offset=0.0):
         calls["n"] += 1
         return out
 
-    monkeypatch.setattr(tl.jax, "vmap", _VmapProxy(tl.jax.vmap, fake, counted))
+    monkeypatch.setattr(tl.jax.lax, "map", _SolveMapProxy(tl.jax.lax.map, counted))
     seen_G = []
     out = _canopy_call(seed_arr=seed_arr, soil_record=seen_G, soil_offset=soil_offset)
     return out, seen_G, calls["n"], seen_Ts
 
 
-class _VmapProxy:
-    """jax.vmap, except vmap(_solve_one_col) is replaced by the stand-in."""
-    def __init__(self, real, fake, counted):
-        self.real, self.fake, self.counted = real, fake, counted
+class _SolveMapProxy:
+    """jax.lax.map, except the grouped map over _solve_one_col is replaced by
+    the stand-in (called on the whole batch)."""
+    def __init__(self, real, counted):
+        self.real, self.counted = real, counted
 
-    def __call__(self, f, *a, **k):
-        if getattr(f, "__name__", "") == "_solve_one_col":
-            return self.counted
-        return self.real(f, *a, **k)
+    def __call__(self, f, xs, *a, **k):
+        if "_solve_one_col" in getattr(getattr(f, "__code__", None), "co_freevars", ()):
+            return self.counted(*xs)
+        return self.real(f, xs, *a, **k)
 
 
 def test_a_warm_seed_that_fails_gets_a_cold_retry(monkeypatch):
@@ -265,13 +266,12 @@ def test_a_rejected_nan_iterate_leaves_finite_gradients(monkeypatch):
     """Round-1 fix: a failed column's iterate is NaN; the fluxes and the soil
     boundary it would feed must still give finite reverse-mode gradients."""
     import legoesm.land.surface_scheme.two_leaf_canopy as tl
-    real_vmap = tl.jax.vmap
 
     def fake(x0, bun):
         z = jnp.zeros((), x0.dtype)
         return (jnp.full_like(x0, jnp.nan), jnp.array(1), jnp.asarray(False), z, z, z, z)
 
-    monkeypatch.setattr(tl.jax, "vmap", _VmapProxy(real_vmap, fake, real_vmap(fake)))
+    monkeypatch.setattr(tl.jax.lax, "map", _SolveMapProxy(tl.jax.lax.map, jax.vmap(fake)))
 
     def loss(scale):
         out = _canopy_call(soil_record=None, lw_scale=scale)

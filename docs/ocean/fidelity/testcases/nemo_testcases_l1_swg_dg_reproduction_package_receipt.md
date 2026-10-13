@@ -191,8 +191,8 @@ SHA-256 is
 The citation gate was rerun after this receipt was written.
 It reported PASS for 274 mapped citations, no failures, no unmapped
 citations, no map-audit failures, and all nine built-in controls firing. The
-precommit gate log SHA-256 is
-`21763358bcf51f72dec34dade86cd35e333e908932c205b4aa94913d9951607b`.
+clean-tree gate at `c27fe2a37` has log SHA-256
+`1a95ae4faee744ee245ce07bc6748aea71eba00e8a0fa3b95a0e1c9179b512bf`.
 
 ## Acquisition boundary
 

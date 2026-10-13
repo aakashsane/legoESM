@@ -70,6 +70,20 @@ def day_boundary_schedule(ndays: int = NDAYS) -> tuple[int, ...]:
     return tuple(1 + STEPS_PER_DAY * day for day in range(ndays + 1))
 
 
+def register_daily_entry_time_levels(ndays: int = NDAYS) -> None:
+    """Register only the day-boundary dumps emitted by the daily writer."""
+    from legoesm.ocean.fidelity.time_levels import register_dump
+
+    source = (
+        "/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2/cfgs/"
+        "GYRE_OMIP_L2_P3_DAILY/BLD/ppsrc/nemo/stprk3.f90:90-100 writes "
+        "ts/uu/vv/ssh(...,Nbb) at kt=1,25,...,721"
+    )
+    for kt in day_boundary_schedule(ndays):
+        register_dump(
+            f"oracle_step_entry_kt{kt:08d}.bin", "before", source)
+
+
 def run(
     oracle_root: Path,
     output: Path,
@@ -102,6 +116,7 @@ def run(
         raise ValueError(f"max_day must be in 1..{NDAYS}")
     set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
     admission = admit_daily_oracle(oracle_root, math_flavour)
+    register_daily_entry_time_levels(max_day)
 
     final_kt = day_boundary_schedule(max_day)[-1]
     namelist = GYRE_R4_SMAG_NAMELIST._replace(

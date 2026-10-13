@@ -28,6 +28,18 @@ def test_daily_schedule_refuses_empty_duration():
         GATE.day_boundary_schedule(0)
 
 
+def test_daily_writer_registers_its_exact_sparse_time_levels():
+    from legoesm.ocean.fidelity.time_levels import time_level_for_dump
+
+    GATE.register_daily_entry_time_levels()
+    assert time_level_for_dump("oracle_step_entry_kt00000073.bin") == "before"
+    assert time_level_for_dump("oracle_step_entry_kt00000721.bin") == "before"
+    # The registration must not silently admit a dump the sparse writer never
+    # emits.  That would defeat the fail-closed time-level control.
+    with pytest.raises(ValueError, match="no registered NEMO time level"):
+        time_level_for_dump("oracle_step_entry_kt00000072.bin")
+
+
 def test_daily_gate_preregisters_exact_bar_and_acquisition_root():
     assert "round6/oracle_gyre_r4_smag_daily_stage/run" in str(
         GATE.DEFAULT_ORACLE_ROOT)

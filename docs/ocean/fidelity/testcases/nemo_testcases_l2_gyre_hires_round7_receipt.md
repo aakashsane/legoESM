@@ -290,13 +290,13 @@ Round-7 artifacts are under
 Verification from clean committed trees:
 
 - ladder, daily-ladder, acquisition, citation-gate, and independent
-  Smagorinsky tests: 58 passed, 1 slow test deselected;
+  Smagorinsky tests: 63 passed, 1 slow test deselected;
 - GYRE card, dispatch, and 43,800-step calendar tests: 10 passed, 25 unrelated
   tests deselected;
 - GPU-selection, deck-cadence, climate-refusal, and movie-refusal tests:
   16 passed, 1 slow parity test deselected;
-- compiled-source citation gate: PASS for all nine receipt citations; the
-  explicit shifted-calendar-citation plant: FIRED;
+- compiled-source citation gate: PASS for all 13 receipt citations; the
+  explicit shifted executed-`tra_zdf` citation plant: FIRED;
 - scalar step-2 writer preflight and scalar daily-writer build preflight:
   PASS; daily run preflight: expected fail-closed refusal until the compiled
   scalar daily writer exists.  The runner writes and count-checks a manifest

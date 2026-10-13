@@ -100,7 +100,8 @@ def _git_output(tree, *args: str) -> str:
     own error text.
     """
     return subprocess.check_output(
-        ["git", "-C", str(tree), *args], text=True, stderr=subprocess.DEVNULL)
+        ["git", "--no-optional-locks", "-C", str(tree), *args],
+        text=True, stderr=subprocess.DEVNULL)
 
 
 def git_sha(*, allow_dirty: bool = False, repo: str | Path | None = None) -> str:

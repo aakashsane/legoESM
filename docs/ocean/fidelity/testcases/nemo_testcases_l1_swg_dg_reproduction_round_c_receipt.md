@@ -21,6 +21,8 @@ Round-C evidence is under
 
 - `22dd7e2e8`: reconstructable environment guide, stranger runbook, cost
   artifact, review-disposition receipt, and runbook completeness guard.
+- `d2a4e061f`: re-anchor the shifted provenance citation, record the completed
+  movie/first battery, and correct the clean-wrapper decoy assertion.
 
 ## Independent-review findings
 
@@ -124,7 +126,7 @@ agent's inference:
 | Rank command | exit 1 after both NEMO runs; measured packaging import failure | fresh log and 8 s/2 s `run.log` files |
 | Rank scorer rerun | `all_bit_identical=True variables=21` | report SHA-256 `113fe89f7e3530bff1232ec84eb244423ff857b6baa37334d2f2fdb6dd6ebb44` |
 | 30-day smoke | exit 0, `WALL_SECONDS=504` | `dg_smoke/run.log`, SHA-256 `97a87bca3c2035b1764e7baf21422aa271f7257b14d276bd2f56df0705c2ad81` |
-| Three-year NEMO | **in progress**, not claimed complete; step 809,702 observed while closing this evidence commit | `operator_acquisition/nemo/dg_3yr/time.step` |
+| Three-year NEMO | **in progress**, not claimed complete; step 904,417 observed while closing this receipt | `operator_acquisition/nemo/dg_3yr/time.step` |
 | Fresh GPU/comparisons/movie | not started | acquisition commands below |
 
 ## Tests and evidence boundary
@@ -142,8 +144,21 @@ Three failures had one cause: the new checkout helper shifted `git_sha` from
 line 107 to 149 without re-anchoring its campaign receipt/map entry. The
 fourth caught a test-harness error: the decoy test expected the clean GPU
 wrapper's `--help` to fail, although success is correct after it binds this
-checkout. Both are corrected in the next evidence commit; final clean rerun
-results follow there. No model/card/gradient/comparator assertion failed.
+checkout. Both are corrected in `d2a4e061f`; final clean rerun results follow
+below. No model/card/gradient/comparator assertion failed.
+
+After `d2a4e061f`, the citation gate reported PASS for 274 citations, zero
+failures, zero unmapped citations, zero map-audit failures, and all nine
+controls firing; log SHA-256 is
+`5c2bb03e06c8e38a3b793b0eee123e3543117e3656db5f0df05796079503fb3e`.
+The 18 directly affected tests passed. Following the repository instruction
+to split compiler-heavy suites, the already-passed clean gradient matrix was
+retained (11 passed, one registered six-step LLVM-memory skip), and every
+non-matrix requested battery file was rerun at `d2a4e061f`: **342 passed** in
+806.99 seconds, log SHA-256
+`8d63a51d613d60234ad8e6d12d7a4b41ea690eb26eb373745a768298bd7bf7e7`.
+Combined final requested coverage is **353 passed, one registered skip** over
+all 354 tests. No full-repository suite or optional 172,800-step scorer ran.
 
 The movie repair arose during this round's permitted CPU execution. The first
 attempt left only a 48-byte partial after Python warned that ffmpeg's fork

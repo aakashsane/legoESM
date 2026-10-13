@@ -773,6 +773,8 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
             radiation, step clock). With ``suffix_seg is self`` it is the same
             forecast as ``raw``; its derivative in the suffix parameters is
             what ``raw(..., adjoint_steps=suffix_steps)`` differentiates."""
+            import jax
+
             k0 = int(n_steps) - int(suffix_steps)
             if not 0 < k0 < int(n_steps):
                 raise ValueError(f"suffix_steps must be in 1..{int(n_steps) - 1}, "

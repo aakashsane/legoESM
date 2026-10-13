@@ -10,6 +10,12 @@ from pathlib import Path
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+CHECKOUT_TOOLS = (
+    REPO_ROOT / "scripts/validate/ocean_fidelity/testcases")
+sys.path.insert(0, str(CHECKOUT_TOOLS))
+from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
+
+CHECKOUT_IMPORT = bootstrap_checkout(__file__)
 CLIMATE_PATH = (
     REPO_ROOT / "scripts/validate/ocean_fidelity/testcases/"
     "nemo_testcase_l1_swg_dg_climate.py")

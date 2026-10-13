@@ -12,6 +12,12 @@ from pathlib import Path
 
 import numpy as np
 
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
+
+CHECKOUT_IMPORT = bootstrap_checkout(__file__)
+
 MAGIC = "NEMO_L1_SWGSTG1"
 NINT = 15
 BOUNDS_AT = 10

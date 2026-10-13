@@ -3,28 +3,54 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 TOOLS = ROOT / "scripts/data/nemo_swg_double_gyre"
-MOUNTED_NEMO = Path(os.environ.get("LEGOESM_TEST_NEMO_ROOT", "/nonexistent"))
+ACQUISITION = ROOT / "scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg"
+FIXTURES = ROOT / "tests/ocean/fixtures/swg_dg"
 
 
-@pytest.mark.parametrize("name", (
-    "build_swg_dg.sh", "check_swg_dg_identity.sh", "swg_md_run.sh",
-    "swg_dg_rankcheck.sh",
+def _fake_nemo(tmp_path: Path) -> Path:
+    nemo = tmp_path / "nemo"
+    shipped = nemo / "tests/SWG"
+    variant = nemo / "tests/SWG_DG"
+    for path in (
+        nemo / "arch", shipped / "EXPREF", shipped / "MY_SRC",
+        variant / "BLD/bin", variant / "EXP00",
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+    for executable in (nemo / "makenemo", variant / "BLD/bin/nemo.exe"):
+        executable.write_text("#!/usr/bin/env bash\nexit 0\n")
+        executable.chmod(0o755)
+    (shipped / "EXPREF/namelist_cfg").write_bytes(
+        (FIXTURES / "namelist_cfg.shipped").read_bytes())
+    (shipped / "MY_SRC/usrdef_zgr.F90").write_bytes(
+        (FIXTURES / "usrdef_zgr.F90.shipped").read_bytes())
+    (variant / "EXP00/namelist_cfg").write_bytes(
+        (FIXTURES / "namelist_cfg.shipped").read_bytes())
+    (variant / "EXP00/namelist_ref").write_text("&dummy\n/\n")
+    (nemo / "arch/arch-swg-dg-scalarmath.fcm").write_text("reference\n")
+    return nemo
+
+
+@pytest.mark.parametrize(("directory", "name"), (
+    (TOOLS, "build_swg_dg.sh"), (TOOLS, "check_swg_dg_identity.sh"),
+    (TOOLS, "swg_md_run.sh"), (TOOLS, "swg_dg_rankcheck.sh"),
+    (ACQUISITION, "run.sh"), (ACQUISITION, "run_30d.sh"),
 ))
-def test_tool_help_and_source_have_no_personal_path_defaults(name):
-    path = TOOLS / name
+def test_tool_help_and_source_have_no_personal_path_defaults(directory, name):
+    path = directory / name
     result = subprocess.run(
         ["bash", str(path), "--help"], capture_output=True, text=True)
     assert result.returncode == 0
     assert "Usage:" in result.stdout
     source = path.read_text()
-    assert "/data/" not in source
-    assert "/home/" not in source
+    assert "/data/abyssal" not in source
+    assert "/home/dbalwada" not in source
 
 
 def test_reference_arch_keeps_the_measured_scalar_math_flags():
@@ -35,16 +61,22 @@ def test_reference_arch_keeps_the_measured_scalar_math_flags():
             "-ffree-line-length-none -fallow-argument-mismatch "
             "-fno-tree-vectorize") in source
     assert "%CFLAGS              -O0" in source
+    gpu_wrapper = (ROOT / "scripts/run/run_swg_double_gyre_gpu.sh").read_text()
+    assert "/data/abyssal" not in gpu_wrapper
+    assert "/home/dbalwada" not in gpu_wrapper
+    deck_helper = (ACQUISITION / "deck.sh").read_text()
+    assert "/data/abyssal" not in deck_helper
+    assert "/home/dbalwada" not in deck_helper
+    assert "python3" not in deck_helper
 
 
-@pytest.mark.skipif(
-    not (MOUNTED_NEMO / "tests/SWG_DG/BLD/bin/nemo.exe").is_file(),
-    reason="built SWG_DG case is not mounted")
 def test_nemo_run_and_controls_preflight_without_mpi_or_makenemo(tmp_path):
-    cfg = MOUNTED_NEMO / "tests/SWG_DG"
+    nemo = _fake_nemo(tmp_path)
+    cfg = nemo / "tests/SWG_DG"
     run = subprocess.run([
         "bash", str(TOOLS / "swg_md_run.sh"),
         "--nemo-cfg", str(cfg), "--output-root", str(tmp_path),
+        "--python", sys.executable,
         "--three-year", "portable", "32",
     ], capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
@@ -56,6 +88,7 @@ def test_nemo_run_and_controls_preflight_without_mpi_or_makenemo(tmp_path):
     escaped = subprocess.run([
         "bash", str(TOOLS / "swg_md_run.sh"),
         "--nemo-cfg", str(cfg), "--output-root", str(tmp_path),
+        "--python", sys.executable,
         "--smoke", "../escaped", "1",
     ], capture_output=True, text=True)
     assert escaped.returncode != 0
@@ -64,9 +97,9 @@ def test_nemo_run_and_controls_preflight_without_mpi_or_makenemo(tmp_path):
 
     identity = subprocess.run([
         "bash", str(TOOLS / "check_swg_dg_identity.sh"),
-        "--nemo-root", str(MOUNTED_NEMO),
-        "--arch-name", "conda-scalarmath",
-        "--output", str(tmp_path / "identity"),
+        "--nemo-root", str(nemo),
+        "--arch-name", "swg-dg-scalarmath",
+        "--output", str(tmp_path / "identity"), "--python", sys.executable,
     ], capture_output=True, text=True)
     assert identity.returncode == 0, identity.stderr
     assert "steps=10 ranks=1" in identity.stdout
@@ -75,7 +108,83 @@ def test_nemo_run_and_controls_preflight_without_mpi_or_makenemo(tmp_path):
     rank = subprocess.run([
         "bash", str(TOOLS / "swg_dg_rankcheck.sh"),
         "--nemo-cfg", str(cfg), "--output", str(tmp_path / "rank"),
+        "--python", sys.executable,
     ], capture_output=True, text=True)
     assert rank.returncode == 0, rank.stderr
     assert "rank-control=1-versus-32" in rank.stdout
     assert rank.stdout.endswith("PREFLIGHT_OK\n")
+
+    ladder = subprocess.run([
+        "bash", str(TOOLS / "swg_md_run.sh"),
+        "--nemo-cfg", str(cfg), "--output-root", str(tmp_path),
+        "--python", sys.executable, "--short-ladder", "ladder",
+    ], capture_output=True, text=True)
+    assert ladder.returncode == 0, ladder.stderr
+    assert "steps=10 ranks=1 nn_stock=1" in ladder.stdout
+    assert ladder.stdout.endswith("PREFLIGHT_OK\n")
+
+
+def test_shell_entry_points_bind_this_checkout_ahead_of_decoy(tmp_path):
+    decoy = tmp_path / "decoy/legoesm/ocean"
+    decoy.mkdir(parents=True)
+    (decoy / "__init__.py").write_text("DECOY = True\n")
+    env = os.environ | {"PYTHONPATH": str(tmp_path / "decoy"),
+                        "PYTHON": sys.executable}
+    commands = (
+        ["bash", str(TOOLS / "build_swg_dg.sh"),
+         "--nemo-root", str(tmp_path / "missing"),
+         "--conda-prefix", str(tmp_path / "missing-prefix"),
+         "--manifest-dir", str(tmp_path / "manifest"),
+         "--python", sys.executable],
+        ["bash", str(TOOLS / "check_swg_dg_identity.sh"),
+         "--nemo-root", str(tmp_path / "missing"), "--arch-name", "x",
+         "--output", str(tmp_path / "identity"), "--python", sys.executable],
+        ["bash", str(TOOLS / "swg_dg_rankcheck.sh"),
+         "--nemo-cfg", str(tmp_path / "missing"),
+         "--output", str(tmp_path / "rank"), "--python", sys.executable],
+        ["bash", str(TOOLS / "swg_md_run.sh"),
+         "--nemo-cfg", str(tmp_path / "missing"),
+         "--output-root", str(tmp_path / "run"), "--python", sys.executable,
+         "--short-ladder", "ladder"],
+        ["bash", str(ROOT / "scripts/run/run_swg_double_gyre_gpu.sh"),
+         "--help"],
+        ["bash", str(ACQUISITION / "run.sh"),
+         "--nemo-root", str(tmp_path / "missing"),
+         "--evidence", str(tmp_path / "stage"), "--python", sys.executable,
+         "--deck", "maddison"],
+        ["bash", str(ACQUISITION / "run_30d.sh"),
+         "--nemo-root", str(tmp_path / "missing"),
+         "--evidence", str(tmp_path / "month"), "--python", sys.executable,
+         "--deck", "maddison"],
+    )
+    for command in commands:
+        result = subprocess.run(command, env=env, capture_output=True, text=True)
+        assert result.returncode != 0
+        assert f"CHECKOUT_IMPORT_OK root={ROOT}" in result.stdout
+        assert str(ROOT / "packages/ocean/legoesm/ocean/__init__.py") in result.stdout
+
+
+@pytest.mark.parametrize("relative", (
+    "scripts/run/run_swg_double_gyre.py",
+    "scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg/check_records.py",
+    "scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_climate.py",
+    "scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_composition.py",
+    "scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_deck_guard.py",
+    "scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_restart_identity.py",
+    "scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_round6.py",
+    "scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_round7.py",
+    "scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_short_ladder.py",
+    "scripts/plot/swg_double_gyre_movie.py",
+))
+def test_python_entry_points_bind_this_checkout_ahead_of_decoy(tmp_path, relative):
+    decoy = tmp_path / "decoy/legoesm/ocean"
+    decoy.mkdir(parents=True)
+    (decoy / "__init__.py").write_text("DECOY = True\n")
+    env = os.environ | {"PYTHONPATH": str(tmp_path / "decoy"),
+                        "JAX_PLATFORMS": "cpu"}
+    result = subprocess.run(
+        [sys.executable, str(ROOT / relative), "--help"], env=env,
+        cwd=tmp_path, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert f"CHECKOUT_IMPORT_OK root={ROOT}" in result.stdout
+    assert str(ROOT / "packages/ocean/legoesm/ocean/__init__.py") in result.stdout

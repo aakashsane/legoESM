@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: check_swg_dg_identity.sh --nemo-root DIR --arch-name NAME --output DIR [--mpiexec CMD] [--python PYTHON] [--execute]
+Usage: check_swg_dg_identity.sh --nemo-root DIR --arch-name NAME --output DIR --python PYTHON [--mpiexec CMD] [--execute]
 
 Default mode is a read-only preflight. --execute builds an unmodified shipped
 SWG reference with the selected arch, runs both reference and SWG_DG for ten
@@ -15,7 +15,7 @@ nemo_root=
 arch_name=
 output=
 mpiexec=mpirun
-python=python3
+python=
 execute=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -30,8 +30,13 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
-[[ -n "$nemo_root" && -n "$arch_name" && -n "$output" ]] || {
-  printf 'REFUSE_USAGE: --nemo-root, --arch-name, and --output are required\n' >&2; exit 64; }
+[[ -n "$nemo_root" && -n "$arch_name" && -n "$output" && -n "$python" ]] || {
+  printf 'REFUSE_USAGE: --nemo-root, --arch-name, --output, and --python are required\n' >&2; exit 64; }
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+repo_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
+  printf 'REFUSE_NOT_WORKTREE: tool is outside a Git checkout\n' >&2; exit 66; }
+source "$here/checkout_env.bash"
+swg_dg_bind_checkout "$python"
 variant=$nemo_root/tests/SWG_DG
 shipped=$nemo_root/tests/SWG
 for path in "$nemo_root/makenemo" "$shipped/EXPREF/namelist_cfg" \
@@ -41,9 +46,6 @@ for path in "$nemo_root/makenemo" "$shipped/EXPREF/namelist_cfg" \
 done
 [[ ! -e "$output" ]] || { printf 'REFUSE_OUTPUT_EXISTS: %s\n' "$output" >&2; exit 69; }
 
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-repo_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
-  printf 'REFUSE_NOT_WORKTREE: tool is outside a Git checkout\n' >&2; exit 66; }
 deck_patch=$repo_root/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg/namelist_cfg_kt10.patch
 mesh_patch=$repo_root/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg/namelist_meshmask.patch
 checker=$repo_root/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg/check_records.py

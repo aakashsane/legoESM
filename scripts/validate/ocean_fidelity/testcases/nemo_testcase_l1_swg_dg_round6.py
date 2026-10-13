@@ -16,17 +16,10 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
+from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-DG_STAGE_ROOT = Path(
-    "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/swgdg_rounds/"
-    "round1/oracle_swg_dg_r1/instrumented")
-SHIPPED_STAGE_ROOT = Path(
-    "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/swg_rounds/"
-    "round1/oracle_swg_r1/run")
-RANKCHECK_ROOT = Path(
-    "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/swg_rounds/"
-    "maddison_deck/rankcheck_kt10")
+CHECKOUT_IMPORT = bootstrap_checkout(__file__)
+from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
 
 RESTART_STATE_FIELDS = (
     "utau_b", "vtau_b", "qns_b", "emp_b", "sfx_b", "sshn", "un",
@@ -639,8 +632,9 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "replay":
-            root = args.stage_root or (
-                DG_STAGE_ROOT if args.deck == "maddison" else SHIPPED_STAGE_ROOT)
+            require(args.stage_root is not None,
+                    "replay requires an explicit --stage-root")
+            root = args.stage_root
             payload = run_replay(root, args.deck, args.npz, plant=args.plant)
         elif args.command == "compare":
             payload = compare_replays(args.left, args.right)

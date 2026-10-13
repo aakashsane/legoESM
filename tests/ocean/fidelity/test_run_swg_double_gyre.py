@@ -42,6 +42,15 @@ def test_tiny_cpu_driver_writes_daily_native_state_with_provenance(tmp_path):
     assert manifest["transcendentals"] == "libm"
     assert manifest["integration"] == "production-python-step-loop"
     assert manifest["device_selection"]["requested_physical_gpu"] is None
+    assert manifest["device_selection"]["JAX_PLATFORMS"] == "cpu"
+    assert manifest["device_memory_at_completion"] == {
+        "api": "jax.Device.memory_stats",
+        "available_keys": [],
+        "bytes_in_use": None,
+        "bytes_limit": None,
+        "peak_bytes_in_use": None,
+        "supported": False,
+    }
     assert manifest["wall_seconds"] > 0.0
     assert manifest["wall_seconds_per_model_day"] == manifest["wall_seconds"]
     assert manifest["profile"] is None
@@ -172,11 +181,40 @@ def test_gpu_device_is_explicit_and_not_pinned_to_one(monkeypatch):
     environ = {}
     selected = driver.configure_runtime_device("gpu-native", "0", environ)
     assert selected == {
-        "requested_physical_gpu": "0", "CUDA_VISIBLE_DEVICES": "0"}
-    assert environ == {"CUDA_VISIBLE_DEVICES": "0"}
+        "requested_physical_gpu": "0", "CUDA_VISIBLE_DEVICES": "0",
+        "JAX_PLATFORMS": "gpu"}
+    assert environ == {"CUDA_VISIBLE_DEVICES": "0", "JAX_PLATFORMS": "gpu"}
     selected = driver.configure_runtime_device("gpu-native", "3", environ)
     assert selected["requested_physical_gpu"] == "3"
     with pytest.raises(ValueError, match="requires --gpu-device"):
         driver.configure_runtime_device("gpu-native", None, {})
     with pytest.raises(ValueError, match="valid only"):
         driver.configure_runtime_device("cpu-certified", "0", {})
+
+
+def test_device_memory_statistics_records_supported_peak():
+    class Device:
+        @staticmethod
+        def memory_stats():
+            return {"bytes_in_use": 4, "bytes_limit": 32,
+                    "peak_bytes_in_use": 12, "num_allocs": 2}
+
+    assert driver.device_memory_statistics(Device(), required=True) == {
+        "api": "jax.Device.memory_stats",
+        "supported": True,
+        "peak_bytes_in_use": 12,
+        "bytes_in_use": 4,
+        "bytes_limit": 32,
+        "available_keys": ["bytes_in_use", "bytes_limit", "num_allocs",
+                           "peak_bytes_in_use"],
+    }
+
+
+def test_device_memory_statistics_refuses_missing_gpu_peak():
+    class Device:
+        @staticmethod
+        def memory_stats():
+            return None
+
+    with pytest.raises(RuntimeError, match="peak_bytes_in_use"):
+        driver.device_memory_statistics(Device(), required=True)

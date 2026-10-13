@@ -1,8 +1,10 @@
 {
-  "schema": "swg-double-gyre-environment-v1",
+  "schema": "swg-double-gyre-environment-v2",
   "measured_on": "2026-10-13",
   "nemo": {
     "version": "5.0.2",
+    "repository": "https://forge.nemo-ocean.eu/nemo/nemo.git",
+    "tag": "5.0.2",
     "source_revision": "dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796",
     "xios": false,
     "fortran": {
@@ -13,18 +15,31 @@
     },
     "mpi": {
       "implementation": "Open MPI",
-      "version": "5.0.10"
+      "version": "5.0.10",
+      "conda_forge_build": "openmpi 5.0.10 h67ed482_1"
     },
+    "dependency_builds": {
+      "hdf5": "2.1.0 mpi_openmpi_hb23c26a_9",
+      "libgcc": "15.2.0 he0feb66_19",
+      "libgfortran5": "15.2.0 h68bc16d_19",
+      "libnetcdf": "4.10.0 mpi_openmpi_h75687c8_4",
+      "netcdf-fortran": "4.6.3 mpi_openmpi_h8f6c4f5_0",
+      "sysroot_linux-64": "2.34 h087de78_3"
+    },
+    "exact_conda_file": "scripts/data/nemo_swg_double_gyre/nemo-build-linux-64-explicit.txt",
+    "readable_conda_file": "scripts/data/nemo_swg_double_gyre/nemo-build-environment.yml",
     "cpp": "cpp -Dkey_nosignedzero",
     "cflags": "-O0",
     "reference_arch_sha256": "132f7a0500c4f0e86d8d3bf7864974a82e1dea5d83166dcfdfaf409e2ca04561"
   },
   "python": {
     "version": "3.13.0",
+    "requirements_file": "scripts/data/nemo_swg_double_gyre/python-gpu-requirements.txt",
     "packages": {
       "equinox": "0.13.7",
       "imageio-ffmpeg": "0.6.0",
       "jax": "0.10.0",
+      "jax-cuda12-pjrt": "0.10.0",
       "jax-cuda12-plugin": "0.10.0",
       "jaxlib": "0.10.0",
       "numpy": "2.4.4"
@@ -33,7 +48,14 @@
   "hardware": {
     "cpu": "Intel Xeon Gold 6242R",
     "gpu": "Tesla V100S-PCIE-32GB",
-    "gpu_driver": "580.126.20"
+    "gpu_driver": "580.126.20",
+    "minimum_gpu_memory_bytes": 34359738368,
+    "minimum_gpu_memory_basis": "32 GiB is the only tested capacity; a smaller-memory minimum has not been measured"
+  },
+  "storage": {
+    "reference_nemo_three_year_bytes": 56985134712,
+    "reference_legoesm_daily_mean_bytes": 21803971913,
+    "recommended_free_bytes_before_build_and_outputs": 107374182400
   },
   "operating_system": {
     "kernel": "Linux 5.14.0-611.36.1.el9_7.x86_64"

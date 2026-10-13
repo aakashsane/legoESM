@@ -14,6 +14,9 @@ import numpy as np
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[3]
 sys.path.insert(0, str(HERE))
+from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
+
+CHECKOUT_IMPORT = bootstrap_checkout(__file__)
 from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
 
 

@@ -4,9 +4,11 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import struct
+import sys
 from pathlib import Path
 
 import numpy as np
+import netCDF4
 import pytest
 
 _P = (Path(__file__).resolve().parents[3] / "scripts/validate/ocean_fidelity/"
@@ -14,12 +16,9 @@ _P = (Path(__file__).resolve().parents[3] / "scripts/validate/ocean_fidelity/"
 _S = importlib.util.spec_from_file_location("swg_check_records", _P)
 cr = importlib.util.module_from_spec(_S); _S.loader.exec_module(cr)
 TOOLS = _P.parent
-SHIPPED_NAMELIST = Path(
-    "/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2/tests/SWG/"
-    "EXPREF/namelist_cfg")
-SHIPPED_ZGR = Path(
-    "/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2/tests/SWG/"
-    "MY_SRC/usrdef_zgr.F90")
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures/swg_dg"
+SHIPPED_NAMELIST = FIXTURES / "namelist_cfg.shipped"
+SHIPPED_ZGR = FIXTURES / "usrdef_zgr.F90.shipped"
 
 NI, NJ = 8, 6
 BOUNDS = (3, 3, 6, 4)
@@ -106,7 +105,6 @@ def test_record_plants_are_refused(evidence, plant):
 
 
 def test_output_passivity_refuses_one_changed_bit(tmp_path):
-    netCDF4 = pytest.importorskip("netCDF4")
     run, ref = tmp_path / "run", tmp_path / "ref"
     run.mkdir(); ref.mkdir()
     for kind in cr.GRID_KINDS:
@@ -134,7 +132,6 @@ def test_completion_guard_binds_time_step_and_run_stat(tmp_path):
 
 
 def test_daily_restart_passivity_refuses_one_changed_bit(tmp_path):
-    netCDF4 = pytest.importorskip("netCDF4")
     run, ref = tmp_path / "run", tmp_path / "ref"
     run.mkdir(); ref.mkdir()
     name = "SWG_00000024_restart.nc"
@@ -149,8 +146,6 @@ def test_daily_restart_passivity_refuses_one_changed_bit(tmp_path):
         cr.compare_restarts(run, ref, (24,))
 
 
-@pytest.mark.skipif(not SHIPPED_NAMELIST.is_file(),
-                    reason="shipped SWG deck not mounted")
 @pytest.mark.parametrize("name,expected", (
     ("namelist_cfg_maddison_kt10.patch", {
         "nn_SWG": "16", "rn_domsiz": "4000000", "rn_tau": "0.10",
@@ -198,8 +193,6 @@ def test_maddison_patches_resolve_exact_operator_decks(tmp_path, name, expected)
     assert values == expected
 
 
-@pytest.mark.skipif(not SHIPPED_ZGR.is_file(),
-                    reason="shipped SWG source not mounted")
 def test_source_case_patch_changes_only_the_two_upper_mask_limits(tmp_path):
     target = tmp_path / "usrdef_zgr.F90"
     target.write_bytes(SHIPPED_ZGR.read_bytes())
@@ -239,9 +232,9 @@ def test_daily_clock_refuses_fractional_nint_cadence(tmp_path):
             f" nn_write = {steps_per_day}\n")
         return subprocess.run(
             ["bash", "-c",
-             f'. "{deck}"; swg_require_daily_clock "$1" || exit $?; '
+             f'. "{deck}"; swg_require_daily_clock "$1" "$2" || exit $?; '
              'printf "STEPS_PER_DAY=%s\\n" "$STEPS_PER_DAY"',
-             "clock", str(namelist)],
+             "clock", str(namelist), sys.executable],
             capture_output=True, text=True)
 
     accepted = check("200.")

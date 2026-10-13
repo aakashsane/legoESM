@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: build_swg_dg.sh --nemo-root DIR --conda-prefix DIR --manifest-dir DIR [--arch-name NAME] [--execute]
+Usage: build_swg_dg.sh --nemo-root DIR --conda-prefix DIR --manifest-dir DIR --python PYTHON [--arch-name NAME] [--execute]
 
 Default mode is a read-only preflight. --execute creates tests/SWG_DG and
 renders arch/arch-NAME.fcm inside the supplied NEMO checkout. No path defaults
@@ -22,6 +22,7 @@ trap refuse_unhandled ERR
 nemo_root=
 conda_prefix=
 manifest_dir=
+python=
 arch_name=swg-dg-scalarmath
 execute=0
 while [[ $# -gt 0 ]]; do
@@ -29,6 +30,7 @@ while [[ $# -gt 0 ]]; do
     --nemo-root) nemo_root=${2-}; shift ;;
     --conda-prefix) conda_prefix=${2-}; shift ;;
     --manifest-dir) manifest_dir=${2-}; shift ;;
+    --python) python=${2-}; shift ;;
     --arch-name) arch_name=${2-}; shift ;;
     --execute) execute=1 ;;
     --help|-h) usage; exit 0 ;;
@@ -37,9 +39,14 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
-for value in nemo_root conda_prefix manifest_dir; do
+for value in nemo_root conda_prefix manifest_dir python; do
   [[ -n ${!value} ]] || { printf 'REFUSE_USAGE: --%s is required\n' "${value//_/-}" >&2; exit 64; }
 done
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+repo_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
+  printf 'REFUSE_NOT_WORKTREE: tool is outside a Git checkout\n' >&2; exit 66; }
+source "$here/checkout_env.bash"
+swg_dg_bind_checkout "$python"
 [[ -d "$nemo_root" && -x "$nemo_root/makenemo" ]] || {
   printf 'REFUSE_NEMO_ROOT: missing executable makenemo under %s\n' "$nemo_root" >&2; exit 66; }
 [[ -d "$conda_prefix" ]] || {
@@ -49,9 +56,6 @@ done
 [[ "$arch_name" =~ ^[A-Za-z0-9._-]+$ ]] || {
   printf 'REFUSE_ARCH_NAME: %s\n' "$arch_name" >&2; exit 64; }
 
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-repo_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
-  printf 'REFUSE_NOT_WORKTREE: tool is outside a Git checkout\n' >&2; exit 66; }
 source_case=$nemo_root/tests/SWG
 target_case=$nemo_root/tests/SWG_DG
 arch_template=$here/arch-conda-scalarmath.fcm.in
@@ -66,7 +70,7 @@ keys=$(sed -E 's/.*fppkeys *//' "$source_case/cpp_SWG.fcm" | xargs)
 [[ "$keys" == 'key_xios key_qco key_vco_3d key_RK3' ]] || {
   printf 'REFUSE_SHIPPED_KEYS: %s\n' "$keys" >&2; exit 68; }
 [[ "$(sha256sum "$source_patch" | awk '{print $1}')" == \
-   5021a71143943a34943497f40b72e86a43073ab7ff089646fdb3418cb029ba9e ]] || {
+   c3af0880a1beb44e7ab40027aa8012d11f1e43fc97127d6cc27d50a44fcab08b ]] || {
   printf 'REFUSE_SOURCE_PATCH_HASH: %s\n' "$source_patch" >&2; exit 68; }
 [[ ! -e "$target_case" ]] || {
   printf 'REFUSE_TARGET_EXISTS: %s\n' "$target_case" >&2; exit 69; }

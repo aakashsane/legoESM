@@ -13,11 +13,10 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
+from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-DG_ROOT = Path(
-    "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/swgdg_rounds/"
-    "round1/oracle_swg_dg_r1/instrumented")
+CHECKOUT_IMPORT = bootstrap_checkout(__file__)
+from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
 
 ENTRY_RESTART_FIELDS = (
     ("ssh_k", "sshn", "T"),
@@ -175,7 +174,7 @@ def signed_zero_scope(comparisons: dict[str, list[dict]]) -> dict:
     }
 
 
-def run(root: Path = DG_ROOT, *, plant: bool = True) -> dict:
+def run(root: Path, *, plant: bool = True) -> dict:
     """Run all four preregistered comparisons on certified CPU arithmetic."""
     import jax
     from legoesm.core.precision import get_policy
@@ -347,7 +346,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=DG_ROOT)
+    parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--json", type=Path, required=True)
     parser.add_argument("--no-plant", action="store_true")
     args = parser.parse_args(argv)

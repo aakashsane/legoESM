@@ -4,13 +4,15 @@ set -Eeuo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  swg_md_run.sh --nemo-cfg DIR --output-root DIR [--mpiexec CMD] [--execute] <label> <nn_SWG> <dt_s> <steps> [ranks] [nn_stock]
-  swg_md_run.sh --nemo-cfg DIR --output-root DIR [--mpiexec CMD] [--execute] --smoke <label> [ranks]
-  swg_md_run.sh --nemo-cfg DIR --output-root DIR [--mpiexec CMD] [--execute] --three-year <label> [ranks]
+  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON [--mpiexec CMD] [--execute] <label> <nn_SWG> <dt_s> <steps> [ranks] [nn_stock]
+  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON [--mpiexec CMD] [--execute] --smoke <label> [ranks]
+  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON [--mpiexec CMD] [--execute] --three-year <label> [ranks]
+  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON [--mpiexec CMD] [--execute] --short-ladder <label>
 
 Default mode is a read-only preflight. Smoke is 30 days (51,840 steps);
 three-year is 1,095 days (1,892,160 steps) with annual restarts. The committed
-Maddison namelist patch is the sole source of physical deck values.
+Maddison namelist patch defines the NEMO-side deck; completed daily runs are
+cross-checked against legoESM's independently encoded resolved card.
 EOF
 }
 
@@ -25,6 +27,7 @@ trap refuse_unhandled ERR
 nemo_cfg=
 output_root=
 mpiexec=mpirun
+python=
 execute=0
 mode=generic
 positionals=()
@@ -33,17 +36,24 @@ while [[ $# -gt 0 ]]; do
     --nemo-cfg) nemo_cfg=${2-}; shift ;;
     --output-root) output_root=${2-}; shift ;;
     --mpiexec) mpiexec=${2-}; shift ;;
+    --python) python=${2-}; shift ;;
     --execute) execute=1 ;;
     --smoke) mode=smoke ;;
     --three-year) mode=three-year ;;
+    --short-ladder) mode=short-ladder ;;
     --help|-h) usage; exit 0 ;;
     --*) printf 'REFUSE_USAGE: unknown option %s\n' "$1" >&2; exit 64 ;;
     *) positionals+=("$1") ;;
   esac
   shift
 done
-[[ -n "$nemo_cfg" && -n "$output_root" ]] || {
-  printf 'REFUSE_USAGE: --nemo-cfg and --output-root are required\n' >&2; exit 64; }
+[[ -n "$nemo_cfg" && -n "$output_root" && -n "$python" ]] || {
+  printf 'REFUSE_USAGE: --nemo-cfg, --output-root, and --python are required\n' >&2; exit 64; }
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+repo_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
+  printf 'REFUSE_NOT_WORKTREE: tool is outside a Git checkout\n' >&2; exit 66; }
+source "$here/checkout_env.bash"
+swg_dg_bind_checkout "$python"
 [[ -d "$nemo_cfg" && -x "$nemo_cfg/BLD/bin/nemo.exe" \
    && -f "$nemo_cfg/EXP00/namelist_cfg" && -f "$nemo_cfg/EXP00/namelist_ref" ]] || {
   printf 'REFUSE_NEMO_CFG: incomplete built case %s\n' "$nemo_cfg" >&2; exit 66; }
@@ -67,6 +77,12 @@ case "$mode" in
     label=${positionals[0]}; ranks=${positionals[1]:-32}
     nswg=16; dt=50; steps=1892160; stock=630720
     ;;
+  short-ladder)
+    [[ ${#positionals[@]} -eq 1 ]] || {
+      printf 'REFUSE_USAGE: --short-ladder needs label\n' >&2; exit 64; }
+    label=${positionals[0]}; ranks=1
+    nswg=16; dt=50; steps=10; stock=1
+    ;;
 esac
 [[ "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && "$label" != "." && "$label" != ".." ]] || {
   printf 'REFUSE_LABEL: expected one safe output-directory component, got %s\n' "$label" >&2; exit 64; }
@@ -77,15 +93,12 @@ for pair in "nn_SWG:$nswg" "steps:$steps" "ranks:$ranks" "nn_stock:$stock"; do
 done
 [[ "$dt" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
   printf 'REFUSE_DT: %s\n' "$dt" >&2; exit 64; }
-cadence=$(python3 -I -c 'import sys; q=86400/float(sys.argv[1]); assert q.is_integer(); print(int(q))' "$dt") || {
+cadence=$("$python" -I -c 'import sys; q=86400/float(sys.argv[1]); assert q.is_integer(); print(int(q))' "$dt") || {
   printf 'REFUSE_DAILY_CLOCK: 86400/dt must be an integer\n' >&2; exit 68; }
-dt_render=$(python3 -I -c 'import sys; print(format(float(sys.argv[1]), ".17g"))' "$dt")
+dt_render=$("$python" -I -c 'import sys; print(format(float(sys.argv[1]), ".17g"))' "$dt")
 [[ "$steps" -ge "$stock" ]] || {
   printf 'REFUSE_STOCK: nn_stock exceeds steps\n' >&2; exit 64; }
 
-here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
-repo_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
-  printf 'REFUSE_NOT_WORKTREE: tool is outside a Git checkout\n' >&2; exit 66; }
 deck_patch=$repo_root/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg/namelist_cfg_maddison_3yr.patch
 [[ -f "$deck_patch" ]] || { printf 'REFUSE_MISSING_DECK: %s\n' "$deck_patch" >&2; exit 67; }
 run_dir=$output_root/$label
@@ -147,5 +160,14 @@ runstat_step=$(awk '$1 == "it" && $2 == ":" { step=$3 } END { print step }' run.
     "$steps" "${completed_step:-missing}" "${runstat_step:-missing}" >&2
   exit 70
 }
+if [[ "$mode" == smoke || "$mode" == three-year ]]; then
+  [[ -s output.namelist.dyn ]] || {
+    printf 'REFUSE_INCOMPLETE_RUN: output.namelist.dyn missing\n' >&2; exit 70; }
+  model_days=$((steps / cadence))
+  deck_guard=$repo_root/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_deck_guard.py
+  "$python" "$deck_guard" --nemo-namelist output.namelist.dyn \
+    --days "$model_days" --json deck_guard.json
+  sha256sum deck_guard.json >>manifest.sha256
+fi
 printf 'NEMO_RUN_COMPLETE label=%s steps=%s ranks=%s wall_seconds=%s\n' \
   "$label" "$steps" "$ranks" "$SECONDS"

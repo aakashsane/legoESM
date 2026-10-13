@@ -12,6 +12,14 @@ from pathlib import Path
 
 import numpy as np
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CHECKOUT_TOOLS = (
+    REPO_ROOT / "scripts/validate/ocean_fidelity/testcases")
+sys.path.insert(0, str(CHECKOUT_TOOLS))
+from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
+
+CHECKOUT_IMPORT = bootstrap_checkout(__file__)
+
 SECONDS_PER_DAY = 86_400
 SCAN_PARITY_ATOL = 1.0e-12
 GPU_TARGET_MS_PER_STEP = 5.0
@@ -44,11 +52,15 @@ def configure_runtime_device(
                 "gpu-native mode requires --gpu-device with one physical "
                 "non-negative GPU index")
         target["CUDA_VISIBLE_DEVICES"] = gpu_device
+        target["JAX_PLATFORMS"] = "gpu"
     elif gpu_device is not None:
         raise ValueError("--gpu-device is valid only with gpu-native mode")
+    else:
+        target["JAX_PLATFORMS"] = "cpu"
     return {
         "requested_physical_gpu": gpu_device,
         "CUDA_VISIBLE_DEVICES": target.get("CUDA_VISIBLE_DEVICES"),
+        "JAX_PLATFORMS": target.get("JAX_PLATFORMS"),
     }
 
 
@@ -169,6 +181,33 @@ def prognostic_differences(left, right) -> dict[str, float | int | bool]:
     return result
 
 
+def device_memory_statistics(device, *, required: bool) -> dict:
+    """Read JAX allocator high-water statistics without guessing support."""
+    raw = device.memory_stats()
+    result = {
+        "api": "jax.Device.memory_stats",
+        "supported": False,
+        "peak_bytes_in_use": None,
+        "bytes_in_use": None,
+        "bytes_limit": None,
+        "available_keys": [],
+    }
+    if isinstance(raw, dict):
+        result["available_keys"] = sorted(str(key) for key in raw)
+        for key in ("peak_bytes_in_use", "bytes_in_use", "bytes_limit"):
+            value = raw.get(key)
+            if isinstance(value, int) and value >= 0:
+                result[key] = value
+        result["supported"] = result["peak_bytes_in_use"] is not None
+    if required and not result["supported"]:
+        raise RuntimeError(
+            "GPU backend does not expose peak_bytes_in_use through "
+            "jax.Device.memory_stats; available keys are "
+            f"{result['available_keys']}"
+        )
+    return result
+
+
 def profile_step_modes(model, state, dt_s: float, forcing, n_steps: int) -> dict:
     """Time warm Python and scanned bursts from one fixed-stress state."""
     import jax
@@ -267,6 +306,9 @@ def run_long(
         raise RuntimeError(
             f"{mode} requires JAX backend {expected_backend}, got "
             f"{jax.default_backend()}")
+    device = jax.devices()[0]
+    memory_at_start = device_memory_statistics(
+        device, required=mode == "gpu-native")
     if output.exists():
         raise FileExistsError(f"refusing to overwrite output directory {output}")
     wall_started = time.perf_counter()
@@ -327,6 +369,7 @@ def run_long(
         "device_selection": device_selection | {
             "jax_devices": [str(device) for device in jax.devices()],
         },
+        "device_memory_at_start": memory_at_start,
         "precision_policy": "fp64",
         "transcendentals": "native" if mode == "gpu-native" else "libm",
         "days": days,
@@ -407,6 +450,8 @@ def run_long(
         "status": "complete", "completed_days": days,
         "daily_sha256": day_hashes,
         "wall_seconds": time.perf_counter() - wall_started,
+        "device_memory_at_completion": device_memory_statistics(
+            device, required=mode == "gpu-native"),
     }
     completed["wall_seconds_per_model_day"] = completed["wall_seconds"] / days
     _write_json_atomic(pending_path, completed)

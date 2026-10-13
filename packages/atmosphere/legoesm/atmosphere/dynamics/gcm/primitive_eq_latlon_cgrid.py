@@ -1392,6 +1392,9 @@ class CGridLatLonPrimitiveEquationModel(IntegrationMixin):
         """
         grid = self.grid if grid is None else grid
         if own_polar_masks:
+            if polar_mask is not None or polar_mask_v is not None:
+                raise ValueError("pass explicit polar masks OR "
+                                 "own_polar_masks=True, not both")
             polar_mask, polar_mask_v = self._polar_mask, self._polar_mask_v
         du = interp_cell_to_uface(du_cell)
         dv = interp_cell_to_vface_halo(dv_cell)

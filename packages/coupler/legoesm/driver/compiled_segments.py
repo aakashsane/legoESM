@@ -3653,9 +3653,11 @@ def _rebuild_state(carry: SegmentCarry, model, advect_moisture: bool = False,
               (("face", "x", "y", "level"), ("face", "x", "y", "level")))
     u_f = Field(carry.u, name=_wname, dims=_wdims[0], units="m/s")
     v_f = Field(carry.v, name=_vname, dims=_wdims[1], units="m/s")
-    T_f = Field(carry.T, name="T", dims=("face", "x", "y", "level"), units="K")
-    p_s_f = Field(carry.p_s, name="p_s", dims=("face", "x", "y"), units="Pa")
-    phis_f = Field(carry.phis, name="phis", dims=("face", "x", "y"), units="m2/s2")
+    _d3, _d2 = ((("lat", "lon", "level"), ("lat", "lon")) if persistent_cgrid
+                else (("face", "x", "y", "level"), ("face", "x", "y")))
+    T_f = Field(carry.T, name="T", dims=_d3, units="K")
+    p_s_f = Field(carry.p_s, name="p_s", dims=_d2, units="Pa")
+    phis_f = Field(carry.phis, name="phis", dims=_d2, units="m2/s2")
 
     if advect_moisture:
         # Only the tracer-capable dycore states reach this branch (the
@@ -3665,7 +3667,7 @@ def _rebuild_state(carry: SegmentCarry, model, advect_moisture: bool = False,
         _units = {t.name: t.units for t in make_full_moisture_registry().tracers}
         tracers = {
             nm: Field(getattr(carry, nm), name=nm,
-                      dims=("face", "x", "y", "level"),
+                      dims=_d3,
                       units=_units.get(nm, "kg/kg"))
             for nm in _ADVECTED_TRACER_NAMES
             if getattr(carry, nm) is not None

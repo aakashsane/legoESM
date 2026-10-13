@@ -41,6 +41,18 @@ def test_coordinate_assembly_deduplicates_halos_and_refuses_bad_coverage():
             signed_zero_tiles, lon, lat, word_exact=True)
 
 
+def test_climate_assembly_retains_established_fp64_diagnostic_arithmetic():
+    lon = np.asarray([[0.0]], dtype=np.float32)
+    lat = np.asarray([[0.0]], dtype=np.float32)
+    value = np.asarray([[1.0]], dtype=np.float32)
+    climate_value = climate.assemble_coordinate_tiles(
+        ((lon, lat, value),), lon, lat)
+    exact_value = climate.assemble_coordinate_tiles(
+        ((lon, lat, value),), lon, lat, word_exact=True)
+    assert climate_value.dtype == np.dtype("float64")
+    assert exact_value.dtype == np.dtype("float32")
+
+
 def _synthetic_provider(name="synthetic", sampling="daily_mean"):
     rows = np.array([1.0, 2.0, 4.0, 3.0])[:, None]
     day1 = np.broadcast_to(rows, (4, 4)).copy()

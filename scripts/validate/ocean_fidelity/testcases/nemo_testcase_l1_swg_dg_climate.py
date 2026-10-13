@@ -149,14 +149,15 @@ def assemble_coordinate_tiles(
             "expected coordinates are not unique")
     tiles = list(tiles)
     require(bool(tiles), "no coordinate tiles supplied")
-    dtype = np.asarray(tiles[0][2]).dtype
+    source_dtype = np.asarray(tiles[0][2]).dtype
+    dtype = source_dtype if word_exact else np.dtype("float64")
     assembled = np.empty(expected_lon.shape, dtype=dtype)
     filled = np.zeros(expected_lon.shape, dtype=bool)
     for lon, lat, values in tiles:
         lon, lat, values = np.asarray(lon), np.asarray(lat), np.asarray(values)
         require(lon.shape == lat.shape == values.shape,
                 "rank tile coordinate/value shapes differ")
-        require(values.dtype == dtype, "rank tile dtypes differ")
+        require(values.dtype == source_dtype, "rank tile dtypes differ")
         require(np.all(np.isfinite(values)), "rank tile has non-finite values")
         for key, value in zip(
                 zip(lon.flat, lat.flat, strict=True), values.flat, strict=True):
@@ -165,7 +166,7 @@ def assemble_coordinate_tiles(
                 continue
             if filled[at]:
                 equal = assembled[at] == value
-                if word_exact and dtype.kind == "f":
+                if word_exact and source_dtype.kind == "f":
                     word = np.dtype(f"u{dtype.itemsize}")
                     equal = bool(
                         np.asarray([assembled[at]], dtype=dtype).view(word)[0]

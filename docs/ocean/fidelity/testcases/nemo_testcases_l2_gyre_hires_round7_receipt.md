@@ -148,9 +148,11 @@ coefficients but makes the transcription literal.
 ## Thirty-day vector-flavour report
 
 The daily root is admitted by the executable, namelist, manifest, and all 31
-entry hashes.  The repaired time-level registry admits exactly the sparse
-writer sequence `kt=1,25,...,721` as Nbb and continues to refuse a planted
-non-emitted `kt=72`.  All five day-0 one-ULP plants fire.
+entry hashes.  The daily gate schedules and reads exactly the sparse writer
+sequence `kt=1,25,...,721`; its registration adds the required sparse Nbb
+names beyond the shared registry's inherited per-step `kt=1..60` range and
+continues to refuse planted non-emitted neighbors `kt=72` and `kt=722`.  All
+five day-0 one-ULP plants fire.
 
 This is deliberately REPORT_ONLY because NEMO used the vector-math executable
 while legoESM used the certified scalar-libm policy.  Selected maximum active-
@@ -224,9 +226,22 @@ Round-7 artifacts are under
   one-degree no-movement invariant;
 - `acquisition_preflights.log` records the operator-tool preflights.
 
-Final focused tests and the receipt citation gate are recorded after this
-receipt is committed.  The numerical artifacts above were all produced from
-clean commits and record those commit IDs in their provenance.
+Verification from clean committed trees:
+
+- ladder, daily-ladder, acquisition, citation-gate, and independent
+  Smagorinsky tests: 58 passed, 1 slow test deselected;
+- GYRE card, dispatch, and 43,800-step calendar tests: 10 passed, 25 unrelated
+  tests deselected;
+- GPU-selection, deck-cadence, climate-refusal, and movie-refusal tests:
+  16 passed, 1 slow parity test deselected;
+- compiled-source citation gate: PASS for all nine receipt citations; the
+  explicit shifted-calendar-citation plant: FIRED;
+- scalar step-2 writer preflight and scalar daily-writer build preflight:
+  PASS; daily run preflight: expected fail-closed refusal until the compiled
+  scalar daily writer exists.
+
+The numerical artifacts above were all produced from clean commits and record
+those commit IDs in their provenance.
 
 ## Inherited pins / OPEN
 

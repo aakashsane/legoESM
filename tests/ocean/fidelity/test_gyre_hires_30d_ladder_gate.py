@@ -28,16 +28,19 @@ def test_daily_schedule_refuses_empty_duration():
         GATE.day_boundary_schedule(0)
 
 
-def test_daily_writer_registers_its_exact_sparse_time_levels():
+def test_daily_writer_registers_sparse_levels_beyond_legacy_range_only():
     from legoesm.ocean.fidelity.time_levels import time_level_for_dump
 
     GATE.register_daily_entry_time_levels()
     assert time_level_for_dump("oracle_step_entry_kt00000073.bin") == "before"
     assert time_level_for_dump("oracle_step_entry_kt00000721.bin") == "before"
-    # The registration must not silently admit a dump the sparse writer never
-    # emits.  That would defeat the fail-closed time-level control.
+    # The shared registry inherits the older per-step writer's kt=1..60 names.
+    # Beyond that legacy range, this registration must not silently admit a
+    # neighboring dump the sparse daily writer never emits.
     with pytest.raises(ValueError, match="no registered NEMO time level"):
         time_level_for_dump("oracle_step_entry_kt00000072.bin")
+    with pytest.raises(ValueError, match="no registered NEMO time level"):
+        time_level_for_dump("oracle_step_entry_kt00000722.bin")
 
 
 def test_daily_gate_preregisters_exact_bar_and_acquisition_root():

@@ -80,7 +80,7 @@ rung owner, not a Smagorinsky-port increment.  Calling it inherited rounding
 debt is withdrawn: at `kt=3`, legoESM is about four orders of magnitude farther
 from NEMO than NEMO's scalar and vector builds are from each other.
 
-## First scalar difference and the open second owner
+## First scalar owner closed; second owner open
 
 The step-1 scalar RK walk is:
 
@@ -92,11 +92,37 @@ The step-1 scalar RK walk is:
    `2.1316282072803006e-14` (3 ULP), and U/V
    `1.3877787807814457e-17 m/s` (4 ULP at the maximum); SSH is exact.
 
-In the stage-1 tracer walk, horizontal transports `zFu` and `zFv` are exact;
-`zFw` differs by at most `4.3520742565306136e-14`.  The after-advection
-tendency residues are already present, and the after-surface-boundary values
-have exactly the same maxima.  Thus the step-1 surface heat/freshwater forcing
-does not add the first tracer residue.
+The first state split is a composition owner.  The acquired stage-2 source
+walk gives:
+
+| boundary | U max | U unequal | V max | V unequal |
+|---|---:|---:|---:|---:|
+| HPG increment | 0 | 0 | 0 | 0 |
+| vorticity increment | 8.272e-25 | 1,394 | 8.272e-25 | 1,276 |
+| advection increment | 4.132e-25 | 285,598 | 4.133e-25 | 284,400 |
+| completed RHS | 8.272e-25 | 70,989 | 8.272e-25 | 71,308 |
+
+Thus vorticity is the first non-exact operator, while HPG is exact.  Replacing
+the complete stage-2 RHS with NEMO's record makes the raw RK update bit-exact
+in both U and V; both one-ULP controls fire.  The same replacement followed
+by the ordinary barotropic-mean replacement still leaves 20,603 unequal U
+words and 21,079 unequal V words, each with maximum
+`2.710505431213761e-20 m/s`.  Therefore the larger first state residue is
+produced by the barotropic mean-replacement composition, after the raw update,
+not by its RHS.  NEMO's raw vector update is the two written statements at
+`GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:461-462`; its reference-
+thickness column reduction and correction are at
+`GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:506-526`.
+
+The tracer-side candidate is independently refuted.  Stage-1 horizontal
+transports `zFu` and `zFv` are exact and `zFw` differs by at most
+`4.3520742565306136e-14`, but substituting NEMO's whole triplet changes none
+of the `kt=2` T/S unequal counts or maxima.  Comparing the surface-boundary
+increment itself, rather than only endpoint maxima, finds a real small debt:
+11 T cells move by at most `2.0679515313825692e-25` and 23 S cells by at most
+`8.271806125530277e-25`.  The earlier inference that surface forcing adds no
+debt is withdrawn; neither it nor `zFw` owns the reported `kt=2` tracer
+maximum.
 
 The admitted scalar executable calls scalar `sin` and `cos` only.  It has no
 vector transcendental and no `exp` call in the executed analytic boundary
@@ -222,6 +248,8 @@ Round-7 artifacts are under
   four admitted ten-step scores;
 - `r4_smag_vector_30d_ladder.json` contains all 31 day-boundary scores and the
   NEMO-state branch census;
+- `r4_scalar_stage2_composition.json` contains the clean-stamped NEMO-RHS raw
+  update discriminator and its two firing one-ULP controls;
 - `shipped_trajectory.json` and `shipped_trajectory_regression.json` prove the
   one-degree no-movement invariant;
 - `acquisition_preflights.log` records the operator-tool preflights.
@@ -238,7 +266,8 @@ Verification from clean committed trees:
   explicit shifted-calendar-citation plant: FIRED;
 - scalar step-2 writer preflight and scalar daily-writer build preflight:
   PASS; daily run preflight: expected fail-closed refusal until the compiled
-  scalar daily writer exists.
+  scalar daily writer exists.  The runner writes and count-checks a manifest
+  containing all 31 record payload hashes after acquisition.
 
 The numerical artifacts above were all produced from clean commits and record
 those commit IDs in their provenance.
@@ -281,6 +310,10 @@ OPEN:
   `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3.f90:168-216`.
 - The stage tracer-transport operands and write boundary are at
   `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:604-634`.
+- The stage-2 raw U/V update statements are at
+  `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:461-462`; the subsequent
+  reference-thickness barotropic reduction and correction are at
+  `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:506-526`.
 - The surface, solar, lateral-diffusion, and vertical-diffusion tracer calls
   are ordered at
   `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:691-725`.

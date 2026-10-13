@@ -201,10 +201,10 @@ class LatLonCGridColumnModel:
         T = native.T if state.T is last.T else self.grid_of(state.T.data)
         tracers = dict(native.tracers)
         if state.tracers is not last.tracers:
-            if set(state.tracers) != set(native.tracers):
+            if state.tracers is None or set(state.tracers) != set(native.tracers):
                 raise ValueError(
                     f"LatLonCGridColumnModel.step: tracers "
-                    f"{sorted(state.tracers)} != the model's "
+                    f"{sorted(state.tracers or ())} != the model's "
                     f"{sorted(native.tracers)}")
             for nm in native.tracers:
                 if state.tracers[nm] is not last.tracers[nm]:

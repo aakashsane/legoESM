@@ -4081,7 +4081,7 @@ class ModelDriver:
                 _pft_root = biophysics_lmip_pft_root_params()
                 _glacier_alb = biophysics_lmip_glacier_albedo()
             _, params, _gsd = init_land_surface_data(
-                _sd_path, self.grid, cfg, float(self.config.start_day),
+                _sd_path, self._surface_data_grid(), cfg, float(self.config.start_day),
                 year=(None if getattr(self.config, "start_year", None) is None
                       else float(self.config.start_year)),
                 pft_root_params=_pft_root, glacier_alb=_glacier_alb)
@@ -4569,7 +4569,7 @@ class ModelDriver:
         # (or a static single-year surfdata) falls back to the legacy year-mean.
         _start_year = getattr(self.config, "start_year", None)
         _, land_params, gsd = init_land_surface_data(
-            surfdata_path, self.grid, land_cfg, float(self.config.start_day),
+            surfdata_path, self._surface_data_grid(), land_cfg, float(self.config.start_day),
             year=None if _start_year is None else float(_start_year),
         )
         # Reconcile to the driver's AUTHORITATIVE land mask (not surfdata's own
@@ -5062,13 +5062,18 @@ class ModelDriver:
                     self._phis_data, _vl.partition, "cell")
                 _cmip_fland = gather_voronoi_field(
                     self._f_land, _vl.partition, "cell")
+            _llg = getattr(self, "_latlon_native_grid", None)
             self.diagnostics.set_cmip_grid_info(
                 # the duo column mesh is a cell list: the Voronoi branch
-                # (lat/lon KD-tree weights), not the standard cube's
-                grid_type=("mpas" if self._column_model() is not None
+                # (lat/lon KD-tree weights), not the standard cube's; the
+                # lat-lon column lane's columns ARE its native grid's cells,
+                # so they take the lat-lon lane's structured weights
+                grid_type=("latlon" if _llg is not None
+                           else "mpas" if self._column_model() is not None
                            else self.config.grid.grid_type),
                 grid=_cmip_grid,
                 start_year=self.config.start_year,
+                column_native_latlon=_llg,
             )
             # Register time-invariant fields for the CMIP6 ``fx`` file:
             # _phis_data IS the dynamics terrain (decision C, one product).
@@ -8050,6 +8055,16 @@ class ModelDriver:
                     raise ValueError(
                         f"MPAS checkpoint {path.name}: unknown lat-lon column "
                         f"schema {str(d['latloncol_schema'])!r}")
+                _need = ["latloncol_tracer_names"] + [
+                    f"latloncol_{_k}" for _k in ("u", "v", "T", "p_s", "phis")]
+                if "latloncol_schema" in d.files:
+                    _need += [f"latloncol_q_{_i}" for _i in
+                              range(len(d["latloncol_tracer_names"]))]
+                    _miss = [_k for _k in _need if _k not in d.files]
+                    if _miss:
+                        raise ValueError(
+                            f"MPAS checkpoint {path.name}: lat-lon column "
+                            f"state incomplete, missing {_miss}")
                 if "latloncol_schema" not in d.files:
                     raise ValueError(
                         f"MPAS checkpoint {path.name} carries no lat-lon "
@@ -10904,6 +10919,13 @@ class ModelDriver:
         )
         m = getattr(self, "model", None)
         return m if isinstance(m, FV3DuoColumnModel) else None
+
+    def _surface_data_grid(self):
+        """The grid the land surface data is regridded onto: the lat-lon
+        column lane's NATIVE grid (the conservative lat-lon regrid; the
+        loader returns row-major columns either way), else the driver grid."""
+        g = getattr(self, "_latlon_native_grid", None)
+        return self.grid if g is None else g
 
     def _latlon_column_model(self):
         """The LatLonCGridColumnModel when the driver runs the lat-lon

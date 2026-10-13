@@ -375,3 +375,37 @@ def test_driver_restart_carries_clubb_moments_and_land(tmp_path, monkeypatch):
     mom_a = np.asarray(drv_a._mpas_phys_state.clubb_moments)
     assert _same(mom_a, drv_b._mpas_phys_state.clubb_moments)
     assert mom_mid.tobytes() != mom_a.tobytes()
+
+
+def test_driver_surface_data_and_cmip_output_are_the_lat_lon_lanes(tmp_path):
+    """The column lane regrids the land surface data on its native grid (the
+    lat-lon lane's conservative regrid) and writes CMIP fields through the
+    lat-lon lane's structured weights: both equal the PhysicsPipeline lane's
+    for the same terrain."""
+    from legoesm.driver.config import OutputConfig
+    from tests._land_surfdata import require_surfdata
+    from tests.atmosphere.hydrostatic.unit.test_fv3_duo_column import (
+        _write_elevation_file)
+    elev = tmp_path / "elev.nc"
+    _write_elevation_file(elev)
+    drv = {}
+    for name, col in (("col", True), ("pipe", False)):
+        d = tmp_path / name
+        out = OutputConfig(diag_days=0, checkpoint_days=0,
+                           output_dir=str(d), cmip_output=True)
+        drv[name] = _driver(d, column=col, topography=str(elev),
+                            topo_smoothing=2, output=out)
+    c, p = drv["col"], drv["pipe"]
+    sd = require_surfdata()
+    a_col = np.asarray(c._surfdata_land_albedo(sd, jnp.zeros(RES * 2 * RES)))
+    a_pipe = np.asarray(p._surfdata_land_albedo(sd, jnp.zeros((RES, 2 * RES))))
+    assert np.count_nonzero(a_pipe) > 10
+    np.testing.assert_array_equal(a_col, a_pipe.reshape(-1))
+    o_col = c.diagnostics._regrid_to_latlon_2d(np.asarray(c._phis_data))
+    o_pipe = p.diagnostics._regrid_to_latlon_2d(np.asarray(p._phis_data))
+    assert o_col is not None and o_col.shape == o_pipe.shape
+    np.testing.assert_array_equal(o_col, o_pipe)
+    t3 = np.asarray(c.state.T.data)
+    o3_col = c.diagnostics._regrid_to_latlon_3d(t3)
+    o3_pipe = p.diagnostics._regrid_to_latlon_3d(t3.reshape(RES, 2 * RES, -1))
+    np.testing.assert_array_equal(o3_col, o3_pipe)

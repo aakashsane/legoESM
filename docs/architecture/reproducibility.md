@@ -421,6 +421,48 @@ emits v2. Old manifests keep loading.
 **P0: the record is complete and drift is loud**
 1. `config.resolved_physics` is written, and `reproduce` replays it (item 1).
    Start with the atmosphere pipeline, then ocean.
+   **Implemented for the atmosphere (`ModelDriver`).** Each lane records
+   the configs its kernels actually run with: convection, microphysics,
+   turbulence (with its surface layer), gravity-wave drag, radiation (the
+   standalone lanes' `RadiationConfig` carries clouds, ozone and orbit; the
+   pipeline lanes record their radiation scheme config plus the cloud knobs
+   when a cloud scheme is on), the multilayer land config, the snow-albedo
+   config when that feedback is on, and the solar, ozone, aerosol and GHG
+   forcing configs. `turbulence_override` and `gravity_wave_drag_override` are
+   recorded too. An entry the lane does not run is recorded as `null`, e.g.
+   the idealized FV3-duo / simple tiled lanes record only the Kessler config
+   they run, and the dry spectral path records its default gray radiation
+   and orbit. The pipeline cloud entry is the `CloudConfig` the radiation path
+   builds; its convective-cloud term is recorded on only where the lane passes
+   the lagged convective precip (compiled and operator-split lanes, not the
+   per-step lane).
+   Pipeline lanes record at the start of `run()`; the MPAS / column,
+   spectral, FV3-duo, lat-band and tiled-cube lanes record their own build.
+   Process 0's resolution is recorded and checked; the outcome is broadcast
+   to every process.
+   `reproduce` refuses a manifest whose `resolved_config` today's code does
+   not rebuild exactly, or that has no complete physics record, even with
+   `--allow-version-drift`. It rebuilds the two overrides strictly from the
+   record and runs; the rerun refuses before stepping if its resolved physics
+   differs from the record (closure check). A resume whose resolved physics
+   differs from the manifest's record is refused.
+   Replay verifies rather than injects: apart from the two overrides, values
+   come from today's resolvers, and a difference refuses the run.
+   Not recorded: decisions made inside the physics step at trace time (e.g.
+   Bechtold's diurnal CAPE correction is switched off when no surface-flux
+   source exists); per-process differences (only process 0's resolution is
+   recorded); array-valued overrides (stored as a digest, so they cannot be
+   replayed).
+   On pipeline lanes the record also holds the rollout (`compiled` or
+   `per_step`); `reproduce` reruns in that rollout and reapplies the recorded
+   convection / microphysics / turbulence / GWD configs after `setup()`, since
+   `run_amip.py` may replace them there (`--params` routing, AIMIP trained
+   configs, Sundqvist command-line overrides). This is the one place replay
+   injects; the closure check still compares the whole record afterwards.
+   Out of scope here, planned as a separate change: the ocean, land (LMIP),
+   DINO and coupled drivers record their
+   runtime configs in `resolved_config`, but `reproduce` does not rerun them,
+   so they have no strict replay or closure check yet.
 2. Commit check plus a drift diff table in `reproduce` and restart-chain
    continuation, and reporting from `config_hash_matches` (item 2). Until the
    code delta is captured (P1 step 6), a recorded or current `git_dirty` (a

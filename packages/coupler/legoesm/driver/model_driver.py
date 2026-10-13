@@ -733,6 +733,13 @@ def make_mpas_qv_smooth_fn(mesh, nu, dt, sigma_coord, nu4=0.0,
     return smooth
 
 
+def _spectral_full_physics(cfg) -> bool:
+    """True when the spectral lane builds the unified (MPAS-style) physics."""
+    return (cfg.radiation in ("rrtmg", "rrtmgp")
+            or cfg.microphysics != "none" or cfg.convection != "none"
+            or cfg.turbulence != "none" or cfg.gravity_wave_drag != "none")
+
+
 def _spectral_micro_config(cfg, lane: str = "spectral"):
     """MicrophysicsConfig for a standalone lane (spectral, FV3-duo Kessler,
     simple tiled-cube Kessler): the experiment
@@ -1442,7 +1449,8 @@ class ModelDriver:
         Override output directory. If None, auto-generates.
     """
 
-    def __init__(self, config: ExperimentConfig, output_dir: str | Path | None = None):
+    def __init__(self, config: ExperimentConfig, output_dir: str | Path | None = None,
+                 *, expected_resolved_physics: dict | None = None):
         # Defensive canonical-name normalization at the driver entry:
         # callers that bypass run_amip's argparse postprocessor (direct
         # test fixtures, ad-hoc scripts, older YAML loaders) might still
@@ -1471,6 +1479,9 @@ class ModelDriver:
         # and fail to reproduce.  NamedTuple._replace rebinds self.config to new
         # objects, so this reference stays the original input.
         self._input_config = config
+        # ``legoesm reproduce`` passes the reference run's resolved physics;
+        # the run refuses to start if its own resolves differently.
+        self._expected_resolved_physics = expected_resolved_physics
         # export_mpas_step's hand-off dict; None = a normal run (review F9).
         self._mpas_step_export = None
         self._mpas_step_exported = False   # export consumes the driver
@@ -5466,6 +5477,130 @@ class ModelDriver:
             f"(same config — resume/retry)."
         )
 
+    def _lane_builds_own_physics(self) -> bool:
+        """True on the lanes that build the scheme configs their kernels use
+        inside ``run`` (MPAS, the column lane, full-physics spectral,
+        lat-band and tiled-cube operator-split SPMD) rather than using the
+        setup-time pipeline; mirrors the dispatch order in :meth:`run`, so it
+        needs the device configuration and is called from there."""
+        cfg = self.config
+        disc = cfg.dycore.discretization
+        if cfg.dycore.column_lane:          # _run_column_lane -> _run_column
+            return True
+        if disc == "fv3_duo":
+            return True                     # Held-Suarez / default Kessler
+        if cfg.grid.grid_type == "mpas":
+            return True
+        if disc == "spectral":
+            return True                     # unified physics / dry gray path
+        if cfg.enable_latlon_spmd and cfg.grid.grid_type == "latlon":
+            return True                     # band pipeline / no schemes
+        dc = self._device_config
+        if (cfg.grid.grid_type == "cubed_sphere" and dc is not None
+                and dc.mesh is not None
+                and tuple(getattr(dc, "tiling", (1, 1))) != (1, 1)
+                and not getattr(cfg, "enable_tiled_dycore", False)):
+            return True                     # tile pipeline / default Kessler
+        return False
+
+    def _record_idealized_kessler_physics(self, lane: str) -> None:
+        """The idealized lanes (FV3 duo, simple tiled cube) run Kessler, with
+        the run's config as ``_spectral_micro_config`` resolves it, or
+        nothing, and no other scheme; record that."""
+        self._record_resolved_physics(
+            microphysics=(_spectral_micro_config(self.config, lane=lane).kessler
+                          if self.config.microphysics == "kessler" else None))
+
+    def _forcing_configs(self) -> dict:
+        """External-forcing configs (set in ``_setup_external_forcing``) the
+        full-physics lanes sample their solar / ozone / aerosol / GHG from."""
+        return dict(solar=self._solar_config, ozone=self._ozone_ext_config,
+                    aerosol=self._aerosol_config, ghg=self._ghg_config)
+
+    # Pipeline attributes run_amip may replace after setup (--params routing,
+    # AIMIP trained configs, Sundqvist overrides), keyed by record entry.
+    PIPELINE_SCHEME_ATTRS = {"convection": "convection_config",
+                             "microphysics": "micro_config",
+                             "turbulence": "turbulence_config",
+                             "gravity_wave_drag": "gwd_config"}
+
+    def apply_recorded_pipeline_physics(self, record: dict) -> None:
+        """Reapply a recorded run's pipeline scheme configs after ``setup()``
+        (``legoesm reproduce``): the scheme configs a driver replaced after
+        setup are not rebuilt from the configuration.  Strict decode; the
+        closure check at ``run()`` start still compares the whole record."""
+        from legoesm.driver.restart import physics_config_from_record
+        for key, attr in self.PIPELINE_SCHEME_ATTRS.items():
+            setattr(self.physics, attr, physics_config_from_record(record[key]))
+
+    def _record_pipeline_physics(self, pipeline,
+                                 conv_precip_threaded: bool = True,
+                                 rollout: str | None = None) -> None:
+        """*conv_precip_threaded*: whether the lane passes the lagged
+        convective precip to radiation (compiled and operator-split lanes do,
+        the per-step lane does not), which decides whether the convective
+        cloud term is on in the CloudConfig the radiation path builds."""
+        self._record_resolved_physics(
+            convection=pipeline.convection_config,
+            microphysics=pipeline.micro_config,
+            turbulence=pipeline.turbulence_config,
+            gravity_wave_drag=pipeline.gwd_config,
+            radiation=pipeline.radiation_config,
+            # The CloudConfig the radiation path builds (only with a cloud
+            # scheme); the snow albedo config only with snow-albedo feedback.
+            cloud=(pipeline.resolved_cloud_config(
+                       pipeline._cloud_scheme,
+                       pipeline._cloud_convective and conv_precip_threaded)
+                   if pipeline._cloud_scheme != "none" else None),
+            land=pipeline.land_ml_cfg,
+            land_albedo=(pipeline.land_albedo_config
+                         if pipeline.snow_albedo_feedback else None),
+            rollout=rollout,
+            **self._forcing_configs(),
+        )
+
+    def _record_resolved_physics(self, **configs) -> None:
+        """Record the scheme configs this lane hands its kernels, plus the
+        run's full overrides (which ``resolved_config`` does not keep), into
+        ``config.resolved_physics``.  Process 0 checks the record against
+        ``expected_resolved_physics`` (reproduce) and against one already in
+        the manifest (a resume), then writes it; the outcome is broadcast so
+        every process refuses together.  Process 0's resolution is the one
+        recorded."""
+        from legoesm.driver.restart import (
+            RESOLVED_PHYSICS_KEYS,
+            RUN_MANIFEST_FILENAME,
+            collective_root_gate,
+            format_drift_rows,
+            physics_closure_rows,
+            record_resolved_physics,
+            resolved_physics_record,
+        )
+        configs = {
+            **dict.fromkeys(RESOLVED_PHYSICS_KEYS),   # a scheme this lane does not run
+            **configs,
+            "turbulence_override": self.config.turbulence_override,
+            "gravity_wave_drag_override": self.config.gravity_wave_drag_override,
+        }
+        if set(configs) != set(RESOLVED_PHYSICS_KEYS):
+            raise ValueError(f"unknown resolved-physics entries "
+                             f"{sorted(set(configs) - set(RESOLVED_PHYSICS_KEYS))}")
+        record = resolved_physics_record(configs)
+        manifest_file = self._output_dir / RUN_MANIFEST_FILENAME
+
+        def check_and_write():
+            if self._expected_resolved_physics is not None:
+                rows = physics_closure_rows(self._expected_resolved_physics, record)
+                if rows:
+                    raise RuntimeError(
+                        f"Resolved physics differs from the reference run's record "
+                        f"({len(rows)} fields); refusing to run:\n"
+                        + format_drift_rows(rows))
+            record_resolved_physics(manifest_file, record)
+
+        collective_root_gate(check_and_write, f"resolved physics in {manifest_file}")
+        self._physics_recorded = True
+
     def _record_final_state_digest(self) -> None:
         """Record the final-state SHA-256 digest into the run manifest (rank 0).
 
@@ -8562,6 +8697,12 @@ class ModelDriver:
         # periodic or wallclock-budget checkpoint).  Run-start wallclock anchor
         # for the budget check.
         self._checkpoint_callback = checkpoint_callback
+        self._physics_recorded = False
+        if self.physics is not None and not self._lane_builds_own_physics():
+            # Only _run_compiled and _run_per_step remain for these runs.
+            self._record_pipeline_physics(
+                self.physics, conv_precip_threaded=compiled,
+                rollout="compiled" if compiled else "per_step")
         self._run_wallclock_start = time.time()
         if (self.config.output.max_wallclock_seconds > 0
                 and self._mpi_world_size not in (None, 1)):
@@ -8661,6 +8802,11 @@ class ModelDriver:
             # for a clean run: a BLOWUP/failed status must never become a valid
             # reproducibility reference.
             if status == "COMPLETED":
+                if self.physics is not None and not self._physics_recorded:
+                    raise RuntimeError(
+                        "the run completed without recording its resolved "
+                        "physics: _lane_builds_own_physics disagrees with the "
+                        "lane run() dispatched to")
                 self._record_final_state_digest()
             return status
         finally:
@@ -10118,6 +10264,7 @@ class ModelDriver:
 
         hs_on = bool(cfg.held_suarez_forcing)
         kessler_on = cfg.microphysics == "kessler"
+        self._record_idealized_kessler_physics("FV3-duo Kessler")
         logger.info(
             "FV3 duo lane: C%d km=%d %s, Held-Suarez %s, Kessler %s, "
             "dt=%.1fs, %d "
@@ -11695,6 +11842,15 @@ class ModelDriver:
             turbulence=turbulence_config_for(cfg),
             microphysics=_micro_cfg,
             gravity_wave_drag=gwd_config_for(cfg),
+        )
+        self._record_resolved_physics(
+            convection=phys_cfg.convection,
+            microphysics=phys_cfg.microphysics,
+            turbulence=phys_cfg.turbulence,
+            gravity_wave_drag=phys_cfg.gravity_wave_drag,
+            radiation=phys_cfg.radiation,     # carries cloud_config
+            land=self.physics.land_ml_cfg,
+            **self._forcing_configs(),
         )
         # Phase D perf: shard the per-column RRTMGP workload across all local
         # devices (issue #273 ``column_mesh``).  rrtmgp is the dominant MPAS
@@ -14895,11 +15051,13 @@ class ModelDriver:
         # AMIP run on gaussian/spectral silently ignored every forcing
         # channel (the deck-driver "spectral path bypasses external
         # forcing" warning).
-        _full_physics = (
-            cfg.radiation in ("rrtmg", "rrtmgp")
-            or cfg.microphysics != "none" or cfg.convection != "none"
-            or cfg.turbulence != "none" or cfg.gravity_wave_drag != "none"
-        )
+        _full_physics = _spectral_full_physics(cfg)
+        if not _full_physics:
+            # The dry legacy path: the default gray config above + Rayleigh
+            # friction, with the solar forcing; no scheme from the config.
+            self._record_resolved_physics(
+                radiation={"scheme": gray_config, "orbit": _orbit_params},
+                solar=self._solar_config)
         _phys_fn_loop = _spectral_physics_fn
         _ext_forcing = False
         # #405 prognostic-physics carry (leapfrog path only); stays False/None
@@ -14972,6 +15130,14 @@ class ModelDriver:
                 turbulence=turbulence_config_for(cfg),
                 microphysics=_spectral_micro_config(cfg),
                 gravity_wave_drag=gwd_config_for(cfg),
+            )
+            self._record_resolved_physics(
+                convection=phys_cfg.convection,
+                microphysics=phys_cfg.microphysics,
+                turbulence=phys_cfg.turbulence,
+                gravity_wave_drag=phys_cfg.gravity_wave_drag,
+                radiation=phys_cfg.radiation,     # carries cloud_config
+                **self._forcing_configs(),
             )
             _combined_fn = make_physics(
                 phys_cfg, model_type="spectral_pe", dt=DT,
@@ -15694,6 +15860,9 @@ class ModelDriver:
                     "scan segments yet. Unset the flag, or set every "
                     "parameterization to 'none'.")
             return self._run_operator_split_spmd(start_step, start_day, mesh)
+        # Every scheme is 'none' here (any configured scheme routes to the
+        # operator-split lane above), so no scheme kernel runs.
+        self._record_resolved_physics()
         # STATELESS sub-lane only (dynamics-only / pure Held-Suarez): no radiation,
         # no microphysics, so nothing ever writes held_sw_net_sfc /
         # held_lw_net_sfc / seg_precip into _carry_aux.  The operator-split
@@ -15900,6 +16069,7 @@ class ModelDriver:
         # operator convection inside).
         tile_su, _tile_pipeline = build_tile_step_unified(
             self.grid, self.sigma, cfg, kt)
+        self._record_pipeline_physics(_tile_pipeline)
 
         ghg_vmr = ctx["ghg_vmr"]
         ghg_keys: tuple = ()
@@ -16169,6 +16339,7 @@ class ModelDriver:
                 start_step, start_day, mesh, kt)
         self._reject_unconsumed_flux_override(
             "the simple blocked-loop tiled-cube sub-lane")
+        self._record_idealized_kessler_physics("tiled-cube Kessler")
 
         column_physics_fn = self._tiled_cube_column_physics_fn()
         DT = cfg.dycore.dt
@@ -16456,6 +16627,7 @@ class ModelDriver:
         band_grid = build_band_grids_atm(self.grid, n_dev)[0]
         band_physics = build_physics_pipeline(
             band_grid, self.sigma, cfg, spacing_grid=self.grid)
+        self._record_pipeline_physics(band_physics)
         # Radiation cadence.  ``make_sharded_operator_split_step`` computes the
         # serial prologue's predicate per step (``_need_rad_and_time``,
         # sharded_operator_split_step.py:202) and passes it in as ``need_rad``,

@@ -1,83 +1,146 @@
 # Reproducing the NEMO–legoESM shallow-water double gyre
 
-This runbook rebuilds the NEMO `SWG_DG` case, proves that the case variant is
-inert on the shipped 2,000 km deck, runs the 4,000 km double gyre in NEMO and
-legoESM, compares the completed states at years 1–3, computes matched
-daily-mean climate diagnostics, and renders a side-by-side movie. It assumes
-familiarity with NEMO and Python, but not with legoESM.
+This is a clean-machine runbook for a colleague who knows NEMO and Python but
+not legoESM. It builds the `SWG_DG` case, proves the two-line case variant is
+inert on shipped SWG, runs the 4,000 km eddying double gyre for three years in
+both models, compares annual states, compares matched daily-mean climate
+statistics, and makes a side-by-side movie.
 
-The reference environment is pinned in
-`swg_double_gyre_environment.md` and
-`swg_double_gyre_environment.json`. Bit identity is an environment-sensitive
-result; read “What exact agreement means” before interpreting a mismatch.
+The exact reference claim is deliberately narrow: on the pinned composition,
+legoESM end-of-day `ssh_m`, `u_m_s`, and `v_m_s` at days 365, 730, and 1095
+are IEEE-word identical to NEMO `sshn[0]`, `un[0,0]`, and `vn[0,0]` over the
+T, U, and V wet masks. This is not full-restart identity and says nothing
+about dry/storage cells.
 
-## Prerequisites and paths
+## Before you start
 
-Use a clean checkout of this branch and a clean NEMO 5.0.2 checkout at source
-revision `dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796`. The NEMO environment must
-provide GNU Fortran, Open MPI, NetCDF-C/Fortran and HDF5. XIOS is neither built
-nor used. The commands below deliberately have no developer-machine defaults.
+You need:
+
+- network access to the NEMO Forge, conda-forge, and Python wheel index;
+- a clean legoESM checkout at this branch and a separate writable NEMO tree;
+- GNU/Linux x86-64, conda, Git, patch, and SHA-256 tools;
+- 32 CPU cores for NEMO and an idle CUDA GPU; the only tested GPU capacity is
+  32 GiB, so a smaller card is unmeasured;
+- at least 100 GiB free for outputs (the reference NEMO directory is
+  56,985,134,712 bytes and the legoESM daily-mean directory is
+  21,803,971,913 bytes); and
+- a scheduling window of about 7 hours on 32 CPU cores and 2.5 hours on one
+  GPU, plus storage-bound comparison/movie time.
+
+Those reservations round upward from the measured 22,918 s NEMO and 8,117 s
+GPU runs in `swg_double_gyre_reference_costs.json`. The current manifests and
+logs, not those planning values, are authoritative for your machine. Never
+pre-empt an occupied GPU.
+
+## What you should see
+
+The 5-minute case, 8/2-second rank arms, and 504-second smoke measurements are
+bound to the fresh-run artifacts in the Round-C receipt. Long-run timings are
+bound to `swg_double_gyre_reference_costs.json`.
+
+| Step | Command below | Required final line | Reference time |
+|---|---|---|---|
+| Import check | Python environment check | `CHECKOUT_IMPORT_OK ...` | seconds |
+| Build variant | `build_swg_dg.sh --execute` | `BUILD_DONE .../tests/SWG_DG` | not benchmarked |
+| Case identity | `check_swg_dg_identity.sh --execute` | `SWG_DG_IDENTITY BIT_IDENTICAL variables=41 differing=0` | about 5 min in fresh operator run |
+| Rank control | `swg_dg_rankcheck.sh --execute` | `all_bit_identical=True variables=21` | 1-rank 8 s; 32-rank 2 s |
+| NEMO smoke | `swg_md_run.sh --smoke ... --execute` | `NEMO_RUN_COMPLETE label=dg_smoke steps=51840 ranks=32 ...` | about 8 min in fresh operator run |
+| NEMO long run | `swg_md_run.sh --three-year ... --execute` | `NEMO_RUN_COMPLETE label=dg_3yr steps=1892160 ranks=32 ...` | 22,918 s (6.366 h) |
+| legoESM long run | GPU wrapper | `COMPLETED days=1095 backend=gpu ...` | 8,117 s (2.255 h) |
+| Annual checks | restart checker, three times | `SWG_DG_RESTART_IDENTITY PASS ... unequal=0 ...` | not benchmarked |
+| Climate checks | climate instrument, twice | `PASS ...` | storage-bound; not benchmarked |
+| Movie | movie tool | `SWG_DG_MOVIE COMPLETE frames=365 ...` | recorded in the command log |
+
+“Not benchmarked” is intentional: this guide does not invent a cost where no
+timing artifact exists.
+
+## 1. Reconstruct the environments
+
+Choose only paths on your machine:
 
 ```bash
-export LEGOESM_ROOT=/path/to/legoesm
-export NEMO_ROOT=/path/to/nemo_5.0.2
-export NEMO_PREFIX=/path/to/activated/nemo-conda-environment
+export LEGOESM_ROOT=/path/to/clean/legoesm
+export NEMO_ROOT=/path/to/new/nemo-5.0.2
+export NEMO_PREFIX=/path/to/new/nemo-build-environment
+export PYTHON_ENV=/path/to/new/legoesm-swg-dg-python
 export REPRO=/path/to/new/swg-dg-reproduction
-export PY=/path/to/python
+```
+
+Clone and verify NEMO exactly:
+
+```bash
+git clone --branch 5.0.2 --single-branch \
+  https://forge.nemo-ocean.eu/nemo/nemo.git "$NEMO_ROOT"
+git -C "$NEMO_ROOT" checkout --detach \
+  dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796
+test "$(git -C "$NEMO_ROOT" rev-parse HEAD)" = \
+  dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796
+```
+
+Recreate the exact linux-64 NEMO environment. Use the readable YAML only if
+the explicit build file cannot be solved; that fallback is no longer an exact
+build-composition reproduction.
+
+```bash
+conda create --prefix "$NEMO_PREFIX" --file \
+  "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/nemo-build-linux-64-explicit.txt"
 export PATH="$NEMO_PREFIX/bin:$PATH"
 
-cd "$LEGOESM_ROOT"
-"$PY" -m pip install -e '.[dev]'
-"$PY" -m pip install \
-  'numpy==2.4.4' 'equinox==0.13.7' \
-  'jax==0.10.0' 'jaxlib==0.10.0' 'jax-cuda12-plugin==0.10.0' \
-  'imageio-ffmpeg==0.6.0'
-export PYTHONPATH="$LEGOESM_ROOT/packages/core:$LEGOESM_ROOT/packages/ocean:$LEGOESM_ROOT/packages/atmosphere:$LEGOESM_ROOT/packages/coupler:$LEGOESM_ROOT/packages/ice:$LEGOESM_ROOT/packages/land:$LEGOESM_ROOT/packages/ml:$LEGOESM_ROOT/packages/tools:$LEGOESM_ROOT/src"
+python3.13 -c 'import sys; assert sys.version_info[:3] == (3, 13, 0)'
+python3.13 -m venv "$PYTHON_ENV"
+export PY="$PYTHON_ENV/bin/python"
+"$PY" -m pip install -r \
+  "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/python-gpu-requirements.txt"
 export JAX_ENABLE_X64=1
 mkdir -p "$REPRO"
 ```
 
-Before the long run, compare your versions with the pin:
+The exact conda file includes compiler/MPI/NetCDF build strings. The Python
+file includes JAX, jaxlib, CUDA plugin and PJRT 0.10.0 plus every imported
+package and CUDA wheel. Full values and the readable conda alternative are in
+`swg_double_gyre_environment.md` and `.json`.
+
+Every command below binds imports to the checkout containing the script. Its
+first line names that checkout, interpreter, NumPy version, and source file.
+Verify it before continuing:
 
 ```bash
-git -C "$NEMO_ROOT" rev-parse HEAD
-"$NEMO_PREFIX/bin/gfortran" --version | head -1
-"$NEMO_PREFIX/bin/mpirun" --version | head -1
-"$PY" -c 'import importlib.metadata as m; import equinox,imageio_ffmpeg,jax,jaxlib,numpy; versions=(jax.__version__,jaxlib.__version__,m.version("jax-cuda12-plugin"),numpy.__version__,equinox.__version__,imageio_ffmpeg.__version__); print(*versions); assert versions == ("0.10.0","0.10.0","0.10.0","2.4.4","0.13.7","0.6.0")'
-uname -r
+cd "$LEGOESM_ROOT"
+"$PY" scripts/run/run_swg_double_gyre.py --help
 ```
 
-## 1. Build the `SWG_DG` NEMO variant
+Required prefix:
 
-The build tool starts from shipped `tests/SWG`, removes `key_xios`, installs
-the committed reference architecture, and applies only the committed two-line
-`usrdef_zgr.F90` patch: the wet-basin upper limits follow `rn_domsiz`. It
-refuses an existing target, architecture, or manifest directory.
+```text
+CHECKOUT_IMPORT_OK root=/your/legoesm ... numpy=2.4.4 ...
+```
+
+The tools refuse if `legoesm.ocean` resolves outside this checkout. They also
+set CPU/GPU selection explicitly before importing JAX.
+
+## 2. Build `SWG_DG`
+
+The builder starts from shipped `tests/SWG`, removes only `key_xios`, renders
+the committed scalar-math architecture, and applies the committed two-line
+`usrdef_zgr.F90` patch so the wet extent follows `rn_domsiz`.
 
 ```bash
 TOOLS="$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre"
 bash "$TOOLS/build_swg_dg.sh" \
   --nemo-root "$NEMO_ROOT" --conda-prefix "$NEMO_PREFIX" \
-  --manifest-dir "$REPRO/build-manifest"
+  --manifest-dir "$REPRO/build-manifest" --python "$PY"
 bash "$TOOLS/build_swg_dg.sh" \
   --nemo-root "$NEMO_ROOT" --conda-prefix "$NEMO_PREFIX" \
-  --manifest-dir "$REPRO/build-manifest" --execute
+  --manifest-dir "$REPRO/build-manifest" --python "$PY" --execute
 (cd "$REPRO/build-manifest" && \
   sha256sum -c swg_dg_build_manifest.sha256)
 ```
 
-The preflight ends `PREFLIGHT_OK`. The build ends
-`BUILD_DONE .../tests/SWG_DG`. Preserve the build-manifest directory; its
-`artifacts/` copy makes the SHA-256 inventory self-contained and directly
-checkable with the command recorded in `swg_dg_build_manifest.txt`. It pins
-the binary, every case source, patch, architecture, source revision and
-compiler composition.
+Preflight ends `PREFLIGHT_OK`; the build ends `BUILD_DONE`. Preserve the
+self-contained build manifest. It pins NEMO revision, compiler composition,
+architecture, patch, every case source, and executable.
 
-## 2. Prove that the variant is inert on shipped SWG
-
-At `rn_domsiz=2000000`, the patched domain limit is the same limit used by the
-shipped case. Build a clean shipped reference and run both binaries for ten
-steps on one rank:
+## 3. Prove the variant is inert at 2,000 km
 
 ```bash
 bash "$TOOLS/check_swg_dg_identity.sh" \
@@ -88,133 +151,126 @@ bash "$TOOLS/check_swg_dg_identity.sh" \
   --output "$REPRO/case-identity" --python "$PY" --execute
 ```
 
-The required terminal line is exactly:
+The required result is:
 
 ```text
 SWG_DG_IDENTITY BIT_IDENTICAL variables=41 differing=0
 ```
 
-This command calls `makenemo` and MPI only with `--execute`.
+It proves the variant reproduces all 41 shipped-case output variables over ten
+steps when `rn_domsiz=2000000`.
 
-## 3. Check rank-count identity
-
-The control runs the ten-step double-gyre deck on 1 and 32 ranks, stitches all
-32 restart tiles by coordinates, and compares all 21 restart variables as
-IEEE words. It is not a three-field spot check.
+## 4. Prove NEMO rank-count independence
 
 ```bash
 bash "$TOOLS/swg_dg_rankcheck.sh" \
-  --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" --output "$REPRO/rank-control" \
-  --python "$PY"
+  --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
+  --output "$REPRO/rank-control" --python "$PY"
 bash "$TOOLS/swg_dg_rankcheck.sh" \
-  --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" --output "$REPRO/rank-control" \
-  --python "$PY" --execute
+  --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
+  --output "$REPRO/rank-control" --python "$PY" --execute
 ```
 
-Expected final lines:
+Expected final block:
 
 ```text
 SWG-DG-ROUND6-NEMO-RANK-CHECK
 all_bit_identical=True variables=21
 ```
 
-## 4. Run NEMO smoke and three-year integrations
+The checker stitches rank tiles by coordinates and compares every word of all
+21 restart variables. The 2026-10-13 fresh run initially failed after both
+NEMO arms completed because its bare interpreter imported another checkout;
+that measured packaging defect is fixed by the mandatory `--python` plus the
+checkout-binding preamble.
 
-Both modes apply the same committed namelist patch. It is the single source of
-truth for the 4,000 km basin, 6.25 km spacing, 50 s step, 0.10 N m-2 wind,
-9.80665 m s-2 gravity, 10 m2 s-1 viscosity and 1e-7 s-1 drag. The 30-day smoke
-uses 51,840 steps. The three-year run uses 1,892,160 steps, daily means and
-annual restarts at steps 630,720, 1,261,440 and 1,892,160.
+## 5. Run NEMO smoke and three-year decks
+
+The NEMO namelist patch and legoESM's `SWG_MADDISON_NAMELIST` are independent
+definitions, not one source of truth. On completion, `swg_md_run.sh` feeds
+NEMO's actual `output.namelist.dyn` to a cross-model guard. It compares 137
+resolved common values and permits only:
+
+- `sn_cfctl.l_runstat`: NEMO completion output with no legoESM analogue; and
+- `nn_stock`: annual NEMO restart tiles versus daily legoESM NPZ output.
+
+Any other physical, numerical, or run-control difference fails. The guard
+therefore checks the deck NEMO actually read, not just the patch text.
 
 ```bash
 NEMO_RUNS="$REPRO/nemo"
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$NEMO_RUNS" --smoke dg_smoke 32
+  --output-root "$NEMO_RUNS" --python "$PY" --smoke dg_smoke 32
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$NEMO_RUNS" --smoke dg_smoke 32 --execute
+  --output-root "$NEMO_RUNS" --python "$PY" --smoke dg_smoke 32 --execute
 
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$NEMO_RUNS" --three-year dg_3yr 32
+  --output-root "$NEMO_RUNS" --python "$PY" --three-year dg_3yr 32
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$NEMO_RUNS" --three-year dg_3yr 32 --execute
-NEMO_RUN="$NEMO_RUNS/dg_3yr"
+  --output-root "$NEMO_RUNS" --python "$PY" --three-year dg_3yr 32 --execute
+export NEMO_RUN="$NEMO_RUNS/dg_3yr"
 (cd "$NEMO_RUN" && sha256sum -c manifest.sha256)
 ```
 
-The smoke and long runs end respectively with lines beginning
-`NEMO_RUN_COMPLETE label=dg_smoke steps=51840 ranks=32` and
-`NEMO_RUN_COMPLETE label=dg_3yr steps=1892160 ranks=32`. Inspect `time.step`,
-`run.stat`, `run.log`, `manifest.sha256`, and `resolved_namelist_lines.txt`
-before continuing.
+The smoke is 51,840 steps. The three-year run is 1,892,160 steps with daily
+means and restarts at 630,720, 1,261,440, and 1,892,160. Each command prints
+`SWG_DG_DECK_GUARD PASS overlap=137 allowed_differences=2` before its final
+`NEMO_RUN_COMPLETE` line. Retain `output.namelist.dyn`, `deck_guard.json`,
+`run.log`, `run.stat`, `time.step`, and both manifests.
 
-## 5. Run legoESM
+## 6. Run legoESM
 
-The GPU number is an explicit physical device selection and is recorded with
-the visible JAX devices in `manifest.json`. Replace `0` with either idle GPU;
-never pre-empt another job. A single daily-mean run also writes each day's
-instantaneous endpoint, so it serves both the annual identity and climate
-comparisons.
+Pick an idle physical GPU explicitly; the example uses device 0.
 
 ```bash
+export LEGO_RUN="$REPRO/lego/dg_gpu_1095d_daily_mean"
 PYTHON="$PY" "$LEGOESM_ROOT/scripts/run/run_swg_double_gyre_gpu.sh" \
-  --gpu-device 0 --days 1095 --daily-means \
-  --output "$REPRO/lego/dg_gpu_1095d_daily_mean"
+  --gpu-device 0 --days 1095 --daily-means --output "$LEGO_RUN"
+"$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); m=p["device_memory_at_completion"]; assert p["status"]=="complete" and p["completed_days"]==1095 and p["wall_seconds"]>0 and m["supported"] and m["peak_bytes_in_use"]>0; print("GPU_MANIFEST PASS wall_seconds=%.3f peak_bytes_in_use=%d"%(p["wall_seconds"],m["peak_bytes_in_use"]))' \
+  "$LEGO_RUN/manifest.json"
 ```
 
-The required prefix is:
+Required prefixes:
 
 ```text
 COMPLETED days=1095 backend=gpu certified_policy=False wall_seconds=
+GPU_MANIFEST PASS wall_seconds=... peak_bytes_in_use=...
 ```
 
-On the reference V100S this took about 45 minutes per model year and 2.2 hours
-for three years. NEMO took about two hours per model year on 32 Xeon 6242R
-cores and 6.4 hours for three years. Both commands record their own wall time;
-use those values rather than assuming reference throughput.
+The daily-mean run also writes end-of-day states. The reference wall time was
+8,117 s; the fresh manifest is the source for your runtime and peak allocator
+memory.
 
-The CPU fallback runs the formal fp64/libm materialized-step composition and
-does not support daily means. It is useful for smoke/debug work, not for
-reproducing the GPU composition's exact annual endpoint:
+The debugging fallback is explicit CPU fp64/libm and uses the formal
+materialized-step composition. It cannot create daily means and is not the GPU
+composition used for annual identity:
 
 ```bash
-JAX_PLATFORMS=cpu "$PY" \
-  "$LEGOESM_ROOT/scripts/run/run_swg_double_gyre.py" \
-  --mode cpu-certified --days 1 --output "$REPRO/lego/dg_cpu_1d"
+"$PY" scripts/run/run_swg_double_gyre.py --mode cpu-certified \
+  --days 1 --output "$REPRO/lego/dg_cpu_1d"
 ```
 
-The reference run printed:
+The measured one-day reference manifest records 233.93357684463263 s. Linear
+extrapolation is about 71.2 hours for 1,095 days; this is an estimate, not a
+measured long CPU run.
 
-```text
-COMPLETED days=1 backend=cpu certified_policy=True wall_seconds=233.934 deck_certification=reference-evidence-composition-dependent output=.../dg_cpu_1d
-```
+## 7. Compare annual completed states
 
-On the reference Xeon host, the measured full-resolution one-day fallback
-took `233.934` seconds. A straight-line 1,095-day extrapolation is about 71.2
-hours, so it is not a practical substitute for the GPU run. Read the exact
-measurement from `manifest.json` fields `wall_seconds` and
-`wall_seconds_per_model_day`.
+The comparison is exactly:
 
-## 6. Compare years 1, 2 and 3
-
-The checker compares every wet word of these completed-step fields:
-
-| legoESM snapshot | NEMO restart | Instant |
+| legoESM | NEMO | Instant and scope |
 |---|---|---|
-| `ssh_m` | `sshn[0]` | after completed step N |
-| `u_m_s` | `un[0,0]` | completed SWE layer velocity after step N |
-| `v_m_s` | `vn[0,0]` | completed SWE layer velocity after step N |
+| `ssh_m` | `sshn[0]` | completed step N, T wet mask |
+| `u_m_s` | `un[0,0]` | completed SWE layer velocity, U wet mask |
+| `v_m_s` | `vn[0,0]` | completed SWE layer velocity, V wet mask |
 
-NEMO `uu_n`/`vv_n` are zero barotropic workspace arrays in these restarts;
-the checker hashes and reports them but does not misrepresent them as
-same-instant layer velocities. It verifies each restart `kt`, the legoESM
-day/step, all content manifests, masks, unequal-word counts, maximum absolute
-difference and signed ULP histograms.
+NEMO `uu_n`/`vv_n` are zero barotropic work arrays here, not evidence of the
+same capture instant. The checker hashes them for provenance but does not
+compare them to layer velocities. It also refuses wrong steps/days, incomplete
+manifests, wrong masks/decks/dtypes, and non-finite data.
 
 ```bash
 CHECK="$LEGOESM_ROOT/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_restart_identity.py"
-LEGO_RUN="$REPRO/lego/dg_gpu_1095d_daily_mean"
-NEMO_RUN="$REPRO/nemo/dg_3yr"
-
 JAX_PLATFORMS=cpu "$PY" "$CHECK" --nemo-root "$NEMO_RUN" \
   --legoesm-npz "$LEGO_RUN/day0365.npz" --day 365 --step 630720 \
   --json "$REPRO/year1_restart_identity.json"
@@ -226,7 +282,7 @@ JAX_PLATFORMS=cpu "$PY" "$CHECK" --nemo-root "$NEMO_RUN" \
   --json "$REPRO/year3_restart_identity.json"
 ```
 
-On the reference environment the exact pass lines are:
+The pinned reference composition prints:
 
 ```text
 SWG_DG_RESTART_IDENTITY PASS day=365 step=630720 fields=3 wet_words=1227520 unequal=0 max_abs=0.00000000000000000e+00
@@ -234,43 +290,41 @@ SWG_DG_RESTART_IDENTITY PASS day=730 step=1261440 fields=3 wet_words=1227520 une
 SWG_DG_RESTART_IDENTITY PASS day=1095 step=1892160 fields=3 wet_words=1227520 unequal=0 max_abs=0.00000000000000000e+00
 ```
 
-The three citable reference reports are committed as
-`swg_dg_year{1,2,3}_restart_identity.json` beside this runbook.
+The three committed reports beside this guide are the citable artifacts for
+that statement. They prove 1,227,520 wet words at each checkpoint, not a full
+restart or dry-cell comparison.
 
-## 7. Run the daily-mean climate instrument
-
-The instrument refuses snapshot-versus-mean sampling, incomplete daily
-sequences, unpinned content, wrong clocks, or a different physical deck. Run
-the spin-up year and the years 2–3 window separately:
+## 8. Compare matched daily-mean climate
 
 ```bash
 CLIMATE="$LEGOESM_ROOT/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_climate.py"
-JAX_PLATFORMS=cpu "$PY" "$CLIMATE" --nemo-root "$NEMO_RUN" --legoesm-root "$LEGO_RUN" \
+JAX_PLATFORMS=cpu "$PY" "$CLIMATE" \
+  --nemo-root "$NEMO_RUN" --legoesm-root "$LEGO_RUN" \
   --start-day 1 --days 365 --output "$REPRO/climate_year1"
-JAX_PLATFORMS=cpu "$PY" "$CLIMATE" --nemo-root "$NEMO_RUN" --legoesm-root "$LEGO_RUN" \
+JAX_PLATFORMS=cpu "$PY" "$CLIMATE" \
+  --nemo-root "$NEMO_RUN" --legoesm-root "$LEGO_RUN" \
   --start-day 366 --days 730 --output "$REPRO/climate_years2_3"
 ```
 
-Expected pass lines are:
+Expected lines are `PASS year 1, spin-up -> ...` and
+`PASS years 2-3 -> ...`. On the pinned reference trajectory, maximum absolute
+differences were:
 
-```text
-PASS year 1, spin-up -> .../climate_year1
-PASS years 2-3 -> .../climate_years2_3
-```
+| Window | Basin-mean KE | Basin-mean EKE |
+|---|---:|---:|
+| days 1–365 | `2.286230926795696e-11` | `1.1921534939784983e-11` |
+| days 366–1095 | `2.2225409013199027e-11` | `1.402270660699756e-11` |
 
-The reference reports put basin-mean KE/EKE maximum absolute differences at
-order 1e-11. Because the NEMO daily fields are stored in fp32, spatial-map
-metrics are not expected to be bit-identical; inspect every metric in
-`swg_dg_climate_report.json` rather than treating the successful `PASS` line
-as a numerical tolerance gate.
+These are measured reference values, not a cross-toolchain acceptance bar.
+NEMO daily means are fp32, and no sampling-uncertainty/post-decorrelation bar
+has been registered. Retain and report every metric.
 
-## 8. Render the side-by-side movie
-
-The movie uses matched daily means and shared per-frame colour scales. It has
-NEMO and legoESM rows and relative vorticity/f, SSH and speed columns.
+## 9. Render the matched movie
 
 ```bash
-JAX_PLATFORMS=cpu "$PY" "$LEGOESM_ROOT/scripts/plot/swg_double_gyre_movie.py" \
+export MPLCONFIGDIR="$REPRO/matplotlib-cache"
+JAX_PLATFORMS=cpu "$PY" \
+  "$LEGOESM_ROOT/scripts/plot/swg_double_gyre_movie.py" \
   --nemo-root "$NEMO_RUN" --legoesm-root "$LEGO_RUN" \
   --start-day 1 --days 365 --fps 12 \
   --output "$REPRO/swg_dg_year1.mp4"
@@ -282,64 +336,80 @@ Expected line:
 SWG_DG_MOVIE COMPLETE frames=365 output=.../swg_dg_year1.mp4
 ```
 
-`imageio-ffmpeg` supplies ffmpeg; the script streams frames and refuses to
-overwrite an existing movie.
+The two rows are NEMO and legoESM; columns are relative vorticity/f, SSH, and
+speed with shared per-frame scales. The tool verifies/hashes its inputs,
+starts ffmpeg before JAX threads, streams frames, and atomically publishes the
+MP4. It never presents a partial encode as complete.
 
-## What exact agreement means
+## If annual identity fails: make and score steps 1–10
 
-Bit-for-bit agreement was obtained with the pinned toolchain above. It is a
-property of the physical transcription *and* the compiled program
-composition, not a promise across compilers, JAX/XLA releases, CPUs, or GPUs.
-The committed ten-step composition discriminator makes this concrete:
+Do not change a tolerance. Make a one-rank NEMO restart at every step:
 
 ```bash
-JAX_PLATFORMS=cpu "$PY" \
-  "$LEGOESM_ROOT/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_composition.py" \
-  --root "$REPRO/rank-control/np1" \
-  --json "$REPRO/composition_discriminator.json"
+bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
+  --output-root "$REPRO/nemo" --python "$PY" --short-ladder dg_ladder
+bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
+  --output-root "$REPRO/nemo" --python "$PY" --short-ladder dg_ladder --execute
 ```
 
-The reference output is:
+Score the same outer-scan composition used by the long GPU driver, first on
+CPU for a portable diagnostic:
+
+```bash
+LADDER="$LEGOESM_ROOT/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_short_ladder.py"
+"$PY" "$LADDER" --nemo-root "$REPRO/nemo/dg_ladder" \
+  --backend cpu --composition outer-scan \
+  --json "$REPRO/short_ladder_outer_scan.json"
+```
+
+On the reference machine this prints 30 zero-unequal rows and ends:
 
 ```text
-SWG-DG-TEN-STEP-COMPOSITION-DISCRIMINATOR
-outer_jit_lax_scan: prognostic_bit_unequal=0 all_bit_unequal=640 signed_zero_only=640
-materialized_python_loop: prognostic_bit_unequal=414545 all_bit_unequal=415185 signed_zero_only=640
-control_binding=True
+SWG_DG_SHORT_LADDER EXACT composition=outer-scan backend=cpu first_difference=NONE
 ```
 
-On the reference toolchain, the one-outer-JIT ten-step scan has zero unequal
-prognostic words against NEMO, while retaining the reported 640 V-stress
-signed-zero words. The formal materialized loop has 414,545 unequal
-prognostic words at step 10. Its first dynamic difference appears at step 2;
-the stage ladder reports 1,278 wall-adjacent SSH words in the last bit. No bar
-is relaxed. The forcing sign bits remain DEBT pending the user's policy
-ruling. The result and binding one-ULP plant are committed in
-`swg_dg_composition_discriminator.json`.
+To reproduce the operational device composition, rerun with
+`--backend gpu --gpu-device 0`. The report identifies the first differing
+step/field, unequal words, maximum residual, region, hashes, and a binding
+one-ULP control. Send that JSON with the full toolchain versions.
 
-The shipped 2,000 km deck shows the complementary warning: its certified
-materialized ladder is exact to NEMO, while an outer scan differs from that
-production composition in the last bits. See the standalone replay receipt,
-the double-gyre round-7 receipt, and the SWG gradient-gate round-2 receipt.
-Program composition must therefore be recorded, never inferred from a shared
-Python function alone.
+The formal materialized composition is a useful discriminator and is expected
+to return exit 1 on the reference composition:
 
-On a different compiler, JAX version, or GPU, annual word identity may fail.
-That is not surprising in a chaotic eddying flow: last-bit changes cause
-individual eddies to decorrelate within weeks. After decorrelation, the
-meaningful comparison is the matched-sampling climate instrument. Compare and
-report every statistic, but do not apply the reference run's order-1e-11
-difference as a cross-toolchain acceptance bar: no sampling-uncertainty or
-post-decorrelation bar has yet been registered.
+```bash
+"$PY" "$LADDER" --nemo-root "$REPRO/nemo/dg_ladder" \
+  --backend cpu --composition materialized \
+  --json "$REPRO/short_ladder_materialized.json"
+```
 
-If exact identity fails, retain all manifests and report:
+Its first completed-state difference is:
 
-1. the complete environment JSON and generated build/run manifests;
-2. the first failing annual report and its field/ULP histogram;
-3. a short 1–10-step NEMO restart ladder and the first differing step;
-4. the ten-step composition-discriminator report; and
-5. both climate reports.
+```text
+SWG_DG_SHORT_LADDER DEBT composition=materialized backend=cpu first_difference=step2.ssh_m bits=189
+```
 
-Do not change an exactness bar to make a new toolchain pass. The useful
-question is whether the first difference comes from the deck, a missing
-field/capture alignment, or compiler composition.
+The separate formal stage-entry ladder first differs at step 2 in 1,278 SSH
+words; that is a different registered statistic. Both remain open debt. The
+640 V-stress forcing words differing only by signed zero also remain reported,
+not excepted, pending the user's exactness-policy decision.
+
+## Honest expectation across machines
+
+Bit identity depends on the physical transcription together with GNU Fortran
+version and flags, the scalar-math architecture, `key_nosignedzero`, NEMO rank
+composition (controlled above), JAX/jaxlib/XLA versions, and the GPU versus CPU
+program composition. The compiled-day outer scan matches NEMO on this deck;
+the formal per-step program differs in the last bit. On shipped SWG, the
+opposite composition choice was the certified exact one.
+
+A compiler, XLA, or GPU change may therefore introduce a last-bit difference.
+This flow is chaotic, so individual eddies can decorrelate within weeks. After
+that, annual word comparison is not informative; the matched daily-mean
+climate statistics are the comparison. They should remain close, but no
+cross-toolchain acceptance bar exists yet.
+
+If identity fails, report the exact environment/build/run manifests, first
+failing annual JSON, 1–10-step outer-scan JSON (and GPU device), materialized
+discriminator JSON, and both climate reports. That evidence separates deck,
+capture alignment, compiler, and composition differences without moving a
+bar.

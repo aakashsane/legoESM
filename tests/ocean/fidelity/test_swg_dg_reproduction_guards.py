@@ -115,3 +115,41 @@ def test_environment_reconstruction_files_are_machine_readable_and_pinned():
     assert environment["nemo"]["repository"] == (
         "https://forge.nemo-ocean.eu/nemo/nemo.git")
     assert environment["hardware"]["minimum_gpu_memory_bytes"] == 32 * 2**30
+
+    costs = json.loads((
+        ROOT / "docs/ocean/fidelity/testcases/"
+        "swg_double_gyre_reference_costs.json").read_text())
+    assert costs["nemo_three_year"]["wall_seconds"] == 22_918
+    assert (costs["legoesm_gpu_three_year_daily_mean"]["wall_seconds"]
+            == 8_117)
+    assert costs["legoesm_cpu_one_day"]["wall_seconds"] == pytest.approx(
+        233.93357684463263)
+    assert all(
+        len(costs[name]["source_artifact_sha256"]) == 64
+        for name in ("nemo_three_year", "legoesm_gpu_three_year_daily_mean",
+                     "legoesm_cpu_one_day"))
+
+
+def test_stranger_runbook_contains_every_reconstruction_and_failure_command():
+    runbook = (ROOT / "docs/ocean/fidelity/testcases/"
+               "swg_double_gyre_reproduction.md").read_text()
+    required = (
+        "https://forge.nemo-ocean.eu/nemo/nemo.git",
+        "dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796",
+        "nemo-build-linux-64-explicit.txt",
+        "python-gpu-requirements.txt",
+        "--python \"$PY\"",
+        "--short-ladder dg_ladder",
+        "--composition outer-scan",
+        "--composition materialized",
+        "peak_bytes_in_use",
+        "100 GiB",
+        "SWG_DG_RESTART_IDENTITY PASS day=365",
+        "SWG_DG_MOVIE COMPLETE frames=365",
+        "cross-toolchain acceptance bar",
+    )
+    for text in required:
+        assert text in runbook
+    assert "sole source of" not in runbook
+    assert "full-restart identity" in runbook
+    assert runbook.count("JAX_PLATFORMS=cpu") >= 6

@@ -6,15 +6,18 @@ Incoming lane tip: `d279942e5e666bbbcf880cfaeffa1ad5eefd4770`
 
 ## Verdict
 
-**HELD for one scalar-math acquisition; the second quarter-degree owner is
-not guessed.**  The scalar-math NEMO records close the vector-libm wind
-ambiguity, but they do not close the resolution rung.  The large second owner
-first appears during step 2 in temperature: the `kt=3` entry has a maximum
+**HELD for one scalar-math acquisition; neither unrecorded quarter-degree
+owner is guessed.**  The scalar-math NEMO records close the vector-libm wind
+ambiguity and narrow the first-step boundaries, but they do not close the
+resolution rung.  The large second owner first appears during step 2 in
+temperature: the `kt=3` entry has a maximum
 `3.3392346665550576e-9 K` residue, 939,911 ULP at that value, at native
 legoESM index `[j=1,i=97,k=0]`, the surface southern wall.  The available
-scalar writer serializes the three RK boundaries and operands only for step 1;
-it cannot name the deciding step-2 operand.  The committed scalar step-2
-writer is therefore the stop-rule outcome.
+scalar writer serializes the three RK boundaries and operands only for step 1,
+and it does not serialize the executed `tra_zdf` matrix/RHS even there.  It
+therefore cannot name either the first-step tracer owner or the deciding
+step-2 operand.  The committed scalar step-2 plus `tra_zdf` writer is the
+stop-rule outcome.
 
 Two source-fidelity corrections do land.  The seasonal clock now reproduces
 NEMO's literal completed-360-day-year arithmetic, and the inert final T-point
@@ -25,8 +28,11 @@ trajectory remain byte-identical.
 ## Oracle admissions and exact bar
 
 The committed registry admits all four ten-step roots by absolute path,
-compiler-math flavour, manifest digest, executable, namelist, and all ten
-entry-record hashes:
+compiler-math flavour, manifest digest, executable, namelist, all ten entry
+records, and every auxiliary record the gate consumes.  For `r4` those
+additional hashes cover stages 1/2/3; the tracer, ZDF, and barotropic records;
+and both stage-2 source/composition streams.  A planted auxiliary-record digest
+mutation refuses admission.
 
 - `r4:scalar` and `r4_smag:scalar`: executable SHA-256
   `bbb992d9be39e6c4b57a1c7f8786241687d84dd8e6f59570107e2c2119ecdf2b`,
@@ -80,7 +86,7 @@ rung owner, not a Smagorinsky-port increment.  Calling it inherited rounding
 debt is withdrawn: at `kt=3`, legoESM is about four orders of magnitude farther
 from NEMO than NEMO's scalar and vector builds are from each other.
 
-## First scalar owner closed; second owner open
+## Scalar boundary walk; both tracer owners open
 
 The step-1 scalar RK walk is:
 
@@ -92,37 +98,54 @@ The step-1 scalar RK walk is:
    `2.1316282072803006e-14` (3 ULP), and U/V
    `1.3877787807814457e-17 m/s` (4 ULP at the maximum); SSH is exact.
 
-The first state split is a composition owner.  The acquired stage-2 source
-walk gives:
+The acquired source-order stream records accumulators, not isolated NEMO
+addends.  Subtracting two rounded endpoints is not an inverse of NEMO's
+executed addition, so the earlier reconstructed-increment attribution to
+vorticity is withdrawn.  Replaying each isolated legoESM component from the
+exact preceding NEMO accumulator gives; the compiled call/write order is
+`GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:396-412`:
 
-| boundary | U max | U unequal | V max | V unequal |
+| accumulated boundary | U max | U unequal | V max | V unequal |
 |---|---:|---:|---:|---:|
-| HPG increment | 0 | 0 | 0 | 0 |
-| vorticity increment | 8.272e-25 | 1,394 | 8.272e-25 | 1,276 |
-| advection increment | 4.132e-25 | 285,598 | 4.133e-25 | 284,400 |
-| completed RHS | 8.272e-25 | 70,989 | 8.272e-25 | 71,308 |
+| after HPG | 0 | 0 | 0 | 0 |
+| after vorticity | 0 | 0 | 0 | 0 |
+| after advection | 0 | 0 | 0 | 0 |
 
-Thus vorticity is the first non-exact operator, while HPG is exact.  Replacing
-the complete stage-2 RHS with NEMO's record makes the raw RK update bit-exact
-in both U and V; both one-ULP controls fire.  The same replacement followed
-by the ordinary barotropic-mean replacement still leaves 20,603 unequal U
-words and 21,079 unequal V words, each with maximum
-`2.710505431213761e-20 m/s`.  Therefore the larger first state residue is
-produced by the barotropic mean-replacement composition, after the raw update,
-not by its RHS.  NEMO's raw vector update is the two written statements at
+All three accumulated boundaries are exact.  The production raw RK update is
+not: U/V each reach `1.6940658945086007e-21 m/s`, with 63,830/64,270 unequal
+words.  Replacing the complete stage-2 RHS with NEMO's record makes that raw
+update bit-exact in both components.  Both one-ULP controls fire, and a
+material `1e-6` RHS plant moves the consumed raw U by `1.8e-3 m/s`; the
+substitution cannot pass vacuously.
+
+After the same exact raw update, the ordinary barotropic-mean replacement
+still leaves 20,603 unequal U words and 21,079 unequal V words, each with
+maximum `2.710505431213761e-20 m/s`.  This localizes the first U/V state split
+to the mean-replacement boundary, but not to its arithmetic: the current
+reader does not substitute NEMO's recorded barotropic target or `zub/zvb`.
+Input versus composition remains OPEN.  NEMO's raw vector update is at
 `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:461-462`; its reference-
 thickness column reduction and correction are at
 `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:506-526`.
 
-The tracer-side candidate is independently refuted.  Stage-1 horizontal
+The stage-1 tracer-transport candidate is independently refuted.  Horizontal
 transports `zFu` and `zFv` are exact and `zFw` differs by at most
 `4.3520742565306136e-14`, but substituting NEMO's whole triplet changes none
-of the `kt=2` T/S unequal counts or maxima.  Comparing the surface-boundary
-increment itself, rather than only endpoint maxima, finds a real small debt:
-11 T cells move by at most `2.0679515313825692e-25` and 23 S cells by at most
-`8.271806125530277e-25`.  The earlier inference that surface forcing adds no
-debt is withdrawn; neither it nor `zFw` owns the reported `kt=2` tracer
-maximum.
+of the `kt=2` T/S unequal counts or maxima.  A material `1 m3/s` active-`zFw`
+plant moves 87 T and 74 S cells downstream (maxima `1.77e-9 K` and
+`1.44e-10`), proving the seam is consumed.  The surface-boundary endpoint
+difference contains a small reconstructed residue, but endpoint subtraction
+cannot identify the executed addend; the earlier surface-forcing attribution
+is withdrawn.
+
+The already-acquired stage-3 stream was also exhausted without overclaiming.
+T at the stage-2 boundary and all three QCO ratios are exact.  A post-hoc
+ratio-only replay is exact, whereas legoESM's reference-thickness diagnostic
+has 86,821 unequal T words, maximum `3.552713678800501e-15 K` (2 ULP), and is
+reconstructed exactly by retaining `e3t_0`.  This is not an owner: NEMO's
+executed `tra_zdf` RHS and tridiagonal solve also retain `e3t_0` at
+`GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/trazdf.f90:284-289`.  The report therefore
+says `UNMEASURED_EXECUTED_TRAZDF_OPERANDS`, not “reference-thickness owner.”
 
 The admitted scalar executable calls scalar `sin` and `cos` only.  It has no
 vector transcendental and no `exp` call in the executed analytic boundary
@@ -132,20 +155,27 @@ written left-associated wind composite are bit-exact; the right-associated and
 reciprocal-first planted alternatives differ.  This closes the round-6 vector-
 sine owner without changing production grouping.
 
-One variable was tested before requesting more evidence: replacing only
-legoesm's step-entry `avt/avm` profiles with NEMO's recorded profiles leaves
-the `kt=2` T and S maxima unchanged.  This refutes those entry coefficients as
-the owner of the first-step maxima; it does not test step 2's three RK vertical
-solves.
+One vertical variable was tested before requesting more evidence: replacing
+only legoESM's step-entry `avt/avm` profiles with NEMO's recorded profiles
+leaves the `kt=2` T and S maxima unchanged.  This refutes those entry
+coefficients, but not the executed `tra_zdf` RHS, matrix, recurrences, or clamp.
 
-The next record must begin at step 2.  It writes all three RK state boundaries,
-the zdf-entry bundle, stage-1/2 tracer operands, stage-3 tracer transport and
-accumulator boundaries, and the isolated penetrating-solar term.  A one-
-variable replay against those scalar records will discriminate vertical
-physics, solar/non-solar forcing, slopes, and the FCT limiter in the registered
-order.  No one of those candidates is promoted before acquisition.
+The next writer captures `oracle_trazdf_matrix_kt00000001.bin` and
+`...00000002.bin` in addition to all three step-2 RK state boundaries, the
+ZDF-entry bundle, stage-1/2 tracer operands, stage-3 transport and accumulator
+boundaries, and the isolated penetrating-solar term.  One-variable replays can
+then separate first-step `tra_zdf` arithmetic from the large step-2 owner and
+test vertical physics, solar/non-solar forcing, slopes, and the FCT limiter in
+registered order.  No candidate is promoted before acquisition.
 
 ## Review repairs
+
+All auxiliary binaries consumed by the discriminators are now hash-admitted,
+including the decisive source/composition streams; a planted mutation of that
+auxiliary digest refuses.  The daily acquisition runner also writes and
+count-checks a payload-hash manifest for all 31 sparse records.  The source-
+order and surface-boundary claims were narrowed to what their recorded
+accumulators can support.
 
 The Smagorinsky momentum-LDF discriminator no longer hard-codes `kt=2`:
 
@@ -249,7 +279,10 @@ Round-7 artifacts are under
 - `r4_smag_vector_30d_ladder.json` contains all 31 day-boundary scores and the
   NEMO-state branch census;
 - `r4_scalar_stage2_composition.json` contains the clean-stamped NEMO-RHS raw
-  update discriminator and its two firing one-ULP controls;
+  update discriminator, accumulated source-order walk, two firing one-ULP
+  controls, and material RHS/`zFw` non-vacuity controls;
+- `r4_scalar_stage3_geometry.json` records the bounded post-hoc ratio replay
+  and explicitly withholds an executed-`tra_zdf` owner;
 - `shipped_trajectory.json` and `shipped_trajectory_regression.json` prove the
   one-degree no-movement invariant;
 - `acquisition_preflights.log` records the operator-tool preflights.
@@ -284,8 +317,10 @@ round launches neither run.
 
 OPEN:
 
-1. Acquire the scalar step-2 RK/operand record and perform one-variable replays
-   until the first term producing the `3.339e-9 K` owner is named.
+1. Acquire the scalar step-1/2 `tra_zdf` matrix/RHS plus step-2 RK/operand
+   records.  First close the `kt=2` T/S owner from the executed step-1 solve,
+   then perform one-variable step-2 replays until the term producing the
+   `3.339e-9 K` owner is named.
 2. Acquire and admit the scalar-math 30-day root before giving any bit-level
    certification beyond ten steps.  The existing vector report is not that
    certification.
@@ -310,6 +345,9 @@ OPEN:
   `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3.f90:168-216`.
 - The stage tracer-transport operands and write boundary are at
   `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:604-634`.
+- Stage 2 accumulates HPG, vorticity, and advection in that order and writes
+  each resulting RHS boundary at
+  `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:396-412`.
 - The stage-2 raw U/V update statements are at
   `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:461-462`; the subsequent
   reference-thickness barotropic reduction and correction are at
@@ -317,6 +355,9 @@ OPEN:
 - The surface, solar, lateral-diffusion, and vertical-diffusion tracer calls
   are ordered at
   `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:691-725`.
+- The executed stage-3 tracer solve retains reference thickness in its surface
+  RHS and interior tridiagonal RHS at
+  `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/trazdf.f90:284-289`.
 - Dynamic mode 32 builds, clamps, and square-root converts the T/F coefficients
   without a completed-point mask at
   `cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/ldfdyn.f90:462-528`, followed by the halo

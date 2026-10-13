@@ -136,7 +136,7 @@ def test_scalar_first_owner_discriminator_scores_increment_and_narrow_override()
     assert 'control.material_rhs_override' in source
     assert 'control.material_zFw_override' in source
     assert 'source_order_accumulation_rows' in source
-    assert 'posthoc_stage3_temperature_replay_rows' in source
+    assert 'OPEN_INPUT_VERSUS_ARITHMETIC' in source
     assert '--stage3-geometry-only' in source
     assert 'UNMEASURED_EXECUTED_TRAZDF_OPERANDS' in source
 

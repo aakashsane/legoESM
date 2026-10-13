@@ -1537,61 +1537,6 @@ def run_stage2_composition_only(
     ]
     zfw_effect_fired = any(row["n_unequal"] > 0 for row in zfw_effect_rows)
 
-    # Post-hoc diagnostic only. NEMO stores RHS accumulators, so these rows
-    # algebraically convert them to the concentration returned by legoESM's
-    # process trace. They do NOT reproduce the executed tra_zdf composition,
-    # which retains e3t_0 in its RHS and tridiagonal solve.
-    tracer_stage3 = read_tracer_stage3_hires(
-        oracle_root / "oracle_rktracer_stage3_kt00000001.bin",
-        dims=NEMO_DIMS,
-    )
-    trace = run_model(tracer_process_trace=())
-    b0, badv, bsbc, bqsr, bldf, bpre = trace.boundaries
-    rbb = np.float64(1.0) + tracer_stage3["r3t_Kbb"]
-    rmm = np.float64(1.0) + tracer_stage3["r3t_Kmm"]
-    raa = np.float64(1.0) + tracer_stage3["r3t_Kaa"]
-    dt = np.float64(card.dt_s)
-    oracle_tbb = tracer_stage3["Kbb_T"][..., :30]
-    oracle_temperature_boundaries = {
-        "geometry": rbb[..., None] * oracle_tbb / raa[..., None],
-        **{
-            name: (
-                rbb[..., None] * oracle_tbb
-                + dt * rmm[..., None]
-                * tracer_stage3[f"{oracle_name}_T"][..., :30]
-            ) / raa[..., None]
-            for name, oracle_name in (
-                ("advection", "after_advection"),
-                ("sbc", "after_sbc"),
-                ("qsr", "after_qsr"),
-                ("ldf", "after_ldf"),
-                ("pre_zdf", "after_ldf"),
-            )
-        },
-        "post_zdf": tracer_stage3["Kaa_T"][..., :30],
-    }
-    candidate_temperature_boundaries = {
-        "geometry": b0[..., :30],
-        "advection": badv[..., :30],
-        "sbc": bsbc[..., :30],
-        "qsr": bqsr[..., :30],
-        "ldf": bldf[..., :30],
-        "pre_zdf": bpre[..., :30],
-        "post_zdf": trace.Taa[..., :30],
-    }
-    temperature_boundary_rows = [
-        exact_score(
-            f"GYRE-zco-r4.kt1.stage3.posthoc_temperature.{name}",
-            oracle_temperature_boundaries[name],
-            candidate_temperature_boundaries[name], masks["T"],
-        )
-        for name in candidate_temperature_boundaries
-    ]
-    first_temperature_debt = next(
-        (row for row in temperature_boundary_rows if row["status"] == "DEBT"),
-        None,
-    )
-
     controls.extend([
         {
             "name": "control.material_rhs_override",
@@ -1630,15 +1575,6 @@ def run_stage2_composition_only(
                 "zub/zvb have not yet been substituted"
             ),
         },
-        "posthoc_stage3_temperature_replay_rows": temperature_boundary_rows,
-        "first_nonexact_posthoc_temperature_replay": (
-            None if first_temperature_debt is None else {
-                "name": first_temperature_debt["name"],
-                "max_abs": first_temperature_debt["max_abs"],
-                "max_abs_index": first_temperature_debt["max_abs_index"],
-                "max_ulp": first_temperature_debt["max_ulp"],
-            }
-        ),
         "controls": controls,
         "verdict": (
             "RAW_UPDATE_AT_BAR"

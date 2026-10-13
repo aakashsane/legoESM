@@ -1426,7 +1426,7 @@ CITATION_MAP = {
         'CALL stp_RK3_stg( 3, kstp, Nbb, Nnn, Nrhs, Naa )', 16],
     'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:604-634': [
         'Phase-3 L2 WRITE-only tracer-stage operand stream',
-        '& WRITE(l1_unit) ts(:,:,:,jp_tem,Krhs), ts(:,:,:,jp_sal,Krhs)', 31],
+        ('& WRITE(l1_unit) ts(:,:,:,jp_tem,Krhs), ts(:,:,:,jp_sal,Krhs)', 2), 31],
     'GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/stprk3_stg.f90:650-675': [
         'stage 3     : time-stepping with left over RHS trends',
         "WRITE(numout,*) 'L2_RK_TRACER_OPERAND_DUMP '", 26],

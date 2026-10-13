@@ -2293,7 +2293,17 @@ class ModelDriver:
         # dy) rather than a single resolution.
         from legoesm.grids.factory import create_grid
 
-        if gc.grid_type == "latlon":
+        if gc.grid_type == "latlon" and self.config.dycore.column_lane:
+            # lat-lon COLUMN lane: the driver's grid is the column mesh of
+            # the native lat-lon grid (row-major cells), so every setup-time
+            # regrid lands on the columns the model steps; the native grid
+            # goes to the dycore factory
+            from legoesm.atmosphere.dynamics.gcm.latlon_cgrid_column import (
+                build_latlon_column_mesh,
+            )
+            self._latlon_native_grid = create_grid("latlon", gc.resolution)
+            self.grid = build_latlon_column_mesh(self._latlon_native_grid)
+        elif gc.grid_type == "latlon":
             global_grid = create_grid("latlon", gc.resolution)
             # Stage 3-B: under lat-lon band MPI, slice the global grid
             # to this rank's lat band.  The runtime bootstrap (Stage
@@ -2482,6 +2492,14 @@ class ModelDriver:
                         "the terrain product cannot be indexed onto it")
                 self._phis_data = jnp.asarray(np.asarray(_phis_g)[_ids])
                 self._f_land = jnp.asarray(np.asarray(_fl_g)[_ids])
+            elif getattr(self, "_latlon_native_grid", None) is not None:
+                # lat-lon column lane: the product on the NATIVE lat-lon grid
+                # (its own binning + neighbour filter, the lat-lon lane's
+                # terrain), flattened to the mesh's row-major columns
+                _p, _f = load_real_topography(
+                    self._latlon_native_grid, config=topo_config)
+                self._phis_data = jnp.reshape(_p, (-1,))
+                self._f_land = jnp.reshape(_f, (-1,))
             else:
                 self._phis_data, self._f_land = load_real_topography(
                     self.grid, config=topo_config
@@ -2722,7 +2740,8 @@ class ModelDriver:
         coeff_grid = self._coeff_grid()
         self.model = create_atmosphere_dycore(
             self.config, self.grid, self.sigma, coeff_grid=coeff_grid,
-            fv3_duo_bundle=getattr(self, "_fv3_duo_bundle", None))
+            fv3_duo_bundle=getattr(self, "_fv3_duo_bundle", None),
+            latlon_native_grid=getattr(self, "_latlon_native_grid", None))
         if self._column_model() is not None:
             # the model's own mesh (same values as the grid built in
             # _create_grid, by construction -- asserted) and the hybrid
@@ -2734,7 +2753,7 @@ class ModelDriver:
                 if not np.array_equal(np.asarray(getattr(m, k)),
                                       np.asarray(getattr(self.grid, k))):
                     raise AssertionError(
-                        f"fv3_duo column lane: model mesh {k} differs from "
+                        f"column lane: model mesh {k} differs from "
                         "the grid the forcings were regridded onto")
             # _create_topography attached the per-column SSO stddev to the
             # driver's grid; the model's mesh must carry it, or the
@@ -3242,9 +3261,11 @@ class ModelDriver:
         # Applied after the default moisture init so the Field metadata (dims,
         # units, names) from held_suarez_init is preserved as the template.
         if (cfg.ic == "era5" and cfg.ic_path
-                and not cfg.dycore.column_lane):
+                and not (cfg.dycore.column_lane
+                         and cfg.dycore.discretization == "fv3_duo")):
             # (the fv3_duo column lane builds its ERA5 IC on its own mesh
-            # in _run_column_lane; the driver grid is not the duo's)
+            # in _run_column_lane; the driver grid is not the duo's.  The
+            # lat-lon column lane runs this on its native grid.)
             from legoesm.training.era5_to_state import (
                 load_era5_ic,
                 era5_to_cubedsphere_carry,
@@ -7265,6 +7286,19 @@ class ModelDriver:
                 _save["fv3duo_hs6"] = self._fv3_duo_column_hs6(_col)
                 _save["fv3duo_tracer_names"] = np.asarray(
                     list(_col.tracer_names))
+            # lat-lon COLUMN lane: the u/v above are the column VIEW (cell
+            # winds) and cannot rebuild the C-grid face winds, so the full
+            # native state (driver post-step edits written back) rides along
+            _llc = self._latlon_column_model()
+            if _llc is not None:
+                _nat = _llc.to_bundle(s)
+                _save["latloncol_schema"] = np.asarray("latloncol_ckpt_v1")
+                for _k in ("u", "v", "T", "p_s", "phis"):
+                    _save[f"latloncol_{_k}"] = np.asarray(getattr(_nat, _k))
+                _names = sorted(_nat.tracers)
+                _save["latloncol_tracer_names"] = np.asarray(_names)
+                for _i, _nm in enumerate(_names):
+                    _save[f"latloncol_q_{_i}"] = np.asarray(_nat.tracers[_nm])
             # multi-process SPMD (M7 column lane): every process holds the
             # same host payload; process 0 writes, the others rendezvous
             # on its success (a root-only exception must not leave them
@@ -8003,6 +8037,45 @@ class ModelDriver:
                     {"state": _st, "press": _pr, "q": _q, "omga": _om,
                      "nh": _nh})
                 self._fv3_duo_column_restored = True
+            elif self._latlon_column_model() is not None:
+                _llc = self._latlon_column_model()
+                if "latloncol_schema" not in d.files:
+                    raise ValueError(
+                        f"MPAS checkpoint {path.name} carries no lat-lon "
+                        "C-grid state (latloncol_schema absent): the column "
+                        "view cannot rebuild the face winds, so only a "
+                        "checkpoint written by the lat-lon column lane can "
+                        "restart it.")
+                from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
+                    CGridLatLonHydrostaticState,
+                )
+                _names = [str(n) for n in d["latloncol_tracer_names"]]
+                _cur = self.state.native
+                if sorted(_cur.tracers) != _names:
+                    raise ValueError(
+                        f"MPAS checkpoint {path.name} tracers {_names} != "
+                        f"the run's {sorted(_cur.tracers)}")
+                _nat = CGridLatLonHydrostaticState(
+                    **{_k: jnp.asarray(d[f"latloncol_{_k}"],
+                                       dtype=getattr(_cur, _k).dtype)
+                       for _k in ("u", "v", "T", "p_s", "phis")},
+                    tracers={_nm: jnp.asarray(d[f"latloncol_q_{_i}"],
+                                              dtype=_cur.tracers[_nm].dtype)
+                             for _i, _nm in enumerate(_names)})
+                for _k in ("u", "v", "T", "p_s", "phis"):
+                    if getattr(_nat, _k).shape != getattr(_cur, _k).shape:
+                        raise ValueError(
+                            f"MPAS checkpoint {path.name}: lat-lon {_k} shape "
+                            f"{getattr(_nat, _k).shape} != the run's "
+                            f"{getattr(_cur, _k).shape}")
+                if not np.array_equal(np.asarray(_nat.phis),
+                                      np.asarray(_cur.phis)):
+                    raise RuntimeError(
+                        "lat-lon column restart: the checkpoint's terrain "
+                        "differs from this run's; restart on the same "
+                        "--topography / --topo-smoothing or start fresh")
+                self.state = _llc.from_bundle(_nat)
+                self._fv3_duo_column_restored = True
             elif _mpi:
                 from legoesm.parallel.voronoi_partition import scatter_to_local
                 part = self._voronoi_layout.partition
@@ -8044,7 +8117,7 @@ class ModelDriver:
                         )
                 _u, _T, _ps, _phis = (jnp.asarray(d["u"]), jnp.asarray(d["T"]),
                                       jnp.asarray(d["p_s"]), jnp.asarray(d["phis"]))
-            if _col is None:
+            if self._column_model() is None:
                 self.state = HydrostaticState(
                     u=Field(data=_u, name="u",
                             dims=("nEdges", "nlev"), units="m/s"),
@@ -8058,7 +8131,7 @@ class ModelDriver:
             # Restore moisture tracers (moist MPAS runs); absent ⇒ dry restart.
             # (column lane: the tracers are the bundle's own q slots, already
             # in the view built above)
-            if "tracer_names" in d and _col is None:
+            if "tracer_names" in d and self._column_model() is None:
                 _names = [str(n) for n in d["tracer_names"]]
                 _validate_number_convention(d, _names)
                 self.state = self.state._replace(tracers={
@@ -10110,7 +10183,7 @@ class ModelDriver:
             raise AssertionError(
                 "column lane: the driver's grid / coordinate / state "
                 "are not the column model's (setup order broken)")
-        self.tracers = {nm: f.data for nm, f in self.state.tracers.items()}
+        self.tracers = {nm: f.data for nm, f in (self.state.tracers or {}).items()}
         logger.info("  COLUMN lane: %s, %d columns through _run_column",
                     type(self.model).__name__, self.model.mesh.nCells)
         return self._run_column(start_step, start_day)
@@ -10818,6 +10891,15 @@ class ModelDriver:
         m = getattr(self, "model", None)
         return m if isinstance(m, FV3DuoColumnModel) else None
 
+    def _latlon_column_model(self):
+        """The LatLonCGridColumnModel when the driver runs the lat-lon
+        column lane, else None."""
+        from legoesm.atmosphere.dynamics.gcm.latlon_cgrid_column import (
+            LatLonCGridColumnModel,
+        )
+        m = getattr(self, "model", None)
+        return m if isinstance(m, LatLonCGridColumnModel) else None
+
     def _column_model(self):
         """The dycore when the driver runs a column lane (a
         :class:`~legoesm.grids.column_mesh.ColumnModel`), else None."""
@@ -10872,12 +10954,40 @@ class ModelDriver:
                       "q": [q0] + [jnp.zeros_like(q0)
                                    for _ in self.model.tracer_names[1:]]}
         self.state = self.model.from_bundle(bundle)
-        self.tracers = {nm: f.data for nm, f in self.state.tracers.items()}
+        self.tracers = {nm: f.data for nm, f in (self.state.tracers or {}).items()}
         self._ensemble_size = cfg.ensemble_size
         self._state_template = self.state
         if self._ensemble_size != 1:
             raise NotImplementedError(
                 "fv3_duo column lane threads no ensemble axis")
+
+    def _latlon_column_init_state(self, col) -> None:
+        """The lat-lon column lane's fresh IC: the lat-lon lane's own IC
+        (``_init_state`` on the NATIVE grid with the native-shaped terrain),
+        lifted to the C-grid once and seen through the column view."""
+        from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
+            hydrostatic_to_cgrid,
+        )
+        mesh, phis_cols, model = self.grid, self._phis_data, self.model
+        self.grid, self.model = col.grid, col.dyn
+        self._phis_data = (None if phis_cols is None
+                           else col._grid2d(jnp.asarray(phis_cols)))
+        try:
+            self._init_state()
+            hs = self.state
+        finally:
+            self.grid, self._phis_data, self.model = mesh, phis_cols, model
+        cfg = self.config
+        if (cfg.microphysics != "none" or cfg.convection != "none"
+                or cfg.turbulence != "none"):
+            # moist: the dycore carries the tracers (the MPAS lane's rule)
+            from legoesm.core.field import Field
+            hs = hs._replace(tracers={
+                k: Field(data=v, name=k, units="kg/kg")
+                for k, v in self.tracers.items()})
+        self.state = col.from_bundle(hydrostatic_to_cgrid(hs, col.grid))
+        self.tracers = {nm: f.data for nm, f in (self.state.tracers or {}).items()}
+        self._state_template = self.state
 
     def _fv3_duo_column_rewrap(self, grid):
         """Re-wrap the column model on *grid* (same deck, same tracer
@@ -10938,7 +11048,7 @@ class ModelDriver:
         st = getattr(self, "state", None)
         if isinstance(st, old._state_type) and st.native is not None:
             self.state = self.model.from_bundle(st.native)
-            self.tracers = {nm: f.data for nm, f in self.state.tracers.items()}
+            self.tracers = {nm: f.data for nm, f in (self.state.tracers or {}).items()}
             self._state_template = self.state
         return self.model
 

@@ -2183,10 +2183,31 @@ class ExperimentConfig(NamedTuple):
             errors.append(f"dycore.corner_fill must be one of {CORNER_FILL_MODES}, "
                           f"got {d.corner_fill!r}")
         if d.column_lane:
-            if d.discretization != "fv3_duo":
+            if d.discretization not in ("fv3_duo", "latlon_cgrid"):
                 errors.append(
                     "dycore.column_lane: no column adapter for "
-                    f"dycore.discretization={d.discretization!r} (fv3_duo only)")
+                    f"dycore.discretization={d.discretization!r} "
+                    "(fv3_duo, latlon_cgrid)")
+            if d.discretization == "latlon_cgrid":
+                if (g.grid_type != "latlon" or d.model_type != "hydrostatic"):
+                    errors.append(
+                        "dycore.column_lane with latlon_cgrid needs "
+                        "grid_type='latlon' and model_type='hydrostatic' "
+                        f"(got {g.grid_type!r}, {d.model_type!r})")
+                if self.distributed or self.ensemble_size != 1:
+                    errors.append(
+                        "dycore.column_lane on latlon_cgrid is single device: "
+                        "no MPI band (distributed) and no ensemble axis")
+                # the column loop's q_v smoother is a Voronoi operator (no
+                # lat-lon form); the lat-lon lane's own smoother lives in
+                # the PhysicsPipeline step factories, which this lane does
+                # not run
+                for _k in ("mpas_qv_smooth_del2_m2s", "mpas_qv_smooth_del4_m4s"):
+                    if float(getattr(self, _k, 0.0) or 0.0) != 0.0:
+                        errors.append(
+                            f"{_k}={getattr(self, _k)!r} on the lat-lon column "
+                            "lane: the column loop's q_v smoother needs the "
+                            "Voronoi mesh; set it to 0")
             # every column lane: the columns are a VIEW of the native
             # state and only the dycore's step may move the winds
             if self.sponge_enabled:
@@ -3583,11 +3604,11 @@ class ExperimentConfig(NamedTuple):
                     "only modifies the active drain — it would be silently "
                     "inert)."
                 )
-            if normalize_grid_type(self.grid.grid_type) != "mpas":
+            if not self.column_loop_lane:
                 errors.append(
-                    "hard_sat_ice_curve=True requires an MPAS grid (the "
-                    "ice-curve drain is only wired into the MPAS post-step "
-                    "hook; on grid_type="
+                    "hard_sat_ice_curve=True requires the column loop (MPAS "
+                    "or a column lane: the ice-curve drain is only wired "
+                    "into its post-step hook; on grid_type="
                     f"{self.grid.grid_type!r} it would be silently inert)."
                 )
             if self.microphysics != "morrison":

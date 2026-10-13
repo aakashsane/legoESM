@@ -571,7 +571,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--restart-from", type=str, default=None)
     parser.add_argument("--restart-start-day", type=float, default=None,
                         help="Override start_day after loading checkpoint. "
-                             "Pass 0.0 at year boundaries to reset the day counter.")
+                             "Pass 0.0 at year boundaries to reset the day counter. "
+                             "Refused on the column lane when the checkpoint "
+                             "records its forcing-clock origin and this day "
+                             "disagrees with the day that origin implies.")
     parser.add_argument("--checkpoint-format", type=str,
                         default=_OUTPUT_DEFAULTS.checkpoint_format,
                         choices=["npz", "zarr"],

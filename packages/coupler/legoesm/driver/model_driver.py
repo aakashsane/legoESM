@@ -12087,6 +12087,20 @@ class ModelDriver:
             _DAY_ORIGIN = float(START_DAY)
         elif getattr(self, "_clock_day_origin_ckpt", None) is not None:
             _DAY_ORIGIN = float(self._clock_day_origin_ckpt)
+            # D-REX-4 (user 2026-10-13): the start day (checkpoint names,
+            # diagnostics clock, CMOR feed) must be the day the saved origin
+            # implies; a different one (e.g. --restart-start-day) would run
+            # two clocks.  Refused.  The 1e-6 d tolerance (the snap below)
+            # only absorbs the rounding of the saved day's own expression.
+            _implied_day = _DAY_ORIGIN + start_step * DT / 86400.0
+            if abs(float(START_DAY) - _implied_day) > 1e-6:
+                raise ValueError(
+                    f"restart start day {float(START_DAY)!r} disagrees with "
+                    f"the day {_implied_day!r} implied by the checkpoint's "
+                    f"forcing-clock origin ({_DAY_ORIGIN!r} + step "
+                    f"{start_step} x dt={DT:g} s); refusing to run two "
+                    "clocks.  Drop --restart-start-day (or pass the "
+                    "checkpoint's own day).")
         else:
             _DAY_ORIGIN = START_DAY - start_step * DT / 86400.0
             if abs(_DAY_ORIGIN - float(cfg.start_day)) < 1e-6:
@@ -13204,6 +13218,27 @@ class ModelDriver:
         # aerosol source.
         if cfg.nc_from_aerosol and self._aerosol_active:
             _ext_forcing = True
+        # D-REX-3 (user 2026-10-13): the daily ozone/aerosol cache is rebuilt
+        # from the CURRENT surface pressure whenever the forcing day bucket
+        # changes, and a resumed link always rebuilds on its first step
+        # (``_last_force_day`` starts None).  Bitwise only if the unbroken run
+        # also rebuilt at that step, i.e. the restart step opens a new bucket
+        # (a zero-step link rebuilds nothing).
+        # (Imported here: the later function-local import makes the name local
+        # to this whole function.)
+        from legoesm.forcing.time_utils import daily_forcing_bucket
+        if start_step > 0 and n_steps_total > 0 and _ext_forcing and (
+                daily_forcing_bucket(_DAY_ORIGIN + start_step * DT / 86400.0)
+                == daily_forcing_bucket(
+                    _DAY_ORIGIN + (start_step - 1) * DT / 86400.0)):
+            raise ValueError(
+                f"restart at step {start_step} (day "
+                f"{_DAY_ORIGIN + start_step * DT / 86400.0!r}) is not on a "
+                "day boundary while daily external forcing (ozone/aerosol) "
+                "is active: the resumed run would rebuild the daily cache "
+                "from restart-time state, which the unbroken run did not, so "
+                "the restart is not bitwise.  Restart from a whole-day "
+                "checkpoint (with dt dividing 86400 s).")
         # Operator-split physics carry (prognostic TKE / convection state).
         # ``model.step`` stashes the OUT state on ``self.model._phys_state``;
         # feed it back next step.  SEEDED here (issue #405): starting from

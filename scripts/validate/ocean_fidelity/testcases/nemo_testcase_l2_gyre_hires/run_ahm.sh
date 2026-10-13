@@ -12,16 +12,20 @@ gyre_hires_select_deck r4_smag "$here"
 readonly NEMO_ROOT=${NEMO_ROOT:-/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2}
 readonly SOURCE_CFG=$NEMO_ROOT/cfgs/GYRE_OMIP_L2_P3_AHM
 readonly WRITER=$SOURCE_CFG/BLD/bin/nemo.exe
-readonly EXP00=$SOURCE_CFG/EXP00
+readonly BASE_EXP00=$NEMO_ROOT/cfgs/GYRE_OMIP_L2_P3/EXP00
 readonly EVIDENCE=${EVIDENCE:-/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round4/oracle_gyre_r4_smag_ahm}
-readonly RANKS=${RANKS:-8}
+readonly RANKS=${RANKS:-1}
+[[ $RANKS == 1 ]] || {
+  printf 'REFUSE_RANKS: AHM dumps are guarded by lwp and are not gathered; RANKS must be 1\n' >&2
+  exit 64
+}
 
 repo_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
   printf 'REFUSE_NOT_WORKTREE\n' >&2; exit 66; }
 [[ -z "$(git -C "$repo_root" status --porcelain --untracked-files=all)" ]] || {
   printf 'REFUSE_DIRTY_COMMIT: commit the exact acquisition tool first\n' >&2; exit 66; }
 readonly COMMIT=$(git -C "$repo_root" rev-parse HEAD)
-for path in "$BASE_DECK" "$DECK_PATCH" "$WRITER" "$EXP00/namelist_ref" \
+for path in "$BASE_DECK" "$DECK_PATCH" "$WRITER" "$BASE_EXP00/namelist_ref" \
   "$SOURCE_CFG/MY_SRC/stprk3.F90" "$SOURCE_CFG/MY_SRC/stprk3_stg.F90"; do
   [[ -f $path ]] || { printf 'REFUSE_MISSING_INPUT: %s\n' "$path" >&2; exit 67; }
 done
@@ -29,7 +33,7 @@ done
    && $(sha256sum "$SOURCE_CFG/MY_SRC/stprk3_stg.F90" | awk '{print $1}') == f65546e500ccd0b4d84e9641eeeb11d7e9160fe36a1339c1a2426425322d07e7 ]] || {
   printf 'REFUSE_WRITER_SOURCE: AHM sources differ\n' >&2; exit 68; }
 for token in NEMO_L4_AHMTF__1 NEMO_L4_DYNLDF_1; do
-  rg -q "$token" "$SOURCE_CFG/BLD/ppsrc/nemo/stprk3.f90" \
+  grep -q "$token" "$SOURCE_CFG/BLD/ppsrc/nemo/stprk3.f90" \
     "$SOURCE_CFG/BLD/ppsrc/nemo/stprk3_stg.f90" || {
     printf 'REFUSE_COMPILED_WRITER: missing %s\n' "$token" >&2; exit 68; }
 done
@@ -49,8 +53,8 @@ fi
 
 [[ ! -e $EVIDENCE ]] || { printf 'REFUSE_EVIDENCE_EXISTS: %s\n' "$EVIDENCE" >&2; exit 69; }
 mkdir -p "$EVIDENCE/manifest" "$EVIDENCE/run"
-cp "$dry/namelist_cfg" "$EXP00/namelist_ref" "$EVIDENCE/run/"
-for xml in "$EXP00"/*.xml; do [[ ! -e $xml ]] || cp "$xml" "$EVIDENCE/run/"; done
+cp "$dry/namelist_cfg" "$BASE_EXP00/namelist_ref" "$EVIDENCE/run/"
+for xml in "$BASE_EXP00"/*.xml; do [[ ! -e $xml ]] || cp "$xml" "$EVIDENCE/run/"; done
 cp "$WRITER" "$EVIDENCE/run/nemo"
 printf '%s\n' "$COMMIT" >"$EVIDENCE/manifest/legoesm_commit"
 gyre_hires_write_resolved_namelist "$EVIDENCE/run/namelist_cfg" \

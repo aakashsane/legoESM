@@ -7,7 +7,6 @@ import pytest
 from legoesm.grids.latlon import create_beta_plane_cgrid_geometry
 from legoesm.ocean.dynamics.latlon_cgrid_operators import (
     compute_vertex_mask,
-    nemo_ldf_lap_viscosity_e3_cgrid,
     nemo_smagorinsky_bilaplacian_coefficients_cgrid,
     nemo_smagorinsky_bilaplacian_tendency_e3_cgrid,
 )
@@ -88,8 +87,62 @@ def _numpy_mode32_isotropic(u, v, cell_mask, vertex_mask, c_smag, dt_s, minfac, 
     )
     return (
         np.sqrt(0.125 * esq * lap_t) * tmask,
-        np.sqrt(0.125 * esq * lap_f) * fmask,
+        # ldfdyn.f90:503-534 does not apply fmask to the completed mode-32
+        # coefficient.  dshesq is masked, but the independent velocity lower
+        # limit leaves the free-slip perimeter live.
+        np.sqrt(0.125 * esq * lap_f),
     )
+
+
+def _numpy_nemo_bilaplacian_uniform(
+    u, v, ahmt, ahmf, cell_mask, u_mask, v_mask, *, length=25_000.0, thickness=100.0,
+):
+    """Independent NumPy transcription of dynldf_lev_blp's two source passes."""
+    u = np.asarray(u, dtype=np.float64)
+    v = np.asarray(v, dtype=np.float64)
+    ahmt = np.asarray(ahmt, dtype=np.float64)
+    ahmf = np.asarray(ahmf, dtype=np.float64)
+    tmask = np.asarray(cell_mask, dtype=np.float64)
+    umask = np.asarray(u_mask, dtype=np.float64)
+    vmask = np.asarray(v_mask, dtype=np.float64)
+    length = np.float64(length)
+    thickness = np.float64(thickness)
+
+    def pass_once(uu, vv):
+        # dynldf_lev.f90:271-291 / :311-331, specialized only after retaining
+        # the source's div/curl staggering.  Periodic halo values are harmless
+        # because the synthetic basin's outer T ring is dry.
+        uu = uu * umask
+        vv = vv * vmask
+        flux_u = length * thickness * uu
+        flux_v = length * thickness * vv
+        flux_sum = (flux_u[:, 1:] - flux_u[:, :-1]) + (
+            flux_v[1:] - flux_v[:-1]
+        )
+        zdiv = ahmt * tmask * flux_sum / (length * length * thickness)
+
+        v_metric = length * vv
+        v_pad = np.concatenate([v_metric[:, -1:], v_metric, v_metric[:, :1]], axis=1)
+        dv = v_pad[:, 1:] - v_pad[:, :-1]
+        u_metric = length * uu
+        u_pad = np.pad(u_metric, ((1, 1), (0, 0), (0, 0)))
+        du = u_pad[:-1] - u_pad[1:]
+        zcur = ahmf * thickness * (dv + du) / (length * length)
+
+        zdiv_x = np.concatenate([zdiv[:, -1:], zdiv, zdiv[:, :1]], axis=1)
+        grad_div_u = (zdiv_x[:, 1:] - zdiv_x[:, :-1]) / length
+        zdiv_y = np.pad(zdiv, ((1, 1), (0, 0), (0, 0)))
+        grad_div_v = (zdiv_y[1:] - zdiv_y[:-1]) / length
+        curl_u = -(zcur[1:] - zcur[:-1]) / (length * thickness)
+        curl_v = (zcur[:, 1:] - zcur[:, :-1]) / (length * thickness)
+        return (
+            (curl_u + grad_div_u) * umask,
+            (curl_v + grad_div_v) * vmask,
+        )
+
+    lap_u, lap_v = pass_once(u, v)
+    second_u, second_v = pass_once(lap_u, lap_v)
+    return -second_u, -second_v
 
 
 def test_mode32_zero_flow_is_exact_zero_with_finite_gradient():
@@ -165,6 +218,13 @@ def test_mode32_nonzero_coefficients_match_source_literal_reference(minfac, maxf
     np.testing.assert_allclose(np.asarray(got_t), ref_t, rtol=2.0e-15, atol=0.0)
     np.testing.assert_allclose(np.asarray(got_f), ref_f, rtol=2.0e-15, atol=0.0)
 
+    # The old defect multiplied the completed F coefficient by the four-cell
+    # mask.  Pin NEMO's live free-slip boundary ring independently so reverting
+    # the production fix cannot be hidden by the source-literal reference.
+    perimeter = (np.asarray(fm) == 0.0) & (ref_f > 0.0)
+    assert np.count_nonzero(perimeter) > 0
+    assert np.all(np.asarray(got_f)[perimeter] > 0.0)
+
     if minfac == 1000.0:
         # Planted source violation: omitting the bilaplacian 16/9 lower-limit
         # factor must move a nonzero coefficient.
@@ -190,7 +250,7 @@ def test_mode32_rejects_anisotropic_regular_grid():
         )
 
 
-def test_mode32_bilaplacian_is_two_e3_laplacians_with_negative_second_pass():
+def test_mode32_bilaplacian_matches_independent_source_literal_two_pass():
     grid, mask, um, vm, cell3, fm, u_masked, v_masked = _case()
     jj_u, ii_u, kk_u = jnp.indices(u_masked.shape)
     jj_v, ii_v, kk_v = jnp.indices(v_masked.shape)
@@ -199,40 +259,32 @@ def test_mode32_bilaplacian_is_two_e3_laplacians_with_negative_second_pass():
     ahmt, ahmf = nemo_smagorinsky_bilaplacian_coefficients_cgrid(
         u, v, grid, 3.5, 3600.0, mask=mask, cell_mask=cell3, u_mask=um, v_mask=vm, vertex_mask=fm
     )
-    h = jnp.full(cell3.shape, 100.0) * cell3
+    # NEMO's reference e3 arrays remain geometrical on dry/free-slip points;
+    # masks are separate multiplicands in dynldf_lev.  Supplying the six live
+    # operands also exercises the exact source-order branch used by GYRE.
+    h = jnp.full(cell3.shape, 100.0)
+    e3u = jnp.full(u.shape, 100.0)
+    e3v = jnp.full(v.shape, 100.0)
+    e3f = jnp.full(fm.shape, 100.0)
+    thickness_operands = (h, e3u, e3v, e3f, e3u, e3v)
     got_u, got_v = nemo_smagorinsky_bilaplacian_tendency_e3_cgrid(
-        u, v, grid, ahmt, ahmf, h, mask=mask, u_mask=um, v_mask=vm, vertex_mask=fm
+        u, v, grid, ahmt, ahmf, h, mask=mask, u_mask=um, v_mask=vm,
+        vertex_mask=fm, thickness_operands=thickness_operands,
     )
-    lap_u, lap_v = nemo_ldf_lap_viscosity_e3_cgrid(
-        u,
-        v,
-        grid,
-        ahmt,
-        ahmf,
-        h,
-        mask=mask,
-        u_mask=um,
-        v_mask=vm,
-        vertex_mask=fm,
-        coefficient_fmask_already_applied=True,
+    ref_u, ref_v = _numpy_nemo_bilaplacian_uniform(
+        u, v, ahmt, ahmf, cell3, um, vm,
     )
-    second_u, second_v = nemo_ldf_lap_viscosity_e3_cgrid(
-        lap_u,
-        lap_v,
-        grid,
-        ahmt,
-        ahmf,
-        h,
-        mask=mask,
-        u_mask=um,
-        v_mask=vm,
-        vertex_mask=fm,
-        coefficient_fmask_already_applied=True,
-    )
-    np.testing.assert_array_equal(np.asarray(got_u), -np.asarray(second_u))
-    np.testing.assert_array_equal(np.asarray(got_v), -np.asarray(second_v))
+    np.testing.assert_allclose(np.asarray(got_u), ref_u, rtol=1.0e-13, atol=1.0e-30)
+    np.testing.assert_allclose(np.asarray(got_v), ref_v, rtol=1.0e-13, atol=1.0e-30)
     assert np.max(np.abs(np.asarray(got_u))) > 0.0
     assert np.max(np.abs(np.asarray(got_v))) > 0.0
+
+    # Planted old defect: erasing the live free-slip F ring must move the
+    # independently transcribed NEMO result.
+    wrong_u, wrong_v = _numpy_nemo_bilaplacian_uniform(
+        u, v, ahmt, np.asarray(ahmf) * np.asarray(fm), cell3, um, vm,
+    )
+    assert np.count_nonzero(ref_u != wrong_u) + np.count_nonzero(ref_v != wrong_v) > 0
 
 
 @pytest.mark.slow

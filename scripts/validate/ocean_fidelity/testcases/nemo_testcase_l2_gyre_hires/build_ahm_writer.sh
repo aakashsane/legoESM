@@ -38,11 +38,25 @@ fi
 [[ ! -e $TARGET_CFG ]] || {
   printf 'REFUSE_TARGET_EXISTS: %s\n' "$TARGET_CFG" >&2; exit 69; }
 cd "$NEMO_ROOT"
-./makenemo -r GYRE_OMIP_L2_P3 -n "$TARGET_NAME" -m conda -j 0
+./makenemo -r GYRE_OMIP_L2_P3 -n "$TARGET_NAME" -d "OCE" -m conda -j 0
 patch -s --fuzz=0 -d "$TARGET_CFG/MY_SRC" -p1 <"$PATCH"
+[[ $(sha256sum "$TARGET_CFG/MY_SRC/stprk3.F90" | awk '{print $1}') == b2b73a7899dfd06c9eaf8106d0c332d0d51f93a3e8bad1c44b2d58353caa6a9a \
+   && $(sha256sum "$TARGET_CFG/MY_SRC/stprk3_stg.F90" | awk '{print $1}') == f65546e500ccd0b4d84e9641eeeb11d7e9160fe36a1339c1a2426425322d07e7 ]] || {
+  printf 'REFUSE_PATCH_IDENTITY: installed AHM source changed\n' >&2; exit 68; }
+# makenemo -j 0 creates the copy but does not register it.  Register exactly
+# the component list used for creation; a bare subsequent -n otherwise prints
+# usage and never compiles.
+readonly WORK_CFGS=$NEMO_ROOT/cfgs/work_cfgs.txt
+[[ -f $WORK_CFGS ]] || { printf 'REFUSE_MISSING_INPUT: %s\n' "$WORK_CFGS" >&2; exit 67; }
+if ! grep -qE "^${TARGET_NAME}[[:space:]]+OCE([[:space:]]|$)" "$WORK_CFGS"; then
+  printf '%s OCE\n' "$TARGET_NAME" >>"$WORK_CFGS"
+fi
 ./makenemo -n "$TARGET_NAME" -m conda -j 8
+[[ $(sha256sum "$TARGET_CFG/MY_SRC/stprk3.F90" | awk '{print $1}') == b2b73a7899dfd06c9eaf8106d0c332d0d51f93a3e8bad1c44b2d58353caa6a9a \
+   && $(sha256sum "$TARGET_CFG/MY_SRC/stprk3_stg.F90" | awk '{print $1}') == f65546e500ccd0b4d84e9641eeeb11d7e9160fe36a1339c1a2426425322d07e7 ]] || {
+  printf 'REFUSE_BUILD_OVERWROTE_PATCH: AHM MY_SRC changed\n' >&2; exit 70; }
 for token in NEMO_L4_AHMTF__1 NEMO_L4_DYNLDF_1; do
-  rg -q "$token" "$TARGET_CFG/BLD/ppsrc/nemo/stprk3.f90" \
+  grep -q "$token" "$TARGET_CFG/BLD/ppsrc/nemo/stprk3.f90" \
     "$TARGET_CFG/BLD/ppsrc/nemo/stprk3_stg.f90" || {
     printf 'REFUSE_COMPILED_WRITER: missing %s\n' "$token" >&2; exit 70; }
 done

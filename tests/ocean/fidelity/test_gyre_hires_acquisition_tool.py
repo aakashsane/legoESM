@@ -106,3 +106,16 @@ def test_ahm_builder_read_only_preflight_applies_pinned_patch():
     assert result.returncode == 0, result.stderr
     assert "PREFLIGHT_OK" in result.stdout
     assert "GYRE_OMIP_L2_P3_AHM" in result.stdout
+
+
+def test_ahm_operator_recipes_pin_components_registration_inputs_and_one_rank():
+    build = (TOOL / "build_ahm_writer.sh").read_text()
+    run = (TOOL / "run_ahm.sh").read_text()
+    assert '-d "OCE"' in build
+    assert "work_cfgs.txt" in build and "printf '%s OCE" in build
+    assert "rg -q" not in build and "rg -q" not in run
+    assert "GYRE_OMIP_L2_P3/EXP00" in run
+    assert "RANKS=${RANKS:-1}" in run
+    result = _bash(f"RANKS=8 bash {TOOL / 'run_ahm.sh'}")
+    assert result.returncode == 64
+    assert "REFUSE_RANKS" in result.stderr

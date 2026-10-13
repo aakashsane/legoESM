@@ -434,9 +434,9 @@ def diagnose(provider: DailyProvider, *, target_start: int, target_days: int, ge
     # share NEMO's horizontal index space and are combined before optional
     # T-point interpolation.  Cell-centred velocity remains the input to the
     # spectrum and the separately named mean-magnitude field below.
-    native_speed2 = native_u[target] ** 2 + native_v[target] ** 2
+    target_native_speed2 = native_u[target] ** 2 + native_v[target] ** 2
     ke_series = (
-        np.sum(0.5 * native_speed2 * area, axis=(1, 2), dtype=np.float64)
+        np.sum(0.5 * target_native_speed2 * area, axis=(1, 2), dtype=np.float64)
         / area_sum
     )
     u_hp = native_u - uniform_filter1d(
@@ -467,7 +467,11 @@ def diagnose(provider: DailyProvider, *, target_start: int, target_days: int, ge
         spectrum += e
     mean_sst = np.mean(sst[target], axis=0)
     mean_speed = np.mean(np.sqrt(u[target] ** 2 + v[target] ** 2), axis=0)
-    rms_native_speed = np.sqrt(np.mean(native_speed2, axis=0))
+    # The 15-day lead exists only to center the 31-day high-pass filter.  It is
+    # not part of the scored year for any unfiltered climatology.  Averaging
+    # a full-context speed-square over ``raw`` here used 380 days for year 5
+    # and moved 9,599 wet pixels in the independent review.
+    rms_native_speed = np.sqrt(np.mean(target_native_speed2, axis=0))
     return {
         "basin_mean_ke_series_m2_s2": ke_series,
         "window_mean_basin_ke_m2_s2": np.asarray(mean_ke),

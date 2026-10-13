@@ -81,3 +81,31 @@ def test_shared_tracer_stage_reader_accepts_runtime_dimensions(tmp_path):
     record = GATE.read_tracer_stage12(path, 1, dims=dims)
     assert record["after_advection_T"].shape == (2, 2, 2)
     assert record["after_sbc_S"].shape == (2, 2, 2)
+
+
+def test_ahm_and_dynldf_readers_validate_headers_and_staggering(tmp_path):
+    dims = (6, 6, 3)
+    count = int(np.prod(dims))
+    ahm_path = tmp_path / "oracle_ahm_kt00000002.bin"
+    with ahm_path.open("wb") as stream:
+        stream.write(b"NEMO_L4_AHMTF__1")
+        stream.write(struct.pack("=7i", 1, 2, 3, *dims, 64))
+        np.arange(2 * count, dtype=np.float64).tofile(stream)
+    ahm = GATE.read_ahm(ahm_path, expected_kt=2, dims=dims)
+    assert ahm["ahmt"].shape == (2, 2, 2)
+    assert ahm["ahmf"].shape == (3, 3, 2)
+    assert np.all(ahm["ahmf"][0] == 0.0)
+
+    dyn_path = tmp_path / "oracle_dynldf_kt00000002.bin"
+    with dyn_path.open("wb") as stream:
+        stream.write(b"NEMO_L4_DYNLDF_1")
+        stream.write(struct.pack("=10i", 1, 2, 3, 3, 2, 1, *dims, 64))
+        np.arange(4 * count, dtype=np.float64).tofile(stream)
+    dyn = GATE.read_dynldf(dyn_path, expected_kt=2, dims=dims)
+    assert dyn["u_before"].shape == (2, 2, 2)
+    assert dyn["Kbb"] == 3 and dyn["Kmm"] == 2 and dyn["Krhs"] == 1
+
+    bad = tmp_path / "bad.bin"
+    bad.write_bytes(ahm_path.read_bytes().replace(b"NEMO_L4_AHMTF__1", b"NEMO_L4_AHMTF__X", 1))
+    with np.testing.assert_raises_regex(ValueError, "magic"):
+        GATE.read_ahm(bad, expected_kt=2, dims=dims)

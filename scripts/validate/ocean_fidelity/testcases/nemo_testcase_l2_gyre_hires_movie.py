@@ -45,11 +45,15 @@ def movie_fields(frame: DailyFrame, geom: dict, grid) -> dict[str, np.ndarray]:
 
 def common_scales(providers, geom: dict, grid) -> dict[str, tuple[float, float]]:
     ranges: dict[str, list[float]] = {}
+    wet = np.asarray(geom["wet"], dtype=bool)
+    require(wet.ndim == 2 and np.any(wet), "movie wet mask is empty or invalid")
     for provider in providers:
         for frame in provider.iterate():
             for name, value in movie_fields(frame, geom, grid).items():
-                finite = value[np.isfinite(value)]
-                require(finite.size > 0, f"{name}: no finite movie pixels")
+                require(value.shape == wet.shape, f"{name}: movie field shape differs")
+                require(np.all(np.isfinite(value[wet])),
+                        f"{name}: non-finite wet movie pixel")
+                finite = value[wet]
                 if name not in ranges:
                     ranges[name] = [float(np.min(finite)), float(np.max(finite))]
                 else:

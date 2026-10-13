@@ -3307,6 +3307,7 @@ def _bc_horizontal_viscosity(
     du_dt, dv_dt, u, v, grid, mask, u_mask, v_mask, config, z_coord, H_bathy, dt,
     rho_prime=None, h_k=None, ldf_thickness_operands=None,
     ldf_metric_reciprocal_operands=None,
+    nemo_smagorinsky_coefficient_override=None,
     vertex_mask=None,
 ):
     """Stages 10 + 10b: horizontal viscosity (A_h Laplacian + B_h biharmonic +
@@ -3470,6 +3471,11 @@ def _bc_horizontal_viscosity(
             f"operator's ahmt/ahmf come from); got "
             f"lateral_viscosity_operator={_visc_op!r}"
         )
+    if (nemo_smagorinsky_coefficient_override is not None
+            and _ahm_source != "nemo_smag_blp"):
+        raise ValueError(
+            "NEMO Smagorinsky coefficient override requires "
+            "lateral_viscosity_coefficient_source='nemo_smag_blp'")
     _use_flux_div = _visc_op == "flux_divergence"
     _use_nemo_div_curl = _visc_op == "nemo_div_curl"
     _kdiss_fluxdiv_cell = None  # set by the flux-div A_h branch when _want_kdiss_flux
@@ -3517,10 +3523,25 @@ def _bc_horizontal_viscosity(
                 in_axes=-1, out_axes=-1)(_cell3)
             if vertex_mask is not None:
                 _visc_vmask = _visc_vmask * vertex_mask[..., jnp.newaxis]
-        _ahmt, _ahmf = nemo_smagorinsky_bilaplacian_coefficients_cgrid(
-            u, v, grid, lv.C_smag, dt,
-            minfac=1.0, maxfac=1.0, mask=mask, cell_mask=_cell3,
-            u_mask=u_mask, v_mask=v_mask, vertex_mask=_visc_vmask)
+        if nemo_smagorinsky_coefficient_override is None:
+            _ahmt, _ahmf = nemo_smagorinsky_bilaplacian_coefficients_cgrid(
+                u, v, grid, lv.C_smag, dt,
+                minfac=1.0, maxfac=1.0, mask=mask, cell_mask=_cell3,
+                u_mask=u_mask, v_mask=v_mask, vertex_mask=_visc_vmask)
+        else:
+            if (not isinstance(nemo_smagorinsky_coefficient_override, tuple)
+                    or len(nemo_smagorinsky_coefficient_override) != 2):
+                raise ValueError(
+                    "NEMO Smagorinsky coefficient override must be an "
+                    "(ahmt, ahmf) tuple")
+            _ahmt, _ahmf = (
+                jnp.asarray(value)
+                for value in nemo_smagorinsky_coefficient_override)
+            expected = (_cell3.shape, _visc_vmask.shape)
+            if (_ahmt.shape, _ahmf.shape) != expected:
+                raise ValueError(
+                    "NEMO Smagorinsky coefficient override shapes differ: "
+                    f"{(_ahmt.shape, _ahmf.shape)} != {expected}")
         diag_Cs_smag_u, diag_Cs_smag_v = (
             nemo_smagorinsky_bilaplacian_tendency_e3_cgrid(
                 u, v, grid, _ahmt, _ahmf, h_k,
@@ -5135,6 +5156,7 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
     momentum_flux_face_thickness=None,
     ldf_thickness_operands=None,
     ldf_metric_reciprocal_operands=None,
+    nemo_smagorinsky_coefficient_override=None,
     ene_metric_reciprocals=None,
     ene_generic_f_vtx=False,
     legacy_hpg_algebraic=False,
@@ -5700,6 +5722,8 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
             rho_prime=rho_prime, h_k=h_k,
             ldf_thickness_operands=ldf_thickness_operands,
             ldf_metric_reciprocal_operands=ldf_metric_reciprocal_operands,
+            nemo_smagorinsky_coefficient_override=(
+                nemo_smagorinsky_coefficient_override),
             vertex_mask=vertex_mask,
         )
     _nemo_after_ldf_u = du_dt

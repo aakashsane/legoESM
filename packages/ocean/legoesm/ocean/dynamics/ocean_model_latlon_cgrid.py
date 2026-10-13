@@ -1388,6 +1388,11 @@ class _NEMOWSRK3TestHooks(NamedTuple):
     # of the stage-3 divergence.  The ordinary step still completes before
     # either array is substituted into the returned diagnostic state.
     expose_stage3_momentum_rhs: str = ""
+    # Private Rule-12 discriminator: replace mode-32's completed ahmt/ahmf
+    # pair at the dyn_ldf call boundary.  This is not a model configuration
+    # selector; the r4_smag ladder uses it only with NEMO's recorded pair to
+    # split coefficient ownership from the two-pass bilaplacian operator.
+    smagorinsky_coefficient_override: object = None
     # WRITE-only stage-3 raw-Kaa gauge.  Publish the completed implicit
     # vertical-mixing result immediately before the deferred barotropic
     # replacement (stprk3_stg.F90:430-448).  The ordinary step and replacement
@@ -5403,6 +5408,7 @@ class LatLonCGridOceanModel:
                    momentum_flux_face_thickness=None,
                    ldf_thickness_operands=None,
                    ldf_metric_reciprocal_operands=None,
+                   nemo_smagorinsky_coefficient_override=None,
                    ene_metric_reciprocals=None,
                    ene_generic_f_vtx=False,
                    legacy_hpg_algebraic=False,
@@ -5465,6 +5471,8 @@ class LatLonCGridOceanModel:
             momentum_flux_face_thickness=momentum_flux_face_thickness,
             ldf_thickness_operands=ldf_thickness_operands,
             ldf_metric_reciprocal_operands=ldf_metric_reciprocal_operands,
+            nemo_smagorinsky_coefficient_override=(
+                nemo_smagorinsky_coefficient_override),
             ene_metric_reciprocals=ene_metric_reciprocals,
             ene_generic_f_vtx=ene_generic_f_vtx,
             legacy_hpg_algebraic=legacy_hpg_algebraic,
@@ -6565,6 +6573,9 @@ class LatLonCGridOceanModel:
                                          ) else stage_face_thickness),
                                      ldf_thickness_operands=(
                                          _stage_ldf_thickness),
+                                     nemo_smagorinsky_coefficient_override=(
+                                         self._nemo_ws_test_hooks
+                                         .smagorinsky_coefficient_override),
                                      ene_generic_f_vtx=(
                                          self._nemo_ws_test_hooks
                                          .legacy_ene_vertex_coriolis),

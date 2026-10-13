@@ -28,10 +28,26 @@ def test_common_scales_are_shared_and_signed_fields_are_symmetric(monkeypatch):
         "SST (C)": np.array([[8.0, 12.0]]),
     }
     monkeypatch.setattr(MOVIE, "movie_fields", lambda *args: values)
-    scales = MOVIE.common_scales(providers, {}, object())
+    scales = MOVIE.common_scales(
+        providers, {"wet": np.ones((1, 2), dtype=bool)}, object())
     assert scales["relative vorticity / f"] == (-2.0, 2.0)
     assert scales["SSH (m)"] == (-3.0, 3.0)
     assert scales["surface speed (m/s)"] == (0.0, 4.0)
+
+
+def test_common_scales_refuses_a_derived_nan_on_a_wet_pixel(monkeypatch):
+    frames = [MOVIE.DailyFrame(1, *(np.ones((1, 2)) for _ in range(4)))]
+    provider = type("P", (), {"iterate": lambda self: iter(frames)})()
+    values = {
+        "relative vorticity / f": np.array([[0.0, np.nan]]),
+        "SSH (m)": np.ones((1, 2)),
+        "surface speed (m/s)": np.ones((1, 2)),
+        "SST (C)": np.ones((1, 2)),
+    }
+    monkeypatch.setattr(MOVIE, "movie_fields", lambda *args: values)
+    with np.testing.assert_raises_regex(Exception, "non-finite wet movie pixel"):
+        MOVIE.common_scales(
+            (provider,), {"wet": np.ones((1, 2), dtype=bool)}, object())
 
 
 def test_render_frame_has_encoder_shape(monkeypatch):

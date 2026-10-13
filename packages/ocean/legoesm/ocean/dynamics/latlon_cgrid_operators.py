@@ -1914,7 +1914,10 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
     u_mask: jnp.ndarray | None = None,
     v_mask: jnp.ndarray | None = None,
     vertex_mask: jnp.ndarray | None = None,
-) -> tuple[jnp.ndarray, jnp.ndarray]:
+    return_diagnostics: bool = False,
+) -> tuple[jnp.ndarray, jnp.ndarray] | tuple[
+    jnp.ndarray, jnp.ndarray, dict[str, jnp.ndarray]
+]:
     r"""NEMO mode-32 Smagorinsky bilaplacian ``ahmt``/``ahmf``.
 
     This is the compiled GYRE arm of NEMO 5.0.2 ``ldfdyn.f90``: the grid
@@ -2029,7 +2032,7 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
         + r(dshesq[:-1, 1:] + dshesq[1:, 1:])))
     deform_t = safe_sqrt(r(dtensq + dsh_t))
     zdelta_t = r(zcmsmag * esqt)
-    ahmt_lap = r(_b(zdelta_t) * deform_t)
+    ahmt_unclamped = r(_b(zdelta_t) * deform_t)
     speed_t = r(
         r(r(u_live[:, 1:] * u_live[:, 1:])
           + r(v_live[1:] * v_live[1:]))
@@ -2037,7 +2040,8 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
             + r(v_live[:-1] * v_live[:-1])))
     lower_t = safe_sqrt(r(speed_t * _b(zdelta_t) * zstab_lo))
     upper_t = _b(r(zdelta_t * zstab_up))
-    ahmt_lap = jnp.minimum(jnp.maximum(ahmt_lap, lower_t), upper_t)
+    ahmt_after_lower = jnp.maximum(ahmt_unclamped, lower_t)
+    ahmt_lap = jnp.minimum(ahmt_after_lower, upper_t)
 
     dt_w = jnp.roll(dtensq, 1, axis=1)
     dt_pad = pad_ns_zero(dtensq)
@@ -2048,7 +2052,7 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
     dt_f = jnp.concatenate([dt_f_core, dt_f_core[:, :1]], axis=1)
     deform_f = safe_sqrt(r(dshesq + dt_f))
     zdelta_f = r(zcmsmag * esqf)
-    ahmf_lap = r(_b(zdelta_f) * deform_f)
+    ahmf_unclamped = r(_b(zdelta_f) * deform_f)
 
     u_pad = pad_ns_zero(u_live)
     u_south, u_north = u_pad[:-1], u_pad[1:]
@@ -2060,10 +2064,27 @@ def nemo_smagorinsky_bilaplacian_coefficients_cgrid(
         + r(r(u_north * u_north) + r(v_east * v_east)))
     lower_f = safe_sqrt(r(speed_f * _b(zdelta_f) * zstab_lo))
     upper_f = _b(r(zdelta_f * zstab_up))
-    ahmf_lap = jnp.minimum(jnp.maximum(ahmf_lap, lower_f), upper_f)
+    ahmf_after_lower = jnp.maximum(ahmf_unclamped, lower_f)
+    ahmf_lap = jnp.minimum(ahmf_after_lower, upper_f)
 
     ahmt = safe_sqrt(r(0.125 * _b(esqt) * ahmt_lap)) * tmask
-    ahmf = safe_sqrt(r(0.125 * _b(esqf) * ahmf_lap)) * _b(fmask)
+    # ldfdyn.f90:521-534 is deliberately asymmetric here.  Unlike the
+    # time-independent initialisation at :387-394, mode 32 does *not* multiply
+    # the completed coefficient by fmask: dshesq was masked at :479-483, but
+    # the velocity lower limit at :503-513 remains live on the free-slip
+    # perimeter before the square-root conversion and halo exchange.  Those
+    # perimeter F coefficients are consumed by both passes of
+    # dynldf_lev_blp.f90:271-331.  Applying fmask again erases one complete
+    # boundary ring (400 F points on the r4 GYRE grid) and weakens the wall
+    # bilaplacian by O(1), while leaving the basin interior deceptively exact.
+    ahmf = safe_sqrt(r(0.125 * _b(esqf) * ahmf_lap))
+    if return_diagnostics:
+        return ahmt, ahmf, {
+            "t_lower_clamped": ahmt_unclamped < lower_t,
+            "t_upper_clamped": ahmt_after_lower > upper_t,
+            "f_lower_clamped": ahmf_unclamped < lower_f,
+            "f_upper_clamped": ahmf_after_lower > upper_f,
+        }
     return ahmt, ahmf
 
 

@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,66 @@ SPEC = importlib.util.spec_from_file_location("gyre_hires_climate", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 CLIMATE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CLIMATE)
+
+
+def _write_legoesm_provider_fixture(root: Path, *, mutation: str | None = None) -> Path:
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import GYRE_R4_SMAG_NAMELIST
+
+    run = root / "run"
+    run.mkdir(parents=True)
+    shape = CLIMATE.GLOBAL_SHAPE
+    values = np.ones(shape, dtype=np.float64)
+    if mutation == "nonfinite":
+        values[4, 5] = np.nan
+    day_value = 2 if mutation == "time-counter" else 1
+    dt_s = 1800.0 if mutation == "cadence" else 3600.0
+    daily = run / "day0001.npz"
+    np.savez_compressed(
+        daily,
+        day=np.int64(day_value), dt_s=np.float64(dt_s),
+        ssh_m_daily_mean=values,
+        surface_u_m_s_daily_mean=np.ones(shape),
+        surface_v_m_s_daily_mean=np.ones(shape),
+        surface_temperature_c_daily_mean=np.ones(shape),
+    )
+    if mutation == "file-sequence":
+        np.savez_compressed(run / "day0002.npz", day=np.int64(2))
+    namelist = GYRE_R4_SMAG_NAMELIST._asdict()
+    if mutation == "deck":
+        namelist = dict(namelist, nn_GYRE=3)
+    manifest = {
+        "schema": "legoesm-gyre-hires-daily-v1",
+        "status": "pending" if mutation == "manifest" else "complete",
+        "completed_days": 1,
+        "days": 1,
+        "sampling": ["end_of_day_snapshot", "daily_mean"],
+        "namelist": namelist,
+        "legoesm_git_sha": "a" * 40,
+        "mode": "gpu-native", "backend": "gpu",
+        "transcendentals": "native", "certified_policy": False,
+        "physical_gpu_index": 0,
+        "daily_mean_convention": {
+            "surface_temperature_c": CLIMATE.LEGOESM_SST_CONVENTION,
+        },
+        "daily_sha256": {
+            "day0001.npz": (
+                "0" * 64 if mutation == "digest" else CLIMATE.sha256(daily)
+            ),
+        },
+    }
+    (run / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    registry = {
+        "schema": "gyre-hires-registered-runs-v1",
+        "runs": {"test": {
+            "run_directory": str(run.resolve()), "commit": "a" * 40,
+            "deck": "r4_smag", "mode": "gpu-native", "backend": "gpu",
+            "transcendentals": "native", "certified_policy": False,
+            "physical_gpu_index": 0, "label": "test",
+        }},
+    }
+    registry_path = root / "registry.json"
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    return registry_path
 
 
 def test_domain_assembly_uses_one_based_xy_positions_and_refuses_overlap():
@@ -82,6 +143,10 @@ def test_diagnose_applies_native_velocity_highpass_and_registered_statistics(mon
     assert float(result["eddy_fraction"]) > 0.0
     assert float(result["window_mean_basin_ke_m2_s2"]) > 0.0
     assert np.all(result["time_mean_speed_m_s"][wet] == 0.0)
+    expected_rms = np.sqrt(np.mean(raw_u[15:35] ** 2 + raw_v[15:35] ** 2, axis=0))
+    assert np.allclose(result["time_mean_rms_native_speed_m_s"][wet], expected_rms[wet])
+    wrong_context_rms = np.sqrt(np.mean(raw_u ** 2 + raw_v ** 2, axis=0))
+    assert np.any(expected_rms[wet] != wrong_context_rms[wet])
     assert float(result["ssh_zero_crossing_row"]) == 2.5
 
 
@@ -161,3 +226,35 @@ def test_report_only_pattern_comparison_uses_common_finite_support():
     assert score["bias"] == 1.5
     assert score["rmse"] == pytest.approx(np.sqrt(2.5))
     assert score["correlation"] == pytest.approx(1.0)
+
+
+def test_legoesm_provider_every_registered_refusal_fires(tmp_path):
+    """Manifest/deck/clock/sequence/digest/non-finite controls are executable."""
+    for mutation, pattern, iterate in (
+        ("manifest", "incomplete", False),
+        ("deck", "r4_smag", False),
+        ("cadence", "embedded clock", True),
+        ("time-counter", "embedded clock", True),
+        ("file-sequence", "file sequence", False),
+        ("digest", "digest mismatch", False),
+        ("nonfinite", "non-finite", True),
+    ):
+        root = tmp_path / mutation
+        registry = _write_legoesm_provider_fixture(root, mutation=mutation)
+        if iterate:
+            provider = CLIMATE.legoesm_npz_provider(
+                "test", 1, start_day=1, registry_path=registry)
+            with pytest.raises(Exception, match=pattern):
+                list(provider.iterate())
+        else:
+            with pytest.raises(Exception, match=pattern):
+                CLIMATE.legoesm_npz_provider(
+                    "test", 1, start_day=1, registry_path=registry)
+
+    # Positive control: the same fixture without a plant yields exactly one
+    # finite, correctly clocked day.  This keeps the refusals able to fail.
+    registry = _write_legoesm_provider_fixture(tmp_path / "clean")
+    provider = CLIMATE.legoesm_npz_provider(
+        "test", 1, start_day=1, registry_path=registry)
+    frames = list(provider.iterate())
+    assert len(frames) == 1 and frames[0].day == 1

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 import sys
 from pathlib import Path
 
@@ -38,6 +39,10 @@ DEFAULT_ORACLES = {
         "round2/oracle_gyre_r4_smag_stage/run"
     ),
 }
+DEFAULT_AHM_ROOT = Path(
+    "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/"
+    "round4/oracle_gyre_r4_smag_ahm/run"
+)
 FIELDS = ("T", "S", "u", "v", "ssh")
 
 
@@ -74,9 +79,94 @@ def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> d
     }
 
 
-def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
+def _full_xyz(values: np.ndarray, dims=NEMO_DIMS) -> np.ndarray:
+    nx, ny, nz = dims
+    return values.reshape((nx, ny, nz), order="F")[2:-2, 2:-2].transpose(1, 0, 2)
+
+
+def _native_f_to_vertex(native: np.ndarray) -> np.ndarray:
+    """Map NEMO F(i,j) to legoESM vertex[j+1,(i+1) mod nx]."""
+    ny, nx, nz = native.shape
+    result = np.zeros((ny + 1, nx + 1, nz), dtype=np.float64)
+    columns = (np.arange(nx + 1) - 1) % nx
+    result[1:] = native[:, columns]
+    return result
+
+
+def read_ahm(path: Path, *, expected_kt: int, dims=NEMO_DIMS) -> dict:
+    """Read the acquired post-ldf_dyn mode-32 coefficient pair."""
+    with path.open("rb") as handle:
+        magic = handle.read(16).decode("ascii")
+        version, kt, kbb, nx, ny, nz, bits = struct.unpack("=7i", handle.read(28))
+        values = np.fromfile(handle, dtype=np.float64)
+    if magic != "NEMO_L4_AHMTF__1":
+        raise ValueError(f"{path}: bad AHM magic")
+    if (version, kt, nx, ny, nz, bits) != (1, expected_kt, *dims, 64):
+        raise ValueError(f"{path}: bad AHM header")
+    count = nx * ny * nz
+    if values.size != 2 * count or not np.all(np.isfinite(values)):
+        raise ValueError(f"{path}: bad AHM payload")
+    return {
+        "kt": kt,
+        "Kbb": kbb,
+        "ahmt": _full_xyz(values[:count], dims)[..., :nz - 1],
+        "ahmf": _native_f_to_vertex(
+            _full_xyz(values[count:], dims))[..., :nz - 1],
+    }
+
+
+def read_dynldf(path: Path, *, expected_kt: int, dims=NEMO_DIMS) -> dict:
+    """Read NEMO's stage-3 RHS immediately before and after dyn_ldf."""
+    with path.open("rb") as handle:
+        magic = handle.read(16).decode("ascii")
+        header = struct.unpack("=10i", handle.read(40))
+        values = np.fromfile(handle, dtype=np.float64)
+    version, kt, stage, kbb, kmm, krhs, nx, ny, nz, bits = header
+    if magic != "NEMO_L4_DYNLDF_1":
+        raise ValueError(f"{path}: bad dyn_ldf magic")
+    if ((version, kt, stage, nx, ny, nz, bits)
+            != (1, expected_kt, 3, *dims, 64)):
+        raise ValueError(f"{path}: bad dyn_ldf header")
+    count = nx * ny * nz
+    if values.size != 4 * count or not np.all(np.isfinite(values)):
+        raise ValueError(f"{path}: bad dyn_ldf payload")
+    blocks = [
+        _full_xyz(block, dims)[..., :nz - 1]
+        for block in np.split(values, 4)
+    ]
+    return {
+        "kt": kt, "stage": stage, "Kbb": kbb, "Kmm": kmm, "Krhs": krhs,
+        "u_before": blocks[0], "v_before": blocks[1],
+        "u_after": blocks[2], "v_after": blocks[3],
+    }
+
+
+def mismatch_map(reference, candidate, regions: dict[str, np.ndarray], clamps) -> dict:
+    """Count bit differences by preregistered spatial/clamp class."""
+    reference = np.asarray(reference, dtype=np.float64)
+    candidate = np.asarray(candidate, dtype=np.float64)
+    unequal = reference.view(np.uint64) != candidate.view(np.uint64)
+    mapped = {name: int(np.count_nonzero(unequal & mask))
+              for name, mask in regions.items()}
+    mapped.update({
+        "lower_clamped": int(np.count_nonzero(unequal & np.asarray(clamps[0]))),
+        "upper_clamped": int(np.count_nonzero(unequal & np.asarray(clamps[1]))),
+    })
+    mapped["all"] = int(np.count_nonzero(unequal))
+    return mapped
+
+
+def run(
+    oracle_root: Path, output: Path, *, deck: str = "r4",
+    ahm_root: Path = DEFAULT_AHM_ROOT,
+) -> dict:
     import jax
+    import jax.numpy as jnp
     from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.ocean.dynamics.latlon_cgrid_operators import (
+        compute_vertex_mask,
+        nemo_smagorinsky_bilaplacian_coefficients_cgrid,
+    )
     from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
         LatLonCGridOceanModel,
         _NEMOWSRK3TestHooks,
@@ -118,6 +208,18 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
     tracer_stage1_walk = []
     vertical_candidate = None
     barotropic_resolution_walk = None
+    smagorinsky_coefficients = []
+    smagorinsky_operator = None
+    ahm_records = {}
+    if deck == "r4_smag":
+        cell3 = (
+            np.asarray(card.recipe.z_coord.is_active, dtype=np.float64)
+            * np.asarray(state.land_mask.data)[..., None]
+        )
+        coefficient_vertex_mask = jax.vmap(
+            lambda level: compute_vertex_mask(level, grid=card.recipe.grid),
+            in_axes=-1, out_axes=-1,
+        )(jnp.asarray(cell3))
     for kt in range(1, 11):
         path = oracle_root / f"oracle_step_entry_kt{kt:08d}.bin"
         if not path.is_file():
@@ -149,9 +251,178 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
                     }
                 )
         steps.append({"kt": kt, "Nbb": oracle["Nbb"], "rows": rows})
+        if deck == "r4_smag" and kt in (2, 3):
+            ahm_path = ahm_root / f"oracle_ahm_kt{kt:08d}.bin"
+            if not ahm_path.is_file():
+                raise FileNotFoundError(f"ACQUISITION_NEEDED: {ahm_path}")
+            ahm = read_ahm(ahm_path, expected_kt=kt)
+            ahm_records[kt] = ahm
+            # Rule 12: score the changed coefficient on NEMO's own Kbb
+            # velocity input, not legoESM's already-diverged trajectory.
+            u_input = np.concatenate(
+                [np.zeros((oracle["u"].shape[0], 1, 30)), oracle["u"][..., :30]],
+                axis=1,
+            )
+            v_input = np.concatenate(
+                [np.zeros((1, oracle["v"].shape[1], 30)), oracle["v"][..., :30]],
+                axis=0,
+            )
+            got_t, got_f, diagnostics = (
+                nemo_smagorinsky_bilaplacian_coefficients_cgrid(
+                    jnp.asarray(u_input), jnp.asarray(v_input), card.recipe.grid,
+                    3.5, card.dt_s, mask=state.land_mask.data,
+                    cell_mask=jnp.asarray(cell3), u_mask=state.u_mask.data,
+                    v_mask=state.v_mask.data,
+                    vertex_mask=coefficient_vertex_mask,
+                    return_diagnostics=True,
+                )
+            )
+            got_t, got_f, diagnostics = host_and_clear(
+                (got_t, got_f, diagnostics))
+            full_t = np.ones_like(ahm["ahmt"], dtype=bool)
+            full_f = np.ones_like(ahm["ahmf"], dtype=bool)
+            spatial = np.any(ahm["ahmf"] != 0.0, axis=-1)
+            coords = np.argwhere(spatial)
+            if not coords.size:
+                raise ValueError(f"{ahm_path}: empty F coefficient support")
+            j0, i0 = coords.min(axis=0)
+            j1, i1 = coords.max(axis=0)
+            edge2 = spatial & (
+                (np.indices(spatial.shape)[0] == j0)
+                | (np.indices(spatial.shape)[0] == j1)
+                | (np.indices(spatial.shape)[1] == i0)
+                | (np.indices(spatial.shape)[1] == i1)
+            )
+            corner2 = spatial & (
+                ((np.indices(spatial.shape)[0] == j0)
+                 | (np.indices(spatial.shape)[0] == j1))
+                & ((np.indices(spatial.shape)[1] == i0)
+                   | (np.indices(spatial.shape)[1] == i1))
+            )
+            regions = {
+                "interior": np.broadcast_to((spatial & ~edge2)[..., None], full_f.shape),
+                "walls": np.broadcast_to((edge2 & ~corner2)[..., None], full_f.shape),
+                "corners": np.broadcast_to(corner2[..., None], full_f.shape),
+                "outside": np.broadcast_to((~spatial)[..., None], full_f.shape),
+            }
+            vertex_mask_host = np.asarray(coefficient_vertex_mask, dtype=np.float64)
+            legacy_f = got_f * vertex_mask_host
+            smagorinsky_coefficients.append({
+                "kt": kt,
+                "Kbb": ahm["Kbb"],
+                "NEMO_source": str(ahm_path),
+                "production": {
+                    "ahmt": exact_score(
+                        f"{case}.kt{kt}.ahmt", ahm["ahmt"], got_t, full_t),
+                    "ahmf": exact_score(
+                        f"{case}.kt{kt}.ahmf", ahm["ahmf"], got_f, full_f),
+                    "ahmf_mismatch_map": mismatch_map(
+                        ahm["ahmf"], got_f, regions,
+                        (diagnostics["f_lower_clamped"],
+                         diagnostics["f_upper_clamped"]),
+                    ),
+                },
+                "planted_old_fmask_defect": {
+                    "ahmf": exact_score(
+                        f"control.kt{kt}.legacy_fmask.ahmf",
+                        ahm["ahmf"], legacy_f, full_f),
+                    "ahmf_mismatch_map": mismatch_map(
+                        ahm["ahmf"], legacy_f, regions,
+                        (diagnostics["f_lower_clamped"],
+                         diagnostics["f_upper_clamped"]),
+                    ),
+                },
+                "support": {
+                    "NEMO_nonzero_T": int(np.count_nonzero(ahm["ahmt"])),
+                    "NEMO_nonzero_F": int(np.count_nonzero(ahm["ahmf"])),
+                    "binary_vertex_mask_nonzero": int(
+                        np.count_nonzero(vertex_mask_host)),
+                },
+            })
         freshwater, surface = gyre_surface_forcings(card, state, kt)
         state_before = state
         state = model.step(state_before, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+        if deck == "r4_smag" and kt == 2:
+            dyn_path = ahm_root / "oracle_dynldf_kt00000002.bin"
+            if not dyn_path.is_file():
+                raise FileNotFoundError(f"ACQUISITION_NEEDED: {dyn_path}")
+            dyn = read_dynldf(dyn_path, expected_kt=2)
+
+            def exposed_stage3_rhs(kind, coefficient_override=None):
+                diagnostic_model = LatLonCGridOceanModel(
+                    card.recipe.grid,
+                    card.recipe.z_coord,
+                    card.recipe.model_config,
+                    _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                        expose_stage3_momentum_rhs=kind,
+                        smagorinsky_coefficient_override=coefficient_override,
+                    ),
+                )
+                diagnostic = diagnostic_model.step(
+                    state_before, card.dt_s,
+                    freshwater=freshwater, surface_forcing=surface,
+                )
+                return host_and_clear(diagnostic)
+
+            ahm = ahm_records[2]
+            nemo_pair = (jnp.asarray(ahm["ahmt"]), jnp.asarray(ahm["ahmf"]))
+            legacy_pair = (
+                nemo_pair[0],
+                nemo_pair[1] * coefficient_vertex_mask,
+            )
+            pre = exposed_stage3_rhs("pre_ldf")
+            post_nemo = exposed_stage3_rhs("post_ldf", nemo_pair)
+            post_legacy = exposed_stage3_rhs("post_ldf", legacy_pair)
+            oracle_delta = {
+                "u": dyn["u_after"] - dyn["u_before"],
+                "v": dyn["v_after"] - dyn["v_before"],
+            }
+            nemo_delta = {
+                "u": lego_fields(post_nemo)["u"] - lego_fields(pre)["u"],
+                "v": lego_fields(post_nemo)["v"] - lego_fields(pre)["v"],
+            }
+            legacy_delta = {
+                "u": lego_fields(post_legacy)["u"] - lego_fields(pre)["u"],
+                "v": lego_fields(post_legacy)["v"] - lego_fields(pre)["v"],
+            }
+            substituted_rows = [
+                exact_score(
+                    f"{case}.kt2.stage3.dynldf.NEMO_coefficient.{field}",
+                    oracle_delta[field], nemo_delta[field], masks[field],
+                )
+                for field in ("u", "v")
+            ]
+            legacy_rows = [
+                exact_score(
+                    f"control.kt2.stage3.dynldf.legacy_fmask.{field}",
+                    oracle_delta[field], legacy_delta[field], masks[field],
+                )
+                for field in ("u", "v")
+            ]
+            substituted_max = max(row["max_abs"] for row in substituted_rows)
+            legacy_max = max(row["max_abs"] for row in legacy_rows)
+            smagorinsky_operator = {
+                "NEMO_source": str(dyn_path),
+                "stage": dyn["stage"],
+                "Kbb": dyn["Kbb"],
+                "Kmm": dyn["Kmm"],
+                "Krhs": dyn["Krhs"],
+                "changed_operand": (
+                    "stage-3 ahmt/ahmf only; the stage-1 production call is unchanged"
+                ),
+                "NEMO_coefficient_override": substituted_rows,
+                "planted_old_fmask_override": legacy_rows,
+                "owner": (
+                    "COEFFICIENT: erroneous final F-mask multiplication on mode 32"
+                    if substituted_max <= 1.0e-20 and legacy_max >= 1.0e-10
+                    else "UNRESOLVED"
+                ),
+                "residual_disposition": (
+                    "source-composition residue below 1e-20 m/s2"
+                    if substituted_max <= 1.0e-20 else
+                    "operator residual remains above the preregistered discriminator bar"
+                ),
+            }
         if kt == 1:
             state = host_and_clear(state)
             for stage in (1, 2):
@@ -497,6 +768,7 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
         "case": case,
         "deck": deck,
         "oracle_root": str(oracle_root),
+        "ahm_oracle_root": str(ahm_root) if deck == "r4_smag" else None,
         "policy": "fp64/x64/cpu/libm certified",
         "acceptance": "zero unequal active float64 values in every field/step",
         "namelist": namelist._asdict(),
@@ -506,6 +778,8 @@ def run(oracle_root: Path, output: Path, *, deck: str = "r4") -> dict:
         "tracer_stage1_walk": tracer_stage1_walk,
         "vertical_candidate": vertical_candidate,
         "barotropic_resolution_walk": barotropic_resolution_walk,
+        "smagorinsky_coefficients": smagorinsky_coefficients,
+        "smagorinsky_operator": smagorinsky_operator,
         "controls": controls,
         "verdict": "PASS" if passed else "DEBT",
     }
@@ -518,10 +792,14 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck", choices=tuple(DEFAULT_ORACLES), default="r4")
     parser.add_argument("--oracle-root", type=Path)
+    parser.add_argument("--ahm-root", type=Path, default=DEFAULT_AHM_ROOT)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        report = run(args.oracle_root or DEFAULT_ORACLES[args.deck], args.output, deck=args.deck)
+        report = run(
+            args.oracle_root or DEFAULT_ORACLES[args.deck], args.output,
+            deck=args.deck, ahm_root=args.ahm_root,
+        )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2

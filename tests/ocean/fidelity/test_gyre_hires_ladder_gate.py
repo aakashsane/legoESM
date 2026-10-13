@@ -136,9 +136,9 @@ def test_scalar_first_owner_discriminator_scores_increment_and_narrow_override()
     assert 'control.material_rhs_override' in source
     assert 'control.material_zFw_override' in source
     assert 'source_order_accumulation_rows' in source
-    assert 'stage3_temperature_boundary_rows' in source
+    assert 'posthoc_stage3_temperature_replay_rows' in source
     assert '--stage3-geometry-only' in source
-    assert 'REFERENCE_THICKNESS_FLOATING_COMPOSITION' in source
+    assert 'UNMEASURED_EXECUTED_TRAZDF_OPERANDS' in source
 
 
 def test_wind_expression_arms_preserve_compiled_association_and_reciprocal():

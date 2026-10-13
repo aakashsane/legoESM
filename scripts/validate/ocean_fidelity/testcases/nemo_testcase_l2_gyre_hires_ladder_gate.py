@@ -1537,9 +1537,10 @@ def run_stage2_composition_only(
     ]
     zfw_effect_fired = any(row["n_unequal"] > 0 for row in zfw_effect_rows)
 
-    # Exhaust the already-acquired step-1 temperature record before asking
-    # for step-2 operands. NEMO stores RHS accumulators; convert each one to
-    # the same after-level concentration returned by the process trace.
+    # Post-hoc diagnostic only. NEMO stores RHS accumulators, so these rows
+    # algebraically convert them to the concentration returned by legoESM's
+    # process trace. They do NOT reproduce the executed tra_zdf composition,
+    # which retains e3t_0 in its RHS and tridiagonal solve.
     tracer_stage3 = read_tracer_stage3_hires(
         oracle_root / "oracle_rktracer_stage3_kt00000001.bin",
         dims=NEMO_DIMS,
@@ -1580,7 +1581,7 @@ def run_stage2_composition_only(
     }
     temperature_boundary_rows = [
         exact_score(
-            f"GYRE-zco-r4.kt1.stage3.temperature.{name}",
+            f"GYRE-zco-r4.kt1.stage3.posthoc_temperature.{name}",
             oracle_temperature_boundaries[name],
             candidate_temperature_boundaries[name], masks["T"],
         )
@@ -1629,8 +1630,8 @@ def run_stage2_composition_only(
                 "zub/zvb have not yet been substituted"
             ),
         },
-        "stage3_temperature_boundary_rows": temperature_boundary_rows,
-        "first_nonexact_temperature_boundary": (
+        "posthoc_stage3_temperature_replay_rows": temperature_boundary_rows,
+        "first_nonexact_posthoc_temperature_replay": (
             None if first_temperature_debt is None else {
                 "name": first_temperature_debt["name"],
                 "max_abs": first_temperature_debt["max_abs"],
@@ -1654,7 +1655,7 @@ def run_stage2_composition_only(
 def run_stage3_geometry_only(
     oracle_root: Path, output: Path, *, math_flavour: str = "scalar",
 ) -> dict:
-    """Split the first stage-3 temperature boundary into inputs/composition."""
+    """Bound a post-hoc ratio replay; do not call it executed NEMO arithmetic."""
     import jax
     from legoesm.core.precision import PrecisionPolicy, set_policy
     from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
@@ -1740,13 +1741,11 @@ def run_stage3_geometry_only(
     plant = exact_score(
         "control.one_ulp.q_Kbb_replay",
         literal_ratio, planted_literal, mask3)
-    owner_localized = (
+    replay_bounded = (
         all(row["status"] == "AT-BAR" for row in operand_rows)
         and composition_rows[0]["status"] == "AT-BAR"
-        and composition_rows[1]["status"] == "DEBT"
         and composition_rows[2]["status"] == "AT-BAR"
-        and plant["status"] == "DEBT"
-    )
+        and plant["status"] == "DEBT")
     report = {
         "format": "nemo-testcase-l2-gyre-r4-stage3-geometry-v1",
         "worktree": worktree_stamp(),
@@ -1765,11 +1764,13 @@ def run_stage3_geometry_only(
                 "index": list(plant_index),
             },
         },
-        "owner": (
-            "REFERENCE_THICKNESS_FLOATING_COMPOSITION"
-            if owner_localized else "OPEN"
+        "interpretation": (
+            "POSTHOC_RATIO_REPLAY_ONLY: compiled trazdf.f90:284-289 "
+            "retains e3t_0 in the executed RHS; the current record does not "
+            "contain its matrix/RHS operands"
         ),
-        "verdict": "OWNER_LOCALIZED" if owner_localized else "DEBT",
+        "owner": "UNMEASURED_EXECUTED_TRAZDF_OPERANDS",
+        "verdict": "REPORT_ONLY" if replay_bounded else "DEBT",
     }
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))
@@ -1815,7 +1816,7 @@ def main(argv=None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     return 0 if report["verdict"] in (
-        "PASS", "RAW_UPDATE_AT_BAR", "OWNER_LOCALIZED") else 1
+        "PASS", "RAW_UPDATE_AT_BAR", "REPORT_ONLY") else 1
 
 
 if __name__ == "__main__":

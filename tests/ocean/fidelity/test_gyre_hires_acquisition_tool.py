@@ -245,3 +245,8 @@ def test_scalar_step2_acquisition_preflight_pins_one_rank_and_scalar_math():
     assert "work_cfgs.txt" in text
     assert "mpirun -np 1" in text
     assert "rg " not in text
+    assert "SOURCE_ZDF_SHA=" in text and "PATCHED_ZDF_SHA=" in text
+    assert "trazdf_round35.patch" in text
+    assert "trazdf_round38_kt2.patch" in text
+    assert "oracle_trazdf_matrix_kt00000001.bin" in text
+    assert "oracle_trazdf_matrix_kt00000002.bin" in text

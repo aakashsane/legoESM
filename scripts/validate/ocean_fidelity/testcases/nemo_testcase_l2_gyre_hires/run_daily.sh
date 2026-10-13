@@ -2,20 +2,41 @@
 set -Eeuo pipefail
 
 do_run=0
-[[ $# -eq 0 ]] || [[ $# -eq 1 && $1 == --run ]] || {
-  printf 'REFUSE_USAGE: expected [--run]\n' >&2; exit 64; }
-[[ $# -eq 0 ]] || do_run=1
+math_flavour=vector
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --run) do_run=1 ;;
+    --math-flavour)
+      [[ $# -ge 2 ]] || { printf 'REFUSE_USAGE: --math-flavour needs a value\n' >&2; exit 64; }
+      math_flavour=$2
+      shift
+      ;;
+    *) printf 'REFUSE_USAGE: expected [--math-flavour vector|scalar] [--run]\n' >&2; exit 64 ;;
+  esac
+  shift
+done
+case $math_flavour in
+  vector)
+    readonly WRITER_NAME=GYRE_OMIP_L2_P3_DAILY
+    readonly DEFAULT_ROUND=round6/oracle_gyre_r4_smag_daily_stage
+    ;;
+  scalar)
+    readonly WRITER_NAME=GYRE_OMIP_L2_P3_SMW_DAILY
+    readonly DEFAULT_ROUND=round7/oracle_gyre_r4_smag_daily_stage_scalar
+    ;;
+  *) printf 'REFUSE_MATH_FLAVOUR: expected vector or scalar\n' >&2; exit 64 ;;
+esac
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 . "$here/deck.sh"
 gyre_hires_select_deck r4_smag "$here"
 readonly NEMO_ROOT=${NEMO_ROOT:-/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2}
-readonly SOURCE_CFG=$NEMO_ROOT/cfgs/GYRE_OMIP_L2_P3_DAILY
+readonly SOURCE_CFG=$NEMO_ROOT/cfgs/$WRITER_NAME
 readonly WRITER=$SOURCE_CFG/BLD/bin/nemo.exe
 readonly COMPILED_STEPPER=$SOURCE_CFG/BLD/ppsrc/nemo/stprk3.f90
 readonly BASE_EXP00=$NEMO_ROOT/cfgs/GYRE_OMIP_L2_P3/EXP00
 readonly DURATION_PATCH=$here/namelist_cfg_r4_smag_30d.patch
-readonly EVIDENCE=${EVIDENCE:-/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round6/oracle_gyre_r4_smag_daily_stage}
+readonly EVIDENCE=${EVIDENCE:-/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/$DEFAULT_ROUND}
 readonly RANKS=${RANKS:-1}
 [[ $RANKS == 1 ]] || {
   printf 'REFUSE_RANKS: stage dumps are lwp-only and ungathered; RANKS must be 1\n' >&2
@@ -49,10 +70,14 @@ patch -s --fuzz=0 "$dry/namelist_cfg" <"$DURATION_PATCH"
    && $(gyre_hires_namelist_value "$dry/namelist_cfg" nn_write) == 24 ]] || {
   printf 'REFUSE_DAILY_CLOCK: expected kt=1..721 and 24-step output\n' >&2; exit 68; }
 writer_hash=$(sha256sum "$WRITER" | awk '{print $1}')
-printf 'PREFLIGHT: deck=r4_smag cadence=kt1,25,...,721 ranks=1 evidence=%s writer_sha256=%s commit=%s\n' \
-  "$EVIDENCE" "$writer_hash" "$COMMIT"
+if [[ $math_flavour == scalar ]] && nm -D "$WRITER" | grep -q '_ZGV'; then
+  printf 'REFUSE_COMPILED_MATH: vector-math symbol in scalar writer\n' >&2; exit 68
+fi
+printf 'PREFLIGHT: deck=r4_smag math_flavour=%s cadence=kt1,25,...,721 ranks=1 evidence=%s writer_sha256=%s commit=%s\n' \
+  "$math_flavour" "$EVIDENCE" "$writer_hash" "$COMMIT"
 if [[ $do_run -ne 1 ]]; then
-  printf 'WOULD_RUN: EVIDENCE=%s RANKS=1 %s --run\nPREFLIGHT_OK\n' "$EVIDENCE" "$0"
+  printf 'WOULD_RUN: EVIDENCE=%s RANKS=1 %s --math-flavour %s --run\nPREFLIGHT_OK\n' \
+    "$EVIDENCE" "$0" "$math_flavour"
   exit 0
 fi
 
@@ -65,6 +90,7 @@ for xml in "$BASE_EXP00"/*.xml; do
 done
 cp "$WRITER" "$EVIDENCE/run/nemo"
 printf '%s\n' "$COMMIT" >"$EVIDENCE/manifest/legoesm_commit"
+printf '%s\n' "$math_flavour" >"$EVIDENCE/manifest/math_flavour"
 gyre_hires_write_resolved_namelist "$EVIDENCE/run/namelist_cfg" \
   "$EVIDENCE/manifest/resolved_namelist_lines.txt"
 sha256sum "$EVIDENCE/run/nemo" "$EVIDENCE/run/namelist_cfg" \

@@ -180,3 +180,65 @@ def test_daily_writer_builder_read_only_preflight_applies_pinned_patch():
     assert result.returncode == 0, result.stderr
     assert "GYRE_OMIP_L2_P3_DAILY" in result.stdout
     assert "PREFLIGHT_OK" in result.stdout
+
+
+def test_scalar_daily_writer_preflight_uses_scalar_parent_and_arch():
+    result = subprocess.run(
+        ["bash", str(TOOL / "build_daily_writer.sh"),
+         "--math-flavour", "scalar"],
+        check=False, text=True, capture_output=True, cwd=ROOT)
+    assert result.returncode == 0, result.stderr
+    assert "source=GYRE_OMIP_L2_P3_SMW" in result.stdout
+    assert "target=GYRE_OMIP_L2_P3_SMW_DAILY" in result.stdout
+    assert "arch=conda-scalarmath" in result.stdout
+    assert "PREFLIGHT_OK" in result.stdout
+
+
+def test_daily_operator_recipe_has_explicit_math_flavour_and_scalar_evidence():
+    build = (TOOL / "build_daily_writer.sh").read_text()
+    run = (TOOL / "run_daily.sh").read_text()
+    assert "--math-flavour vector|scalar" in build
+    assert "--math-flavour vector|scalar" in run
+    assert "GYRE_OMIP_L2_P3_SMW_DAILY" in build
+    assert "GYRE_OMIP_L2_P3_SMW_DAILY" in run
+    assert "round7/oracle_gyre_r4_smag_daily_stage_scalar" in run
+
+
+def test_scalar_step2_writer_widens_only_instrumented_boundaries(tmp_path):
+    source = Path(
+        "/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2/"
+        "cfgs/GYRE_OMIP_L2_P3_SMW/MY_SRC"
+    )
+    if not source.is_dir():
+        import pytest
+        pytest.skip("local scalar P3 writer source is unavailable")
+    for name in ("stprk3.F90", "stprk3_stg.F90"):
+        shutil.copy(source / name, tmp_path / name)
+    with (TOOL / "gyre_p3_scalar_step2_writer.patch").open("rb") as patch:
+        result = subprocess.run(
+            ["patch", "-s", "--fuzz=0", "-d", str(tmp_path), "-p1"],
+            stdin=patch, check=False, capture_output=True)
+    assert result.returncode == 0, result.stderr.decode()
+    step = (tmp_path / "stprk3.F90").read_text()
+    stage = (tmp_path / "stprk3_stg.F90").read_text()
+    assert step.count("CALL l1_dump_stage") == 3
+    assert step.count("kstp <= nit000 + 1 )   CALL l1_dump_stage") == 3
+    assert 'oracle_zdf_entry_kt",I8.8' in step
+    assert 'oracle_qsr_stage3_kt",I8.8' in stage
+    assert 'oracle_rktracer_stage3_kt",I8.8' in stage
+    assert 'oracle_tracer_transport_kt",I8.8' in stage
+
+
+def test_scalar_step2_acquisition_preflight_pins_one_rank_and_scalar_math():
+    script = TOOL / "acquire_scalar_step2.sh"
+    result = subprocess.run(
+        ["bash", str(script)], check=False, text=True,
+        capture_output=True, cwd=ROOT)
+    assert result.returncode == 0, result.stderr
+    assert "arch=conda-scalarmath ranks=1" in result.stdout
+    assert "PREFLIGHT_OK" in result.stdout
+    text = script.read_text()
+    assert '-d "OCE"' in text
+    assert "work_cfgs.txt" in text
+    assert "mpirun -np 1" in text
+    assert "rg " not in text

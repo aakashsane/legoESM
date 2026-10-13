@@ -32,3 +32,16 @@ def test_daily_gate_preregisters_exact_bar_and_acquisition_root():
     assert "round6/oracle_gyre_r4_smag_daily_stage/run" in str(
         GATE.DEFAULT_ORACLE_ROOT)
     assert GATE.STEPS_PER_DAY == 24 and GATE.NDAYS == 30
+
+
+def test_daily_vector_oracle_admission_checks_all_boundaries():
+    admission = GATE.admit_daily_oracle(GATE.DEFAULT_ORACLE_ROOT, "vector")
+    entries = [name for name in admission["checked_files"]
+               if name.startswith("oracle_step_entry_")]
+    assert len(entries) == 31
+    assert admission["math_flavour"] == "vector"
+
+
+def test_daily_oracle_refuses_unregistered_scalar_flavour():
+    with pytest.raises(ValueError, match="unregistered daily oracle"):
+        GATE.admit_daily_oracle(GATE.DEFAULT_ORACLE_ROOT, "scalar")

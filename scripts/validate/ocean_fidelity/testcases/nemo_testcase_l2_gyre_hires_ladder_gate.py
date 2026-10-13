@@ -954,19 +954,27 @@ def run(
                     )
                 math_program = compiled_usrdef_math_program(
                     oracle_root / "nemo", expected_flavour=math_flavour)
+                if math_flavour == "scalar":
+                    wind_owner = (
+                        "CLOSED_FOR_SCALAR_ORACLE: production slow and NEMO's "
+                        "written left-associated expression are bit-exact; the "
+                        "right-associated and reciprocal-first controls differ. "
+                        "The admitted usrdef_sbc routine calls scalar libm sin."
+                    )
+                else:
+                    wind_owner = (
+                        "UPSTREAM_TAU_POLICY: production slow equals the "
+                        "reconstructed left-associated scalar-libm composite, "
+                        "but remains in debt to NEMO because the admitted "
+                        "usrdef_sbc routine calls GNU vector sin"
+                    )
                 barotropic_resolution_walk = {
                     "first_difference": first,
                     "term": (
                         "stp2d wind term (r1_rho0 * utau) * r1_hu_0, already "
                         "inside frozen Ue_rhs/Ve_rhs before dynspg_ts substep 1"
                     ),
-                    "raw_operand_ownership": (
-                        "UPSTREAM_TAU_POLICY: production slow equals the reconstructed "
-                        "left-associated scalar-libm composite, but all three product "
-                        "associations remain in debt to NEMO; r1rho and the rest-state "
-                        "stored/current depth reciprocals are bit-identical, while the "
-                        "admitted usrdef_sbc routine calls GNU vector sin"
-                    ),
+                    "raw_operand_ownership": wind_owner,
                     "rest_state_discriminator": {
                         "depth_only_u_max_abs": float(np.max(np.abs(depth_only_u))),
                         "depth_only_v_max_abs": float(np.max(np.abs(depth_only_v))),

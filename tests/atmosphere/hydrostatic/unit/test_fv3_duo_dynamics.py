@@ -1300,7 +1300,7 @@ def test_wall_default_surface_is_frozen():
 #
 # 2026-10-12, merging cf/main (207686288) into fu/composable-p2 (#1933): the
 # surface was dumped on both trees (job 10342193, fv3_duo_gaps/fu/p2/
-# merge1012/tests_r1/wall_*.txt). Same 386 paths; the ONLY differences are
+# merge1012/tests_r1/wall_*.txt). Same 385 paths; the ONLY differences are
 # P2's nine renames (commit 54e21adec), every default identical:
 #   dycore.fv3_duo_column_lane -> dycore.column_lane (False)
 #   mpas_ice_skin_prognostic -> ice_skin_prognostic (False)

@@ -1853,11 +1853,11 @@ class ModelDriver:
         if self._persistent_cgrid_active():
             # The native face winds, so a restart resumes them exactly (the
             # state itself is written at cell centres for every reader).
-            base[self._FACE_WIND_KEYS[0]] = self.state.u_f.data
-            base[self._FACE_WIND_KEYS[1]] = self.state.v_f.data
+            self._stage_native_winds(base, self._FACE_WIND_KEYS,
+                                     self.state.u_f.data, self.state.v_f.data)
         if self._persistent_dgrid_active():
-            base[self._CORNER_WIND_KEYS[0]] = self.state.u_d.data
-            base[self._CORNER_WIND_KEYS[1]] = self.state.v_d.data
+            self._stage_native_winds(base, self._CORNER_WIND_KEYS,
+                                     self.state.u_d.data, self.state.v_d.data)
         dm = self._double_moment_step_inputs()
         for k, v in dm.items():
             base[f"dmtr_{k}"] = v
@@ -7001,6 +7001,19 @@ class ModelDriver:
             "(u_f %s, v_f %s)", tuple(lifted.u_f.data.shape),
             tuple(lifted.v_f.data.shape))
 
+    @staticmethod
+    def _native_winds_digest(u, v) -> str:
+        """SHA-256 of the staggered winds as float32: the cell-centre check
+        cannot see a corruption that averages out (e.g. a checkerboard)."""
+        import hashlib
+        return hashlib.sha256(np.asarray(u, np.float32).tobytes()
+                              + np.asarray(v, np.float32).tobytes()).hexdigest()
+
+    def _stage_native_winds(self, base: dict, keys, u, v) -> None:
+        u, v = jax.device_get((u, v))
+        base[keys[0]], base[keys[1]] = u, v
+        base[keys[0] + "_sha256"] = np.asarray(self._native_winds_digest(u, v))
+
     def _refuse_staged_native_winds(self, keys, why: str) -> None:
         aux = self._carry_aux if isinstance(self._carry_aux, dict) else {}
         if any(aux.get(k) is not None for k in keys):
@@ -7010,7 +7023,7 @@ class ModelDriver:
 
     def _pop_native_winds(self, keys) -> None:
         if isinstance(self._carry_aux, dict):
-            for k in keys:
+            for k in (*keys, keys[0] + "_sha256"):
                 self._carry_aux.pop(k, None)
 
     def _resume_native_winds(self, lifted, keys, fields, to_cc, what: str):
@@ -7028,6 +7041,12 @@ class ModelDriver:
                 f"checkpoint carries only one of the {what} {keys}; refusing "
                 "to lift the other from cell centres and mix the two")
         if all(x is not None for x in saved):
+            digest = aux.get(keys[0] + "_sha256")
+            if (digest is not None
+                    and str(digest) != self._native_winds_digest(*saved)):
+                raise ValueError(
+                    f"checkpoint {what} do not match their saved SHA-256: the "
+                    "file was altered or corrupted")
             cur = [getattr(lifted, f).data for f in fields]
             new = [jnp.asarray(x) for x in saved]
             if any(a.shape != b.shape for a, b in zip(new, cur)):

@@ -121,8 +121,9 @@ def test_corner_winds_from_another_state_are_refused(leg1, corrupt):
     tmp, _b1, ckpt = leg1
     with np.load(ckpt, allow_pickle=True) as z:
         data = {k: z[k] for k in z.keys()}
-    key = next(k for k in data if "cube_u_d" in k)
+    key = next(k for k in data if k.endswith("cube_u_d"))
     data[key] = corrupt(data[key])
+    data.pop(key + "_sha256")       # a pre-digest file: the average check
     bad = tmp / "bad_checkpoint_day_0001.npz"
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_bad", 2))
@@ -132,3 +133,32 @@ def test_corner_winds_from_another_state_are_refused(leg1, corrupt):
         with pytest.raises(ValueError, match="do not average"):
             d._enter_persistent_dgrid()
         assert all(k in d._carry_aux for k in d._CORNER_WIND_KEYS)
+
+
+def test_corruption_that_averages_out_is_refused(leg1):
+    """A checkerboard on the corners cancels in the corner -> centre average,
+    so only the saved digest can catch it."""
+    tmp, _b1, ckpt = leg1
+    with np.load(ckpt, allow_pickle=True) as z:
+        data = {k: z[k] for k in z.keys()}
+    key = f"carry_{ModelDriver._CORNER_WIND_KEYS[0]}"
+    i = np.arange(data[key].shape[1])[:, None]
+    j = np.arange(data[key].shape[2])[None, :]
+    data[key] = data[key] + (np.where((i + j) % 2 == 0, 1.0, -1.0)[None, :, :, None]
+                             ).astype(data[key].dtype)
+    bad = tmp / "checker_checkpoint_day_0001.npz"
+    np.savez(bad, **data)
+    d = ModelDriver(_cfg(tmp / "leg2_checker", 2))
+    d.setup()
+    d.load_checkpoint(str(bad))
+    with pytest.raises(ValueError, match="SHA-256"):
+        d._enter_persistent_dgrid()
+
+
+def test_resume_with_the_flag_off_runs(leg1):
+    tmp, _b1, ckpt = leg1
+    c = _cfg(tmp / "leg2_off", 2)
+    d = ModelDriver(c._replace(dycore=c.dycore._replace(persistent_dgrid=False)))
+    d.setup()
+    step, day = d.load_checkpoint(ckpt)
+    assert d.run(start_step=step, start_day=day) == "COMPLETED"

@@ -127,8 +127,9 @@ def test_faces_from_another_state_are_refused(leg1, corrupt):
     tmp, b1, ckpt = leg1
     with np.load(ckpt, allow_pickle=True) as z:
         data = {k: z[k] for k in z.keys()}
-    key = next(k for k in data if "latlon_u_face" in k)
+    key = next(k for k in data if k.endswith("latlon_u_face"))
     data[key] = corrupt(data[key])
+    data.pop(key + "_sha256")       # a pre-digest file: the average check
     bad = tmp / "bad_checkpoint_day_0001.npz"
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_bad", 2))

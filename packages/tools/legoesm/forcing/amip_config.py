@@ -425,7 +425,7 @@ def load_checkpoint(
     for key in data.files:
         if key.startswith("carry_"):
             _name = key[6:]
-            if _name == "conv_prog_scheme":
+            if _name == "conv_prog_scheme" or _name.endswith("_sha256"):
                 # Scheme tag for the convection carry (issue #413) —
                 # a plain string, not a float array.
                 carry_aux[_name] = str(data[key])

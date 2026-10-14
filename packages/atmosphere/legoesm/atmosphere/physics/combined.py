@@ -1638,12 +1638,28 @@ def _make_spectral_pe_combined(
             # Each sub-cycled module is applied (state AND carry) before the
             # next one runs: CAM physics_update after clubb_tend_cam, then
             # microp_driver_tend on the updated state (physpkg.F90:2097-2101).
-            for _ in range(_n_macmic):
+            # lax.scan over the sub-cycles so the compiled program holds one
+            # copy of the sub-cycled modules, not _n_macmic.  The per-module
+            # results come back stacked and are summed afterwards in the
+            # original (cycle, module) order, which keeps the summation order,
+            # the last-wins carry merge and the first-template rule.
+            def _cycle(carry, _):
+                st_c, ps_c = carry
+                rs = []
                 for _f in sel["sub"]:
-                    r_sub = _ckpt((_f,), state_m, ps_m)
-                    state_m = _advance(state_m, r_sub, _dt_sub)
-                    ps_m = _carry_within_call(ps_m, r_sub[6])
-                    acc = _add_scaled(acc, r_sub, 1.0 / _n_macmic)
+                    r_sub = _ckpt((_f,), st_c, ps_c)
+                    st_c = _advance(st_c, r_sub, _dt_sub)
+                    ps_c = _carry_within_call(ps_c, r_sub[6])
+                    rs.append(r_sub)
+                return (st_c, ps_c), tuple(rs)
+
+            if sel["sub"]:
+                (state_m, ps_m), stacked = jax.lax.scan(
+                    _cycle, (state_m, ps_m), None, length=_n_macmic)
+                for i in range(_n_macmic):
+                    for ys in stacked:
+                        r_sub = jax.tree.map(lambda leaf: leaf[i], ys)
+                        acc = _add_scaled(acc, r_sub, 1.0 / _n_macmic)
             if groups[0] != "once" and sel["once"]:
                 acc = _add_scaled(acc, _accumulate(sel["once"], st, ps), 1.0)
             return acc

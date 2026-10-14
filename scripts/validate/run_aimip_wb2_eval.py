@@ -430,12 +430,14 @@ def _build_skeleton(variant, cfg, spec_cfg, grid):
             )
             _tier = cfg.get("aimip_trainable_schemes")
             _cloud = str(cfg.get("aimip_cloud", "xu_randall"))
+            _gwd = str(cfg.get("aimip_gwd", "mcfarlane"))
+            _micro = str(cfg.get(
+                "aimip_microphysics", _default_schemes()["microphysics"]))
             _keys = aimip_scheme_keys_for(
                 convection=str(cfg.get("aimip_convection", "tiedtke")),
                 turbulence=str(cfg.get("aimip_turbulence", "louis")),
-                gwd=str(cfg.get("aimip_gwd", "mcfarlane")),
-                microphysics=str(cfg.get(
-                    "aimip_microphysics", _default_schemes()["microphysics"])),
+                gwd=_gwd,
+                microphysics=_micro,
                 radiation=str(cfg.get("aimip_radiation", "rrtmgp")),
                 cloud=str(cfg.get("aimip_cloud", "xu_randall")),
             )
@@ -444,7 +446,10 @@ def _build_skeleton(variant, cfg, spec_cfg, grid):
                 tier=(_tier if isinstance(_tier, str) else "extended"),
                 exclude=tuple(sorted(
                     aimip_legacy_owned_fields(cloud_scheme=_cloud)
-                    | aimip_inactive_fields(cloud_scheme=_cloud))),
+                    | aimip_inactive_fields(
+                        cloud_scheme=_cloud, microphysics=_micro, gwd=_gwd,
+                        subgrid_orography=getattr(
+                            grid, "subgrid_topo_stddev", None) is not None))),
             )
             skeleton = AIMIPTrainableBundle(
                 classical=skeleton, schemes=schemes)

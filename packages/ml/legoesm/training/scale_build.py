@@ -589,7 +589,12 @@ def _build_mode_components_spectral(cfg, yml):
                     set(aimip_legacy_owned_fields(
                         cloud_scheme=_schemes["cloud_scheme"]))
                     | aimip_inactive_fields(
-                        cloud_scheme=_schemes["cloud_scheme"])
+                        cloud_scheme=_schemes["cloud_scheme"],
+                        microphysics=_schemes["microphysics_scheme"],
+                        gwd=_schemes["gwd_scheme"],
+                        subgrid_orography=getattr(
+                            grid, "subgrid_topo_stddev", None) is not None,
+                        param_fixed=_param_fixed)
                     | _pinned_trainable_names(_param_fixed))),
             )
             params = AIMIPTrainableBundle(

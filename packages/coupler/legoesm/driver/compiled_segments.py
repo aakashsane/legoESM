@@ -1743,10 +1743,12 @@ def _apply_qv_smoothing(q_v_upd, statics):
     hyperdiffusion is a ×0 no-op AND skipping it avoids calling the
     grid-specific ∇⁴ operator — ``laplacian_compact_3d`` reads the cube-only
     ``grid.halo_interp_offsets`` (absent on lat-lon), which the lat-lon training
-    rollout (``qv_smooth_coeff=0.0``) would otherwise hit.  The nonzero-coeff
-    path is bit-identical to the former nested ``max(q + dt·∇⁴, 0)``; only the
-    q>=0 floor always applies.  Module-scope (not defined in the scan body) per
-    the repo's hot-loop helper doctrine, and so fix-5 is directly testable.
+    rollout (``qv_smooth_coeff=0.0``) would otherwise hit.  The q>=0 floor
+    always applies and is the column-conserving borrow on ``statics.dsigma``,
+    the same layer weights this lane's water-mass bookkeeping
+    (:func:`moist_change_with_mass`) uses.  Module-scope (not defined in the
+    scan body) per the repo's hot-loop helper doctrine, and so fix-5 is
+    directly testable.
     """
     if statics.qv_smooth_coeff != 0.0:
         q_v_upd = q_v_upd + statics.dt * statics.hyperdiffusion_3d(
@@ -2075,15 +2077,12 @@ def build_segment_fn(
         kernels, and ``.raw`` stays the non-JIT, non-donating function
         that the training drivers differentiate through.
     energy_consistent_moisture_clip : bool, optional
-        Issue #323.  When ``True``, the per-step ``max(q_v, 0)`` floor on
-        the physics tracer update also removes the latent heat tied to the
-        clipped (un-removed) vapour sink, so the floor conserves moist
-        static energy ``c_pd*T + L_v*q_v`` instead of injecting spurious
-        condensation heat.  This targets the kessler+sbm wind blow-up
-        (the combined vapour sink can exceed the available ``q_v`` under
-        organised convection; the existing floor truncates the sink but
-        keeps the full latent heating).  Default ``False`` =>
-        bit-identical to the legacy path.
+        Issue #323.  When ``True``, the physics tracer update's vapour floor
+        (the column-conserving borrow either way) also books the latent heat
+        of each cell's vapour change, so ``c_pd*T + L_v*q_v`` is unchanged
+        per cell instead of the clipped cell keeping the condensation heat
+        of a vapour sink that exceeded its vapour (the kessler+sbm wind
+        blow-up).  See :func:`floor_moist_with_mass`.  Default ``False``.
     advect_moisture : bool, optional
         Issue #771.  When ``True``, the moisture tracers (q_v/q_c/q_r and
         the double-moment fields when present) are attached to the dycore

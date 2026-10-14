@@ -126,8 +126,9 @@ _FLOOR_LATENT_COEF = {
 def energy_consistent_water_floor(tracers, T):
     """Hard-floor every water tracer to zero, conserving frozen MSE.
 
-    Generalises :func:`energy_consistent_moisture_floor` (vapour only) to the
-    condensate species.  Each species is floored ``q_out = max(q_raw, 0)``; the
+    The hard-floor, all-species form of the per-cell MSE bookkeeping in
+    :func:`energy_consistent_moisture_floor` (which borrows the vapour instead
+    of creating it).  Each species is floored ``q_out = max(q_raw, 0)``; the
     per-cell temperature is corrected by ``dT = -(coef/c_pd)*deficit`` with
     ``coef`` from :data:`_FLOOR_LATENT_COEF`, so the model's frozen MSE
     ``c_pd*T + L_v*q_v − L_f*(q_i+q_s+q_g)`` is unchanged pointwise (vapour

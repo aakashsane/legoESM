@@ -659,6 +659,52 @@ class TestConservingFormAlways:
             assert bool((T_out == T).all())
 
 
+    @pytest.mark.parametrize("energy_consistent", [False, True])
+    def test_net_negative_column_mass_goes_to_p_s(self, energy_consistent):
+        """A net-negative vapour column has nothing to borrow from: it is
+        zeroed, the water that creates moves p_s by exactly that mass, and
+        with the opt-in floor every cell's c_pd*T + L_v*q_v still holds."""
+        from legoesm import constants
+        from legoesm.driver.compiled_segments import floor_moist_with_mass
+        raw, T, p_s, dsigma = self._raw_columns()
+        raw = {**raw, "q_v": raw["q_v"].at[0].set(
+            jnp.array([-2.0e-3, 1.0e-4, -1.0e-3, 2.0e-4, -5.0e-4]))}
+        assert float(jnp.sum(raw["q_v"][0] * dsigma)) < 0.0
+        out, T_out, p_s_out = floor_moist_with_mass(
+            raw, T, p_s, dsigma, 300.0, energy_consistent)
+        assert bool((out["q_v"][0] == 0.0).all())
+        created = -float(jnp.sum(raw["q_v"][0] * dsigma)) * float(p_s[0])
+        # p_s' (1 - sum dsigma*Q') ... dry mass held: p_s rises by the water
+        dry_in = p_s * (1.0 - sum(jnp.sum(raw[k] * dsigma, axis=-1)
+                                  for k in ("q_v", "q_c", "q_r", "q_i",
+                                            "q_s", "q_g")))
+        dry_out = p_s_out * (1.0 - sum(jnp.sum(out[k] * dsigma, axis=-1)
+                                       for k in ("q_v", "q_c", "q_r", "q_i",
+                                                 "q_s", "q_g")))
+        np.testing.assert_allclose(dry_out, dry_in, rtol=1e-12)
+        assert float(p_s_out[0] - p_s[0]) == pytest.approx(created, rel=1e-6)
+        np.testing.assert_allclose(p_s_out[1], p_s[1], rtol=0, atol=1e-9)
+        if energy_consistent:
+            np.testing.assert_allclose(
+                constants.c_pd * T_out + constants.L_v * out["q_v"],
+                constants.c_pd * T + constants.L_v * raw["q_v"], rtol=1e-13)
+
+    def test_both_compiled_bodies_route_through_the_floor_helper(self):
+        """The single-rank body (split_physics_single_rank, also run by the
+        lat-lon band SPMD and tiled cube steps) and the MPI owned-face body
+        (inside build_segment_fn) must both floor through
+        floor_moist_with_mass, which the behavioural tests above pin; an
+        inlined copy in either body would escape them."""
+        import inspect
+
+        from legoesm.driver import compiled_segments as cs
+        for fn in (cs.split_physics_single_rank, cs.build_segment_fn):
+            src = inspect.getsource(fn)
+            assert src.count("floor_moist_with_mass(") == 1, fn.__name__
+            assert "conservative_positive_clip(" not in src, fn.__name__
+            assert "energy_consistent_moisture_floor(" not in src, fn.__name__
+
+
 class TestNonConservingFormsWarn:
     """Owner decision 2026-08-16 addendum: any selectable NON-conserving
     form must announce itself when invoked. Warnings fire at build/validate

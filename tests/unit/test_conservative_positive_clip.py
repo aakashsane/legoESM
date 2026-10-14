@@ -612,23 +612,104 @@ class TestConservingFormAlways:
     the DEFAULT AMIP route (compiled segments, both the single-rank and the
     MPI owned-face bodies) and the per-step hyperdiffusion floors."""
 
-    def test_compiled_segment_floors_are_conserving(self):
-        """Source pin on the compiled single-rank step body: every species
-        floor routes through conservative_positive_clip; the plain clamps
-        are gone."""
+    @staticmethod
+    def _raw_columns():
+        """Two columns x 5 levels; every species has undershoots but a
+        POSITIVE weighted column total (the borrow's conserving regime)."""
+        from legoesm.driver.compiled_segments import MOIST_FIELDS
+        rng = np.random.default_rng(7)
+        raw = {}
+        for i, name in enumerate(MOIST_FIELDS):
+            scale = 1.0e6 if name.startswith("N_") else 1.0e-3
+            base = rng.uniform(0.2, 1.0, size=(2, 5)) * scale
+            base[:, 1 + i % 3] = -0.1 * scale       # one undershoot per column
+            raw[name] = jnp.asarray(base)
+        dsigma = jnp.array([0.05, 0.1, 0.2, 0.3, 0.35])
+        p_s = jnp.array([1.0e5, 9.0e4])
+        T = jnp.full((2, 5), 280.0)
+        return raw, T, p_s, dsigma
+
+    @pytest.mark.parametrize("energy_consistent", [False, True])
+    def test_compiled_segment_floors_are_conserving(self, energy_consistent):
+        """Behavioural pin on the floor block BOTH compiled bodies (single-
+        rank and MPI owned-face) run: every species ends >= 0, each species'
+        column mass sum(q * p_s * dsigma) is unchanged and p_s does not move.
+        A plain max(q, 0) floor fails all three (it creates the clipped
+        water and p_s rises by it)."""
+        from legoesm.driver.compiled_segments import (
+            MOIST_FIELDS, floor_moist_with_mass,
+        )
+        raw, T, p_s, dsigma = self._raw_columns()
+        out, T_out, p_s_out = floor_moist_with_mass(
+            raw, T, p_s, dsigma, 300.0, energy_consistent)
+        np.testing.assert_allclose(p_s_out, p_s, rtol=0, atol=1e-9)
+        for name in MOIST_FIELDS:
+            assert bool((out[name] >= 0.0).all()), name
+            before = jnp.sum(raw[name] * dsigma, axis=-1) * p_s
+            after = jnp.sum(out[name] * dsigma, axis=-1) * p_s_out
+            np.testing.assert_allclose(after, before, rtol=1e-12,
+                                       err_msg=name)
+        from legoesm import constants
+        mse_in = constants.c_pd * T + constants.L_v * raw["q_v"]
+        mse_out = constants.c_pd * T_out + constants.L_v * out["q_v"]
+        if energy_consistent:
+            # per-cell c_pd*T + L_v*q_v unchanged (to roundoff)
+            np.testing.assert_allclose(mse_out, mse_in, rtol=1e-13)
+        else:
+            assert bool((T_out == T).all())
+
+
+    @pytest.mark.parametrize("energy_consistent", [False, True])
+    def test_net_negative_column_mass_goes_to_p_s(self, energy_consistent):
+        """A net-negative vapour column has nothing to borrow from: it is
+        zeroed, the water that creates moves p_s by exactly that mass, and
+        with the opt-in floor every cell's c_pd*T + L_v*q_v still holds."""
+        from legoesm import constants
+        from legoesm.driver.compiled_segments import floor_moist_with_mass
+        raw, T, p_s, dsigma = self._raw_columns()
+        # Mixed-sign, net-negative vapour column; a net-negative NUMBER column
+        # too (numbers are not water: zeroing them must not move p_s).
+        raw = {**raw,
+               "q_v": raw["q_v"].at[0].set(
+                   jnp.array([-2.0e-3, 1.0e-4, -1.0e-3, 2.0e-4, -5.0e-4])),
+               "N_c": raw["N_c"].at[0].set(
+                   jnp.array([-2.0e6, 1.0e5, -1.0e6, 2.0e5, -5.0e5]))}
+        assert float(jnp.sum(raw["q_v"][0] * dsigma)) < 0.0
+        assert float(jnp.sum(raw["N_c"][0] * dsigma)) < 0.0
+        out, T_out, p_s_out = floor_moist_with_mass(
+            raw, T, p_s, dsigma, 300.0, energy_consistent)
+        assert bool((out["q_v"][0] == 0.0).all())
+        assert bool((out["N_c"][0] == 0.0).all())
+        created = -float(jnp.sum(raw["q_v"][0] * dsigma)) * float(p_s[0])
+        # p_s' (1 - sum dsigma*Q') ... dry mass held: p_s rises by the water
+        dry_in = p_s * (1.0 - sum(jnp.sum(raw[k] * dsigma, axis=-1)
+                                  for k in ("q_v", "q_c", "q_r", "q_i",
+                                            "q_s", "q_g")))
+        dry_out = p_s_out * (1.0 - sum(jnp.sum(out[k] * dsigma, axis=-1)
+                                       for k in ("q_v", "q_c", "q_r", "q_i",
+                                                 "q_s", "q_g")))
+        np.testing.assert_allclose(dry_out, dry_in, rtol=1e-12)
+        assert float(p_s_out[0] - p_s[0]) == pytest.approx(created, rel=1e-6)
+        np.testing.assert_allclose(p_s_out[1], p_s[1], rtol=0, atol=1e-9)
+        if energy_consistent:
+            np.testing.assert_allclose(
+                constants.c_pd * T_out + constants.L_v * out["q_v"],
+                constants.c_pd * T + constants.L_v * raw["q_v"], rtol=1e-13)
+
+    def test_both_compiled_bodies_route_through_the_floor_helper(self):
+        """The single-rank body (split_physics_single_rank, also run by the
+        lat-lon band SPMD and tiled cube steps) and the MPI owned-face body
+        (inside build_segment_fn) must both floor through
+        floor_moist_with_mass, which the behavioural tests above pin; an
+        inlined copy in either body would escape them."""
         import inspect
 
         from legoesm.driver import compiled_segments as cs
-
-        src = inspect.getsource(cs)
-        # q_v else-branch, q_c, q_r and the shared _dm_upd all conserving:
-        assert src.count("conservative_positive_clip(") >= 7
-        # The old plain clamps must be gone from the update spellings.
-        assert "jnp.maximum(_qv_raw, 0.0)" not in src
-        assert "jnp.maximum(moist[\"q_c\"]" not in src
-        assert "jnp.maximum(moist[\"q_r\"]" not in src
-        assert "jnp.maximum(fld + statics.dt * tend, 0.0)" not in src
-        assert "jnp.maximum(fld[_ofi] + _dt * tend, 0.0)" not in src
+        for fn in (cs.split_physics_single_rank, cs.build_segment_fn):
+            src = inspect.getsource(fn)
+            assert src.count("floor_moist_with_mass(") == 1, fn.__name__
+            assert "conservative_positive_clip(" not in src, fn.__name__
+            assert "energy_consistent_moisture_floor(" not in src, fn.__name__
 
 
 class TestNonConservingFormsWarn:
@@ -657,7 +738,10 @@ class TestNonConservingFormsWarn:
             MPASPrimitiveEquationModel(mesh, sigma)
         assert not any("NON-CONSERVING" in r.message for r in caplog.records)
 
-    def test_validate_strict_warns_on_both_optouts(self, caplog):
+    def test_validate_strict_warns_on_legacy_clamp_only(self, caplog):
+        """validate_strict announces the legacy plain tracer clamp; the
+        vapour floor flag alone is not announced there (the factory does it
+        where the water-creating hard floor actually runs)."""
         import logging
 
         from legoesm.driver.config import ExperimentConfig
@@ -671,14 +755,46 @@ class TestNonConservingFormsWarn:
             ).validate_strict()
         msgs = [r.message for r in caplog.records
                 if "NON-CONSERVING" in r.message]
-        assert len(msgs) == 2
-        assert any("mpas_conservative_tracer_clamp" in m for m in msgs)
-        assert any("energy_consistent_moisture_clip" in m for m in msgs)
+        assert len(msgs) == 1
+        assert "mpas_conservative_tracer_clamp" in msgs[0]
         caplog.clear()
         with caplog.at_level(logging.WARNING):
+            base._replace(energy_consistent_moisture_clip=True).validate_strict()
             base.validate_strict()
         assert not any("NON-CONSERVING" in r.message
                        for r in caplog.records)
+
+    @pytest.mark.parametrize("flag,clamp,solver,warns", [
+        # production: MPAS, flag on, conserving clamp -> borrow, silent
+        (True, True, "mpas_primitive_equations", False),
+        (True, False, "mpas_primitive_equations", True),
+        (True, False, "cdgrid_primitive_equations", True),
+        (True, False, "latlon_cgrid_primitive_equations", True),
+        # spectral passes energy_consistent=False: the flag's floor never runs
+        (True, False, "spectral_primitive_equations", False),
+        (False, False, "mpas_primitive_equations", False),
+    ])
+    def test_vapour_floor_warning_only_where_hard_floor_runs(
+            self, caplog, flag, clamp, solver, warns):
+        import logging
+
+        from legoesm.driver.component_factory import (
+            warn_if_vapour_floor_creates_water,
+        )
+        from legoesm.driver.config import ExperimentConfig
+
+        base = ExperimentConfig()
+        cfg = base._replace(
+            dycore=base.dycore._replace(mpas_conservative_tracer_clamp=clamp),
+            energy_consistent_moisture_clip=flag)
+        with caplog.at_level(logging.WARNING):
+            warn_if_vapour_floor_creates_water(cfg, solver)
+        msgs = [r.getMessage() for r in caplog.records
+                if "NON-CONSERVING" in r.getMessage()]
+        assert len(msgs) == (1 if warns else 0)
+        if warns:
+            assert "energy_consistent_moisture_clip" in msgs[0]
+            assert solver in msgs[0]
 
 
 def test_area_weight_is_scale_safe_for_fp32_number_tracers():

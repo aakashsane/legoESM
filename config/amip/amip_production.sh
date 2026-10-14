@@ -50,7 +50,12 @@
 # L32 top layers start ~40/20 K cold.  SAME product as the Ginsburg twin
 # (review 2026-10-10 F33; stage the Ginsburg-built zarr here before a launch).
 : "${ERA5_IC:=/scratch/b/b309178/era5_ic_1979-01-01_gproxy_L21.zarr}"
-: "${ETOPO:=/work/bd1083/b309178/diffESM/legoesm_ap/data/bathymetry/etopo_1deg_clean.nc}"
+# Topography: 0.25 deg, built with scripts/data/prep_etopo_topography.py (its
+# defaults) from NOAA ETOPO 2022 60 arc-second ice-surface relief.  The 1 deg
+# file is coarser than the MPAS res-6 cells, so the per-grid terrain product
+# (bin_latlon_to_cells) leaves 2193 cells with no source point and refuses to
+# build: every production-resolution run crashed at setup.
+: "${ETOPO:=/work/bd1083/b309178/diffESM/legoesm_ap/data/bathymetry/etopo2022_60s_0p25deg.nc}"
 # SST/SIC: PCMDI CMIP7 AMIP boundary conditions (the protocol-standard tosbcs/
 # siconcbcs mid-month files, 1870-2022) — the dataset every proven MPAS-lane
 # run uses (Pierre's climeval_bech day-247+ and the replica chains).  The file

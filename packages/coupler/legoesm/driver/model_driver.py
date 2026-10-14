@@ -12187,6 +12187,16 @@ class ModelDriver:
                 f"({CHECKPOINT_INTERVAL} steps) must both be multiples of the "
                 "cadence so every checkpoint is a resumable window boundary")
         DT_PHYS = DT * PHYS_UPDATE_STEPS
+        # No turbulence scheme: the lane applies the same constant-coefficient
+        # surface exchange as the lat-lon/cube pipeline (which skips it when a
+        # turbulence scheme or the learned parameterization owns the surface).
+        # A dry FV3-duo deck ignores humidity in its dycore: sensible heat only.
+        _sfc_bulk_coeffs = (
+            (float(cfg.C_H), float(cfg.C_E),
+             bool(getattr(getattr(self.model, "config", None), "moist", True)))
+            if (cfg.turbulence == "none" and cfg.surface_bulk_scheme == "constant"
+                and cfg.physics_parameterization == "none")
+            else None)
         if cfg.cld_macmic_num_steps > 1:
             logger.info(
                 f"  CAM macmic sub-cycle: turbulence + microphysics run "
@@ -12208,7 +12218,8 @@ class ModelDriver:
                                 budget_ledger=_budget_ledger_on,
                                 physics_cadence=_phys_cadence_write,
                                 physics_cadence_steps=PHYS_UPDATE_STEPS,
-                                cld_macmic_num_steps=cfg.cld_macmic_num_steps)
+                                cld_macmic_num_steps=cfg.cld_macmic_num_steps,
+                                surface_bulk_coeffs=_sfc_bulk_coeffs)
 
         physics_fn = _build_physics(phys_cfg)
         if _hold_phys:
@@ -12428,7 +12439,15 @@ class ModelDriver:
                         f"nu4={_qv_smooth_nu4:g} m^4/s, dt={DT:g}s, "
                         f"g_max={_g_max:.3e} 1/m^2)."
                     )
-        _sst_forcing = (cfg.radiation != "none" and self.get_sst_sic is not None)
+        # The bulk surface exchange reads forcing["T_sfc"] too, radiation or not.
+        if _sfc_bulk_coeffs is not None and self.get_sst_sic is None:
+            raise ValueError(
+                "turbulence='none' with surface_bulk_scheme='constant' applies "
+                "the bulk surface exchange, which needs a prescribed SST/SIC "
+                "source; this run has none. Set surface_bulk_scheme='none' to "
+                "run without surface fluxes.")
+        _sst_forcing = ((cfg.radiation != "none" or _sfc_bulk_coeffs is not None)
+                        and self.get_sst_sic is not None)
         _sic_day = None            # (nCells,) ice fraction of the last forcing day
         _ice_skin_on = bool(getattr(cfg, "ice_skin_prognostic", False))
         if _ice_skin_on and not _sst_forcing:

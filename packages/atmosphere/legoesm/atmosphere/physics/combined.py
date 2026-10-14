@@ -168,6 +168,7 @@ def make_physics(
     physics_cadence: str = "off",
     physics_cadence_steps: int = 1,
     cld_macmic_num_steps: int = 1,
+    surface_bulk_coeffs=None,
 ) -> Callable:
     """Create a combined physics function for a dynamical core.
 
@@ -291,6 +292,10 @@ def make_physics(
             f"{cld_macmic_num_steps} they are evaluated in parallel on the same "
             "state and summed, leaving the microphysical sinks evaluated on the "
             "pre-exchange liquid.")
+    if surface_bulk_coeffs is not None and model_type != "mpas":
+        raise ValueError(
+            "surface_bulk_coeffs is wired for model_type='mpas' only; "
+            f"{model_type!r} would silently drop the surface exchange.")
     if model_type == "hydrostatic":
         fn = _make_hydrostatic_combined(
             config, dt, column_mesh=column_mesh, need_rad=need_rad,
@@ -312,7 +317,8 @@ def make_physics(
             physics_cadence_steps=physics_cadence_steps,
             cld_macmic_num_steps=cld_macmic_num_steps,
             budget_ledger=budget_ledger,
-            budget_ledger_level_weight=budget_ledger_level_weight)
+            budget_ledger_level_weight=budget_ledger_level_weight,
+            surface_bulk_coeffs=surface_bulk_coeffs)
     else:
         raise ValueError(
             f"Unknown model_type: {model_type!r}. "
@@ -636,8 +642,13 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
                                budget_ledger_level_weight=None,
                                physics_cadence: str = "off",
                                physics_cadence_steps: int = 1,
-                               cld_macmic_num_steps: int = 1) -> Callable:
+                               cld_macmic_num_steps: int = 1,
+                               surface_bulk_coeffs=None) -> Callable:
     """Combined physics for any hydrostatic model (cubed-sphere, lat-lon, MPAS).
+
+    ``surface_bulk_coeffs`` ``(C_H, C_E, latent)``: the constant-coefficient surface
+    exchange (:func:`~legoesm.atmosphere.physics.turbulence.integration.make_surface_bulk_physics`)
+    for a lane with NO turbulence scheme; ``None`` adds no surface exchange.
 
     ``cld_macmic_num_steps`` (CAM6 namelist ``cld_macmic_num_steps``, 3 for
     CLUBB+MG2 at dtime=1800): 1 (default) is the byte-identical parallel
@@ -765,6 +776,19 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
             True,
             _turb_field,
         ))
+    _sfc_bulk = surface_bulk_coeffs is not None
+    if _sfc_bulk:
+        if config.turbulence.scheme != "none":
+            raise ValueError(
+                "surface_bulk_coeffs adds the bulk surface exchange for a lane "
+                "with no turbulence scheme; turbulence="
+                f"{config.turbulence.scheme!r} already owns the surface flux, "
+                "so both would apply it.")
+        from legoesm.atmosphere.physics.turbulence.integration import (
+            make_surface_bulk_physics)
+        _C_H, _C_E, _latent = surface_bulk_coeffs
+        tagged_fns.append((make_surface_bulk_physics(_C_H, _C_E, _latent),
+                           False, None))
     if config.microphysics.scheme != "none":
         # The run's BUILT cloud config (MPAS lane: _standalone_cloud_config),
         # never a default one: the aist rh ramps are run parameters.
@@ -786,6 +810,8 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
         _macmic_group.append("pre")
     if config.turbulence.scheme != "none":
         _macmic_group.append("sub")
+    if _sfc_bulk:
+        _macmic_group.append("once")
     if config.microphysics.scheme != "none":
         _macmic_group.append("sub")
     if config.gravity_wave_drag.scheme != "none":
@@ -825,6 +851,9 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
             _ledger_row_of.append(ROW_CONVECTION)
         if config.turbulence.scheme != "none":
             _ledger_row_of.append(ROW_TURBULENCE)
+        if _sfc_bulk:
+            # The FV pipeline books its bulk kick in the other_physics residual.
+            _ledger_row_of.append(ROW_OTHER)
         if config.microphysics.scheme != "none":
             _ledger_row_of.append(ROW_MICROPHYSICS)
         if config.gravity_wave_drag.scheme != "none":

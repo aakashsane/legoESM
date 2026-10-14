@@ -163,3 +163,18 @@ def test_checkpoint_with_one_face_wind_is_refused(leg1):
     np.savez(half, **data)
     with pytest.raises(ValueError, match="only one of the face winds"):
         _resume(tmp, str(half), "leg2_half")
+
+
+def test_resume_on_another_latlon_scheme_drops_the_faces(leg1):
+    """A lat-lon run that does not carry face winds (here 'centered') must
+    not re-save the checkpoint's faces next to its newer state."""
+    tmp, _b1, ckpt = leg1
+    c = _cfg(tmp / "leg2_centered", 2)
+    d = ModelDriver(c._replace(dycore=c.dycore._replace(
+        discretization="centered")))
+    d.setup()
+    step, day = d.load_checkpoint(ckpt)
+    assert d.run(start_step=step, start_day=day, compiled=False) == "COMPLETED"
+    new = sorted(glob.glob(str(tmp / "leg2_centered" / "checkpoint_day_*.npz")))[-1]
+    with np.load(new, allow_pickle=True) as z:
+        assert not any("latlon_" in k for k in z.keys())

@@ -6961,6 +6961,9 @@ class ModelDriver:
         if not (cfg.grid.grid_type == "latlon"
                 and cfg.dycore.discretization == "latlon_cgrid"
                 and cfg.dycore.model_type == "hydrostatic"):
+            # Saved face winds this run will not carry: drop them, so this
+            # run's checkpoints do not re-save them next to a newer state.
+            self._pop_native_winds(self._FACE_WIND_KEYS)
             return
         _why = None
         if getattr(self, "_ensemble_size", 1) not in (None, 1):

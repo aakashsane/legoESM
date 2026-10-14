@@ -1855,6 +1855,9 @@ class ModelDriver:
             # state itself is written at cell centres for every reader).
             base[self._FACE_WIND_KEYS[0]] = self.state.u_f.data
             base[self._FACE_WIND_KEYS[1]] = self.state.v_f.data
+        if self._persistent_dgrid_active():
+            base[self._CORNER_WIND_KEYS[0]] = self.state.u_d.data
+            base[self._CORNER_WIND_KEYS[1]] = self.state.v_d.data
         dm = self._double_moment_step_inputs()
         for k, v in dm.items():
             base[f"dmtr_{k}"] = v
@@ -6759,6 +6762,8 @@ class ModelDriver:
     # read-only view.  Nothing writes a converted state back over the native
     # winds, so the round trip never re-enters the prognostic path.
 
+    _CORNER_WIND_KEYS = ("cube_u_d", "cube_v_d")
+
     def _persistent_dgrid_active(self) -> bool:
         """True iff the run is carrying D-staggered cube winds."""
         return bool(getattr(self, "_persistent_dgrid", False))
@@ -6813,7 +6818,7 @@ class ModelDriver:
                 "flag to run the (eddy-damped) cell-centre path knowingly.")
 
         from legoesm.atmosphere.dynamics.gcm.primitive_eq_cdgrid import (
-            FV3HydrostaticState, hydrostatic_to_fv3,
+            FV3HydrostaticState, fv3_to_hydrostatic, hydrostatic_to_fv3,
         )
         cdgrid = getattr(self.model, "cdgrid", None)
         if cdgrid is None:
@@ -6821,11 +6826,16 @@ class ModelDriver:
                 "dycore.persistent_dgrid=True but the dynamics model exposes "
                 "no cdgrid; the cc->D lift has no geometry to use.")
         if isinstance(self.state, FV3HydrostaticState):
-            # Already D (a restart that carried the native winds).
+            self._refuse_staged_native_winds(
+                self._CORNER_WIND_KEYS, "the state already carries D winds")
             self._persistent_dgrid = True
             return
-        self.state = hydrostatic_to_fv3(self.state, cdgrid)
+        self.state = self._resume_native_winds(
+            hydrostatic_to_fv3(self.state, cdgrid),
+            self._CORNER_WIND_KEYS, ("u_d", "v_d"),
+            lambda st: fv3_to_hydrostatic(st, cdgrid), "D-grid winds")
         self._persistent_dgrid = True
+        self._pop_native_winds(self._CORNER_WIND_KEYS)
         logger.info(
             "#1028 persistent D-grid winds: the cube state stays in FV3 D "
             "staggering between steps (one cc->D lift at run start; the "
@@ -6974,62 +6984,78 @@ class ModelDriver:
             LatLonFaceWindState, facewind_to_hydrostatic,
             hydrostatic_to_facewind,
         )
-        aux = self._carry_aux if isinstance(self._carry_aux, dict) else {}
-        # Removed from the aux carry only once validated, so a refused restart
-        # cannot be retried into a silent lift.
-        faces = [aux.get(k) for k in self._FACE_WIND_KEYS]
         if isinstance(self.state, LatLonFaceWindState):
-            if any(f is not None for f in faces):
-                raise ValueError(
-                    "face winds are staged from a checkpoint but the state "
-                    "already carries faces; refusing to pick one silently")
+            self._refuse_staged_native_winds(self._FACE_WIND_KEYS,
+                                             "the state already carries faces")
             self._persistent_cgrid = True
             return
-        lifted = hydrostatic_to_facewind(self.state, self.grid)
-        if sum(f is not None for f in faces) == 1:
+        lifted = self._resume_native_winds(
+            hydrostatic_to_facewind(self.state, self.grid),
+            self._FACE_WIND_KEYS, ("u_f", "v_f"),
+            lambda st: facewind_to_hydrostatic(st, self.grid), "face winds")
+        self.state = lifted
+        self._persistent_cgrid = True
+        self._pop_native_winds(self._FACE_WIND_KEYS)
+        logger.info(
+            "lat-lon C-grid face winds are carried between steps "
+            "(u_f %s, v_f %s)", tuple(lifted.u_f.data.shape),
+            tuple(lifted.v_f.data.shape))
+
+    def _refuse_staged_native_winds(self, keys, why: str) -> None:
+        aux = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        if any(aux.get(k) is not None for k in keys):
             raise ValueError(
-                "checkpoint carries only one of the face winds "
-                f"{self._FACE_WIND_KEYS}; refusing to lift the other from "
-                "cell centres and mix the two")
-        if all(f is not None for f in faces):
-            u_f, v_f = (jnp.asarray(f) for f in faces)
-            if (u_f.shape != lifted.u_f.data.shape
-                    or v_f.shape != lifted.v_f.data.shape):
+                f"staggered winds {keys} are staged from a checkpoint but "
+                f"{why}; refusing to pick one silently")
+
+    def _pop_native_winds(self, keys) -> None:
+        if isinstance(self._carry_aux, dict):
+            for k in keys:
+                self._carry_aux.pop(k, None)
+
+    def _resume_native_winds(self, lifted, keys, fields, to_cc, what: str):
+        """``lifted`` (a cc -> staggered lift of ``self.state``) with its winds
+        replaced by the checkpoint's saved staggered winds, when it saved them.
+
+        The saved winds are left in the aux carry (the caller pops them once
+        the lane is entered), so a refused restart cannot be retried into a
+        silent lift.
+        """
+        aux = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        saved = [aux.get(k) for k in keys]
+        if sum(x is not None for x in saved) == 1:
+            raise ValueError(
+                f"checkpoint carries only one of the {what} {keys}; refusing "
+                "to lift the other from cell centres and mix the two")
+        if all(x is not None for x in saved):
+            cur = [getattr(lifted, f).data for f in fields]
+            new = [jnp.asarray(x) for x in saved]
+            if any(a.shape != b.shape for a, b in zip(new, cur)):
                 raise ValueError(
-                    f"checkpoint face winds {u_f.shape}/{v_f.shape} do not "
-                    f"match this grid's faces {lifted.u_f.data.shape}/"
-                    f"{lifted.v_f.data.shape}")
-            dt_ = lifted.u_f.data.dtype
-            lifted = lifted._replace(
-                u_f=lifted.u_f.replace(data=u_f.astype(dt_)),
-                v_f=lifted.v_f.replace(data=v_f.astype(dt_)))
-            # The checkpoint's cell-centre winds were written as the average
-            # of these faces; anything else means faces from another state.
-            view = facewind_to_hydrostatic(lifted, self.grid)
+                    f"checkpoint {what} {[tuple(a.shape) for a in new]} do not "
+                    f"match this grid's {[tuple(b.shape) for b in cur]}")
+            lifted = lifted._replace(**{
+                f: getattr(lifted, f).replace(data=a.astype(b.dtype))
+                for f, a, b in zip(fields, new, cur)})
+            # The checkpoint's cell-centre winds were written from these
+            # staggered winds; anything else means winds from another state.
+            view = to_cc(lifted)
             for name in ("u", "v"):
                 a = np.asarray(getattr(view, name).data, np.float64)
                 b = np.asarray(getattr(self.state, name).data, np.float64)
                 err = float(np.abs(a - b).max())
                 if not err <= 1e-5 * (1.0 + float(np.abs(b).max())):
                     raise ValueError(
-                        f"checkpoint face winds do not average to its "
+                        f"checkpoint {what} do not average to its "
                         f"cell-centre {name} (max diff {err:.3g} m/s): they "
                         "belong to a different state")
         elif getattr(self, "_loaded_checkpoint_step_day", None) is not None:
             logger.warning(
-                "restart checkpoint has no saved face winds (a zarr "
-                "checkpoint, or one written before they were checkpointed): "
-                "lifting the cell-centre winds to "
-                "the C-grid faces once.  This restart is not bit-identical "
-                "to an uninterrupted run.")
-        self.state = lifted
-        self._persistent_cgrid = True
-        for k in self._FACE_WIND_KEYS:
-            aux.pop(k, None)
-        logger.info(
-            "lat-lon C-grid face winds are carried between steps "
-            "(u_f %s, v_f %s)", tuple(lifted.u_f.data.shape),
-            tuple(lifted.v_f.data.shape))
+                f"restart checkpoint has no saved {what} (a zarr checkpoint, "
+                "or one written before they were checkpointed): lifting the "
+                f"cell-centre winds to the {what} once.  This restart is not "
+                "bit-identical to an uninterrupted run.")
+        return lifted
 
     def save_checkpoint(self, step: int, day: float) -> None:
         """Save checkpoint to output directory using unified restart API.

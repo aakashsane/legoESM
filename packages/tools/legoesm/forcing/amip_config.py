@@ -416,8 +416,11 @@ def load_checkpoint(
     # downcast carry), and a storage cast here would also make the
     # restart non-bit-exact for the physics memory.  Everything else
     # (held radiation, conv_prog, T_land, …) keeps the legacy storage
-    # cast.
-    _keep_stored_dtype = ("tke", "qke", "gwd_spectrum")
+    # cast.  The mass/moisture fixer targets are global totals (~5e19 kg)
+    # saved in float64; a float32 cast moves the target by ~1e12 kg, so the
+    # fixer pulls a restarted run off the straight run.
+    _keep_stored_dtype = ("tke", "qke", "gwd_spectrum",
+                          "target_dry_mass", "target_moisture")
     carry_aux = {}
     for key in data.files:
         if key.startswith("carry_"):

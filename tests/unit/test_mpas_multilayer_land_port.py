@@ -70,7 +70,8 @@ def _patch_land_loaders(monkeypatch):
 
 def _build_driver(tmpdir: str, days: float, *, turbulence: str = "none",
                   beta_soil: bool = False,
-                  use_multilayer: bool = True, **extra) -> ModelDriver:
+                  use_multilayer: bool = True, distributed: bool = False,
+                  **extra) -> ModelDriver:
     # The default land scheme is the two-leaf canopy; it needs the real
     # per-PFT surfdata (soil hydraulics still come from the synthetic map).
     if use_multilayer and "land_surface_scheme" not in extra:
@@ -82,7 +83,7 @@ def _build_driver(tmpdir: str, days: float, *, turbulence: str = "none",
         output=OutputConfig(output_dir="", diag_days=0, checkpoint_days=1),
         days=days, dataset="analytical", radiation="gray",
         convection="none", turbulence=turbulence, precision="fp64",
-        distributed=False,
+        distributed=distributed,
         land_mask_path="synthetic.nc",      # truthy -> land block (loader patched)
         use_multilayer_land=use_multilayer,
         multilayer_n_layers=4, multilayer_soil_depth=2.0,

@@ -667,12 +667,19 @@ class TestConservingFormAlways:
         from legoesm import constants
         from legoesm.driver.compiled_segments import floor_moist_with_mass
         raw, T, p_s, dsigma = self._raw_columns()
-        raw = {**raw, "q_v": raw["q_v"].at[0].set(
-            jnp.array([-2.0e-3, 1.0e-4, -1.0e-3, 2.0e-4, -5.0e-4]))}
+        # Mixed-sign, net-negative vapour column; a net-negative NUMBER column
+        # too (numbers are not water: zeroing them must not move p_s).
+        raw = {**raw,
+               "q_v": raw["q_v"].at[0].set(
+                   jnp.array([-2.0e-3, 1.0e-4, -1.0e-3, 2.0e-4, -5.0e-4])),
+               "N_c": raw["N_c"].at[0].set(
+                   jnp.array([-2.0e6, 1.0e5, -1.0e6, 2.0e5, -5.0e5]))}
         assert float(jnp.sum(raw["q_v"][0] * dsigma)) < 0.0
+        assert float(jnp.sum(raw["N_c"][0] * dsigma)) < 0.0
         out, T_out, p_s_out = floor_moist_with_mass(
             raw, T, p_s, dsigma, 300.0, energy_consistent)
         assert bool((out["q_v"][0] == 0.0).all())
+        assert bool((out["N_c"][0] == 0.0).all())
         created = -float(jnp.sum(raw["q_v"][0] * dsigma)) * float(p_s[0])
         # p_s' (1 - sum dsigma*Q') ... dry mass held: p_s rises by the water
         dry_in = p_s * (1.0 - sum(jnp.sum(raw[k] * dsigma, axis=-1)

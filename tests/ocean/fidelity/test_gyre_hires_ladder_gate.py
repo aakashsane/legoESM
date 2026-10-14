@@ -134,6 +134,18 @@ def test_step2_stage_records_are_registered_as_after_level():
         time_level_for_dump(f"oracle_stage_kt00000002_s{stage}.bin")
         for stage in (1, 2, 3)
     ] == ["after", "after", "after"]
+    root = Path(GATE.admit_oracle("r4_step2", "scalar")["root"])
+    observed = [
+        GATE.read_stage(
+            root / f"oracle_stage_kt00000002_s{stage}.bin",
+            stage,
+            dims=GATE.NEMO_DIMS,
+            expected_kt=2,
+            expected_kaa=GATE.STEP2_STAGE_KAA[stage],
+        )["Kaa"]
+        for stage in (1, 2, 3)
+    ]
+    assert observed == [1, 2, 1]
 
 
 def test_all_math_flavour_oracles_are_admitted_by_content():

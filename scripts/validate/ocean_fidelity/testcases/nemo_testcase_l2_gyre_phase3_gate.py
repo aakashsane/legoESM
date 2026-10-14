@@ -197,6 +197,7 @@ def read_stage(
     dims=DIMS,
     *,
     expected_kt: int = 1,
+    expected_kaa: int | None = None,
 ) -> dict:
     level = _registered(path, "after")
     with path.open("rb") as handle:
@@ -206,9 +207,11 @@ def read_stage(
     version, kt, stage, kaa, nx, ny, nz, ntr, bits = header
     require(magic == "NEMO_L1_STAGE_1", f"{path}: bad magic")
     require((version, nx, ny, nz, ntr, bits) == (1, *dims, 2, 64), f"{path}: bad header")
+    if expected_kaa is None:
+        expected_kaa = LEVELS[expected_stage]["Kaa"]
     require(
         (kt, stage, kaa)
-        == (expected_kt, expected_stage, LEVELS[expected_stage]["Kaa"]),
+        == (expected_kt, expected_stage, expected_kaa),
         f"{path}: wrong Kaa",
     )
     count = nx * ny * nz

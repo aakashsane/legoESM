@@ -49,6 +49,10 @@ DEFAULT_AHM_ROOT = Path(
 ADMISSIONS_PATH = HERE / "gyre_hires_oracle_admissions.json"
 ORACLE_FLAVOURS = ("scalar", "vector")
 FIELDS = ("T", "S", "u", "v", "ssh")
+# Compiled stprk3.f90:200-222: step 1 leaves Nbb=3, so step 2 enters
+# (Nbb,Nnn,Naa,Nrhs)=(3,2,1,1); the swaps after stages 1/2 give these Naa
+# registry slots.  Keep this independent of the record headers being checked.
+STEP2_STAGE_KAA = {1: 1, 2: 2, 3: 1}
 WRITER_STEP1_RECORDS = (
     "oracle_step_entry_kt00000002.bin",
     "oracle_rhs_kt00000001.bin",
@@ -2063,6 +2067,7 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
             stage,
             dims=NEMO_DIMS,
             expected_kt=2,
+            expected_kaa=STEP2_STAGE_KAA[stage],
         )
         stage_fields = lego_fields(stage_state)
         rows = [
@@ -2083,6 +2088,7 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
         3,
         dims=NEMO_DIMS,
         expected_kt=2,
+        expected_kaa=STEP2_STAGE_KAA[3],
     )
     stage_fields = lego_fields(traced.state_after)
     rk_stage_walk.append({

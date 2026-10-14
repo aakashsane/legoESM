@@ -15945,6 +15945,66 @@ class ModelDriver:
             return held_suarez_forcing_latlon
         return None                         # dynamics-only (dry)
 
+    def _with_segment_bulk_surface(self, physics_fn, day_of):
+        """Wrap a STATELESS lane physics with the constant-coefficient surface
+        exchange the lat-lon/cube pipeline applies when no turbulence scheme
+        runs.  The surface temperature is the SST/sea-ice blend sampled at
+        each segment start (``day_of(step_done)``), handed in per segment so
+        it follows the forcing without recompiling.
+
+        Returns ``(physics_fn, segment_forcing)``; unchanged
+        ``(physics_fn, None)`` when the run selects no bulk exchange.
+        """
+        cfg = self.config
+        if not (cfg.turbulence == "none" and cfg.surface_bulk_scheme == "constant"
+                and cfg.physics_parameterization == "none"):
+            return physics_fn, None
+        if self.get_sst_sic is None:
+            raise ValueError(
+                "turbulence='none' with surface_bulk_scheme='constant' applies "
+                "the bulk surface exchange, which needs a prescribed SST/SIC "
+                "source; this run has none. Set surface_bulk_scheme='none' to "
+                "run without surface fluxes.")
+        from legoesm.atmosphere.physics.turbulence.integration import (
+            make_surface_bulk_physics)
+        from legoesm.forcing.surface_utils import blend_surface_temperature
+        bulk = make_surface_bulk_physics(float(cfg.C_H), float(cfg.C_E))
+        n_lat, n_lon = int(self.grid.n_lat), int(self.grid.n_lon)
+
+        def _flat(x):
+            x = jnp.asarray(x)
+            if x.ndim == 1 and x.shape[0] == n_lat:
+                x = jnp.broadcast_to(x[:, None], (n_lat, n_lon))
+            if x.size != n_lat * n_lon:
+                raise ValueError(
+                    f"SST/SIC forcing has {x.size} values, the lat-lon grid "
+                    f"{n_lat * n_lon} columns.")
+            return x.reshape(-1)
+
+        def segment_forcing(done):
+            sst, sic = self.get_sst_sic(day_of(done))
+            return {"T_sfc": blend_surface_temperature(
+                _flat(sst), _flat(sic), float(cfg.T_ice))}
+
+        def physics(hs, grid, sigma_coord, forcing):
+            t = bulk(hs, grid, sigma_coord, forcing=forcing)
+            if physics_fn is not None:
+                b = physics_fn(hs, grid, sigma_coord)
+                t = t._replace(
+                    du_dt=t.du_dt.replace(data=t.du_dt.data + b.du_dt.data),
+                    dv_dt=t.dv_dt.replace(data=t.dv_dt.data + b.dv_dt.data),
+                    dT_dt=t.dT_dt.replace(data=t.dT_dt.data + b.dT_dt.data),
+                    dp_s_dt=t.dp_s_dt.replace(
+                        data=t.dp_s_dt.data + b.dp_s_dt.data))
+                if b.tracer_tendencies is not None:
+                    raise NotImplementedError(
+                        "the lane physics returned tracer tendencies; summing "
+                        "them with the surface exchange is not wired.")
+            return t, forcing
+
+        physics._requires_phys_state = True
+        return physics, segment_forcing
+
     def _reject_unconsumed_flux_override(self, lane: str) -> None:
         """Refuse a coupler flux handback (``get_sfc_flux_override``, set by
         ``couple_surface_fluxes``) on a run loop that never reads it: the
@@ -16100,11 +16160,15 @@ class ModelDriver:
             if self._segment_callback is not None:
                 self._segment_callback(self, day, DT * seg_n)
 
+        physics_fn, segment_forcing = self._with_segment_bulk_surface(
+            physics_fn,
+            lambda done: START_DAY + (start_step + done) * DT / 86400.0)
+
         t0 = time.time()
         hs_final, status = run_atm_latlon_spmd(
             self.model, mesh, self.state, DT, n_run,
             segment_steps=seg_len, physics_fn=physics_fn,
-            on_segment=_on_segment,
+            on_segment=_on_segment, segment_forcing=segment_forcing,
             # M2b opt-in (--latlon-spmd-compiled-segments): one compiled
             # lax.scan per segment; default False = per-step path.
             compiled_segments=cfg.latlon_spmd_compiled_segments)

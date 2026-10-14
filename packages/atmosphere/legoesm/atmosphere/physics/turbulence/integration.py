@@ -1271,9 +1271,11 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
     (the pipeline's bulk path applies none either).
 
     Signature ``(state, mesh, sigma_coord, forcing) -> HydrostaticTendencies``;
-    the surface temperature is the lane's per-step ``forcing["T_sfc"]``.
-    Edge winds are reconstructed to cells (Perot); a column model carrying
-    cell winds (``state.v`` present) hands them over directly.  A dry deck
+    the surface temperature is the lane's ``forcing["T_sfc"]`` (any shape that
+    reshapes to ``p_s``).
+    Edge winds are reconstructed to cells (Perot); a state carrying cell
+    winds (``state.v`` present: the FV3-duo column view, a cell-centred
+    lat-lon state) hands them over directly.  A dry deck
     (``latent=False``, or no ``q_v`` tracer) exchanges sensible heat only.
     """
     from legoesm.atmosphere.physics.turbulence.surface_layer import (
@@ -1287,9 +1289,8 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
                 "temperature to exchange with.")
         T = state.T.data
         p_s = state.p_s.data
-        nCells = T.shape[0]
         if state.v is not None:
-            u_low, v_low = state.u.data[:, -1], state.v.data[:, -1]
+            u_low, v_low = state.u.data[..., -1], state.v.data[..., -1]
         else:
             from legoesm.grids.voronoi import reconstruct_cell_velocity
             u_cell, v_cell = reconstruct_cell_velocity(state.u.data, mesh)
@@ -1297,24 +1298,24 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
         # A dry deck carries no vapour: sensible heat only.
         _moist = (latent and state.tracers is not None
                   and "q_v" in state.tracers)
-        T_sfc = jnp.asarray(forcing["T_sfc"]).reshape(nCells)
+        T_sfc = jnp.asarray(forcing["T_sfc"]).reshape(p_s.shape)
         if _moist:
             _qv_raw = state.tracers["q_v"]
             _qv = _qv_raw.data if hasattr(_qv_raw, "data") else _qv_raw
-            q_low = _qv[:, -1]
+            q_low = _qv[..., -1]
         else:
-            q_low = jnp.zeros_like(T[:, -1])
+            q_low = jnp.zeros_like(T[..., -1])
         shflx, lhflx = constant_bulk_surface_fluxes(
-            T[:, -1], q_low, u_low, v_low,
-            sigma_coord.pressure_at_full(p_s)[:, -1], p_s, T_sfc, C_H, C_E)
+            T[..., -1], q_low, u_low, v_low,
+            sigma_coord.pressure_at_full(p_s)[..., -1], p_s, T_sfc, C_H, C_E)
         if not _moist:
             lhflx = jnp.zeros_like(lhflx)
         dT_low, dq_low, evap = bottom_layer_surface_kick(
-            shflx, lhflx, T_sfc, sigma_coord.layer_thickness_dp(p_s)[:, -1])
-        dT = jnp.zeros_like(T).at[:, -1].set(dT_low.astype(T.dtype))
+            shflx, lhflx, T_sfc, sigma_coord.layer_thickness_dp(p_s)[..., -1])
+        dT = jnp.zeros_like(T).at[..., -1].set(dT_low.astype(T.dtype))
         tracer_tends = None
         if _moist:
-            dq = jnp.zeros_like(_qv).at[:, -1].set(dq_low.astype(_qv.dtype))
+            dq = jnp.zeros_like(_qv).at[..., -1].set(dq_low.astype(_qv.dtype))
             tracer_tends = {"q_v": (
                 _qv_raw.replace(data=dq, name="dq_v_dt_sfc_bulk")
                 if hasattr(_qv_raw, "replace") else dq)}

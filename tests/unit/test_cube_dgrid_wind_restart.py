@@ -87,7 +87,8 @@ def test_two_legs_equal_the_straight_run(leg1):
 def test_old_checkpoint_is_lifted_once_with_a_warning(leg1, caplog):
     tmp, b1, ckpt = leg1
     with np.load(ckpt, allow_pickle=True) as z:
-        drop = {f"carry_{k}" for k in ModelDriver._CORNER_WIND_KEYS}
+        drop = {f"carry_{k}{x}" for k in ModelDriver._CORNER_WIND_KEYS
+                for x in ("", "_sha256")}
         assert drop <= set(z.keys())
         data = {k: z[k] for k in z.keys() if k not in drop}
     old = tmp / "old_checkpoint_day_0001.npz"
@@ -208,4 +209,18 @@ def test_one_digest_missing_is_refused(leg1):
     d.setup()
     d.load_checkpoint(str(bad))
     with pytest.raises(ValueError, match="only one"):
+        d._enter_persistent_dgrid()
+
+
+def test_digests_without_winds_are_refused(leg1):
+    tmp, _b1, ckpt = leg1
+    with np.load(ckpt, allow_pickle=True) as z:
+        data = {k: z[k] for k in z.keys()
+                if k not in {f"carry_{k}" for k in ModelDriver._CORNER_WIND_KEYS}}
+    bad = tmp / "orphan_checkpoint_day_0001.npz"
+    np.savez(bad, **data)
+    d = ModelDriver(_cfg(tmp / "leg2_orphan", 2))
+    d.setup()
+    d.load_checkpoint(str(bad))
+    with pytest.raises(ValueError, match="damaged"):
         d._enter_persistent_dgrid()

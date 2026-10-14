@@ -7043,12 +7043,17 @@ class ModelDriver:
         """
         aux = self._carry_aux if isinstance(self._carry_aux, dict) else {}
         saved = [aux.get(k) for k in keys]
+        digests = [aux.get(k + "_sha256") for k in keys]
         if sum(x is not None for x in saved) == 1:
             raise ValueError(
                 f"checkpoint carries only one of the {what} {keys}; refusing "
                 "to lift the other from cell centres and mix the two")
+        if (any(x is not None for x in digests)
+                and not all(x is not None for x in saved)):
+            raise ValueError(
+                f"checkpoint carries SHA-256s for the {what} {keys} but not "
+                "the winds themselves: the file is damaged")
         if all(x is not None for x in saved):
-            digests = [aux.get(k + "_sha256") for k in keys]
             if sum(x is not None for x in digests) == 1:
                 raise ValueError(
                     f"checkpoint carries a SHA-256 for only one of the {what} "

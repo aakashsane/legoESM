@@ -467,3 +467,55 @@ def test_ice_curve_drain_acts_on_the_column_lane(tmp_path):
     d_qi = np.abs(np.asarray(on.state.native.tracers["q_i"])
                   - np.asarray(off.state.native.tracers["q_i"])).max()
     assert d_T > 0.0 and d_qi > 0.0
+
+
+# ---------------------------------------------------------------------
+# the lane's q_v del4 smoother (latlon_qv_smooth_del4_m4s)
+# ---------------------------------------------------------------------
+
+def test_latlon_qv_smoother_damps_noise_and_keeps_level_water(setup):
+    from legoesm.driver.model_driver import make_latlon_qv_smooth_fn
+    g, s, nat = setup
+    col = LatLonCGridColumnModel(_dyn(g, s))
+    n = g.n_lat * g.n_lon
+    i, j = np.meshgrid(np.arange(g.n_lat), np.arange(g.n_lon), indexing="ij")
+    chk = ((-1.0) ** (i + j)).reshape(n, 1) * np.ones((1, NLEV))
+    q = jnp.asarray(4e-3 + 1e-3 * chk)
+    p_s = jnp.asarray(1e5 - 3e3 * np.cos(np.arange(n) * 0.37))
+    nu4 = 0.5 * 1e14
+    out = make_latlon_qv_smooth_fn(col, nu4, DT, s)(q, p_s)
+    dp = s.layer_thickness_dp(p_s)
+    area = np.asarray(col.mesh.areaCell)[:, None]
+    m0 = np.sum(area * np.asarray(dp) * np.asarray(q), axis=0)
+    m1 = np.sum(area * np.asarray(dp) * np.asarray(out), axis=0)
+    np.testing.assert_allclose(m1, m0, rtol=1e-12)
+    amp = lambda x: np.abs(np.sum((np.asarray(x) - 4e-3) * chk, axis=0))  # noqa: E731
+    assert np.all(amp(out) < amp(q))
+    flat = jnp.full_like(q, 4e-3)
+    np.testing.assert_allclose(np.asarray(make_latlon_qv_smooth_fn(
+        col, nu4, DT, s)(flat, p_s)), 4e-3, rtol=1e-13)
+
+
+def test_driver_latlon_qv_smoother_is_wired(tmp_path):
+    a = _driver(tmp_path / "off", microphysics="kessler", days=DT / 86400.0)
+    b = _driver(tmp_path / "on", microphysics="kessler", days=DT / 86400.0,
+                latlon_qv_smooth_del4_m4s=5e14)
+    assert a.run() == "COMPLETED" and b.run() == "COMPLETED"
+    qa = np.asarray(a.model.to_bundle(a.state).tracers["q_v"])
+    qb = np.asarray(b.model.to_bundle(b.state).tracers["q_v"])
+    assert np.abs(qa - qb).max() > 0
+
+
+def test_latlon_qv_smoother_needs_the_column_lane(tmp_path):
+    _driver_cfg(tmp_path, latlon_qv_smooth_del4_m4s=1e14).validate_strict()
+    for v, over, frag in ((1e14, dict(column=False), "COLUMN lane"),
+                          (-1.0, dict(), "finite in")):
+        with pytest.raises(ValueError, match=frag):
+            _driver_cfg(tmp_path, latlon_qv_smooth_del4_m4s=v,
+                        **over).validate_strict()
+
+
+def test_driver_latlon_qv_smoother_refuses_an_unstable_coefficient(tmp_path):
+    drv = _driver(tmp_path, microphysics="kessler", latlon_qv_smooth_del4_m4s=1e18)
+    with pytest.raises(ValueError, match="stability bound"):
+        drv.run()

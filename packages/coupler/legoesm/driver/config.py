@@ -1810,6 +1810,12 @@ class ExperimentConfig(NamedTuple):
     # nu4*dt*g_max^2 <= 0.5 at setup.  MPAS-only, same as the del2.  Default 0.0 pending the controlled
     # pair that picks the coefficient — see the arm before changing it.
     mpas_qv_smooth_del4_m4s: float = 0.0   # del4 diffusivity [m^4/s]
+    # Lat-lon COLUMN lane's post-step q_v del4: the lat-lon grid's own
+    # biharmonic (operators_latlon_3d.hyperdiffusion_3d), then the same
+    # water-mass-restoring floor as the MPAS smoother.  The lat-lon pipeline
+    # lane applies 0.5x the dycore hyperdiffusion unconditionally; on the
+    # column lane it is this explicit field.  0 = off.
+    latlon_qv_smooth_del4_m4s: float = 0.0   # del4 diffusivity [m^4/s]
     # Prognostic sea-ice skin temperature on the MPAS lane (Semtner 1976
     # zero-layer conduction + slab thermal inertia; forcing/surface_utils
     # helper).  The prescribed-SST anchor otherwise pins ice-covered cells
@@ -2198,10 +2204,8 @@ class ExperimentConfig(NamedTuple):
                     errors.append(
                         "dycore.column_lane on latlon_cgrid is single device: "
                         "no MPI band (distributed) and no ensemble axis")
-                # the column loop's q_v smoother is a Voronoi operator (no
-                # lat-lon form); the lat-lon lane's own smoother lives in
-                # the PhysicsPipeline step factories, which this lane does
-                # not run
+                # the column loop's MPAS q_v smoother is a Voronoi
+                # operator; this lane's is latlon_qv_smooth_del4_m4s
                 if self.output.budget_ledger:
                     errors.append(
                         "output.budget_ledger on the lat-lon column lane: its "
@@ -2212,7 +2216,8 @@ class ExperimentConfig(NamedTuple):
                         errors.append(
                             f"{_k}={getattr(self, _k)!r} on the lat-lon column "
                             "lane: the column loop's q_v smoother needs the "
-                            "Voronoi mesh; set it to 0")
+                            "Voronoi mesh; set it to 0 (this lane's is "
+                            "latlon_qv_smooth_del4_m4s)")
             # every column lane: the columns are a VIEW of the native
             # state and only the dycore's step may move the winds
             if self.sponge_enabled:
@@ -3550,6 +3555,19 @@ class ExperimentConfig(NamedTuple):
                 f"[m^2/s]) must be finite in [0, 1e8]; got "
                 f"{self.mpas_qv_smooth_del2_m2s!r}."
             )
+        if not (math.isfinite(self.latlon_qv_smooth_del4_m4s)
+                and 0.0 <= self.latlon_qv_smooth_del4_m4s <= 1.0e18):
+            errors.append(
+                f"latlon_qv_smooth_del4_m4s (horizontal q_v del4 diffusivity "
+                f"[m^4/s]) must be finite in [0, 1e18]; got "
+                f"{self.latlon_qv_smooth_del4_m4s!r}.")
+        elif (self.latlon_qv_smooth_del4_m4s != 0.0
+              and not (d.column_lane and d.discretization == "latlon_cgrid")):
+            errors.append(
+                "latlon_qv_smooth_del4_m4s is the lat-lon COLUMN lane's q_v "
+                "smoother (dycore.column_lane with latlon_cgrid); "
+                f"discretization={d.discretization!r}, column_lane="
+                f"{d.column_lane!r} would silently ignore it.")
         # Same shape one order up: 0 = off, and the ceiling is far above any
         # biharmonic a stable explicit step admits (the driver enforces the
         # mesh-specific bound nu4*dt*g_max^2 <= 0.5 at setup).

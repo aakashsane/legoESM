@@ -7048,6 +7048,11 @@ class ModelDriver:
                 f"checkpoint carries only one of the {what} {keys}; refusing "
                 "to lift the other from cell centres and mix the two")
         if all(x is not None for x in saved):
+            digests = [aux.get(k + "_sha256") for k in keys]
+            if sum(x is not None for x in digests) == 1:
+                raise ValueError(
+                    f"checkpoint carries a SHA-256 for only one of the {what} "
+                    f"{keys}; refusing to trust the other unverified")
             for k, x in zip(keys, saved):
                 digest = aux.get(k + "_sha256")
                 if (digest is not None

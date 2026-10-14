@@ -123,7 +123,8 @@ def test_corner_winds_from_another_state_are_refused(leg1, corrupt):
         data = {k: z[k] for k in z.keys()}
     key = next(k for k in data if k.endswith("cube_u_d"))
     data[key] = corrupt(data[key])
-    data.pop(key + "_sha256")       # a pre-digest file: the average check
+    for k in [k for k in data if k.endswith("_sha256")]:
+        data.pop(k)                 # a pre-digest file: the average check
     bad = tmp / "bad_checkpoint_day_0001.npz"
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_bad", 2))
@@ -193,4 +194,18 @@ def test_float64_winds_are_checked_bit_for_bit(leg1):
     d.setup()
     d.load_checkpoint(str(bad))
     with pytest.raises(ValueError, match="SHA-256"):
+        d._enter_persistent_dgrid()
+
+
+def test_one_digest_missing_is_refused(leg1):
+    tmp, _b1, ckpt = leg1
+    with np.load(ckpt, allow_pickle=True) as z:
+        data = {k: z[k] for k in z.keys()}
+    data.pop(f"carry_{ModelDriver._CORNER_WIND_KEYS[0]}_sha256")
+    bad = tmp / "halfdigest_checkpoint_day_0001.npz"
+    np.savez(bad, **data)
+    d = ModelDriver(_cfg(tmp / "leg2_half", 2))
+    d.setup()
+    d.load_checkpoint(str(bad))
+    with pytest.raises(ValueError, match="only one"):
         d._enter_persistent_dgrid()

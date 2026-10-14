@@ -6981,10 +6981,6 @@ class ModelDriver:
                 and cfg.dycore.discretization == "latlon_cgrid"
                 and cfg.dycore.model_type == "hydrostatic"):
             return
-        if self._latlon_column_model() is not None:
-            # The column lane's state already holds the native C-grid state
-            # (face winds included) and steps it directly.
-            return
         _why = None
         if getattr(self, "_ensemble_size", 1) not in (None, 1):
             _why = ("an ensemble run: the member axis would have to ride the "
@@ -7006,6 +7002,10 @@ class ModelDriver:
                 "re-project the winds every step, which removes most of the "
                 "eddy kinetic energy within a day.  Run single-process "
                 "(one device, or the lat-band enable_latlon_spmd lanes).")
+        if self._latlon_column_model() is not None:
+            # The column lane's state already holds the native C-grid state
+            # (face winds included) and steps it directly.
+            return
         from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
             LatLonFaceWindState, facewind_to_hydrostatic,
             hydrostatic_to_facewind,

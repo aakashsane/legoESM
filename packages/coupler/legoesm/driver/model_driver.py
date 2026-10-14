@@ -7149,9 +7149,8 @@ class ModelDriver:
         """
         self._persistent_cgrid = False
         cfg = self.config
-        if not (cfg.grid.grid_type == "latlon"
-                and cfg.dycore.discretization == "latlon_cgrid"
-                and cfg.dycore.model_type == "hydrostatic"):
+        from legoesm.driver.component_factory import driver_solver_name
+        if driver_solver_name(cfg) != "latlon_cgrid_primitive_equations":
             return
         _why = None
         if getattr(self, "_ensemble_size", 1) not in (None, 1):
@@ -18247,9 +18246,8 @@ class ModelDriver:
         # segment never enters run(), so it would integrate the cell-centre
         # (eddy-damped) path production no longer runs.  Refuse (approved hard
         # error) rather than fit a model to a different discretisation.
-        if (self.config.grid.grid_type == "latlon"
-                and self.config.dycore.discretization == "latlon_cgrid"
-                and self.config.dycore.model_type == "hydrostatic"):
+        from legoesm.driver.component_factory import driver_solver_name
+        if driver_solver_name(self.config) == "latlon_cgrid_primitive_equations":
             raise NotImplementedError(
                 "build_training_segment does not carry the lat-lon C-grid face "
                 "winds production runs carry between steps, so it would train "

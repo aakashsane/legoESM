@@ -705,6 +705,16 @@ def fv3_duo_dynamics_for_layout(config: ExperimentConfig, bundle, cfg):
     return FV3DuoDynamicsModel(bundle, cfg)
 
 
+def driver_solver_name(config: ExperimentConfig) -> str | None:
+    """The solver ``create_atmosphere_dycore`` builds for ``config`` (None
+    when the combination is unsupported).  Gate on this, not on one
+    discretization spelling: several spellings build the same solver."""
+    from legoesm.driver.config import normalize_grid_type
+    return _DRIVER_SUPPORTED.get((
+        config.dycore.model_type, config.dycore.discretization,
+        normalize_grid_type(config.grid.grid_type)))
+
+
 def energy_fixer_wired(config: ExperimentConfig, solver_name: str) -> bool:
     """Whether the dycore ``solver_name`` runs ``DycoreConfig.energy_fixer``
     (the CAM-style global total-energy fixer, review 2026-10-10 F15): the
@@ -833,13 +843,9 @@ def create_atmosphere_dycore(
     # here too — the cost is one dict lookup.
     from legoesm.driver.config import normalize_grid_type
     grid_type = normalize_grid_type(gc.grid_type)
-
-    key = (model_type, discretization, grid_type)
-
-    if key not in _DRIVER_SUPPORTED:
+    solver_name = driver_solver_name(config)
+    if solver_name is None:
         _fail_unsupported(model_type, discretization, grid_type)
-
-    solver_name = _DRIVER_SUPPORTED[key]
     refuse_unwired_energy_fixer(config, solver_name)
     warn_if_vapour_floor_creates_water(config, solver_name)
     if coeff_grid is None:

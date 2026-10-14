@@ -90,6 +90,43 @@ def test_writer_identity_excludes_only_nemo_out_of_loop_halo_and_plant_fires(
     assert planted["active_or_consumed_mismatches"] == 1
 
 
+def test_writer_identity_covers_shared_prognostic_and_rhs_records():
+    assert "oracle_step_entry_kt00000002.bin" in GATE.WRITER_STEP1_RECORDS
+    assert "oracle_rhs_kt00000001.bin" in GATE.WRITER_STEP1_RECORDS
+
+
+def test_first_rk_difference_is_derived_in_stage_and_field_order():
+    def row(name, unequal, maximum):
+        return {"name": name, "n_unequal": unequal, "max_abs": maximum}
+
+    walk = [
+        {
+            "stage": 1,
+            "rows": [
+                row("s1.T", 0, 0.0),
+                row("s1.S", 1, 1.0e-13),
+                row("s1.u", 0, 0.0),
+                row("s1.v", 0, 0.0),
+                row("s1.ssh", 0, 0.0),
+            ],
+        },
+        {
+            "stage": 2,
+            "rows": [
+                row("s2.T", 1, 2.0e-9),
+                row("s2.S", 0, 0.0),
+                row("s2.u", 0, 0.0),
+                row("s2.v", 0, 0.0),
+                row("s2.ssh", 0, 0.0),
+            ],
+        },
+    ]
+    assert GATE.first_rk_difference(walk)["field"] == "S"
+    owner_scale = GATE.first_rk_difference(
+        walk, minimum_max_abs=1.0e-10)
+    assert (owner_scale["stage"], owner_scale["field"]) == (2, "T")
+
+
 def test_all_math_flavour_oracles_are_admitted_by_content():
     expected_files = {
         ("r4", "vector"): 20,

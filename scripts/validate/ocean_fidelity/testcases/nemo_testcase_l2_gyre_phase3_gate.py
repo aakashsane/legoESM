@@ -191,7 +191,13 @@ def read_entry(path: Path, dims=DIMS) -> dict:
     }
 
 
-def read_stage(path: Path, expected_stage: int, dims=DIMS) -> dict:
+def read_stage(
+    path: Path,
+    expected_stage: int,
+    dims=DIMS,
+    *,
+    expected_kt: int = 1,
+) -> dict:
     level = _registered(path, "after")
     with path.open("rb") as handle:
         magic = handle.read(16).decode("ascii").rstrip()
@@ -201,7 +207,8 @@ def read_stage(path: Path, expected_stage: int, dims=DIMS) -> dict:
     require(magic == "NEMO_L1_STAGE_1", f"{path}: bad magic")
     require((version, nx, ny, nz, ntr, bits) == (1, *dims, 2, 64), f"{path}: bad header")
     require(
-        (kt, stage, kaa) == (1, expected_stage, LEVELS[expected_stage]["Kaa"]),
+        (kt, stage, kaa)
+        == (expected_kt, expected_stage, LEVELS[expected_stage]["Kaa"]),
         f"{path}: wrong Kaa",
     )
     count = nx * ny * nz

@@ -50,6 +50,8 @@ ADMISSIONS_PATH = HERE / "gyre_hires_oracle_admissions.json"
 ORACLE_FLAVOURS = ("scalar", "vector")
 FIELDS = ("T", "S", "u", "v", "ssh")
 WRITER_STEP1_RECORDS = (
+    "oracle_step_entry_kt00000002.bin",
+    "oracle_rhs_kt00000001.bin",
     "oracle_stage_kt00000001_s1.bin",
     "oracle_stage_kt00000001_s2.bin",
     "oracle_stage_kt00000001_s3.bin",
@@ -477,6 +479,22 @@ def exact_score(name: str, oracle, candidate, mask, *, plant_one_ulp=False) -> d
         "bit_bar": 0,
         "plant_one_ulp": plant_one_ulp,
     }
+
+
+def first_rk_difference(
+    stage_walk: list[dict], *, minimum_max_abs: float = 0.0,
+) -> dict | None:
+    """Return the first field that differs in source stage/field order."""
+    for stage in stage_walk:
+        for field, row in zip(FIELDS, stage["rows"], strict=True):
+            if row["n_unequal"] and row["max_abs"] >= minimum_max_abs:
+                return {
+                    "stage": stage["stage"],
+                    "field": field,
+                    "minimum_max_abs": minimum_max_abs,
+                    "score": row,
+                }
+    return None
 
 
 def accumulated_component_score(
@@ -2025,6 +2043,65 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
     ).step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
     traced = jax.device_get(traced)
 
+    # Measure every RK boundary instead of inferring stage 3 from the first
+    # detailed tracer record.  The hooks expose the stage T/S and momentum
+    # only after the ordinary production step has completed, so these runs do
+    # not perturb the stage being measured.
+    wet_masks = expected_masks(card)
+    rk_stage_walk = []
+    for stage in (1, 2):
+        stage_state = LatLonCGridOceanModel(
+            card.recipe.grid, card.recipe.z_coord, card.recipe.model_config,
+            _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                expose_momentum_stage=stage,
+                expose_tracer_stage=stage,
+            ),
+        ).step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+        stage_state = jax.device_get(stage_state)
+        stage_oracle = read_stage(
+            oracle_root / f"oracle_stage_kt00000002_s{stage}.bin",
+            stage,
+            dims=NEMO_DIMS,
+            expected_kt=2,
+        )
+        stage_fields = lego_fields(stage_state)
+        rows = [
+            exact_score(
+                f"GYRE-zco-r4.kt2.rk_stage{stage}.{field}",
+                (stage_oracle[field] if field == "ssh"
+                 else stage_oracle[field][..., :30]),
+                stage_fields[field],
+                wet_masks[field],
+            )
+            for field in FIELDS
+        ]
+        rk_stage_walk.append({"stage": stage, "rows": rows})
+        jax.clear_caches()
+
+    stage_oracle = read_stage(
+        oracle_root / "oracle_stage_kt00000002_s3.bin",
+        3,
+        dims=NEMO_DIMS,
+        expected_kt=2,
+    )
+    stage_fields = lego_fields(traced.state_after)
+    rk_stage_walk.append({
+        "stage": 3,
+        "rows": [
+            exact_score(
+                f"GYRE-zco-r4.kt2.rk_stage3.{field}",
+                (stage_oracle[field] if field == "ssh"
+                 else stage_oracle[field][..., :30]),
+                stage_fields[field],
+                wet_masks[field],
+            )
+            for field in FIELDS
+        ],
+    })
+    first_any_rk = first_rk_difference(rk_stage_walk)
+    first_owner_scale_rk = first_rk_difference(
+        rk_stage_walk, minimum_max_abs=1.0e-10)
+
     oracle = read_tracer_stage3_hires(
         oracle_root / "oracle_rktracer_stage3_kt00000002.bin",
         expected_kt=2,
@@ -2106,6 +2183,12 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
         qsr_record["dT_dt"][..., :30],
         oracle["after_qsr_T"][..., :30]
         - oracle["after_sbc_T"][..., :30], wet)
+    qsr_term_row = exact_score(
+        "GYRE-zco-r4.kt2.stage3.qsr_kmm.executed_term",
+        qsr_record["dT_dt"][..., :30],
+        np.asarray(traced.qsr_association.qsr_kmm, dtype=np.float64),
+        wet,
+    )
 
     def zdf_native(name: str, stop: int | None = None) -> np.ndarray:
         value = np.asarray(zdf_record["arrays"][name], dtype=np.float64)
@@ -2155,10 +2238,12 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
             "NEMO kt=2 T/S/U/V/SSH primary state; legoESM hidden closure "
             "and RK memories retained from its certified step 1"),
         "step": 2,
-        "first_material_rk_stage": 3,
-        "first_material_field": "T",
+        "rk_stage_walk": rk_stage_walk,
+        "first_rk_difference": first_any_rk,
+        "first_rk_difference_above_1e-10": first_owner_scale_rk,
         "boundary_rows": boundary_rows,
         "executed_qsr_record_identity": qsr_increment_row,
+        "executed_qsr_term_score": qsr_term_row,
         "vertical_solve_rows": vertical_rows,
         "first_remaining_vertical_operand_or_boundary": first_vertical,
         "one_variable_experiment": {

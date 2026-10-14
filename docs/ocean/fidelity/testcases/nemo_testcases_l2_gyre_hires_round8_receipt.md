@@ -31,12 +31,15 @@ the old one-degree trajectory would preserve the diagnosed defect.
 ## Scalar step-2 writer classification
 
 The widened scalar writer is admitted only after a scoped identity proof.
-Every byte consumed by the gates is identical to the scalar twin.  Four words
-move outside NEMO's recorded `ntsi:ntei` / `ntsj:ntej` loop box:
+Every byte consumed by the gates is identical to the scalar twin.  Ten
+serialized word occurrences at four distinct array indices move outside
+NEMO's recorded `ntsi:ntei` / `ntsj:ntej` loop box:
 
 - stage-1 `zFu` at Fortran `[126,60,25]` and `[126,73,13]`;
 - stage-2 `zFu` at the same two locations;
 - stage-2 `zFw` at `[1,1,1]` and `[2,1,1]`.
+- the active-tracer-transport record repeats those two `zFu` and two `zFw`
+  locations.
 
 These are uninitialised full-halo work-array words.  The readers crop to the
 writer's own loop box before returning the arrays, so earlier gates that
@@ -56,10 +59,10 @@ TKE owner remains open.
 ## Step-2 source-order walk
 
 The new writer's prognostic step-1 state and all records the old gates consume
-are byte-identical to the scalar twin.  The only raw differences are the four
-excluded work-memory words above.  The admitted step-2 stream then gives this
-temperature walk after bridging NEMO's `kt=2` T/S/U/V/SSH before state while
-retaining legoESM's closure memories:
+are byte-identical to the scalar twin.  The only raw differences are the ten
+excluded work-memory word occurrences above.  The admitted step-2 stream then
+gives this temperature walk after bridging NEMO's `kt=2` T/S/U/V/SSH before
+state while retaining legoESM's closure memories:
 
 | stage-3 boundary | max absolute T residue | max ULP | location of max `[j,i,k]` |
 |---|---:|---:|---:|
@@ -80,8 +83,10 @@ gives:
 | reverted static one | 3.2262263971460925e-9 | 908102 | [1,120,0] |
 
 Thus the old `3.3392346665550576e-9 K` entry error was not one indivisible
-owner.  The static Kbb QSR association supplied its material solar-boundary
-component; the fixed run exposes a separate vertical owner.
+owner.  That old total was 939,911 ULP at `[j=1,i=97,k=0]`; after the QSR fix
+the same final-solve location is `1.81572090696136e-9 K`, 511,080 ULP.  The
+static Kbb QSR association supplied the material solar-boundary component;
+the fixed run exposes a separate vertical owner.
 
 The executed `tra_zdf` matrix/RHS and the production vertical observer agree
 on where that next owner first appears:

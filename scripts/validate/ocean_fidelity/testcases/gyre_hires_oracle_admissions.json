@@ -210,12 +210,12 @@
       "proofs": {
         "writer_identity": {
           "path": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round7/oracle_gyre_r4_scalar_step2/manifest/writer_identity.json",
-          "sha256": "57f3d3302a877cc367c5ba77e732162b4f4d65182a9a26532ff98a6a3da9250b",
+          "sha256": "8baeaed469dcce96ba31ebc26ecbe7fea6ffdde362d904b595dce85d0ba254fe",
           "verdict": "PASS"
         },
         "active_word_plant": {
           "path": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round7/oracle_gyre_r4_scalar_step2/manifest/writer_identity_active_plant.json",
-          "sha256": "4156140eaa2ad8363e8eb7314c5db7c37671d3e90dcf191dfaefd45b5052ad15",
+          "sha256": "244a619836026ac5108bce3262d9b4e7b2ad551d2cbca9909409116d5662348e",
           "verdict": "DEBT"
         }
       },

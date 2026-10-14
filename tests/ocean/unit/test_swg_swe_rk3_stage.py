@@ -8,7 +8,7 @@ import pytest
 
 from legoesm.core.precision import PrecisionPolicy, get_policy, set_policy
 from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import LatLonCGridOceanModel
-from legoesm.ocean.dynamics.swe_rk3 import SWERK3StageEntry
+from legoesm.ocean.dynamics.swe_rk3 import SWERK3StageEntry, swe_rk3_stage
 from legoesm.ocean.eos import nemo_qco_r3t_ratio
 from legoesm.ocean.fidelity.nemo_testcase_recipe import (
     SWG_NAMELIST, build_swg_card, swg_horizontal_coordinates)
@@ -315,6 +315,45 @@ def test_stage_replay_refuses_a_non_swe_selector(card_and_model):
     model = LatLonCGridOceanModel(card.recipe.grid, card.recipe.z_coord, bad)
     with pytest.raises(ValueError, match="requires outer_integrator"):
         model.replay_swe_rk3_stage(_entry(), card.dt_s, 1)
+
+
+@pytest.mark.parametrize("field,value", (
+    ("coriolis_scheme", "matsuno_split"),
+    ("een_e3f_scheme", "min"),
+    ("een_metric_weighting", "off"),
+    ("een_q_boundary", "neumann_fill"),
+    ("tracer_advection", "tvd"),
+))
+def test_stage_replay_refuses_ignored_program_selector(
+        card_and_model, field, value):
+    card, _ = card_and_model
+    bad = card.recipe.model_config._replace(**{field: value})
+    with pytest.raises(ValueError, match="SWE RK3 requires"):
+        swe_rk3_stage(
+            _entry(), _entry(), card.dt_s, 1, card.recipe.grid,
+            card.recipe.z_coord, card.recipe.land_mask, bad)
+
+
+def test_stage_replay_refuses_bypassed_time_and_vertical_physics_selectors(
+        card_and_model):
+    card, _ = card_and_model
+    base = card.recipe.model_config
+    variants = (
+        base._replace(tracer_time_integrator="euler",
+                      momentum_time_integrator="euler"),
+        base._replace(implicit_vertical_mixing=True),
+        base._replace(physics=base.physics._replace(
+            vertical_mixing=base.physics.vertical_mixing._replace(
+                scheme="constant"))),
+        base._replace(physics=base.physics._replace(
+            convection=base.physics.convection._replace(
+                scheme="enhanced_diffusion"))),
+    )
+    for bad in variants:
+        with pytest.raises(ValueError, match="SWE RK3 requires"):
+            swe_rk3_stage(
+                _entry(), _entry(), card.dt_s, 1, card.recipe.grid,
+                card.recipe.z_coord, card.recipe.land_mask, bad)
 
 
 @pytest.mark.parametrize("field,value", (

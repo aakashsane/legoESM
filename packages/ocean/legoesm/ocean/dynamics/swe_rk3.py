@@ -87,6 +87,23 @@ def _validate_program(config, z_coord, stage):
             or vor.scheme != "ens_total" or vor.ln_dynvor_msk is not True):
         raise ValueError(
             "SWE RK3 requires total ENS with ln_dynvor_msk=true")
+    if (config.coriolis_scheme != "explicit_ab2"
+            or config.een_e3f_scheme != "nemo_avg4"
+            or config.een_metric_weighting != "nemo"
+            or config.een_q_boundary != "nemo_live"):
+        raise ValueError(
+            "SWE RK3 requires explicit_ab2 with NEMO live ENS operands")
+    if (config.tracer_advection != "none"
+            or config.tracer_time_integrator != "rk3_ws"
+            or config.momentum_time_integrator != "rk3_ws"):
+        raise ValueError(
+            "SWE RK3 requires disabled tracer advection and the coupled "
+            "rk3_ws time selectors")
+    if (config.implicit_vertical_mixing
+            or config.physics.vertical_mixing.scheme != "none"
+            or config.physics.convection.scheme != "none"):
+        raise ValueError(
+            "SWE RK3 requires disabled vertical mixing and convection")
     if int(z_coord.n_levels) != 1:
         raise ValueError("SWE RK3 supports exactly one layer")
     if config.constants.g != config.g:

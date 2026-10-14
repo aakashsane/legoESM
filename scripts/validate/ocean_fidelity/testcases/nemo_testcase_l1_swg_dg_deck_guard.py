@@ -28,7 +28,7 @@ NEMO_ONLY_REGISTRY = (
 sys.path.insert(0, str(HERE))
 from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-CHECKOUT_IMPORT = bootstrap_checkout(__file__)
+CHECKOUT_IMPORT = bootstrap_checkout(__file__, enforce_x64=__name__ == "__main__")
 from nemo_testcase_l1_swg_namelist_inventory import (  # noqa: E402
     CARD_ALIASES,
     load_reference_inventory,
@@ -225,7 +225,13 @@ def resolve_inventory(
         reference: dict[str, dict[str, object]],
         config: dict[str, dict[str, object]],
 ) -> dict[tuple[str, str], dict]:
-    """Resolve every inventory field from the echo or NEMO's ref->cfg order."""
+    """Resolve every inventory field from the echo or NEMO's ref->cfg order.
+
+    An echoed group yields NEMO's EFFECTIVE values (NEMO may adjust an input
+    before echoing it, e.g. nn_hls = MAX(2, nn_hls)), so a raw input that NEMO
+    normalises to the reference value passes; an unechoed group yields the raw
+    values read from namelist_ref then namelist_cfg.
+    """
     resolved = {}
     for group, item in inventory["groups"].items():
         fields = item["fields"]

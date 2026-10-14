@@ -18,7 +18,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-CHECKOUT_IMPORT = bootstrap_checkout(__file__)
+CHECKOUT_IMPORT = bootstrap_checkout(__file__, enforce_x64=__name__ == "__main__")
 from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
 
 NEMO_FIELDS = {"T": "sossheig", "U": "vozocrtx", "V": "vomecrty"}

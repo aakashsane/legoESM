@@ -387,8 +387,14 @@ groups are switched off by this deck and so are not echoed either). Then:
   158 rows in all because `sn_cfctl` has 12 members;
 - the other 189 fields have no card counterpart (MPI layout, T/S input files,
   runoff, and the switched-off groups). Each has a reason in the committed
-  registry `swg_dg_nemo_only_namelist_fields.json` and is pinned to the value
-  the reference run read, so any change refuses;
+  registry `swg_dg_nemo_only_namelist_fields.json` and is pinned to the
+  reference run's value, so any change of the value the guard resolves
+  refuses. For an echoed group that value is the EFFECTIVE value NEMO wrote
+  after reading, not necessarily the raw input: NEMO adjusts some inputs
+  before echoing them (for example `nn_hls = MAX(2, nn_hls)` in `mppini.f90`),
+  so a raw `nn_hls = 1` in `namelist_cfg` echoes as 2 and passes, which is
+  correct because the model then runs with 2. Groups NEMO does not echo are
+  compared at the raw values read from `namelist_ref` and `namelist_cfg`;
 - the guard refuses a field that is neither compared nor registered, a field
   it cannot resolve, an echoed group or field outside the inventory, an
   echoed group missing a field (a disappearing comparison row), a set of

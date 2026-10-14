@@ -15,7 +15,7 @@ CHECKOUT_TOOLS = (
 sys.path.insert(0, str(CHECKOUT_TOOLS))
 from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-CHECKOUT_IMPORT = bootstrap_checkout(__file__)
+CHECKOUT_IMPORT = bootstrap_checkout(__file__, enforce_x64=__name__ == "__main__")
 CLIMATE_PATH = (
     REPO_ROOT / "scripts/validate/ocean_fidelity/testcases/"
     "nemo_testcase_l1_swg_dg_climate.py")

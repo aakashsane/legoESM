@@ -26,13 +26,16 @@ JAX_PLATFORMS_FOR = {"cpu": "cpu", "gpu": "cuda"}
 
 def bootstrap_checkout(
         script: str | Path, *, jax_platform: str = "cpu",
-        gpu_device: str | None = None,
+        gpu_device: str | None = None, enforce_x64: bool = True,
 ) -> dict[str, str]:
     """Select JAX, put the owning checkout first, and verify both choices.
 
     Importing ``legoesm.ocean`` imports JAX.  Platform selection therefore
     belongs here, before the checkout verification import, rather than later
-    in an entry point's model code.
+    in an entry point's model code.  ``enforce_x64`` refuses a process whose
+    JAX was already imported in float32; modules that bootstrap at import
+    time pass ``__name__ == "__main__"`` so that importing them as a library
+    (pytest collection) never depends on which module imported JAX first.
     """
     if jax_platform not in ("cpu", "gpu"):
         raise RuntimeError(
@@ -69,7 +72,7 @@ def bootstrap_checkout(
     result = require_checkout_import(root)
     import jax
 
-    if not jax.config.jax_enable_x64:
+    if enforce_x64 and not jax.config.jax_enable_x64:
         raise RuntimeError(
             "JAX x64 is disabled: JAX was imported with float32 before this "
             "entry point selected float64; run the tool as its own process")

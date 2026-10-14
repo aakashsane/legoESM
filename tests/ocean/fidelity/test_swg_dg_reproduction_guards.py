@@ -294,6 +294,38 @@ def test_deck_guard_selects_float64_itself(tmp_path):
     assert report["jax_enable_x64"].startswith("selected by the checkout bootstrap")
 
 
+def test_import_time_bootstrap_does_not_make_collection_order_dependent():
+    """Importing a tool as a library (pytest collection) in a float32 process
+    must not raise; only a command-line run enforces float64."""
+    env = {key: value for key, value in os.environ.items()
+           if key != "JAX_ENABLE_X64"}
+    env["JAX_PLATFORMS"] = "cpu"
+    library = subprocess.run(
+        [sys.executable, "-c",
+         "import importlib.util, sys\n"
+         "import jax\n"
+         "assert not jax.config.jax_enable_x64\n"
+         "spec = importlib.util.spec_from_file_location('guard', sys.argv[1])\n"
+         "guard = importlib.util.module_from_spec(spec)\n"
+         "spec.loader.exec_module(guard)\n"
+         "print('IMPORTED')\n",
+         str(TOOLS / "nemo_testcase_l1_swg_dg_deck_guard.py")],
+        env=env, capture_output=True, text=True)
+    assert library.returncode == 0, library.stderr
+    assert library.stdout.strip().splitlines()[-1] == "IMPORTED"
+    enforced = subprocess.run(
+        [sys.executable, "-c",
+         "import sys\n"
+         "import jax\n"
+         "sys.path.insert(0, sys.argv[1])\n"
+         "from nemo_testcase_checkout import bootstrap_checkout\n"
+         "bootstrap_checkout(sys.argv[2], enforce_x64=True)\n",
+         str(TOOLS), str(TOOLS / "nemo_testcase_l1_swg_dg_deck_guard.py")],
+        env=env, capture_output=True, text=True)
+    assert enforced.returncode != 0
+    assert "JAX x64 is disabled" in enforced.stderr
+
+
 @pytest.mark.parametrize("relative", (
     "nemo_testcase_l1_swg_dg_restart_identity.py",
     "nemo_testcase_l1_swg_dg_climate.py",

@@ -15,7 +15,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-CHECKOUT_IMPORT = bootstrap_checkout(__file__)
+CHECKOUT_IMPORT = bootstrap_checkout(__file__, enforce_x64=__name__ == "__main__")
 from nemo_testcase_l1_swg_dg_climate import (  # noqa: E402
     _require_legoesm_deck,
     _require_nemo_deck,

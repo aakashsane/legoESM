@@ -161,4 +161,36 @@ def test_resume_with_the_flag_off_runs(leg1):
     d = ModelDriver(c._replace(dycore=c.dycore._replace(persistent_dgrid=False)))
     d.setup()
     step, day = d.load_checkpoint(ckpt)
-    assert d.run(start_step=step, start_day=day) == "COMPLETED"
+    # per-step: the lane whose checkpoint re-writes the loaded aux carry
+    assert d.run(start_step=step, start_day=day, compiled=False) == "COMPLETED"
+    # the stale corner winds are not re-saved next to the newer state
+    new = sorted(glob.glob(str(tmp / "leg2_off" / "checkpoint_day_*.npz")))[-1]
+    with np.load(new, allow_pickle=True) as z:
+        assert not any("cube_" in k for k in z.keys())
+
+
+def test_float64_winds_are_checked_bit_for_bit(leg1):
+    """Stored float64 winds keep their dtype on load and their digest covers
+    every bit: the untouched file resumes, a one-ulp edit is refused."""
+    tmp, b1, ckpt = leg1
+    with np.load(ckpt, allow_pickle=True) as z:
+        data = {k: z[k] for k in z.keys()}
+    for k in ModelDriver._CORNER_WIND_KEYS:
+        data[f"carry_{k}"] = data[f"carry_{k}"].astype(np.float64)
+        data[f"carry_{k}_sha256"] = np.asarray(
+            ModelDriver._native_wind_digest(data[f"carry_{k}"]))
+    good = tmp / "f64_checkpoint_day_0001.npz"
+    np.savez(good, **data)
+    d = _resume(tmp, str(good), "leg2_f64")
+    for x, y in zip(_winds(b1), _winds(d)):
+        np.testing.assert_array_equal(x, y)
+    key = f"carry_{ModelDriver._CORNER_WIND_KEYS[0]}"
+    data[key] = data[key].copy()
+    data[key].flat[7] = np.nextafter(data[key].flat[7], np.inf)
+    bad = tmp / "f64ulp_checkpoint_day_0001.npz"
+    np.savez(bad, **data)
+    d = ModelDriver(_cfg(tmp / "leg2_f64ulp", 2))
+    d.setup()
+    d.load_checkpoint(str(bad))
+    with pytest.raises(ValueError, match="SHA-256"):
+        d._enter_persistent_dgrid()

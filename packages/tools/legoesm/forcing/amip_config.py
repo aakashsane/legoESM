@@ -429,7 +429,9 @@ def load_checkpoint(
                 # Scheme tag for the convection carry (issue #413) —
                 # a plain string, not a float array.
                 carry_aux[_name] = str(data[key])
-            elif _name in _keep_stored_dtype:
+            elif (_name in _keep_stored_dtype
+                  or f"{key}_sha256" in data.files):
+                # digest-protected arrays: verified against their stored bytes
                 carry_aux[_name] = jnp.array(data[key])
             else:
                 carry_aux[_name] = jnp.array(data[key], dtype=_storage_dtype)

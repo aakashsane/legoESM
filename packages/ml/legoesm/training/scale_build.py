@@ -528,6 +528,7 @@ def _build_mode_components_spectral(cfg, yml):
             cloud_scheme=str(_cl.get("cloud", "xu_randall")),
             surface_bulk_scheme=str(_cl.get("surface_bulk", "constant")),
         )
+        reject_no_surface_flux_with_era5_fluxes(yml)
         _rad_interval = int(_cl.get("rad_update_interval_steps", 6))
 
         # Any scheme in any family may be swapped, and the TRAINABLE
@@ -1070,6 +1071,19 @@ def _era5_config(cfg, yml):
         # loader's documented option), so the key's presence decides.
         c = c._replace(flux_zarr=str(yml["era5_flux_zarr"] or ""))
     return c
+
+
+def reject_no_surface_flux_with_era5_fluxes(yml) -> None:
+    """``classical.surface_bulk: none`` and ``era5_surface_fluxes: true`` are
+    two contradicting surface choices: the ERA5 planes are folded into the
+    turbulence lower boundary condition from the physics state and would
+    silently replace the zero fluxes "none" prescribes."""
+    if (str((yml.get("classical") or {}).get("surface_bulk", "constant"))
+            == "none" and bool(yml.get("era5_surface_fluxes", False))):
+        raise ValueError(
+            "classical.surface_bulk='none' (no surface fluxes) contradicts "
+            "era5_surface_fluxes=true (ERA5 surface fluxes prescribed); "
+            "choose one.")
 
 
 def prescribed_surface_planes(sl, grid):

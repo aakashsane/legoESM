@@ -132,6 +132,34 @@ PRESCRIBED_SURFACE_LEAF_MARKERS = (
 )
 
 
+# The subset of those markers that only shape the turbulent surface EXCHANGE
+# (bulk coefficients, roughness, stability functions and their spatial fields):
+# inert when the training surface setting is "none".  Albedo and emissivity are
+# absent because radiation still reads them.
+NO_SURFACE_FLUX_LEAF_MARKERS = (
+    "surface_Cd_neutral",
+    "surface_Ch_neutral",
+    "surface_z0",
+    "surface_z0h_z0_ratio",
+    "surface_most_unstable_gamma",
+    "surface_most_stable_beta",
+    # spatial exchange fields only; the spatial albedo/emissivity stay live
+    "fields['Cd_neutral']",
+    "fields['Ch_neutral']",
+    "fields['z0']",
+    "['C_H']",
+    "['C_E']",
+)
+
+
+def no_surface_flux_frozen_names(params) -> list:
+    """Sorted keystr names of the surface-exchange leaves in ``params``."""
+    arrays = eqx.partition(params, eqx.is_inexact_array)[0]
+    return sorted(
+        nm for nm in _leaf_names(arrays)
+        if any(m in nm for m in NO_SURFACE_FLUX_LEAF_MARKERS))
+
+
 def prescribed_surface_frozen_names(params) -> list:
     """Sorted keystr names of the classical-surface leaves in ``params``.
 
@@ -143,6 +171,21 @@ def prescribed_surface_frozen_names(params) -> list:
     return sorted(
         nm for nm in _leaf_names(arrays)
         if any(m in nm for m in PRESCRIBED_SURFACE_LEAF_MARKERS))
+
+
+def surface_policy_frozen_names(yml, params):
+    """``(names, reason)`` of the surface leaves a WB deck freezes by policy:
+    every classical surface leaf when ERA5 fluxes are prescribed, the
+    exchange leaves only when ``classical.surface_bulk`` is "none", else
+    ``([], None)``."""
+    if bool(yml.get("era5_surface_fluxes", False)):
+        return (prescribed_surface_frozen_names(params),
+                "ERA5 surface fluxes prescribed")
+    if str((yml.get("classical") or {}).get(
+            "surface_bulk", "constant")) == "none":
+        return (no_surface_flux_frozen_names(params),
+                "classical.surface_bulk='none'")
+    return [], None
 
 
 def apply_forced_freeze(params, frozen_names, forced_names):

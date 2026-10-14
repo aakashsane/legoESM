@@ -300,6 +300,10 @@ class DiagnosticCollector:
         # similarity profile, so it keeps the historical coare3 profile —
         # which also keeps the default byte-identical.
         self.surface_stability_scheme = surface_stability_scheme
+        # surface_bulk_scheme="none": no surface layer exists, so the 2 m
+        # temperature (and its daily extremes) is not produced at all rather
+        # than published from a profile of an exchange that never happens.
+        self.produces_tas = surface_bulk_scheme != "none"
         self.tas_profile_scheme = (
             surface_bulk_scheme
             if surface_bulk_scheme in ("most", "coare3", "large_yeager",
@@ -417,7 +421,7 @@ class DiagnosticCollector:
             # min/max for tas so tasmin/tasmax can be emitted.
             self._spatial_daily = SpatialDailyAccumulator(
                 nlat=_cmip_nlat, nlon=_cmip_nlon,
-                track_extremes={"tas"},
+                track_extremes={"tas"} if self.produces_tas else set(),
             )
             self._cmip_nlat = _cmip_nlat
             self._cmip_nlon = _cmip_nlon
@@ -1228,16 +1232,18 @@ class DiagnosticCollector:
             # MOST surface-layer similarity profile to interpolate the lowest
             # level down to 2 m (CMIP tas convention).  Falls back to the
             # lowest level if the surface-layer inputs are unavailable.
-            tas_field = self._tas_2m(state, q_v, sst, sic, T_ice)
-            if t_low_mean is not None:
-                # Segment-mean tas: instantaneous 2 m stability offset on the
-                # segment-mean lowest-level T (see the ``t_low_mean`` doc).
-                tas_field = tas_field + (
-                    np.asarray(t_low_mean) - np.asarray(state.T.data[..., -1])
-                )
-            r = self._regrid_to_latlon_2d(tas_field)
-            if r is not None:
-                fields_2d['tas'] = r
+            if self.produces_tas:
+                tas_field = self._tas_2m(state, q_v, sst, sic, T_ice)
+                if t_low_mean is not None:
+                    # Segment-mean tas: instantaneous 2 m stability offset on
+                    # the segment-mean lowest-level T (``t_low_mean`` doc).
+                    tas_field = tas_field + (
+                        np.asarray(t_low_mean)
+                        - np.asarray(state.T.data[..., -1])
+                    )
+                r = self._regrid_to_latlon_2d(tas_field)
+                if r is not None:
+                    fields_2d['tas'] = r
             r = self._regrid_to_latlon_2d(precip_total)
             if r is not None:
                 fields_2d['pr'] = r
@@ -1613,7 +1619,7 @@ class DiagnosticCollector:
 
     def feed_daily_extremes_native(self, day: float, *, tas) -> None:
         """Regrid an hourly temperature sample without feeding any means."""
-        if self._spatial_daily is None:
+        if self._spatial_daily is None or not self.produces_tas:
             return
         field = self._regrid_to_latlon_2d(np.asarray(tas, dtype=np.float64))
         if field is not None:
@@ -1889,8 +1895,11 @@ class DiagnosticCollector:
                     f"feed_cmip_accumulators_native: {_nm} shape {_arr.shape} "
                     f"!= expected {_shp}")
 
-        # tas is the 2 m MOST temperature when supplied, else the lowest level.
-        if tas_field is None:
+        # tas is the 2 m MOST temperature when supplied, else the lowest level;
+        # never produced without a surface layer.
+        if not self.produces_tas:
+            tas_field = None
+        elif tas_field is None:
             tas_field = T_low
 
         # Sea-level pressure (hypsometric) — shared by the spatial ``psl`` and
@@ -2401,6 +2410,21 @@ class DiagnosticCollector:
             if accum is not None and sub:
                 accum.set_state(sub)
                 restored = True
+        if restored and not self.produces_tas:
+            buckets = [
+                *(self._spatial_monthly._data_2d.values()
+                  if self._spatial_monthly is not None else ()),
+                *(self._spatial_daily._data.values()
+                  if self._spatial_daily is not None else ()),
+            ]
+            if any("tas" in b for b in buckets):
+                raise ValueError(
+                    f"{path}: the restored CMOR accumulators hold 2 m "
+                    "temperature, but this run has surface_bulk_scheme='none' "
+                    "and produces none; resuming would publish a tas written "
+                    "under a different surface setting. Resume with the "
+                    "setting that wrote it, or delete the sidecar to drop the "
+                    "partial month.")
         return restored
 
     def save(self, output_dir: str | Path) -> None:

@@ -1247,6 +1247,17 @@ class MPASPrimitiveEquationModel(IntegrationMixin):
                 target_mass=target_mass,
                 sigma_coord=self.sigma_coord,
             )
+            if self.config.energy_fixer:
+                # The dry-mass fixer runs OUTSIDE the energy window (after
+                # physics); return the energy its p_s shift changed as a
+                # uniform heating [K, +warming], so E is unchanged across it
+                # (CAM's window covers its mass fixer; F15 V8, vote B).
+                _dT_mf = voronoi_energy_fixer_dT(
+                    _state_prefix, state_new, self.mesh, self.sigma_coord,
+                    self.mesh.areaCell)
+                state_new = state_new._replace(T=state_new.T.replace(
+                    data=state_new.T.data
+                    + _dT_mf.astype(state_new.T.data.dtype)))
         _state_postfix = state_new        # ledger: after the dry-mass fixer
 
         # --- 3. Floors ---

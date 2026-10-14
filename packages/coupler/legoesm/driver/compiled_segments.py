@@ -1358,6 +1358,22 @@ def fix_segment_dry_mass(p_s, moist, target_dry_mass, grid, dsigma,
     return p_s, {k: tr.get(k) for k in moist}
 
 
+def mass_fixer_energy_dT(model, T, u_cc, v_cc, phis, p_s_pre, p_s_post,
+                         grid, owned_mask=None):
+    """Uniform ``dT`` [K, +warming] that returns the energy a segment lane's
+    dry-mass fixer changed (``p_s_pre -> p_s_post`` at fixed T and cell
+    winds): that fixer runs after the dycore step, OUTSIDE the dycore
+    energy-fixer window (review 2026-10-14 F15 V8, vote B).  ``None`` when
+    ``model`` runs no energy fixer.  Same energy, layer masses
+    (``model.sigma_coord``) and reduction as the dycore's own fixer."""
+    if not getattr(getattr(model, "config", None), "energy_fixer", False):
+        return None
+    from legoesm.core.conservation import gridded_energy_fixer_dT
+    return gridded_energy_fixer_dT(
+        (T, u_cc, v_cc, p_s_pre, phis), (T, u_cc, v_cc, p_s_post, phis),
+        grid, model.sigma_coord, owned_mask=owned_mask)
+
+
 def dycore_without_inner_mass_fixer(model):
     """``model``, or a shallow copy whose config has the dycore's OWN
     end-step mass fixer (and the per-RK-stage ``zero_mean_ps_tendency``)
@@ -2378,6 +2394,7 @@ def build_segment_fn(
             # re-weighted so its column mass is untouched.  The target is
             # the segment's initial dry mass (``segment_dry_mass``).
             if fix_mass:
+                _p_s_pre_mf = p_s_new
                 _fx = fix_segment_dry_mass(
                     p_s_new,
                     {"q_v": q_v_dyn, "q_c": q_c_dyn, "q_r": q_r_dyn,
@@ -2391,6 +2408,11 @@ def build_segment_fn(
                     _fxm["q_i"], _fxm["q_s"], _fxm["q_g"])
                 N_c_dyn, N_r_dyn, N_i_dyn = (
                     _fxm["N_c"], _fxm["N_r"], _fxm["N_i"])
+                _dT_mf = mass_fixer_energy_dT(
+                    _dynamics_model, T_new, u_cc, v_cc, carry.phis,
+                    _p_s_pre_mf, p_s_new, grid, owned_mask=_owned_mask)
+                if _dT_mf is not None:
+                    T_new = T_new + _dT_mf.astype(T_new.dtype)
 
             # --- Physics with radiation sub-cycling ---
             # ``rad_update_steps`` is a Python ``int`` captured in this

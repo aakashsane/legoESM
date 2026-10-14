@@ -524,7 +524,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         default=_DYCORE_DEFAULTS.energy_fixer,
                         help="CAM-style dycore total-energy fixer: return the "
                              "energy each dynamics step loses (damping KE, "
-                             "numerics) as a uniform heating before physics. "
+                             "numerics) as a uniform heating before physics, "
+                             "and the energy the dry-mass fixer moves with "
+                             "its p_s shift. "
                              "ON by default; wired on the MPAS, FV3-duo "
                              "column, lat-lon C-grid and cube C-D grid "
                              "hydrostatic lanes, refused on every other lane "

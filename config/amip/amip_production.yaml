@@ -104,7 +104,10 @@ energy_fixer: true                   # CAM6 check_energy_fix analogue (review
                                      # 2026-10-10 F15, by vote): the energy each
                                      # dynamics step loses (sponge/del4/div4 KE,
                                      # numerics) returns as a uniform heating
-                                     # before physics.  Named, not inherited
+                                     # before physics, and the energy the dry-
+                                     # mass fixer moves (outside that window)
+                                     # returns too (2026-10-14 F15 V8: 0.065
+                                     # W/m2 at res6).  Named, not inherited
                                      # (the code default is also true).
 
 # ---- physics cadence ---------------------------------------------------------

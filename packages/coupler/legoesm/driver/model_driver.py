@@ -1743,11 +1743,21 @@ class ModelDriver:
         ``fix_segment_dry_mass`` on the same water species, over the run's
         TRUE layer masses (``self.sigma``, hybrid-correct), so the added or
         removed mass is dry air."""
-        from legoesm.driver.compiled_segments import fix_segment_dry_mass
+        from legoesm.driver.compiled_segments import (
+            fix_segment_dry_mass, mass_fixer_energy_dT)
+        p_s_pre = self.state.p_s.data
         p_s, moist = fix_segment_dry_mass(
-            self.state.p_s.data, self._per_step_moist(), target_dry_mass,
+            p_s_pre, self._per_step_moist(), target_dry_mass,
             self.grid, self.sigma, owned_mask=owned_mask)
+        # outside the dycore energy window: return its energy as heat (F15 V8)
+        cc = self.cell_centre_state()
+        dT = mass_fixer_energy_dT(
+            self.model, cc.T.data, cc.u.data, cc.v.data, cc.phis.data,
+            p_s_pre, p_s, self.grid, owned_mask=owned_mask)
         self._set_per_step_moist(moist, p_s)
+        if dT is not None:
+            self.state = self.state._replace(T=self.state.T.replace(
+                data=self.state.T.data + dT.astype(self.state.T.data.dtype)))
 
     def _per_step_moisture_update(self, phys_out, new_T, DT, dsigma, *,
                                   sat_adjust, hyperdiffusion_3d,

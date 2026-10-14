@@ -388,6 +388,16 @@ class DycoreConfig(NamedTuple):
     # non-hydrostatic cores, FV3-duo non-column, sub-face-tiled cube) do not
     # run it (the driver refuses True there, never silently).
     energy_fixer: bool = True
+    # (appended last: positional ABI)
+    # Tracer names whose vertical del4 filter uses the mass-weighted FLUX form
+    # instead of the projected form (``vertical_del4_tracer_tendency_flux``).
+    # The projected form subtracts the column-mean tendency as a uniform
+    # mixing-ratio offset, which drains stratospheric water vapour (measured
+    # -0.4 ppmv/day at 45-70N, -3 ppmv/day in the tropics on e12_year).
+    # Default ("q_v",) since 2026-10 (owner decision after the 60-day A/B:
+    # 45-70N 70-150 hPa vapour 0.64 -> 4.05 ppmv, 100-200 hPa T -2.3 K).
+    # Empty = every tracer projected (the pre-2026-10 form, for bit-comparison).
+    mpas_vert4_flux_form_tracers: tuple = ("q_v",)
 
 
 class EvaluationConfig(NamedTuple):
@@ -3764,6 +3774,20 @@ class ExperimentConfig(NamedTuple):
                 "dycore.mpas_div_damp4_scale is wired into the hydrostatic MPAS dycore "
                 f"only; on discretization={d.discretization!r}/model_type={d.model_type!r} "
                 "it would be silently inert")
+        # Names must be known per-mass water/number tracers (typo guard; the
+        # dycore skips a valid name its state does not carry).  No inertness
+        # error: the default is non-empty and, like mpas_nu_vert4_T, simply
+        # unused off the MPAS lane or with the filter off.
+        _v4f = getattr(d, "mpas_vert4_flux_form_tracers", ())
+        from legoesm.core.conservation import BORROW_ELIGIBLE_TRACERS
+        if isinstance(_v4f, str):   # builders tuple() it into characters
+            errors.append(
+                "dycore.mpas_vert4_flux_form_tracers must be a list of tracer "
+                f"names, got the string {_v4f!r}")
+        elif _bad := [n for n in (_v4f or ()) if n not in BORROW_ELIGIBLE_TRACERS]:
+            errors.append(
+                f"dycore.mpas_vert4_flux_form_tracers: unknown tracer names {_bad} "
+                "(expected per-mass water/number tracers such as q_v)")
         if d.mpas_vert_advection_scheme not in _vert_adv_options:
             errors.append(
                 f"dycore.mpas_vert_advection_scheme must be one of "

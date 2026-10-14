@@ -246,22 +246,37 @@ def test_stored_row_checks_fp32_bits_but_uses_the_fp64_numerical_gate():
 
 
 def test_shared_shipped_statistics_are_deterministic_for_equal_series():
-    from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.core.precision import PrecisionPolicy, get_policy, set_policy
     from legoesm.ocean.fidelity.nemo_testcase_recipe import build_swg_card
 
-    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
-    card = build_swg_card()
-    shape = (2, 84, 84)
-    zeros = np.zeros(shape, dtype=np.float32)
-    arrays1, summary1 = lad._shared_shipped_statistics(
-        zeros, zeros, zeros, card)
-    arrays2, summary2 = lad._shared_shipped_statistics(
-        zeros.copy(), zeros.copy(), zeros.copy(), card)
-    assert summary1 == summary2
-    assert all(np.array_equal(arrays1[name], arrays2[name])
-               for name in arrays1)
-    assert summary1["transport_streamfunction_sv"]["min"] == 0.0
-    assert summary1["kinetic_energy_m5_s-2"]["time_mean"] == 0.0
+    old = get_policy()
+    try:
+        set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+        card = build_swg_card()
+        shape = (2, 84, 84)
+        zeros = np.zeros(shape, dtype=np.float32)
+        arrays1, summary1 = lad._shared_shipped_statistics(
+            zeros, zeros, zeros, card)
+        arrays2, summary2 = lad._shared_shipped_statistics(
+            zeros.copy(), zeros.copy(), zeros.copy(), card)
+        assert summary1 == summary2
+        assert all(np.array_equal(arrays1[name], arrays2[name])
+                   for name in arrays1)
+        assert summary1["transport_streamfunction_sv"]["min"] == 0.0
+        assert summary1["kinetic_energy_m5_s-2"]["time_mean"] == 0.0
+    finally:
+        set_policy(old)
+
+
+def test_shared_statistics_test_restores_process_precision_policy():
+    from legoesm.core.precision import get_policy, set_policy
+
+    old = get_policy()
+    try:
+        test_shared_shipped_statistics_are_deterministic_for_equal_series()
+        assert get_policy() == old
+    finally:
+        set_policy(old)
 
 
 @pytest.mark.skipif(not MONTH_ROOT.is_dir(),

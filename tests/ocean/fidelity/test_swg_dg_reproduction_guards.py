@@ -295,13 +295,15 @@ def test_stranger_runbook_contains_every_reconstruction_and_failure_command():
         "SWG_DG_RESTART_IDENTITY PASS day=365",
         "SWG_DG_MOVIE COMPLETE frames=365",
         "cross-toolchain acceptance bar",
-        "2.286230926795696e-11",
-        "1.402270660699756e-11",
+        ("Across both windows, the measured maxima are\n"
+         "`2.286230926795696e-11` for kinetic energy and\n"
+         "`1.402270660699756e-11` for eddy kinetic energy."),
         "export STAGE_ROOT=/path/to/instrumented/nemo/step2/stage-entry-records",
     )
     for text in required:
         assert text in runbook
     assert "sole source of" not in runbook
+    assert "agrees to `1e-11`" not in runbook
     assert "full-restart identity" in runbook
     assert runbook.count("JAX_PLATFORMS=cpu") >= 6
     assert re.findall(r"^## ([1-9])\. ", runbook, re.MULTILINE) == list(

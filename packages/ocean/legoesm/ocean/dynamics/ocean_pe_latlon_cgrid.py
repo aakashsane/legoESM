@@ -6247,7 +6247,3 @@ def nemo_c2_kinetic_energy(u, v):
     zu = nemo_source_round(u_w_sq + u_e_sq)
     zv = nemo_source_round(v_s_sq + v_n_sq)
     return nemo_source_round(0.25 * nemo_source_round(zv + zu))
-
-
-# Historical private import retained for existing focused tests and callers.
-_nemo_c2_kinetic_energy = nemo_c2_kinetic_energy

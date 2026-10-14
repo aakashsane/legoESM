@@ -24,13 +24,21 @@ NI, NJ = 8, 6
 BOUNDS = (3, 3, 6, 4)
 
 
-def _record(path, kt, stage, groups=None):
+TIME_LEVELS = {
+    1: (1, 1, 3, 3),
+    2: (1, 3, 2, 2),
+    3: (1, 2, 3, 3),
+}
+
+
+def _record(path, kt, stage, groups=None, time_levels=None):
     groups = cr.GROUPS if groups is None else groups
+    time_levels = TIME_LEVELS[stage] if time_levels is None else time_levels
     field = np.zeros((NJ, NI), dtype="<f8")
     with path.open("wb") as f:
         f.write(cr.MAGIC.ljust(16).encode())
         f.write(struct.pack(f"<{cr.NINT}i",
-                            1, kt, stage, 1, 1, 3, 3, NI, NJ, 2,
+                            1, kt, stage, *time_levels, NI, NJ, 2,
                             *BOUNDS, 64))
         for name in sorted(groups):
             f.write(name.ljust(16).encode())
@@ -72,6 +80,14 @@ def test_daily_stage_one_sequence_is_driven_by_requested_inventory(
     (run / "oracle_swgstage_kt00000049_s1.bin").unlink()
     with pytest.raises(cr.Refusal, match="stage sequence"):
         cr.check(run, ref, record_kts=(1, 25, 49), stages=(1,))
+
+
+def test_wrong_stage_time_levels_are_refused(evidence):
+    run, ref = evidence
+    path = run / "oracle_swgstage_kt00000003_s2.bin"
+    _record(path, 3, 2, time_levels=TIME_LEVELS[1])
+    with pytest.raises(cr.Refusal, match="stage 2 time levels"):
+        cr.check(run, ref)
 
 
 @pytest.mark.parametrize(

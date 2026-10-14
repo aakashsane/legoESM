@@ -1308,6 +1308,11 @@ def make_aimip_classical_spectral_physics(
     # no-op branch); the 32-level WB arm sets 5000 Pa (see CLUBBConfig
     # docstring).
     clubb_top_press: float | None = None,
+    # CAM6 clubb_intr liquid hand-off (TurbulenceConfig.liquid_partition):
+    # the closure's diagnosed liquid becomes the host cloud water. CLUBB only;
+    # make_physics requires cld_macmic_num_steps >= 2 with it.
+    clubb_liquid_partition: bool = False,
+    cld_macmic_num_steps: int = 1,
     # Ablations that deliberately drop a family set this True; production
     # training does not (see validate_classical_scheme_set).
     allow_unfilled_families: bool = False,
@@ -1322,6 +1327,7 @@ def make_aimip_classical_spectral_physics(
     rrtmgp_gpoint_checkpoint: bool = True,
     rrtmgp_gpoint_batch_size: int = 16,
     rrtmgp_column_chunk_size: int = 0,
+    column_mesh=None,
 ):
     """Build a SpectralPE physics function for the AIMIP classical variant.
 
@@ -1606,6 +1612,10 @@ def make_aimip_classical_spectral_physics(
             )
         return inner_cfg._replace(surface=new_surface)
 
+    if clubb_liquid_partition and turbulence_scheme != "clubb":
+        raise ValueError(
+            "clubb_liquid_partition is CLUBB's liquid hand-off; "
+            f"turbulence_scheme={turbulence_scheme!r} has no closure liquid.")
     if turbulence_scheme == "louis":
         louis_cfg = _spatial_surface_override(
             params.to_louis_config(bulk_scheme=_bulk_law)
@@ -1665,6 +1675,7 @@ def make_aimip_classical_spectral_physics(
                     trop_cloud_top_press=float(clubb_top_press))
             turb_cfg = TurbulenceConfig(
                 scheme=turbulence_scheme,
+                liquid_partition=bool(clubb_liquid_partition),
                 **{turbulence_scheme: _spatial_surface_override(_turb_sub)},
             )
         else:
@@ -1730,10 +1741,15 @@ def make_aimip_classical_spectral_physics(
     # so the caller can dispatch through the simple
     # ``spectral_rollout(state, physics_fn, ...)`` branch.
     if not split_rad:
+        if column_mesh is not None:
+            raise ValueError(
+                "column_mesh is wired only on the split-radiation path "
+                "(split_rad=True)")
         combined_raw = make_physics(
             physics_config, model_type="spectral_pe", dt=dt,
             sfc_albedo_override=_sfc_albedo_override,
             sfc_emissivity_override=_sfc_emissivity_override,
+            cld_macmic_num_steps=cld_macmic_num_steps,
         )
 
         def combined_fn(state, grid_, sigma_coord):
@@ -1812,12 +1828,17 @@ def make_aimip_classical_spectral_physics(
             "(turbulence.scheme='clubb', diagnostic or prognostic); got "
             f"turbulence.scheme={turb_cfg.scheme!r} (cloud_scheme={cloud_scheme!r})."
         )
-    non_rad_raw = make_physics(non_rad_cfg, model_type="spectral_pe", dt=dt)
+    # CAM macro/micro sub-cycle: turbulence and microphysics run in sequence
+    # inside the non-radiative factory (radiation is split out and is a
+    # "once" module, so the split does not change the sub-cycle's meaning).
+    non_rad_raw = make_physics(non_rad_cfg, model_type="spectral_pe", dt=dt,
+                               cld_macmic_num_steps=cld_macmic_num_steps)
     rad_only_raw = make_radiation_physics(
         rad_cfg, "spectral_pe",
         sfc_albedo_override=_sfc_albedo_override,
         sfc_emissivity_override=_sfc_emissivity_override,
         use_clubb_cloud_fraction=rad_cfg.use_clubb_cloud_fraction,
+        column_mesh=column_mesh,
     )
 
     def non_rad_fn(state, grid_, sigma_coord, phys_state=None, forcing=None):

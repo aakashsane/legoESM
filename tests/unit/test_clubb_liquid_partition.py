@@ -335,11 +335,14 @@ def test_non_mpas_lanes_refuse_the_lever():
     )
     from legoesm.atmosphere.physics.turbulence.config import TurbulenceConfig
     tc = TurbulenceConfig(scheme="clubb", clubb=_ON, liquid_partition=True)
-    for lane in ("hydrostatic", "nonhydrostatic", "spectral_pe"):
+    for lane in ("hydrostatic", "nonhydrostatic"):
         with pytest.raises(NotImplementedError, match="liquid_partition"):
             make_turbulence_physics(tc, model_type=lane)
-    # The wired lane builds.
+    # The wired lanes build (spectral_pe routes dq_c_dt too; its
+    # prognostic-closure and tracer requirements are pinned in
+    # test_spectral_macmic_subcycle.py).
     make_turbulence_physics(tc, model_type="mpas")
+    make_turbulence_physics(tc, model_type="spectral_pe")
 
 
 def test_a_non_clubb_scheme_refuses_the_lever():

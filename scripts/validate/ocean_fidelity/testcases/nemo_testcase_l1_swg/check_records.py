@@ -16,6 +16,11 @@ NINT = 15
 BOUNDS_AT = 10
 STEPS = 10
 STAGES = (1, 2, 3)
+STAGE_TIME_LEVELS = {
+    1: (1, 1, 3, 3),
+    2: (1, 3, 2, 2),
+    3: (1, 2, 3, 3),
+}
 SENTINEL = 1.0e10
 GROUPS = {
     "ssh_k", "u_k", "v_k", "r3t_k", "r3u_k", "r3v_k", "r3f",
@@ -126,6 +131,12 @@ def check(evidence: Path, reference: Path, *,
         head, groups = parse(path)
         kt, stage = head[1], head[2]
         found.append((kt, stage))
+        levels = tuple(head[3:7])
+        expected_levels = STAGE_TIME_LEVELS.get(stage)
+        if levels != expected_levels:
+            raise Refusal(
+                f"{path.name}: stage {stage} time levels "
+                f"{levels} != {expected_levels} (kbb,kmm,kaa,krhs)")
         if path.name != f"oracle_swgstage_kt{kt:08d}_s{stage}.bin":
             raise Refusal(f"{path.name}: filename/header mismatch")
         shapes = {a.shape for a in groups.values()}

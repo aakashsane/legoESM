@@ -460,7 +460,8 @@ class DiagnosticCollector:
         """
         self._area_w = None if area is None else jnp.asarray(area)
 
-    def set_cmip_grid_info(self, grid_type: str, grid=None, start_year: int = 1):
+    def set_cmip_grid_info(self, grid_type: str, grid=None, start_year: int = 1,
+                           column_native_latlon=None):
         """Configure CMIP output grid and regridding weights.
 
         Must be called after setup() and before the first collect() when
@@ -474,9 +475,19 @@ class DiagnosticCollector:
             Grid object (needed for regridding weights).
         start_year : int
             Calendar start year for time axis in NetCDF files.
+        column_native_latlon : LatLonGrid, optional
+            The lat-lon COLUMN lane: the fields arrive as row-major columns
+            of this grid; they are reshaped to it and regridded with the
+            structured lat-lon weights (``grid_type`` must be "latlon").
         """
         self._cmip_start_year = start_year
         self._cmip_grid_type = grid_type
+        self._column_native_shape = None
+        if column_native_latlon is not None:
+            if grid_type != "latlon":
+                raise ValueError("column_native_latlon needs grid_type='latlon'")
+            grid = column_native_latlon
+            self._column_native_shape = (int(grid.n_lat), int(grid.n_lon))
 
         if self._spatial_monthly is None:
             return
@@ -594,6 +605,15 @@ class DiagnosticCollector:
                 "regridder's [-180,180) columns onto [0,360) labels.")
         return np.roll(arr, self._cmip_nlon // 2, axis=1)
 
+    def _native_of_columns(self, arr: np.ndarray, ndim: int) -> np.ndarray:
+        """A lat-lon column-lane field ``(nCells[, k])`` as ``(n_lat, n_lon[,
+        k])`` (row-major cells); anything else unchanged."""
+        shp = getattr(self, "_column_native_shape", None)
+        if (shp is not None and arr.ndim == ndim - 1
+                and arr.shape[0] == shp[0] * shp[1]):
+            return arr.reshape(shp + arr.shape[1:])
+        return arr
+
     def _regrid_to_latlon_2d(self, field) -> np.ndarray | None:
         """Regrid a 2-D field to the CMIP lat-lon grid.
 
@@ -610,7 +630,7 @@ class DiagnosticCollector:
                 np.asarray(field).reshape(-1), self._voronoi_regrid_weights,
             ))
         # Structured grids (lat-lon / Gaussian)
-        arr = np.asarray(field)
+        arr = self._native_of_columns(np.asarray(field), 2)
         if arr.ndim == 2:
             regrid = getattr(self, '_structured_regrid', None)
             if regrid is not None:
@@ -642,7 +662,7 @@ class DiagnosticCollector:
             # flattened (nCells*nlev,) inputs are not supported here.
             return self._roll_to_cmip_lon(
                 apply_voronoi_to_latlon_3d(arr, self._voronoi_regrid_weights))
-        arr = np.asarray(field)
+        arr = self._native_of_columns(np.asarray(field), 3)
         if arr.ndim == 3:
             regrid = getattr(self, '_structured_regrid', None)
             if regrid is not None:

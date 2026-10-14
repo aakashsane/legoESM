@@ -37,7 +37,7 @@ NEMO's recorded `ntsi:ntei` / `ntsj:ntej` loop box:
 
 - stage-1 `zFu` at Fortran `[126,60,25]` and `[126,73,13]`;
 - stage-2 `zFu` at the same two locations;
-- stage-2 `zFw` at `[1,1,1]` and `[2,1,1]`.
+- stage-2 `zFw` at `[1,1,1]` and `[2,1,1]`;
 - the active-tracer-transport record repeats those two `zFu` and two `zFw`
   locations.
 
@@ -64,6 +64,24 @@ excluded work-memory word occurrences above.  The admitted step-2 stream then
 gives this temperature walk after bridging NEMO's `kt=2` T/S/U/V/SSH before
 state while retaining legoESM's closure memories:
 
+The widened writer's step-1 stage records, step-1 RHS, and `kt=2` entry are
+byte-identical to the scalar twin; those are the boundaries earlier rounds
+proved exact.  That statement applies only to step 1.  The new step-2 stage
+records rotate NEMO's `Kaa` registry slots from `3/2/3` to `1/2/1`, as required
+by the compiled RK swaps, and give this measured walk:
+
+| RK stage | T | S | U | V | SSH |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 1.066e-14 | 2.132e-14 | 4.112e-13 | 3.141e-13 | 6.174e-12 |
+| 2 | 1.066e-14 | 2.132e-14 | 5.613e-13 | 4.754e-13 | 9.262e-12 |
+| 3 | 1.816e-9 | 1.171e-10 | 1.240e-11 | 1.399e-11 | 1.852e-11 |
+
+The first bit difference in source stage/field order is therefore stage 1 T:
+`1.0658141036401503e-14 K`, 3 ULP maximum, at `[j=23,i=106,k=6]`.
+The first difference at the registered owner-separation scale of `1e-10` is
+stage 3 T: `1.81572090696136e-9 K`, 511,080 ULP, at
+`[j=1,i=97,k=0]`.  These are measured report fields, not hard-coded labels.
+
 | stage-3 boundary | max absolute T residue | max ULP | location of max `[j,i,k]` |
 |---|---:|---:|---:|
 | geometry | 1.0302869668521453e-13 | 36 | [1,120,1] |
@@ -81,6 +99,13 @@ gives:
 |---|---:|---:|---:|
 | production live `1+r3t(Kbb)` | 1.1759482276829658e-12 | 1014 | [33,63,16] |
 | reverted static one | 3.2262263971460925e-9 | 908102 | [1,120,0] |
+
+The additional independent production-term score compares
+`qsr_association.qsr_kmm` directly with NEMO's executed `tra_qsr` record.  Its
+maximum residue is `3.5998900258307764e-21 K/s` (17 ULP at that maximum), so it
+is a measured floating-point composition debt rather than a second material
+QSR transcription error.  This row complements, but does not replace, the
+bit-exact NEMO record-versus-accumulator identity above.
 
 Thus the old `3.3392346665550576e-9 K` entry error was not one indivisible
 owner.  That old total was 939,911 ULP at `[j=1,i=97,k=0]`; after the QSR fix
@@ -208,9 +233,17 @@ The controlling artifacts are `step2_tracer_owner.json`,
 - scalar 30-day admission tests: 6 passed;
 - climate registry/refusal tests: 10 passed;
 - shipped-card digest test: 3 passed;
-- final clean lane battery: 118 passed, 2 slow tests deselected;
+- final clean lane battery: 121 passed, 2 slow tests deselected;
 - compiled-source citation gate: PASS for all four receipt citations; the
   shifted `traqsr` range plant: FIRED.
+
+Two independent reviews were dispositioned before handoff.  The physics
+review passed the production fix, its non-vacuous regression, and the
+JIT/autodiff checks; its advisory direct-QSR-term row is now in the report.
+The evidence review held the first draft because the first RK stage was
+inferred and because the identity proof omitted the shared `kt=2` entry and
+step-1 RHS.  The measured three-stage walk and the expanded full-byte proof
+above close both findings; the active-word plant still refuses.
 
 ## Compiled-source citations
 

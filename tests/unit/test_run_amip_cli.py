@@ -2307,6 +2307,26 @@ def test_amip_sota_config_builds_valid_experiment_config():
     assert cfg.convection == "sbm"
 
 
+@pytest.mark.parametrize("deck", ["amip_sota.yaml", "amip_realism_c12.yaml"])
+def test_single_process_cube_decks_carry_persistent_dgrid(deck):
+    """The cube AMIP decks carry D-staggered winds between steps (#1028):
+    the per-step cell-centre round trip damps the eddies."""
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    parser = build_arg_parser()
+    parser.set_defaults(**load_yaml_config(
+        str(_repo_root() / "config" / "amip" / deck), parser))
+    args = _postprocess_args(parser.parse_args(
+        _AMIP_DUMMY_PATHS + ["--clm-surfdata-path", "/dummy/surfdata.nc",
+                             "--land-mask-file", "/dummy/lsm.nc"]), parser)
+    cfg = build_config_from_args(args)
+    # The lane ModelDriver._enter_persistent_dgrid accepts.
+    assert cfg.grid.grid_type == "cubed_sphere"
+    assert cfg.dycore.model_type == "hydrostatic"
+    assert cfg.dycore.discretization in ("cdgrid", "centered", "finite_volume")
+    assert cfg.ensemble_size in (None, 1) and not cfg.distributed
+    assert cfg.dycore.persistent_dgrid is True
+
+
 def test_config_yaml_round_trips_authoritative_values():
     """`run_amip.py --config config/amip/amip_production.yaml` reproduces the
     production AMIP parametrization.

@@ -51,10 +51,10 @@ The one excluded read pair is NEMO's self-test on a literal string
 
 The guard's registries and refusals: card-only fields
 (`nemo_testcase_l1_swg_dg_deck_guard.py:51`), resolution and echo
-completeness (`:223`, `:236`), classification and the neither-check (`:261`,
-`:282`), the echoed-group set (`:326`), the row count (`:362`), strict
-parsing (`:438`), and the PASS line (`:509`). Float64 is selected and
-verified in the shared bootstrap (`nemo_testcase_checkout.py:53`, `:72`).
+completeness (`:223`, `:242`), classification and the neither-check (`:267`,
+`:288`), the echoed-group set (`:332`), the row count (`:368`), strict
+parsing (`:444`), and the PASS line (`:515`). Float64 is selected and
+verified in the shared bootstrap (`nemo_testcase_checkout.py:56`, `:75`).
 
 Gates behind the pinned groups, in the reference build: `sbc_blk_init` only
 when `ln_blk` (`SWG_DG/BLD/ppsrc/nemo/sbcmod.f90:365`), `sbc_rnf_init` always
@@ -89,8 +89,8 @@ Policy and climate: `nemo_testcase_l1_swg_dg_round7.py:161`,
 
 Tests named above: `test_swg_dg_reproduction_guards.py:100` (GPU emulation),
 `:132` (exhaustive fixture run), `:201` (echo plants), `:261` (registry gap),
-`:277` (float64), `:301` (annual and climate float64), `:397` (derivation),
-`:445` (live derivation), `:545` (exact pins), `:654` (runbook);
+`:277` (float64), `:333` (annual and climate float64), `:429` (derivation),
+`:477` (live derivation), `:577` (exact pins), `:686` (runbook);
 `test_swg_dg_reproduction_shell.py:148` (prefix), `:177` (archiver);
 `test_nemo_swg_dg_climate.py:275` (final line);
 `test_nemo_swg_card.py:326` (derived groups beyond the frozen thirteen).
@@ -143,7 +143,7 @@ LEGOESM_GATE_ALLOW_DIRTY=1 bash SCRATCH/py.sh \
   scripts/validate/ocean_fidelity/testcases/nemo_testcase_receipt_citation_gate.py \
   --receipt docs/ocean/fidelity/testcases/nemo_testcases_l1_swg_dg_reproduction_round_e_receipt.md \
   --from-heading "## Review disposition"
-#   ... --plant nemo_testcase_l1_swg_dg_deck_guard.py:236   -> exit 1
+#   ... --plant nemo_testcase_l1_swg_dg_deck_guard.py:242   -> exit 1
 ```
 
 Decisive outputs: the inventory and guard lines quoted in the table; the

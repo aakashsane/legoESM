@@ -6675,21 +6675,21 @@ CITATION_MAP = {
         'READ(numnam_ref(MAX(INDEX(numnam_ref,"&nambdy "),1):),nambdy',
     'nemo_testcase_l1_swg_dg_deck_guard.py:51': 'CARD_ONLY = {',
     'nemo_testcase_l1_swg_dg_deck_guard.py:223': 'def resolve_inventory(',
-    'nemo_testcase_l1_swg_dg_deck_guard.py:236':
+    'nemo_testcase_l1_swg_dg_deck_guard.py:242':
         'require(entries, f"echoed group {group} lacks compiled-read "',
-    'nemo_testcase_l1_swg_dg_deck_guard.py:261':
+    'nemo_testcase_l1_swg_dg_deck_guard.py:267':
         'def classify_fields(inventory: dict, card_fields, registry: dict) -> dict:',
-    'nemo_testcase_l1_swg_dg_deck_guard.py:282':
+    'nemo_testcase_l1_swg_dg_deck_guard.py:288':
         'require(not neither, "compiled-read field(s) neither compared with the "',
-    'nemo_testcase_l1_swg_dg_deck_guard.py:326':
+    'nemo_testcase_l1_swg_dg_deck_guard.py:332':
         'f"echoed groups differ from the reference run: "',
-    'nemo_testcase_l1_swg_dg_deck_guard.py:362':
+    'nemo_testcase_l1_swg_dg_deck_guard.py:368':
         'f"comparison rows {len(rows)} differ from the inventory\'s "',
-    'nemo_testcase_l1_swg_dg_deck_guard.py:438':
+    'nemo_testcase_l1_swg_dg_deck_guard.py:444':
         'def _strict_inputs(run_dir: Path, inventory: dict):',
-    'nemo_testcase_l1_swg_dg_deck_guard.py:509': '"SWG_DG_DECK_GUARD PASS "',
-    'nemo_testcase_checkout.py:53': 'os.environ["JAX_ENABLE_X64"] = "1"',
-    'nemo_testcase_checkout.py:72': 'if not jax.config.jax_enable_x64:',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:515': '"SWG_DG_DECK_GUARD PASS "',
+    'nemo_testcase_checkout.py:56': 'os.environ["JAX_ENABLE_X64"] = "1"',
+    'nemo_testcase_checkout.py:75': 'if enforce_x64 and not jax.config.jax_enable_x64:',
     'SWG_DG/BLD/ppsrc/nemo/sbcmod.f90:365':
         'IF( ln_blk      )   CALL sbc_blk_init              ! bulk formulae initialization',
     'SWG_DG/BLD/ppsrc/nemo/sbcmod.f90:372':
@@ -6745,15 +6745,15 @@ CITATION_MAP = {
         'def test_deck_guard_refuses_a_read_that_is_neither_compared_nor_registered():',
     'test_swg_dg_reproduction_guards.py:277':
         'def test_deck_guard_selects_float64_itself(tmp_path):',
-    'test_swg_dg_reproduction_guards.py:301':
+    'test_swg_dg_reproduction_guards.py:333':
         'def test_annual_and_climate_tools_select_float64_themselves(tmp_path, relative):',
-    'test_swg_dg_reproduction_guards.py:397':
+    'test_swg_dg_reproduction_guards.py:429':
         'def test_inventory_derives_every_reachable_read_and_nothing_else(tmp_path):',
-    'test_swg_dg_reproduction_guards.py:445':
+    'test_swg_dg_reproduction_guards.py:477':
         'def test_live_build_derives_the_committed_inventory():',
-    'test_swg_dg_reproduction_guards.py:545':
+    'test_swg_dg_reproduction_guards.py:577':
         'def test_environment_reconstruction_files_are_machine_readable_and_pinned():',
-    'test_swg_dg_reproduction_guards.py:654':
+    'test_swg_dg_reproduction_guards.py:686':
         'def test_stranger_runbook_matches_its_committed_measurements():',
     'test_swg_dg_reproduction_shell.py:148':
         'def test_mpi_steps_refuse_a_prefix_without_its_mpi(tmp_path, name):',

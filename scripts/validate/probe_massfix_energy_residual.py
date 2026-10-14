@@ -3,13 +3,23 @@
 with the full production step (dynamics + energy fixer + physics + rails).
 
 Restores a checkpoint through the production driver and runs N steps of the
-real loop.  Two operators are instrumented (jax.debug.callback, numbers only):
+real loop.  Operators are instrumented (jax.debug.callback, numbers only),
+one row per call, tagged by call site:
   efix    : energy the dycore energy fixer returns   = c_pd * dT * M   [J]
-  massfix : energy change across the dry-mass fixer  = E(after) - E(before) [J]
+  efix_mf : same, for the restore after the dry-mass fixer (F15 V8; absent
+            before that fix or with energy_fixer off)
+  massfix : energy change across the dry-mass fixer [J]
 with E = sum_area((c_pd T + KE) dp/g + phis p_s/g), the fixer's own energy
 (``dycore_column_energy``; TRiSK KE on MPAS, cell-centre KE on lat-lon).
-On lat-lon the mass fixer sits inside the safety rails; its share is
-E(rails, fix_mass on) - E(rails, fix_mass off) on the same input.
+MPAS: massfix = E(mass fixer out) - E(in), i.e. BEFORE the restore (raw).
+Lat-lon: the mass fixer (and the restore) sit inside the safety rails, so
+massfix = E(rails, fix_mass on) - E(rails, fix_mass off) on the same input,
+i.e. AFTER the restore (net).  ``summarize`` reports both raw and net on both
+lanes (net = raw + efix_mf).  The lat-lon isolation needs the T-neutral
+positivity borrow (conservative_tracer_clamp=True); the probe refuses
+otherwise.  Rows are aggregated per tag (arrival order is not step order:
+callbacks are unordered), and every tag must have one row per step.
+Single process only (plain area sums, no owned masks / MPI reductions).
 Rates are W/m^2 = dE / (A * dt), + = energy added.
 
   --lane mpas   : ``--argv-file`` = run_amip CLI (deck + data paths) of the run
@@ -31,6 +41,7 @@ import numpy as np  # noqa: E402
 
 ROOT = Path(os.environ.get("WT", ".")).resolve()
 ROWS: list[tuple[str, float, float]] = []
+_CTX: dict = {"mf_out": None, "in_rails": False}
 
 
 def _rec(tag):
@@ -92,6 +103,7 @@ def _instrument_mpas():
                       target_mass=target_mass, sigma_coord=sigma_coord)
         a = mesh.areaCell
         dps = jnp.sum((out.p_s.data - state_new.p_s.data) * a) / jnp.sum(a)
+        _CTX["mf_out"] = out   # the restore's ``post`` is this object
         jax.debug.callback(_rec("massfix"),
                            energy(out, mesh, sigma_coord)
                            - energy(state_new, mesh, sigma_coord), dps)
@@ -101,7 +113,8 @@ def _instrument_mpas():
         dT = orig_ef(pre, post, mesh, sigma_coord, area, sum_fn)
         ph = sigma_coord.pressure_at_half(post.p_s.data)
         m = jnp.sum(jnp.sum(ph[..., 1:] - ph[..., :-1], axis=-1) * area) / constants.g
-        jax.debug.callback(_rec("efix"), constants.c_pd * dT * m, dT)
+        tag = "efix_mf" if post is _CTX["mf_out"] else "efix"
+        jax.debug.callback(_rec(tag), constants.c_pd * dT * m, dT)
         return dT
 
     pm._fix_mass_mpas_hydro, pm.voronoi_energy_fixer_dT = mf, ef
@@ -129,8 +142,15 @@ def _instrument_latlon():
               sigma_coord=None):
         g = self.grid if grid is None else grid
         sc = self.sigma_coord if sigma_coord is None else sigma_coord
-        on = orig_rails(self, state, target_mass, pre_state, grid=grid,
-                        sigma_coord=sigma_coord)
+        if not self.config.conservative_tracer_clamp:
+            raise SystemExit("on-minus-off isolation needs the T-neutral "
+                             "positivity borrow (conservative_tracer_clamp)")
+        _CTX["in_rails"] = True   # trace time: the restore is called in here
+        try:
+            on = orig_rails(self, state, target_mass, pre_state, grid=grid,
+                            sigma_coord=sigma_coord)
+        finally:
+            _CTX["in_rails"] = False
         cfg = self.config
         self.config = cfg._replace(fix_mass=False)
         try:
@@ -143,11 +163,12 @@ def _instrument_latlon():
                            dps)
         return on
 
-    def ef(pre, post, grid, sigma_coord):
-        dT = orig_ef(pre, post, grid, sigma_coord)
+    def ef(pre, post, grid, sigma_coord, owned_mask=None):
+        dT = orig_ef(pre, post, grid, sigma_coord, owned_mask=owned_mask)
         ph = sigma_coord.pressure_at_half(post[3])
         m = jnp.sum(jnp.sum(ph[..., 1:] - ph[..., :-1], axis=-1) * grid.area) / constants.g
-        jax.debug.callback(_rec("efix"), constants.c_pd * dT * m, dT)
+        tag = "efix_mf" if _CTX["in_rails"] else "efix"
+        jax.debug.callback(_rec(tag), constants.c_pd * dT * m, dT)
         return dT
 
     M._apply_safety_rails, pl.gridded_energy_fixer_dT = rails, ef
@@ -177,6 +198,36 @@ def _convert_p3_latlon(src, out_dir):
     return out
 
 
+def summarize(rows, A, dt, lane, steps):
+    """Per-tag rates [W/m^2] (+ = energy added) and the mass fixer's RAW
+    (before the restore) and NET (after it) energy change, net = raw +
+    efix_mf.  Tags are never paired by arrival index.  Every recorded tag
+    must have exactly ``steps`` rows (efix and massfix are required)."""
+    by: dict = {}
+    for tag, de, x in rows:
+        by.setdefault(tag, []).append((de, x))
+    for tag in ("efix", "massfix", *by):
+        n = len(by.get(tag, ()))
+        if n != steps:
+            raise RuntimeError(f"{tag}: {n} rows for {steps} steps")
+    out: dict = {}
+    for tag, v in sorted(by.items()):
+        r = np.array([de for de, _ in v]) / (A * dt)
+        out[f"{tag}_mean_Wm2"] = float(r.mean())
+        out[f"{tag}_min_Wm2"], out[f"{tag}_max_Wm2"] = float(r.min()), float(r.max())
+    restore = out.get("efix_mf_mean_Wm2", 0.0)
+    if lane == "mpas":
+        raw = out["massfix_mean_Wm2"]
+        net = raw + restore
+    else:
+        net = out["massfix_mean_Wm2"]
+        raw = net - restore
+    out.update(massfix_raw_Wm2=raw, massfix_net_Wm2=net,
+               dps_absmean_Pa=float(np.mean([abs(x) for _, x in by["massfix"]])),
+               ratio_raw_over_efix=raw / out["efix_mean_Wm2"])
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lane", choices=("mpas", "latlon"), required=True)
@@ -189,7 +240,10 @@ def main():
     a = ap.parse_args()
     sha = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"],
                          capture_output=True, text=True).stdout.strip()
-    print(f"WT={ROOT} sha={sha} lane={a.lane} restart={a.restart} "
+    dirty = len(subprocess.run(
+        ["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True, text=True).stdout.splitlines())
+    print(f"WT={ROOT} sha={sha} dirty={dirty} lane={a.lane} restart={a.restart} "
           f"steps={a.steps}", flush=True)
     {"mpas": _instrument_mpas, "latlon": _instrument_latlon}[a.lane]()
     if a.lane == "mpas":
@@ -229,24 +283,17 @@ def main():
                       else drv.grid.area)
     A = float(area.sum())
     drv.run(start_step=step0, start_day=day0)
-    ef = [r for r in ROWS if r[0] == "efix"]
-    mf = [r for r in ROWS if r[0] == "massfix"]
-    print(f"A={A:.6e} n_efix={len(ef)} n_massfix={len(mf)}", flush=True)
-    for i, (e, m) in enumerate(zip(ef, mf)):
-        print(f"step {i + 1:3d} efix {e[1] / (A * dt):+.6e} W/m2 (dT={e[2]:+.3e} K)"
-              f"  massfix {m[1] / (A * dt):+.6e} W/m2 (dps={m[2]:+.3e} Pa)",
-              flush=True)
-    efr = np.array([e[1] for e in ef]) / (A * dt)
-    mfr = np.array([m[1] for m in mf]) / (A * dt)
-    dps = np.array([m[2] for m in mf])
-    print(json.dumps({
-        "lane": a.lane, "restart": a.restart, "sha": sha, "dt": dt,
-        "steps": len(mf), "efix_mean_Wm2": float(efr.mean()),
-        "massfix_mean_Wm2": float(mfr.mean()),
-        "massfix_absmean_Wm2": float(np.abs(mfr).mean()),
-        "massfix_min_Wm2": float(mfr.min()), "massfix_max_Wm2": float(mfr.max()),
-        "dps_absmean_Pa": float(np.abs(dps).mean()),
-        "ratio_massfix_over_efix": float(mfr.mean() / efr.mean())}), flush=True)
+    import jax
+    jax.effects_barrier()   # every debug callback has landed in ROWS
+    print(f"A={A:.6e} rows=" + str({t: sum(r[0] == t for r in ROWS)
+                                    for t in sorted({r[0] for r in ROWS})}),
+          flush=True)
+    for tag, de, x in ROWS:   # arrival order, NOT step order
+        unit = "Pa" if tag == "massfix" else "K"
+        print(f"{tag:8s} {de / (A * dt):+.6e} W/m2 ({x:+.3e} {unit})", flush=True)
+    print(json.dumps({"lane": a.lane, "restart": a.restart, "sha": sha,
+                      "dirty": dirty, "dt": dt, "steps": a.steps,
+                      **summarize(ROWS, A, dt, a.lane, a.steps)}), flush=True)
 
 
 if __name__ == "__main__":

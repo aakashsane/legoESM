@@ -51,3 +51,26 @@ def test_p3_checkpoint_is_rekeyed_without_changing_values(tmp_path):
     np.testing.assert_array_equal(out["latloncol_q_1"], q_v.reshape(nlat, nlon, nlev))
     # row-major: column k = (k // nlon, k % nlon)
     assert out["latloncol_p_s"][1, 2] == p_s[1 * nlon + 2]
+
+
+def test_summarize_rates_tags_and_raw_net():
+    """W/m^2 = J / (A dt); the restore rows (efix_mf) never enter the dycore
+    efix mean; raw/net follow each lane's measurement point; missing rows
+    are refused."""
+    import pytest
+    summarize = _load().summarize
+    A, dt, steps = 2.0, 10.0, 2
+    rows = [("efix", 40.0, 1e-5), ("massfix", -4.0, -2e-4), ("efix_mf", 4.0, 1e-6),
+            ("efix", 60.0, 1e-5), ("efix_mf", 4.0, 1e-6), ("massfix", -4.0, -4e-4)]
+    m = summarize(rows, A, dt, "mpas", steps)   # massfix measured BEFORE restore
+    assert m["efix_mean_Wm2"] == pytest.approx(2.5)        # (40+60)/2/(2*10)
+    assert m["massfix_raw_Wm2"] == pytest.approx(-0.2)
+    assert m["massfix_net_Wm2"] == pytest.approx(0.0)
+    assert m["dps_absmean_Pa"] == pytest.approx(3e-4)
+    assert m["ratio_raw_over_efix"] == pytest.approx(-0.08)
+    net_rows = [r if r[0] != "massfix" else ("massfix", 0.0, r[2]) for r in rows]
+    ll = summarize(net_rows, A, dt, "latlon", steps)      # massfix AFTER restore
+    assert ll["massfix_net_Wm2"] == pytest.approx(0.0)
+    assert ll["massfix_raw_Wm2"] == pytest.approx(-0.2)
+    with pytest.raises(RuntimeError, match="efix_mf: 1 rows"):
+        summarize(rows[:-2] + rows[-1:], A, dt, "mpas", steps)

@@ -791,6 +791,21 @@ It did not cover: creating either environment (it reused the reference conda
 prefix and Python environment), the package self-test, the deck guard inside
 the launcher (that launcher predated the guard, which was run on its outputs
 afterwards), the namelist inventory, the tile-check command (run on its
-outputs afterwards), or the current `--conda-prefix` interface. The GPU half
-of the fresh reproduction was running when this guide was written; its
-result is not part of this guide.
+outputs afterwards), or the current `--conda-prefix` interface.
+
+The GPU half followed on 2026-10-14 with the tools at commit `d7d2e21f6` (the
+platform fix on top of Round D), against the fresh NEMO run above, on the
+idle reference V100S: the three-year legoESM run printed `COMPLETED
+days=1095 backend=gpu` in 8,320.989 s with a peak of 437,028,608 bytes of GPU
+memory (`GPU_MANIFEST PASS`); the deck guard of that commit printed `PASS
+compiled_reads=131/131` (the 336-field Round-E guard was run on the same
+NEMO run separately and also passes); the three annual checks printed
+`SWG_DG_RESTART_IDENTITY PASS` at days 365, 730 and 1095 with 1,227,520 wet
+words, 0 unequal and maximum difference 0 each (report SHA-256 `b325b65d...`,
+`2c44440b...`, `35eef943...`); both climate reports were written; and the
+movie printed `SWG_DG_MOVIE COMPLETE frames=365`. The first attempt at this
+half stopped at start-up because JAX 0.10.0 refuses `JAX_PLATFORMS=gpu` on a
+CUDA-only install (fixed in `d7d2e21f6`), and its first guard run refused
+because the shell lacked `JAX_ENABLE_X64` (the guard now selects float64
+itself). This half did not cover the Round-E tools themselves, the
+environment creation, or a GPU other than the reference V100S.

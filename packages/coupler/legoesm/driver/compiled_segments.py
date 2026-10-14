@@ -44,7 +44,9 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
-from legoesm.core.conservation import conservative_positive_clip
+from legoesm.core.conservation import (
+    conservative_positive_clip, energy_consistent_moisture_floor,
+)
 from legoesm.core.field import Field
 # #1028: the D-grid -> cell-centre wind view used wherever the column physics
 # reads winds while the run carries FV3 D-staggered cube winds.
@@ -1343,6 +1345,26 @@ def moist_change_with_mass(old, new, p_s, dsigma, dt):
     return {k: tr.get(k) for k in old}, p_s
 
 
+def floor_moist_with_mass(raw, T, p_s, dsigma, dt, energy_consistent):
+    """The split step's water positivity floors on the post-physics fields
+    ``raw`` (``{name: array | None}`` over ``MOIST_FIELDS``): every species is
+    floored by the column-conserving borrow on the ``dsigma`` weights, the
+    opt-in ``energy_consistent`` vapour floor also books the latent heat of
+    each cell's vapour change into ``T``, and any column water the floors
+    still change (net-negative columns only) carries its mass into ``p_s``.
+    Returns ``(floored, T, p_s)``."""
+    if energy_consistent:
+        q_v, T = energy_consistent_moisture_floor(raw["q_v"], T, dsigma)
+    else:
+        q_v = conservative_positive_clip(raw["q_v"], dsigma, axis=-1)[0]
+    floored = {"q_v": q_v, **{
+        k: (None if raw[k] is None
+            else conservative_positive_clip(raw[k], dsigma, axis=-1)[0])
+        for k in MOIST_FIELDS[1:]}}
+    floored, p_s = moist_change_with_mass(raw, floored, p_s, dsigma, dt)
+    return floored, T, p_s
+
+
 def fix_segment_dry_mass(p_s, moist, target_dry_mass, grid, dsigma,
                          owned_mask=None):
     """The segment lanes' target-anchored DRY-mass fixer (F13): the shared
@@ -1444,7 +1466,6 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
     POST-ADVECTION aliases so the physics update acts on the transported
     moisture.  ``tke/qke/gwd_spectrum`` are physics carries (not advected) and
     always ride the carry."""
-    from legoesm.core.conservation import energy_consistent_moisture_floor
     if moist is None:
         moist = {_nm: getattr(carry, _nm) for _nm in MOIST_FIELDS}
     # #1028: physics is a COLUMN closure and reads winds at cell centres.  On
@@ -1595,31 +1616,12 @@ def split_physics_single_rank(carry, T_new, u_new, v_new, p_s_new,
     # the column water change and every moisture field is re-weighted.
     _raw, p_s_phys = segment_physics_water(
         moist, phys_out, p_s_new, statics.dt, statics.dsigma)
-    _qv_raw = _raw["q_v"]
-    if statics.energy_consistent_moisture_clip:
-        # Issue #323: keep the q_v floor moist-static-energy neutral by
-        # removing the latent heat of the clipped (un-removed) vapour sink.
-        # KNOWN EXCEPTION to "conserving form always": this opt-in branch
-        # conserves MSE but CREATES the clipped vapour; a jointly water- and
-        # energy-conserving floor is a separate limiter (codex 2026-08-16).
-        q_v_upd, T_upd = energy_consistent_moisture_floor(_qv_raw, T_upd)
-    else:
-        # Conserving form always (owner decision 2026-08-16): column borrow,
-        # never the mass-creating plain max(q, 0). Pure-sigma lane: dsigma is
-        # the layer-mass weight up to the per-column p_s factor, which
-        # cancels in the rescale.
-        q_v_upd = conservative_positive_clip(
-            _qv_raw, statics.dsigma, axis=-1)[0]
-    def _dm_upd(name):
-        return (None if _raw[name] is None
-                else conservative_positive_clip(
-                    _raw[name], statics.dsigma, axis=-1)[0])
-    _floored = {"q_v": q_v_upd, **{k: _dm_upd(k) for k in MOIST_FIELDS[1:]}}
-    # The floors' water change carries its mass too (F13, codex r2): the
-    # borrow moves none except in net-negative columns, the opt-in hard
-    # vapour floor creates it.
-    _floored, p_s_phys = moist_change_with_mass(
-        _raw, _floored, p_s_phys, statics.dsigma, statics.dt)
+    # Positivity floors: column-conserving borrow for every species (the
+    # opt-in vapour floor also books each cell's latent heat); see
+    # floor_moist_with_mass.
+    _floored, T_upd, p_s_phys = floor_moist_with_mass(
+        _raw, T_upd, p_s_phys, statics.dsigma, statics.dt,
+        statics.energy_consistent_moisture_clip)
     (q_v_upd, q_c_upd, q_r_upd, q_i_upd, q_s_upd, q_g_upd,
      N_c_upd, N_r_upd, N_i_upd) = (_floored[k] for k in MOIST_FIELDS)
     conv_prog_upd = phys_out.conv_prog
@@ -1741,15 +1743,17 @@ def _apply_qv_smoothing(q_v_upd, statics):
     hyperdiffusion is a ×0 no-op AND skipping it avoids calling the
     grid-specific ∇⁴ operator — ``laplacian_compact_3d`` reads the cube-only
     ``grid.halo_interp_offsets`` (absent on lat-lon), which the lat-lon training
-    rollout (``qv_smooth_coeff=0.0``) would otherwise hit.  The nonzero-coeff
-    path is bit-identical to the former nested ``max(q + dt·∇⁴, 0)``; only the
-    q>=0 floor always applies.  Module-scope (not defined in the scan body) per
-    the repo's hot-loop helper doctrine, and so fix-5 is directly testable.
+    rollout (``qv_smooth_coeff=0.0``) would otherwise hit.  The q>=0 floor
+    always applies and is the column-conserving borrow on ``statics.dsigma``,
+    the same layer weights this lane's water-mass bookkeeping
+    (:func:`moist_change_with_mass`) uses.  Module-scope (not defined in the
+    scan body) per the repo's hot-loop helper doctrine, and so fix-5 is
+    directly testable.
     """
     if statics.qv_smooth_coeff != 0.0:
         q_v_upd = q_v_upd + statics.dt * statics.hyperdiffusion_3d(
             q_v_upd, statics.grid, statics.qv_smooth_coeff)
-    return jnp.maximum(q_v_upd, 0.0)
+    return conservative_positive_clip(q_v_upd, statics.dsigma, axis=-1)[0]
 
 
 def finalize_split_step(carry, lz, statics):
@@ -2073,15 +2077,12 @@ def build_segment_fn(
         kernels, and ``.raw`` stays the non-JIT, non-donating function
         that the training drivers differentiate through.
     energy_consistent_moisture_clip : bool, optional
-        Issue #323.  When ``True``, the per-step ``max(q_v, 0)`` floor on
-        the physics tracer update also removes the latent heat tied to the
-        clipped (un-removed) vapour sink, so the floor conserves moist
-        static energy ``c_pd*T + L_v*q_v`` instead of injecting spurious
-        condensation heat.  This targets the kessler+sbm wind blow-up
-        (the combined vapour sink can exceed the available ``q_v`` under
-        organised convection; the existing floor truncates the sink but
-        keeps the full latent heating).  Default ``False`` =>
-        bit-identical to the legacy path.
+        Issue #323.  When ``True``, the physics tracer update's vapour floor
+        (the column-conserving borrow either way) also books the latent heat
+        of each cell's vapour change, so ``c_pd*T + L_v*q_v`` is unchanged
+        per cell instead of the clipped cell keeping the condensation heat
+        of a vapour sink that exceeded its vapour (the kessler+sbm wind
+        blow-up).  See :func:`floor_moist_with_mass`.  Default ``False``.
     advect_moisture : bool, optional
         Issue #771.  When ``True``, the moisture tracers (q_v/q_c/q_r and
         the double-moment fields when present) are attached to the dycore
@@ -2136,10 +2137,7 @@ def build_segment_fn(
                 "the tiled adapter enters and exits at cell centres by "
                 "construction (tiled_step_adapter), so the round trip this "
                 "flag removes would still happen every step.")
-    from legoesm.core.conservation import (
-        fix_moisture_hydrostatic,
-        energy_consistent_moisture_floor,
-    )
+    from legoesm.core.conservation import fix_moisture_hydrostatic
     from legoesm.core.cfl import estimate_min_dx_cubed_sphere
 
     # Per-step solar clock precision (codex round-11 Low): the in-scan
@@ -2558,31 +2556,11 @@ def build_segment_fn(
                     {k: (None if v is None else v[_ofi])
                      for k, v in _moist_dyn.items()},
                     phys_out, p_s_new[_ofi], _dt, dsigma)
-                _qv_raw = _raw_owned["q_v"]
-                if energy_consistent_moisture_clip:
-                    # Issue #323: keep the q_v floor moist-static-energy
-                    # neutral (remove the latent heat of the clipped vapour
-                    # sink) instead of injecting spurious condensation heat
-                    # -> the kessler+sbm wind blow-up.  Default off =>
-                    # bit-identical (plain ``max(q_v, 0)`` below).
-                    _qv_owned, _T_owned = energy_consistent_moisture_floor(
-                        _qv_raw, _T_owned)
-                else:
-                    # Conserving form always (owner decision 2026-08-16):
-                    # column borrow on the owned subset (rows are whole
-                    # columns, so the borrow is rank-local and MPI-safe).
-                    _qv_owned = conservative_positive_clip(
-                        _qv_raw, dsigma, axis=-1)[0]
-                # Every other moisture field: the conserving borrow on the
-                # mass-carrying increment; the floors' water change then
-                # carries its mass too (F13).
-                _fl_owned = {"q_v": _qv_owned, **{
-                    k: (None if _raw_owned[k] is None
-                        else conservative_positive_clip(
-                            _raw_owned[k], dsigma, axis=-1)[0])
-                    for k in MOIST_FIELDS[1:]}}
-                _fl_owned, _ps_owned = moist_change_with_mass(
-                    _raw_owned, _fl_owned, _ps_owned, dsigma, _dt)
+                # Same floors as the single-rank body, on the owned columns
+                # (rows are whole columns: the borrow is rank-local).
+                _fl_owned, _T_owned, _ps_owned = floor_moist_with_mass(
+                    _raw_owned, _T_owned, _ps_owned, dsigma, _dt,
+                    energy_consistent_moisture_clip)
                 T_upd = T_new.at[_ofi].set(_T_owned)
                 q_v_upd = q_v_dyn.at[_ofi].set(_fl_owned["q_v"])
                 # Base = the (possibly advected) _dyn alias so non-owned

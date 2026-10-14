@@ -71,14 +71,15 @@ def _run(sim_day: int, start_year: int, outdir: Path, **env):
         *(f'{k}="{v}"' for k, v in env.items()),
         _fake_pool(outdir / "fakeroot"),
         'echo "RESULT VOLCANIC=${VOLCANIC:-} OZONE=${OZONE:-} '
-        'SST=${SST:-} SIC=${SIC:-} FLAGS=${AMIP_PATH_FLAGS[*]// /,}"',
+        'SST=${SST:-} SIC=${SIC:-}"',
+        '(IFS=,; echo "FLAGS=${AMIP_PATH_FLAGS[*]}")',
     ])
     return subprocess.run(["bash", "-c", script], env={"PATH": "/usr/bin:/bin"},
                           capture_output=True, text=True)
 
 
 def _parsed(p):
-    m = re.search(r"RESULT VOLCANIC=(\S*) OZONE=(\S*) SST=(\S*) SIC=(\S*) FLAGS=(\S*)",
+    m = re.search(r"RESULT VOLCANIC=(\S*) OZONE=(\S*) SST=(\S*) SIC=(\S*)\nFLAGS=(\S*)",
                   p.stdout)
     assert m, f"chain did not reach the echo:\nout={p.stdout}\nerr={p.stderr}"
     return dict(zip(("volcanic", "ozone", "sst", "sic", "flags"), m.groups()))
@@ -156,17 +157,25 @@ class TestEraSelection:
 
     def test_past_2014_volcanic_is_not_clamped_or_held(self, tmp_path):
         """After 2014 the chain still names the 1850-2014 file (no clamp to a
-        2014 pool file) and does not opt in to holding its end record, so the
-        loader raises instead of silently holding 2014."""
+        2014 pool file) and neither the sourced flags nor the chain's launch
+        opt in to holding its end record, so the loader raises instead of
+        silently holding 2014 (EXTRA remains the user's explicit opt-in)."""
         got = _parsed(_run(365 * 95, 1923, tmp_path))   # 2018
         assert got["volcanic"] == _production_volcanic(), got["volcanic"]
-        assert "--forcing-hold-outside-file-years" not in got["flags"].split(",")
+        span = re.search(r"_(\d{4})-(\d{4})_", Path(got["volcanic"]).name)
+        assert span and int(span[1]) <= 1923 and int(span[2]) < 2018, got["volcanic"]
+        flags = got["flags"].split(",")
+        assert "--volcanic-aerosol-file" in flags, flags      # the echo saw the array
+        assert "--forcing-hold-outside-file-years" not in flags
+        code = "\n".join(line.split("#")[0] for line in _SBATCH.read_text().splitlines())
+        assert "--forcing-hold-outside-file-years" not in code
 
     def test_day_comes_from_the_newest_checkpoint(self, tmp_path):
         """Multiple checkpoints: the LATEST one sets the simulated year, so a
-        link resuming mid-century does not reload the 1923 deck."""
+        link resuming mid-century does not reload the 1923 deck.  Names use
+        the driver's {:04d}, so widths mix and a plain lexical sort picks 3650."""
         for d in (100, 20000, 3650):
-            (tmp_path / f"checkpoint_day_{d:05d}.npz").touch()
+            (tmp_path / f"checkpoint_day_{d:04d}.npz").touch()
         got = _parsed(_run(0, 1923, tmp_path))           # 1923 + 20000/365 = 1977
         assert "195001-199912" in got["ozone"], got["ozone"]
 

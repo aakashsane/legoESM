@@ -50,6 +50,13 @@ def _rec(tag):
     return f
 
 
+def _fp64(T):
+    """efix J = c_pd*dT*M is the heating APPLIED only if T += dT is not
+    rounded away: refuse fp32 T storage (trace-time dtype check)."""
+    if T.dtype != np.float64:
+        raise SystemExit(f"probe needs fp64 T storage, got {T.dtype}")
+
+
 def _driver_mpas(a, days):
     spec = importlib.util.spec_from_file_location(
         "run_amip_probe", ROOT / "scripts" / "run" / "run_amip.py")
@@ -113,7 +120,10 @@ def _instrument_mpas():
         dT = orig_ef(pre, post, mesh, sigma_coord, area, sum_fn)
         ph = sigma_coord.pressure_at_half(post.p_s.data)
         m = jnp.sum(jnp.sum(ph[..., 1:] - ph[..., :-1], axis=-1) * area) / constants.g
+        _fp64(post.T.data)
         tag = "efix_mf" if post is _CTX["mf_out"] else "efix"
+        if tag == "efix_mf":
+            _CTX["mf_out"] = None
         jax.debug.callback(_rec(tag), constants.c_pd * dT * m, dT)
         return dT
 
@@ -167,6 +177,7 @@ def _instrument_latlon():
         dT = orig_ef(pre, post, grid, sigma_coord, **kw)
         ph = sigma_coord.pressure_at_half(post[3])
         m = jnp.sum(jnp.sum(ph[..., 1:] - ph[..., :-1], axis=-1) * grid.area) / constants.g
+        _fp64(post[0])
         tag = "efix_mf" if _CTX["in_rails"] else "efix"
         jax.debug.callback(_rec(tag), constants.c_pd * dT * m, dT)
         return dT
@@ -269,9 +280,14 @@ def main():
         import jax.numpy as jnp
         ck = np.load(a.restart)["latloncol_phis"]
         nat = drv.state.native
-        print(f"adopting checkpoint terrain: max|dphis|="
-              f"{float(np.max(np.abs(np.asarray(nat.phis) - ck))):.3e} m2/s2",
+        dphis = float(np.max(np.abs(np.asarray(nat.phis) - ck)))
+        print(f"adopting checkpoint terrain: max|dphis|={dphis:.3e} m2/s2",
               flush=True)
+        # External check of the re-keying order: a wrong (n_lat, n_lon)
+        # reshape scrambles phis by O(1e4) m2/s2 against main's own terrain.
+        if dphis > 1e-6:
+            raise SystemExit("converted terrain differs from the grid's: "
+                             "check the re-keying order")
         drv.state = drv.model.from_bundle(
             nat._replace(phis=jnp.asarray(ck, dtype=nat.phis.dtype)))
         if getattr(drv, "_phis_data", None) is not None:

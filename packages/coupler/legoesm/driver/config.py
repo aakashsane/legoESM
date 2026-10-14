@@ -1194,20 +1194,18 @@ class ExperimentConfig(NamedTuple):
 
     # Conservation
     fix_moisture: bool = False
-    # Issue #323: make the per-step ``max(q_v, 0)`` floor on the physics
-    # tracer update moist-static-energy-conserving (remove the latent heat
-    # of the clipped vapour sink).  Opt-in for the kessler+sbm wind blow-up;
-    # default off => bit-identical.  LANE-DEPENDENT (review 2026-10-10 F10):
-    # on the cube / lat-lon pipeline lanes (per-step, compiled, tiled, SPMD,
-    # training segments) True replaces the column-conserving vapour borrow
-    # with a hard floor that ADDS the clipped vapour (sum max(-q,0) dp/g per
-    # column, every step; nothing later removes it unless fix_moisture
-    # rescales globally).  In the dycores' own positivity stage (MPAS, duo
-    # column, cube C-D, lat-lon C-grid) the conserving borrow (dycore
-    # mpas_conservative_tracer_clamp, default True) takes precedence in
-    # core.conservation.apply_water_positivity, so the key does not create
-    # water there.  "True on all lanes" is therefore NOT the MPAS behaviour;
-    # False is the MPAS-equivalent setting on the pipeline lanes.
+    # Issue #323: the physics tracer update's vapour floor also books the
+    # latent heat of each cell's vapour change, so c_pd*T + L_v*q_v is
+    # unchanged per cell (opt-in for the kessler+sbm wind blow-up).
+    # LANE-DEPENDENT (review 2026-10-10 F10): on the cube / lat-lon pipeline
+    # lanes (per-step, compiled, tiled, SPMD, training segments) the floor is
+    # the same column-conserving vapour borrow as with False, plus that T
+    # correction (core.conservation.energy_consistent_moisture_floor); it
+    # creates water only in net-negative columns, like the borrow.  In the
+    # dycores' own positivity stage (MPAS, cube C-D, lat-lon C-grid) the key
+    # matters only with mpas_conservative_tracer_clamp=False, where the hard
+    # floor ADDS the clipped water (announced at dycore build); with the
+    # default borrow it is ignored there.
     energy_consistent_moisture_clip: bool = False
     # Resolved-wind moisture advection (issue #771): attach q_v/q_c/q_r/q_i/
     # q_s/q_g (+ the per-mass ice number N_i) to the dycore state each step so
@@ -2056,13 +2054,9 @@ class ExperimentConfig(NamedTuple):
                 "max(q, 0) tracer clamp, which CREATES mass at every "
                 "transport undershoot (+30 kg/m2/yr of water measured on "
                 "the AMIP century). Legacy bit-comparison mode only.")
-        if self.energy_consistent_moisture_clip:
-            _wlog.warning(
-                "NON-CONSERVING form selected: "
-                "energy_consistent_moisture_clip=True conserves "
-                "moist static energy but CREATES the clipped vapour "
-                "(water is NOT conserved by this floor) — the documented "
-                "exception to 'conserving form always'.")
+        # energy_consistent_moisture_clip creates water only in the dycore
+        # hard floor; the factory announces it where that floor runs
+        # (warn_if_vapour_floor_creates_water).
         if g.resolution <= 0:
             errors.append(f"grid.resolution must be > 0, got {g.resolution}")
         if g.nlev <= 0:

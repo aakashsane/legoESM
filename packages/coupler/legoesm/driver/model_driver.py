@@ -1773,15 +1773,18 @@ class ModelDriver:
             moist_change_with_mass, segment_physics_water)
         lay = self.sigma
 
+        def _weight(p_s):
+            return jnp.maximum(lay.layer_thickness_dp(p_s), 0.0)
+
         def _floor(q, p_s):
-            dp = jnp.maximum(lay.layer_thickness_dp(p_s), 0.0)
-            return conservative_positive_clip(q, dp, axis=-1)[0]
+            return conservative_positive_clip(q, _weight(p_s), axis=-1)[0]
 
         moist = self._per_step_moist()
         raw, p_s = segment_physics_water(
             moist, phys_out, self.state.p_s.data, DT, lay)
         if self.config.energy_consistent_moisture_clip:
-            q_v, new_T = energy_consistent_moisture_floor(raw["q_v"], new_T)
+            q_v, new_T = energy_consistent_moisture_floor(
+                raw["q_v"], new_T, _weight(p_s))
         else:
             # Conserving form always (owner decision 2026-08-16).
             q_v = _floor(raw["q_v"], p_s)
@@ -1789,8 +1792,7 @@ class ModelDriver:
             k: (None if raw[k] is None else _floor(raw[k], p_s))
             for k in raw if k != "q_v"}}
         # The floors' water change carries its mass too (the borrow moves
-        # none except in net-negative columns; the opt-in hard vapour floor
-        # creates it).
+        # none except in net-negative columns).
         moist, p_s = moist_change_with_mass(raw, floored, p_s, lay, DT)
 
         precip_ls = jnp.zeros_like(p_s)

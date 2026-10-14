@@ -112,7 +112,7 @@ class MPASPrimitiveEquationConfig(NamedTuple):
     budget_ledger_level_weight: object = None
     # #1354/#1515: applies ONLY to the plain-max hard-floor path (i.e. when
     # conservative_tracer_clamp=False).  Then the q_v floor removes the latent
-    # heat tied to the clipped vapour (energy_consistent_moisture_floor) so
+    # heat tied to the clipped vapour (energy_consistent_water_floor) so
     # column MSE is conserved instead of leaving +L_v*deficit of spurious heat.
     # The default conservative BORROW is already column-MSE-neutral (it
     # preserves the q_v integral with T untouched), so this is a no-op there and

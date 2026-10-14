@@ -187,6 +187,38 @@ def _land_columns_to_local(arr, partition):
     return arr
 
 
+def _exchange_halo_cell_fields(halo_ex, fields):
+    """Refresh the halo rows of several ``(n_local_cells,)`` cell fields from
+    their owners in ONE message: stack the non-None fields along a trailing
+    axis (bool flags as 0/1 floats, floats in their common promoted dtype so
+    no owned value is rounded), exchange, split back and restore the dtypes.
+    ``None`` entries pass through.  The set of live fields sizes the message,
+    so it must be the same on every rank: it is, because each field's
+    presence follows the (rank-uniform) config and pytree structure, never a
+    rank's own data -- no host collective is issued here on purpose (mpi4jax
+    warns against mixing mpi4py collectives with its in-flight sendrecvs on
+    one communicator)."""
+    live = [(i, f) for i, f in enumerate(fields) if f is not None]
+    if not live:
+        return tuple(fields)
+    arrs = [jnp.asarray(f) for _, f in live]
+    for a in arrs:
+        if a.ndim != 1:
+            raise ValueError(f"land halo exchange expects (n_local_cells,) "
+                             f"fields, got {a.shape}")
+        if a.dtype != bool and not jnp.issubdtype(a.dtype, jnp.floating):
+            raise TypeError(f"land halo exchange: {a.dtype} field not packable")
+    floats = [a.dtype for a in arrs if a.dtype != bool]
+    pack_dtype = jnp.result_type(*floats) if floats else jnp.float64
+    out = halo_ex.exchange_cell_field(
+        jnp.stack([a.astype(pack_dtype) for a in arrs], axis=-1))
+    result = list(fields)
+    for k, ((i, _), a) in enumerate(zip(live, arrs)):
+        col = out[:, k]
+        result[i] = (col > 0.5) if a.dtype == bool else col.astype(a.dtype)
+    return tuple(result)
+
+
 def _map_flat_column_leaves(tree, n_tile, global_ncol, fn):
     """Apply ``fn(leaf, n_tile)`` to every array leaf of ``tree`` whose leading
     axis equals ``global_ncol`` (a per-column field); leave all other leaves
@@ -5605,8 +5637,34 @@ class ModelDriver:
     def _write_step_digest(self, abs_step: int, parts: dict) -> None:
         """One line of ``digest_steps_r<rank>.log``: per part of the restart
         set, a SHA-256 prefix of its array leaves (shape, dtype, bytes) and
-        the leaf count.  Rank-local (each rank hashes its own cells)."""
+        the leaf count.  Rank-local (each rank hashes its own cells); under
+        a multi-rank cell partition OWNED cells/edges only -- the halo is a
+        cache of other ranks' state that a restart neither can nor should
+        reproduce (it is one step stale at a step boundary)."""
         import hashlib
+        part = (self._voronoi_layout.partition
+                if _is_mpas_cell_partitioned(self) else None)
+        if part is not None:
+            # Ownership by leading dim: cells, the 1-based padded cell layout
+            # (row 0 is the pad; see _scatter_1based_*), or edges.  The rule
+            # is shape-based, so the three counts must be distinct, else a
+            # leaf could be sliced by the wrong rule; a leaf whose leading
+            # dim merely coincides with one of them is a known limitation.
+            _n = (part.n_local_cells, part.n_local_cells + 1,
+                  len(part.local_edges))
+            if len(set(_n)) != 3:
+                raise ValueError(
+                    f"step digest: ambiguous entity counts {_n}")
+
+        def _owned(a):
+            if part is not None and a.ndim >= 1:
+                if a.shape[0] == part.n_local_cells:
+                    return a[:part.n_owned_cells]
+                if a.shape[0] == part.n_local_cells + 1:
+                    return a[:part.n_owned_cells + 1]
+                if a.shape[0] == len(part.local_edges):
+                    return a[:part.n_owned_edges]
+            return a
 
         def _h(tree):
             d, n = hashlib.sha256(), 0
@@ -5615,7 +5673,7 @@ class ModelDriver:
                 xs = ([s.data for s in x.addressable_shards]
                       if isinstance(x, jax.Array)
                       and not x.is_fully_addressable else [x])
-                for a in map(np.asarray, jax.device_get(xs)):
+                for a in map(_owned, map(np.asarray, jax.device_get(xs))):
                     if a.dtype != object:
                         d.update(f"{a.shape}{a.dtype}".encode())
                         d.update(a.tobytes())
@@ -14360,6 +14418,36 @@ class ModelDriver:
                         # Root-zone beta only until the humidity channel is
                         # live (or when the scheme solves none).
                         _land_beta_cells = _land_beta_fn(self._land_ml_state)
+                    if _is_mpas_cell_partitioned(self):
+                        # A halo cell steps its OWN land column, which is
+                        # never exchanged and drifts from the owner's; the
+                        # turbulence's cell->edge tendency projection reads
+                        # the halo cell's surface stress, so without this an
+                        # owned boundary edge is forced by a land column
+                        # nobody owns (measured: 1e-8 m/s restart drift on
+                        # exactly the boundary edges, zero with the land
+                        # stress off).  ``_land_call`` is rank-uniform
+                        # (step cadence + a loop-local None test), so every
+                        # rank issues this collective together.
+                        (_land_T_skin, _land_albedo_cells, _land_qsfc_step,
+                         _land_qsfc_cells, _land_shflx_cells,
+                         _land_lhflx_cells, _land_evap_cells,
+                         _land_beta_cells, _land_taumag_cells,
+                         _land_taumag_valid, _land_taumag_fresh
+                         ) = _exchange_halo_cell_fields(
+                            self._voronoi_layout.halo_exchange,
+                            (_land_T_skin, _land_albedo_cells,
+                             _land_qsfc_step, _land_qsfc_cells,
+                             _land_shflx_cells, _land_lhflx_cells,
+                             _land_evap_cells, _land_beta_cells,
+                             _land_taumag_cells, _land_taumag_valid,
+                             _land_taumag_fresh))
+                        self._land_T_skin_last = _land_T_skin
+                        self._land_qsfc_last = _land_qsfc_step
+                        if _land_taumag_cells is not None:
+                            self._land_taumag = _land_taumag_cells
+                            self._land_taumag_valid = _land_taumag_valid
+                            self._land_taumag_fresh = _land_taumag_fresh
                 # Publish the cadence state for the checkpoint writer (F31):
                 # Python references only, no device work.
                 self._land_window = land_window_checkpoint_payload(

@@ -37,11 +37,11 @@ def _drive(fn, *a, **k):
         raise RuntimeError(f"driver assertion in {fn.__name__}") from exc
 
 
-def _digests(outdir) -> dict[int, str]:
-    """``{abs_step: digest line}`` of ``digest_steps_r0.log``; a step logged
-    twice is an error (a duplicate could hide a mismatching row)."""
+def _digests(outdir, rank=0) -> dict[int, str]:
+    """``{abs_step: digest line}`` of ``digest_steps_r<rank>.log``; a step
+    logged twice is an error (a duplicate could hide a mismatching row)."""
     lines = {}
-    with open(os.path.join(str(outdir), "digest_steps_r0.log")) as f:
+    with open(os.path.join(str(outdir), f"digest_steps_r{rank}.log")) as f:
         for line in f:
             step, rest = line.split(" ", 1)
             k = int(step.removeprefix("step="))
@@ -61,18 +61,19 @@ def _parts(line) -> dict[str, tuple[str, int]]:
     return out
 
 
-def _restarted_vs_continuous(cont, start_step, resumed):
+def _restarted_vs_continuous(cont, start_step, resumed, rank=0):
     """Resumed steps (must start at start_step+1, continuous log gapless)
     and the subset whose digest line differs from the continuous run."""
-    c, r = _digests(cont), _digests(resumed)
+    c, r = _digests(cont, rank), _digests(resumed, rank)
     steps = sorted(r)
     _require(steps and steps[0] == start_step + 1, (steps, start_step))
     _require(sorted(c) == list(range(1, steps[-1] + 1)), sorted(c))
     return steps, [k for k in steps if c[k] != r[k]]
 
 
-def _mismatch(cont, resumed, step):
-    c, r = _parts(_digests(cont)[step]), _parts(_digests(resumed)[step])
+def _mismatch(cont, resumed, step, rank=0):
+    c, r = (_parts(_digests(cont, rank)[step]),
+            _parts(_digests(resumed, rank)[step]))
     return f"step {step}: " + ", ".join(
         f"{k} {c[k]} != {r[k]}" for k in c if c[k] != r[k])
 
@@ -112,6 +113,57 @@ def test_digest_writer_sees_each_part_and_only_that_part(tmp_path):
             {k: v for k, v in ref.items() if k != part}, name
 
 
+def test_digest_hashes_owned_entities_only_under_a_cell_partition(tmp_path):
+    """Under a multi-rank Voronoi partition the writer hashes the owned
+    prefix of cell-, 1-based-padded-cell- and edge-indexed leaves (the halo
+    is a cache the restart cannot reproduce) and every other leaf whole: a halo perturbation leaves
+    the digest unchanged, an owned one and a non-spatial one change it; the
+    serial writer (no partition) still sees the halo rows."""
+    from legoesm.driver.model_driver import ModelDriver
+    part = types.SimpleNamespace(n_local_cells=5, n_owned_cells=3,
+                                 local_edges=np.arange(7), n_owned_edges=4)
+    mpi = types.SimpleNamespace(
+        _output_dir=tmp_path / "mpi", _mpi_rank=1, _mpi_world_size=2,
+        _voronoi_layout=types.SimpleNamespace(partition=part))
+    serial = types.SimpleNamespace(_output_dir=tmp_path / "serial",
+                                   _mpi_rank=0)
+    for d in (mpi, serial):
+        d._output_dir.mkdir()
+    base = {"state": {"T": np.arange(10.0).reshape(5, 2),
+                      "u": np.arange(14.0).reshape(7, 2),
+                      "p1": np.arange(6.0),           # 1-based padded cells
+                      "key": np.arange(2, dtype=np.uint32)}}
+    halo = {"state": {**base["state"], "T": base["state"]["T"].copy(),
+                      "u": base["state"]["u"].copy(),
+                      "p1": base["state"]["p1"].copy()}}
+    halo["state"]["T"][4, 1] += 1.0
+    halo["state"]["u"][6, 0] += 1.0
+    halo["state"]["p1"][5] += 1.0
+    owned = {"state": {**base["state"], "T": base["state"]["T"].copy()}}
+    owned["state"]["T"][2, 0] += 1.0
+    pad0 = {"state": {**base["state"], "p1": base["state"]["p1"].copy()}}
+    pad0["state"]["p1"][0] += 1.0                     # the pad row is kept
+    padown = {"state": {**base["state"], "p1": base["state"]["p1"].copy()}}
+    padown["state"]["p1"][3] += 1.0                   # last owned padded row
+    key = {"state": {**base["state"], "key": base["state"]["key"] + 1}}
+    cases = (base, halo, owned, pad0, padown, key)
+    for d in (mpi, serial):
+        for i, parts in enumerate(cases, start=1):
+            ModelDriver._write_step_digest(d, i, parts)
+    m = {i: line.split("=", 1)[1] for i, line in
+         _digests(mpi._output_dir, rank=1).items()}
+    s = {i: line.split("=", 1)[1] for i, line in
+         _digests(serial._output_dir).items()}
+    assert m[1] == m[2]
+    assert len({m[i] for i in (1, 3, 4, 5, 6)}) == 5
+    assert s[1] != s[2]
+    assert m[1].endswith("/4") and s[1].endswith("/4")
+    # Shape-based ownership needs distinct entity counts.
+    part.local_edges = np.arange(6)                   # == n_local_cells + 1
+    with pytest.raises(ValueError, match="ambiguous"):
+        ModelDriver._write_step_digest(mpi, 99, base)
+
+
 def test_restart_comparator_on_synthetic_logs(tmp_path):
     """The comparator: resumed log starts at start_step+1, continuous log is
     gapless, no step twice, one differing line reported."""
@@ -139,10 +191,11 @@ def test_restart_comparator_on_synthetic_logs(tmp_path):
         == ([3], [3])
 
 
-def _mpas_continuous(tmp_path, name, days, monkeypatch, nudge=None):
+def _mpas_continuous(tmp_path, name, days, monkeypatch, nudge=None,
+                     distributed=False):
     _patch_land_loaders(monkeypatch)
     d = _drive(_build_driver, str(tmp_path / name), days, **_LS_KW,
-               land_stress_from_land=True)
+               land_stress_from_land=True, distributed=distributed)
     if nudge is not None:
         d._land_ml_state = d._land_ml_state._replace(
             T_soil=d._land_ml_state.T_soil + nudge)

@@ -81,3 +81,21 @@ def test_coupled_forcing_products_cover_the_decks_run_years(flag):
         cfg = yaml.safe_load((REPO / "config" / "cmip" / deck).read_text())
         first, last = cfg["start_year"], cfg["start_year"] + (cfg["days"] - 1) // 365
         assert lo <= first and last <= hi, (flag, path, (lo, hi), deck, (first, last))
+
+
+def test_levante_topography_is_finer_than_the_production_mesh():
+    """The terrain product bins the topography file onto model cells and
+    refuses any cell that receives no source point; the 1 deg file left 2193
+    MPAS res-6 cells empty, so every production run crashed at setup.  The
+    Levante launcher's file must be at least 4x finer than the res-6 cell
+    spacing (~120 km, ~1.08 deg)."""
+    netCDF4 = pytest.importorskip("netCDF4")
+    path = _path_flags("config/amip/amip_production.sh",
+                       basename=False)["--topography"]
+    if not Path(path).exists():
+        pytest.skip(f"{path} is not staged on this machine")
+    with netCDF4.Dataset(path) as nc:
+        lat = [nc[k][:] for k in nc.variables if k.startswith("lat")][0]
+        lon = [nc[k][:] for k in nc.variables if k.startswith("lon")][0]
+    dlat, dlon = float(abs(lat[1] - lat[0])), float(abs(lon[1] - lon[0]))
+    assert max(dlat, dlon) <= 0.27, (path, dlat, dlon)

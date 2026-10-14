@@ -1,12 +1,12 @@
 """A restart on the column loop reproduces the continuous run, step by step,
 on the per-step restart-set digest (``LEGOESM_DIGEST_EVERY_STEPS``): MPAS
-and the FV3-duo column lane, land on, restart at a physics-but-not-radiation
-boundary.  The instrument is validated first: the digest writer sees a
+and the FV3-duo column lane, land on, restart on a radiation boundary (as
+D-REX-1 requires of every checkpoint).  The instrument is validated first: the digest writer sees a
 change in each part and nothing else; two continuous runs of one config
 agree; a planted 1e-12 K change of one soil leaf is seen.
 
-Preconditions raise ``RuntimeError`` so the strict xfail (restart exactness
-pending) can only absorb the final digest equality."""
+Preconditions raise ``RuntimeError`` so only the final digest equality (and
+the persisted clock origin, and the D-REX-3/4 refusals) can fail the test."""
 import os
 import types
 
@@ -16,7 +16,7 @@ import pytest
 from tests.atmosphere.hydrostatic.unit.test_fv3_duo_column import (  # noqa: F401
     _drop_compiled_graphs, _land_stress_cfg)
 from tests.unit.test_mpas_multilayer_land_port import (
-    _LS_KW, ONE_STEP_DAYS, THREE_STEPS_DAYS, TWO_STEPS_DAYS, _build_driver,
+    DT, _LS_KW, ONE_STEP_DAYS, THREE_STEPS_DAYS, TWO_STEPS_DAYS, _build_driver,
     _patch_land_loaders)
 
 _PARTS = ("state", "phys", "land", "landio", "ice", "sfc", "forcing",
@@ -37,11 +37,11 @@ def _drive(fn, *a, **k):
         raise RuntimeError(f"driver assertion in {fn.__name__}") from exc
 
 
-def _digests(outdir) -> dict[int, str]:
-    """``{abs_step: digest line}`` of ``digest_steps_r0.log``; a step logged
-    twice is an error (a duplicate could hide a mismatching row)."""
+def _digests(outdir, rank=0) -> dict[int, str]:
+    """``{abs_step: digest line}`` of ``digest_steps_r<rank>.log``; a step
+    logged twice is an error (a duplicate could hide a mismatching row)."""
     lines = {}
-    with open(os.path.join(str(outdir), "digest_steps_r0.log")) as f:
+    with open(os.path.join(str(outdir), f"digest_steps_r{rank}.log")) as f:
         for line in f:
             step, rest = line.split(" ", 1)
             k = int(step.removeprefix("step="))
@@ -61,18 +61,19 @@ def _parts(line) -> dict[str, tuple[str, int]]:
     return out
 
 
-def _restarted_vs_continuous(cont, start_step, resumed):
+def _restarted_vs_continuous(cont, start_step, resumed, rank=0):
     """Resumed steps (must start at start_step+1, continuous log gapless)
     and the subset whose digest line differs from the continuous run."""
-    c, r = _digests(cont), _digests(resumed)
+    c, r = _digests(cont, rank), _digests(resumed, rank)
     steps = sorted(r)
     _require(steps and steps[0] == start_step + 1, (steps, start_step))
     _require(sorted(c) == list(range(1, steps[-1] + 1)), sorted(c))
     return steps, [k for k in steps if c[k] != r[k]]
 
 
-def _mismatch(cont, resumed, step):
-    c, r = _parts(_digests(cont)[step]), _parts(_digests(resumed)[step])
+def _mismatch(cont, resumed, step, rank=0):
+    c, r = (_parts(_digests(cont, rank)[step]),
+            _parts(_digests(resumed, rank)[step]))
     return f"step {step}: " + ", ".join(
         f"{k} {c[k]} != {r[k]}" for k in c if c[k] != r[k])
 
@@ -112,6 +113,57 @@ def test_digest_writer_sees_each_part_and_only_that_part(tmp_path):
             {k: v for k, v in ref.items() if k != part}, name
 
 
+def test_digest_hashes_owned_entities_only_under_a_cell_partition(tmp_path):
+    """Under a multi-rank Voronoi partition the writer hashes the owned
+    prefix of cell-, 1-based-padded-cell- and edge-indexed leaves (the halo
+    is a cache the restart cannot reproduce) and every other leaf whole: a halo perturbation leaves
+    the digest unchanged, an owned one and a non-spatial one change it; the
+    serial writer (no partition) still sees the halo rows."""
+    from legoesm.driver.model_driver import ModelDriver
+    part = types.SimpleNamespace(n_local_cells=5, n_owned_cells=3,
+                                 local_edges=np.arange(7), n_owned_edges=4)
+    mpi = types.SimpleNamespace(
+        _output_dir=tmp_path / "mpi", _mpi_rank=1, _mpi_world_size=2,
+        _voronoi_layout=types.SimpleNamespace(partition=part))
+    serial = types.SimpleNamespace(_output_dir=tmp_path / "serial",
+                                   _mpi_rank=0)
+    for d in (mpi, serial):
+        d._output_dir.mkdir()
+    base = {"state": {"T": np.arange(10.0).reshape(5, 2),
+                      "u": np.arange(14.0).reshape(7, 2),
+                      "p1": np.arange(6.0),           # 1-based padded cells
+                      "key": np.arange(2, dtype=np.uint32)}}
+    halo = {"state": {**base["state"], "T": base["state"]["T"].copy(),
+                      "u": base["state"]["u"].copy(),
+                      "p1": base["state"]["p1"].copy()}}
+    halo["state"]["T"][4, 1] += 1.0
+    halo["state"]["u"][6, 0] += 1.0
+    halo["state"]["p1"][5] += 1.0
+    owned = {"state": {**base["state"], "T": base["state"]["T"].copy()}}
+    owned["state"]["T"][2, 0] += 1.0
+    pad0 = {"state": {**base["state"], "p1": base["state"]["p1"].copy()}}
+    pad0["state"]["p1"][0] += 1.0                     # the pad row is kept
+    padown = {"state": {**base["state"], "p1": base["state"]["p1"].copy()}}
+    padown["state"]["p1"][3] += 1.0                   # last owned padded row
+    key = {"state": {**base["state"], "key": base["state"]["key"] + 1}}
+    cases = (base, halo, owned, pad0, padown, key)
+    for d in (mpi, serial):
+        for i, parts in enumerate(cases, start=1):
+            ModelDriver._write_step_digest(d, i, parts)
+    m = {i: line.split("=", 1)[1] for i, line in
+         _digests(mpi._output_dir, rank=1).items()}
+    s = {i: line.split("=", 1)[1] for i, line in
+         _digests(serial._output_dir).items()}
+    assert m[1] == m[2]
+    assert len({m[i] for i in (1, 3, 4, 5, 6)}) == 5
+    assert s[1] != s[2]
+    assert m[1].endswith("/4") and s[1].endswith("/4")
+    # Shape-based ownership needs distinct entity counts.
+    part.local_edges = np.arange(6)                   # == n_local_cells + 1
+    with pytest.raises(ValueError, match="ambiguous"):
+        ModelDriver._write_step_digest(mpi, 99, base)
+
+
 def test_restart_comparator_on_synthetic_logs(tmp_path):
     """The comparator: resumed log starts at start_step+1, continuous log is
     gapless, no step twice, one differing line reported."""
@@ -139,10 +191,11 @@ def test_restart_comparator_on_synthetic_logs(tmp_path):
         == ([3], [3])
 
 
-def _mpas_continuous(tmp_path, name, days, monkeypatch, nudge=None):
+def _mpas_continuous(tmp_path, name, days, monkeypatch, nudge=None,
+                     distributed=False):
     _patch_land_loaders(monkeypatch)
     d = _drive(_build_driver, str(tmp_path / name), days, **_LS_KW,
-               land_stress_from_land=True)
+               land_stress_from_land=True, distributed=distributed)
     if nudge is not None:
         d._land_ml_state = d._land_ml_state._replace(
             T_soil=d._land_ml_state.T_soil + nudge)
@@ -169,19 +222,14 @@ def test_two_continuous_runs_agree_and_a_soil_nudge_is_seen(
     assert _parts(c3[2])["state"] != _parts(c1[2])["state"]
 
 
-_REX = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason=(
-        "R-ex pending (composable physics design): a column-loop restart "
-        "re-seeds the land boundary outputs and the held radiation slots "
-        "and keeps checkpoint-only carry leaves, so every digest part "
-        "differs from the first resumed step on MPAS and the duo "
-        "(measured 2026-10-10, jobs 10315955/10315961)"))
-
-
-@_REX
 def test_mpas_restart_matches_the_continuous_digest(tmp_path, monkeypatch):
     """MPAS, land stress on, gray radiation: resume from the step-2
-    checkpoint; step 3 digests equal the continuous run's."""
+    checkpoint; step 3 digests equal the continuous run's.  The digest's
+    forcing part carries the lagged shflx/lhflx the CAPE-diurnal forcing
+    reads (on by default), so dropping D-REX-2 fails here.  The forcing-clock
+    origin is checked as written and adopted: in a same-config chain the
+    reconstructed origin snaps to the same float, so the digest alone cannot
+    see it."""
     monkeypatch.setenv("LEGOESM_DIGEST_EVERY_STEPS", "1")
     _mpas_continuous(tmp_path, "c", THREE_STEPS_DAYS, monkeypatch)
     _mpas_continuous(tmp_path, "a", TWO_STEPS_DAYS, monkeypatch)
@@ -195,15 +243,19 @@ def test_mpas_restart_matches_the_continuous_digest(tmp_path, monkeypatch):
     steps, bad = _restarted_vs_continuous(tmp_path / "c", step, tmp_path / "b")
     _require(steps == [3], steps)
     assert not bad, _mismatch(tmp_path / "c", tmp_path / "b", bad[0])
+    with np.load(ckpt) as z:
+        assert "clock_day_origin" in z.files
+        origin = float(z["clock_day_origin"])
+    assert origin == dB._clock_day_origin_ckpt == dB._clock_day_origin
 
 
 @pytest.mark.slow
-@_REX
 def test_duo_column_lane_restart_matches_the_continuous_digest(
         tmp_path, monkeypatch):
-    """FV3-duo column lane, RRTMGP every 5 steps, land on: the day-1
-    checkpoint (step 144 at the CFL-clamped 600 s, not a radiation step)
-    resumes bitwise over the remaining 144 steps."""
+    """FV3-duo column lane, RRTMGP every 4 steps, land on: the day-1
+    checkpoint (step 144 at the CFL-clamped 600 s; a radiation boundary, as
+    D-REX-1 requires of every checkpoint) resumes bitwise over the remaining
+    144 steps -- 108 of them held-radiation steps."""
     from legoesm.driver.model_driver import ModelDriver
     monkeypatch.setenv("LEGOESM_DIGEST_EVERY_STEPS", "1")
 
@@ -211,7 +263,7 @@ def test_duo_column_lane_restart_matches_the_continuous_digest(
         d = tmp_path / name
         d.mkdir()
         cfg = _land_stress_cfg(d, monkeypatch, stress=None, days=days,
-                               dt=600.0, rad_update_steps=5)
+                               dt=600.0, rad_update_steps=4)
         cfg = cfg._replace(output=cfg.output._replace(checkpoint_days=1))
         drv = ModelDriver(cfg, output_dir=d)
         _drive(drv.setup)
@@ -223,9 +275,241 @@ def test_duo_column_lane_restart_matches_the_continuous_digest(
     _require(ckpt.exists(), ckpt)
     dB, d = build("b", 1)
     step, day = _drive(dB.load_checkpoint, ckpt)
-    _require(step == 144 and step % 5 and (step - 1) % 5, step)
+    _require(step == 144 and step % 4 == 0, step)
     _require(_drive(dB.run, start_step=step, start_day=day) == "COMPLETED",
              "b")
     steps, bad = _restarted_vs_continuous(tmp_path / "c", step, d)
     _require(steps == list(range(145, 289)), steps)
     assert not bad, _mismatch(tmp_path / "c", d, bad[0])
+
+
+@pytest.mark.usefixtures("allow_version_drift")  # hand-built checkpoints, no manifest beside them
+def test_mpas_restart_refuses_a_start_day_the_saved_origin_does_not_imply(
+        tmp_path, monkeypatch):
+    """D-REX-4: resuming the step-2 checkpoint with a start day one day off
+    the day its recorded forcing-clock origin implies is refused, naming both
+    days -- so the resumed run READS the saved origin (ignoring it, nothing
+    could disagree).  The same checkpoint with the origin stripped keeps the
+    previous behaviour: the shifted start day runs (origin reconstructed)."""
+    _mpas_continuous(tmp_path, "a", TWO_STEPS_DAYS, monkeypatch)
+    ckpt = sorted((tmp_path / "a").glob("checkpoint_day_*.npz"))[-1]
+    dB = _drive(_build_driver, str(tmp_path / "b"), ONE_STEP_DAYS, **_LS_KW,
+                land_stress_from_land=True)
+    step, day = _drive(dB.load_checkpoint, ckpt)
+    _require(step == 2 and dB._clock_day_origin_ckpt is not None, step)
+    with pytest.raises(ValueError, match="implied by the checkpoint's "
+                       "forcing-clock origin") as exc:
+        dB.run(start_step=step, start_day=day + 1.0)
+    assert repr(day + 1.0) in str(exc.value)
+    assert repr(dB._clock_day_origin_ckpt + step * DT / 86400.0) in \
+        str(exc.value)
+    # The saved origin DRIVES the clock: plant one 1.25 d off the config
+    # start day (fractional, so an origin rebuilt from floor(start day) is
+    # 0.25 d off) and resume with the day it implies plus 5e-7 d (inside the
+    # guard's tolerance).  The one resumed step asks for exactly the planted
+    # origin + start_step*dt; an origin from cfg.start_day is 1.25 d off, one
+    # rebuilt from the start day 5e-7 d off, a clock one step late 1 dt off.
+    with np.load(ckpt) as z:
+        origin = float(z["clock_day_origin"])
+        planted_origin = origin + 1.25
+        planted = tmp_path / "planted" / ckpt.name
+        planted.parent.mkdir()
+        np.savez(planted, **{**{k: z[k] for k in z.files},
+                             "clock_day_origin": np.float64(planted_origin)})
+    dP = _drive(_build_driver, str(tmp_path / "p"), ONE_STEP_DAYS, **_LS_KW,
+                land_stress_from_land=True)
+    step, day = _drive(dP.load_checkpoint, planted)
+    _require(dP._clock_day_origin_ckpt == planted_origin, "origin not planted")
+    seen = []
+    cal = dP._calendar_for_radiation
+    dP._calendar_for_radiation = lambda d: (seen.append(float(d)), cal(d))[1]
+    assert _drive(dP.run, start_step=step,
+                  start_day=day + 1.25 + 5e-7) == "COMPLETED"
+    _require(seen, "the step loop never asked for a calendar time")
+    assert set(seen) == {planted_origin + step * DT / 86400.0}, seen
+    assert dP._clock_day_origin == planted_origin
+    legacy = tmp_path / "legacy" / ckpt.name
+    legacy.parent.mkdir()
+    with np.load(ckpt) as z:
+        np.savez(legacy, **{k: z[k] for k in z.files
+                            if k != "clock_day_origin"})
+    dC = _drive(_build_driver, str(tmp_path / "c"), ONE_STEP_DAYS, **_LS_KW,
+                land_stress_from_land=True)
+    step, day = _drive(dC.load_checkpoint, legacy)
+    _require(dC._clock_day_origin_ckpt is None, "origin not stripped")
+    assert _drive(dC.run, start_step=step, start_day=day + 1.0) == "COMPLETED"
+
+
+def test_mpas_mid_day_end_without_daily_forcing_still_checkpoints(
+        tmp_path, monkeypatch, capsys):
+    """Daily external forcing OFF (gray radiation): a run ending mid-day
+    (step 2 at 300 s) still writes its final checkpoint, unwarned."""
+    d = _mpas_continuous(tmp_path, "a", TWO_STEPS_DAYS, monkeypatch)
+    _require(d.config.radiation == "gray" and not d.config.nc_from_aerosol,
+             "daily external forcing would be on")
+    ckpts = sorted((tmp_path / "a").glob("checkpoint_day_*.npz"))
+    assert len(ckpts) == 1
+    with np.load(ckpts[0]) as z:
+        assert int(z["step"]) == 2
+    assert "NOT checkpointed" not in capsys.readouterr().err
+
+
+def test_duo_daily_forcing_setup_refuses_a_mid_day_cadence(
+        tmp_path, monkeypatch):
+    """D-REX-5, FV3-duo column lane: with the daily external-ozone cache on,
+    setup refuses a dt that does not divide a day (500 s) and a fractional
+    checkpoint cadence (1.5 d at 600 s), each by name, while a whole-day
+    cadence at 600 s sets up; with daily forcing off neither is refused."""
+    from legoesm.driver.model_driver import ModelDriver
+
+    def drv(name, dt, ck_days, **over):
+        d = tmp_path / name
+        d.mkdir()
+        c = _land_stress_cfg(d, monkeypatch, stress=None, days=1, dt=dt,
+                             rad_update_steps=1, **over)
+        return ModelDriver(
+            c._replace(output=c.output._replace(checkpoint_days=ck_days)),
+            output_dir=d)
+    on = dict(ozone_forcing="external")
+    with pytest.raises(ValueError, match=r"dt=500 s does not divide 86400 s"):
+        drv("dt_on", 500.0, 0, **on).setup()
+    with pytest.raises(ValueError,
+                       match=r"checkpoint_days=1\.5 is not a whole number"):
+        drv("ck_on", 600.0, 1.5, **on).setup()
+    with pytest.raises(ValueError, match=r"start_day=0\.5 is not a whole day"):
+        drv("sd_on", 600.0, 1, start_day=0.5, **on).setup()
+    ok = drv("ok_on", 600.0, 1, **on)
+    ok.setup()
+    _require(ok._column_daily_forcing_active(), "daily forcing not on")
+    for name, dt, ck in (("dt_off", 500.0, 0), ("ck_off", 600.0, 1.5)):
+        off = drv(name, dt, ck)
+        off.setup()
+        _require(off.config.dycore.dt == dt, off.config.dycore.dt)
+        _require(not off._column_daily_forcing_active(), "forcing on")
+    drv("sd_off", 600.0, 1, start_day=0.5).setup()
+
+
+@pytest.mark.slow
+@pytest.mark.usefixtures("allow_version_drift")  # hand-built checkpoints, no manifest beside them
+def test_duo_daily_external_forcing_restart_needs_a_day_boundary(
+        tmp_path, monkeypatch, capsys):
+    """D-REX-3, FV3-duo column lane, RRTMGP every 4 steps, the daily
+    external-ozone cache on.  A 148-step run (600 s) ends mid-day: its final
+    checkpoint is NOT written (it would overwrite the whole-day one under the
+    same name), a warning says so, and the whole-day checkpoint (step 144)
+    survives and resumes bitwise.  A mid-day checkpoint (written by hand at
+    step 148) is refused before any step, naming the step -- also with its
+    forcing-clock origin stripped (origin reconstructed from the start day)."""
+    from legoesm.driver.model_driver import ModelDriver
+    monkeypatch.setenv("LEGOESM_DIGEST_EVERY_STEPS", "1")
+
+    def build(name, n_steps):
+        d = tmp_path / name
+        d.mkdir()
+        cfg = _land_stress_cfg(d, monkeypatch, stress=None,
+                               days=(n_steps * 600.0 + 1.0) / 86400.0,
+                               dt=600.0, rad_update_steps=4,
+                               ozone_forcing="external")
+        cfg = cfg._replace(output=cfg.output._replace(checkpoint_days=1))
+        drv = ModelDriver(cfg, output_dir=d)
+        _drive(drv.setup)
+        _require(drv._ozone_ext_active, "external ozone not active")
+        return drv, d
+
+    dC, _ = build("c", 148)
+    capsys.readouterr()
+    _require(_drive(dC.run) == "COMPLETED", "c")
+    whole = tmp_path / "c" / "checkpoint_day_0001.npz"
+    assert sorted((tmp_path / "c").glob("checkpoint_day_*.npz")) == [whole]
+    with np.load(whole) as z:
+        assert int(z["step"]) == 144
+    assert "final partial-day state was NOT checkpointed" in \
+        capsys.readouterr().err
+    dB, d = build("b", 4)
+    step, day = _drive(dB.load_checkpoint, whole)
+    _require(step == 144, step)
+    _require(_drive(dB.run, start_step=step, start_day=day) == "COMPLETED",
+             "b")
+    steps, bad = _restarted_vs_continuous(tmp_path / "c", step, d)
+    _require(steps == [145, 146, 147, 148], steps)
+    assert not bad, _mismatch(tmp_path / "c", d, bad[0])
+    # The mid-day checkpoint the run no longer writes, from its end state.
+    dC._output_dir = tmp_path / "mid"
+    dC._output_dir.mkdir()
+    _drive(dC.save_checkpoint, 148, dC.config.start_day + 148 * 600.0 / 86400.0)
+    mid = tmp_path / "mid" / "checkpoint_day_0001.npz"
+    dM, _ = build("m", 4)
+    step, day = _drive(dM.load_checkpoint, mid)
+    _require(step == 148, step)
+    with pytest.raises(ValueError, match="restart at step 148 .* not on a "
+                       "day boundary while daily external forcing"):
+        dM.run(start_step=step, start_day=day)
+    legacy = tmp_path / "legacy" / "checkpoint_day_0001.npz"
+    legacy.parent.mkdir()
+    with np.load(mid) as z:
+        np.savez(legacy, **{k: z[k] for k in z.files
+                            if k != "clock_day_origin"})
+    dN, _ = build("n", 4)
+    step, day = _drive(dN.load_checkpoint, legacy)
+    _require(step == 148 and dN._clock_day_origin_ckpt is None,
+             "origin not stripped")
+    with pytest.raises(ValueError, match="restart at step 148 .* not on a "
+                       "day boundary while daily external forcing"):
+        dN.run(start_step=step, start_day=day)
+
+
+@pytest.mark.slow
+def test_duo_mid_day_end_under_daily_forcing_leaves_cmor_to_the_resumed_run(
+        tmp_path, monkeypatch, capsys):
+    """D-REX-3 with CMOR output, FV3-duo column lane, daily external ozone on
+    (600 s, one-day checkpoints and diagnostics).  A 148-step run ends
+    mid-day: besides its final checkpoint it writes NO CMOR NetCDF and keeps
+    the step-144 checkpoint's CMOR accumulator sidecar (the finalizer would
+    retire it under the same day name).  Resumed from that checkpoint and
+    sidecar to step 288, the CMOR files equal a continuous 288-step run's:
+    the span after step 144 is accumulated and written exactly once."""
+    import xarray as xr
+    from legoesm.driver.model_driver import ModelDriver
+
+    def build(name, n_steps):
+        d = tmp_path / name
+        d.mkdir()
+        cfg = _land_stress_cfg(d, monkeypatch, stress=None,
+                               days=(n_steps * 600.0 + 1.0) / 86400.0,
+                               dt=600.0, rad_update_steps=4,
+                               ozone_forcing="external")
+        cfg = cfg._replace(output=cfg.output._replace(
+            checkpoint_days=1, diag_days=1, cmip_output=True))
+        drv = ModelDriver(cfg, output_dir=d)
+        _drive(drv.setup)
+        _require(drv._ozone_ext_active, "external ozone not active")
+        return drv, d
+
+    dC, c = build("c", 148)
+    capsys.readouterr()
+    _require(_drive(dC.run) == "COMPLETED", "c")
+    _require(dC._mpas_cmip_feed_on, "CMOR feed off")
+    _require(sorted(c.glob("checkpoint_day_*.npz"))
+             == [c / "checkpoint_day_0001.npz"], "checkpoints")
+    sidecar = c / "cmor_accum_day_0001.npz"
+    assert sidecar.exists()
+    assert sorted(c.rglob("*.nc")) == []
+    assert "The CMOR NetCDF was NOT written either" in capsys.readouterr().err
+    dR, r = build("r", 144)
+    step, day = _drive(dR.load_checkpoint, c / "checkpoint_day_0001.npz")
+    _require(step == 144, step)
+    assert dR.diagnostics.load_cmor_accumulators(sidecar)
+    _require(_drive(dR.run, start_step=step, start_day=day) == "COMPLETED",
+             "r")
+    dK, k = build("k", 288)
+    _require(_drive(dK.run) == "COMPLETED", "k")
+    files = sorted(p.relative_to(k) for p in k.rglob("*.nc"))
+    _require(any("_day_" in p.name for p in files), files)
+    assert sorted(p.relative_to(r) for p in r.rglob("*.nc")) == files
+    for rel in files:
+        with xr.open_dataset(k / rel, decode_times=False) as a, \
+                xr.open_dataset(r / rel, decode_times=False) as b:
+            assert sorted(b.variables) == sorted(a.variables), rel
+            for v in a.variables:
+                np.testing.assert_array_equal(
+                    b[v].values, a[v].values, err_msg=f"{rel}: {v}")

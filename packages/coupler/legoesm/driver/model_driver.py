@@ -187,6 +187,38 @@ def _land_columns_to_local(arr, partition):
     return arr
 
 
+def _exchange_halo_cell_fields(halo_ex, fields):
+    """Refresh the halo rows of several ``(n_local_cells,)`` cell fields from
+    their owners in ONE message: stack the non-None fields along a trailing
+    axis (bool flags as 0/1 floats, floats in their common promoted dtype so
+    no owned value is rounded), exchange, split back and restore the dtypes.
+    ``None`` entries pass through.  The set of live fields sizes the message,
+    so it must be the same on every rank: it is, because each field's
+    presence follows the (rank-uniform) config and pytree structure, never a
+    rank's own data -- no host collective is issued here on purpose (mpi4jax
+    warns against mixing mpi4py collectives with its in-flight sendrecvs on
+    one communicator)."""
+    live = [(i, f) for i, f in enumerate(fields) if f is not None]
+    if not live:
+        return tuple(fields)
+    arrs = [jnp.asarray(f) for _, f in live]
+    for a in arrs:
+        if a.ndim != 1:
+            raise ValueError(f"land halo exchange expects (n_local_cells,) "
+                             f"fields, got {a.shape}")
+        if a.dtype != bool and not jnp.issubdtype(a.dtype, jnp.floating):
+            raise TypeError(f"land halo exchange: {a.dtype} field not packable")
+    floats = [a.dtype for a in arrs if a.dtype != bool]
+    pack_dtype = jnp.result_type(*floats) if floats else jnp.float64
+    out = halo_ex.exchange_cell_field(
+        jnp.stack([a.astype(pack_dtype) for a in arrs], axis=-1))
+    result = list(fields)
+    for k, ((i, _), a) in enumerate(zip(live, arrs)):
+        col = out[:, k]
+        result[i] = (col > 0.5) if a.dtype == bool else col.astype(a.dtype)
+    return tuple(result)
+
+
 def _map_flat_column_leaves(tree, n_tile, global_ncol, fn):
     """Apply ``fn(leaf, n_tile)`` to every array leaf of ``tree`` whose leading
     axis equals ``global_ncol`` (a per-column field); leave all other leaves
@@ -1248,6 +1280,30 @@ _ICE_SEED_RHO_FLOOR = 0.1        # [kg/m^3]
 # layer (last valid magnitude, valid mask, value-from-latest-solve mask).
 _LAND_STRESS_CKPT_KEYS = ("land_taumag", "land_taumag_valid", "land_taumag_fresh")
 _LAND_ML_CACHE_FIELDS = ("canopy_x",)
+# Restart-exactness payload of the column loop (R-ex), beyond the land
+# cadence window below (which carries the land boundary outputs the loop
+# holds between land steps).  The held RADIATION slots are NOT persisted
+# (D-REX-1): a checkpoint sits on a radiation boundary (the setup check on the
+# effective dt + the run loop's restart guard), so the first resumed step re-solves radiation as the
+# unbroken run does.  The two TURBULENT surface fluxes ARE persisted
+# (D-REX-2): the CAPE-diurnal forcing reads the previous step's shflx/lhflx
+# BEFORE the step, so a cold start hands it zeros where the unbroken run had
+# the last step's fluxes.
+_SFC_FLUX_LAG_CKPT_KEYS = ("sfc_lag_shflx", "sfc_lag_lhflx")
+
+
+def _sfc_flux_lag_slots() -> tuple[int, int]:
+    """``_sfc_diag`` slots of (shflx_sfc, lhflx_sfc), from the shared slot
+    contract like ``_evap_sfc_slot`` -- never hand-counted."""
+    from legoesm.core.state import (
+        MPAS_SFC_DIAG_BASE_KEYS,
+        MPAS_SFC_DIAG_EXTRA_KEYS,
+    )
+    n = len(MPAS_SFC_DIAG_BASE_KEYS)
+    return (n + MPAS_SFC_DIAG_EXTRA_KEYS.index("shflx_sfc"),
+            n + MPAS_SFC_DIAG_EXTRA_KEYS.index("lhflx_sfc"))
+
+
 # MPAS checkpoint keys of the land CADENCE state (review 2026-10-10 F31): the
 # pending window's forcing sum / sample count / SW-weighted zenith sums, and
 # the land outputs the surface blend holds between land calls.  Without them
@@ -1255,7 +1311,11 @@ _LAND_ML_CACHE_FIELDS = ("canopy_x",)
 # land never received) and re-ran the one-step bootstrap.
 _LAND_WIN_PREFIXES = ("land_win_", "land_held_")
 _LAND_HELD_NAMES = ("T_skin", "albedo", "qsfc_last", "qsfc", "shflx", "lhflx",
-                    "evap")
+                    "evap", "beta")
+# ``beta`` (R-ex): once the solved-humidity channel is live the loop stops
+# refreshing the traced beta, so it is NOT a function of the restored soil
+# state; without it a restart re-derives it and the restart set differs.
+_LAND_HELD_FLUX = ("qsfc", "shflx", "lhflx", "evap")
 
 
 def land_window_checkpoint_payload(a2s_sum, n, cz_wsum, w_sum, held):
@@ -1326,6 +1386,15 @@ def land_window_from_checkpoint(payload, land_k, n_cells):
             raise ValueError(
                 f"checkpoint land window holds {n} pending samples but no "
                 f"held land outputs {absent}: incomplete land cadence state.")
+    # R-ex: a partial held set would silently cold-start the missing
+    # entries; the flux quartet comes all or none, and any held output
+    # needs the skin T and albedo it was solved with.
+    _hk = {nm for nm in _LAND_HELD_NAMES if f"land_held_{nm}" in payload}
+    if ((_hk and not {"T_skin", "albedo"} <= _hk)
+            or (_hk & set(_LAND_HELD_FLUX)) not in (set(), set(_LAND_HELD_FLUX))):
+        raise ValueError(
+            f"checkpoint carries a partial held land-output set {sorted(_hk)}: "
+            "incomplete land cadence state.")
     held = tuple(
         None if f"land_held_{nm}" not in payload
         else jnp.asarray(payload[f"land_held_{nm}"])
@@ -1783,15 +1852,18 @@ class ModelDriver:
             moist_change_with_mass, segment_physics_water)
         lay = self.sigma
 
+        def _weight(p_s):
+            return jnp.maximum(lay.layer_thickness_dp(p_s), 0.0)
+
         def _floor(q, p_s):
-            dp = jnp.maximum(lay.layer_thickness_dp(p_s), 0.0)
-            return conservative_positive_clip(q, dp, axis=-1)[0]
+            return conservative_positive_clip(q, _weight(p_s), axis=-1)[0]
 
         moist = self._per_step_moist()
         raw, p_s = segment_physics_water(
             moist, phys_out, self.state.p_s.data, DT, lay)
         if self.config.energy_consistent_moisture_clip:
-            q_v, new_T = energy_consistent_moisture_floor(raw["q_v"], new_T)
+            q_v, new_T = energy_consistent_moisture_floor(
+                raw["q_v"], new_T, _weight(p_s))
         else:
             # Conserving form always (owner decision 2026-08-16).
             q_v = _floor(raw["q_v"], p_s)
@@ -1799,8 +1871,7 @@ class ModelDriver:
             k: (None if raw[k] is None else _floor(raw[k], p_s))
             for k in raw if k != "q_v"}}
         # The floors' water change carries its mass too (the borrow moves
-        # none except in net-negative columns; the opt-in hard vapour floor
-        # creates it).
+        # none except in net-negative columns).
         moist, p_s = moist_change_with_mass(raw, floored, p_s, lay, DT)
 
         precip_ls = jnp.zeros_like(p_s)
@@ -1848,6 +1919,23 @@ class ModelDriver:
         if "land_taumag" in ck:
             return tuple(ck[k] for k in _LAND_STRESS_CKPT_KEYS)
         return None
+
+    def _sfc_flux_lag_for_checkpoint(self) -> dict:
+        """``{sfc_lag_shflx, sfc_lag_lhflx}`` to persist (D-REX-2): the
+        model's held turbulent surface fluxes, or -- before any run has
+        adopted a loaded checkpoint -- the staged payload.  Empty when the
+        lane has not published them (no step yet, or a lane without the
+        slots)."""
+        sd = getattr(getattr(self, "model", None), "_sfc_diag", None)
+        if sd is not None:
+            out = {}
+            for key, slot in zip(_SFC_FLUX_LAG_CKPT_KEYS, _sfc_flux_lag_slots()):
+                if len(sd) > slot and sd[slot] is not None:
+                    out[key] = getattr(sd[slot], "data", sd[slot])
+            if len(out) == len(_SFC_FLUX_LAG_CKPT_KEYS):
+                return out
+        ck = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        return {k: ck[k] for k in _SFC_FLUX_LAG_CKPT_KEYS if k in ck}
 
     def _land_window_for_checkpoint(self):
         """The MPAS land cadence state to persist (F31) or ``None``.
@@ -2251,6 +2339,14 @@ class ModelDriver:
         self._create_grid()
         self._create_topography()
         self._create_dycore()
+        # D-REX-1 on the EFFECTIVE timestep: _create_dycore may have clamped
+        # dt (CFL / factory), and checkpoint-radiation alignment is a
+        # property of the steps the run actually takes.  Config-only, so
+        # every rank raises alike.
+        from legoesm.driver.config import checkpoint_radiation_cadence_error
+        _ck_rad_err = checkpoint_radiation_cadence_error(self.config)
+        if _ck_rad_err is not None:
+            raise ValueError(_ck_rad_err)
         self._create_forcing()
         self._init_state()
         self._create_ensemble()
@@ -2260,6 +2356,39 @@ class ModelDriver:
         # while MPAS/spectral, built later from self.config, ran the
         # experiment's value; gridaudit 2026-10-09).
         self._setup_external_forcing()
+        # D-REX-5 (user 2026-10-13): with daily external forcing on, the
+        # column loop resumes only from a checkpoint on a forcing-day boundary
+        # (D-REX-3), so every checkpoint must land on one: dt divides a day
+        # and the checkpoint cadence is whole days.  On the EFFECTIVE dt (the
+        # clamp above); config-only, so every rank raises alike, before any
+        # step.  Forcing off: nothing new is refused.
+        if (self.config.column_loop_lane
+                and self._column_daily_forcing_active()):
+            _dt = float(self.config.dycore.dt)
+            _ck_days = self.config.output.checkpoint_days
+            if 86400.0 % _dt != 0.0:
+                raise ValueError(
+                    f"dt={_dt:g} s does not divide 86400 s exactly while "
+                    "daily external forcing (ozone/aerosol/GHG) is active on "
+                    "the column loop: no step would end on a day boundary, "
+                    "so no checkpoint could be resumed bitwise (D-REX-3).  "
+                    "Use a dt that divides 86400 s.")
+            if _ck_days > 0 and not float(_ck_days).is_integer():
+                raise ValueError(
+                    f"checkpoint_days={_ck_days!r} is not a whole number of "
+                    "days while daily external forcing (ozone/aerosol/GHG) "
+                    "is active on the column loop: checkpoints would land "
+                    "mid-day, where a restart is refused (D-REX-3).  Use a "
+                    "whole number of days.")
+            # User 2026-10-14: a fractional start day puts whole-day
+            # checkpoints mid-day just the same.
+            _sd = float(self.config.start_day)
+            if not _sd.is_integer():
+                raise ValueError(
+                    f"start_day={_sd!r} is not a whole day while daily "
+                    "external forcing (ozone/aerosol/GHG) is active on the "
+                    "column loop: every checkpoint would land mid-day, where "
+                    "a restart is refused (D-REX-3).  Use a whole start day.")
         self._create_physics()
         self._create_diagnostics()
         self._create_friction()
@@ -5712,8 +5841,34 @@ class ModelDriver:
     def _write_step_digest(self, abs_step: int, parts: dict) -> None:
         """One line of ``digest_steps_r<rank>.log``: per part of the restart
         set, a SHA-256 prefix of its array leaves (shape, dtype, bytes) and
-        the leaf count.  Rank-local (each rank hashes its own cells)."""
+        the leaf count.  Rank-local (each rank hashes its own cells); under
+        a multi-rank cell partition OWNED cells/edges only -- the halo is a
+        cache of other ranks' state that a restart neither can nor should
+        reproduce (it is one step stale at a step boundary)."""
         import hashlib
+        part = (self._voronoi_layout.partition
+                if _is_mpas_cell_partitioned(self) else None)
+        if part is not None:
+            # Ownership by leading dim: cells, the 1-based padded cell layout
+            # (row 0 is the pad; see _scatter_1based_*), or edges.  The rule
+            # is shape-based, so the three counts must be distinct, else a
+            # leaf could be sliced by the wrong rule; a leaf whose leading
+            # dim merely coincides with one of them is a known limitation.
+            _n = (part.n_local_cells, part.n_local_cells + 1,
+                  len(part.local_edges))
+            if len(set(_n)) != 3:
+                raise ValueError(
+                    f"step digest: ambiguous entity counts {_n}")
+
+        def _owned(a):
+            if part is not None and a.ndim >= 1:
+                if a.shape[0] == part.n_local_cells:
+                    return a[:part.n_owned_cells]
+                if a.shape[0] == part.n_local_cells + 1:
+                    return a[:part.n_owned_cells + 1]
+                if a.shape[0] == len(part.local_edges):
+                    return a[:part.n_owned_edges]
+            return a
 
         def _h(tree):
             d, n = hashlib.sha256(), 0
@@ -5722,7 +5877,7 @@ class ModelDriver:
                 xs = ([s.data for s in x.addressable_shards]
                       if isinstance(x, jax.Array)
                       and not x.is_fully_addressable else [x])
-                for a in map(np.asarray, jax.device_get(xs)):
+                for a in map(_owned, map(np.asarray, jax.device_get(xs))):
                     if a.dtype != object:
                         d.update(f"{a.shape}{a.dtype}".encode())
                         d.update(a.tobytes())
@@ -7259,6 +7414,24 @@ class ModelDriver:
                         gather_voronoi_field(jnp.asarray(_a).reshape(-1),
                                              part, "cell")
                         for _a in _ls_save)
+                # D-REX-2 payload: rank-local cell arrays, gathered HERE with
+                # the other collectives (every rank holds the same key set:
+                # every rank steps the same model).
+                _nloc_rex = int(part.n_local_cells)
+
+                def _g_rex(x, _n=_nloc_rex, _p=part):
+                    x = jnp.asarray(x)
+                    if x.ndim == 0:
+                        return x
+                    if int(x.shape[0]) != _n:
+                        raise ValueError(
+                            f"R-ex checkpoint payload with leading length "
+                            f"{int(x.shape[0])} != this rank's "
+                            f"{_n} cells: every persisted land/flux array is "
+                            "a per-cell field.")
+                    return gather_voronoi_field(x, _p, "cell")
+                _sfl_save = {k: _g_rex(v) for k, v in
+                             self._sfc_flux_lag_for_checkpoint().items()}
                 # Land cadence window (F31): per-cell entries gather like the
                 # stress; the same keys exist on every rank (same loop, same
                 # cadence), iterated SORTED so the collectives line up.
@@ -7273,6 +7446,7 @@ class ModelDriver:
                     return
             else:
                 _ls_save = self._land_stress_for_checkpoint()
+                _sfl_save = self._sfc_flux_lag_for_checkpoint()
                 _lw_save = self._land_window_for_checkpoint()
                 u_d, T_d, ps_d, phis_d = (
                     s.u.data, s.T.data, s.p_s.data, s.phis.data)
@@ -7400,6 +7574,18 @@ class ModelDriver:
                 _save["land_taumag"] = np.asarray(_ls_save[0])
                 _save["land_taumag_valid"] = np.asarray(_ls_save[1], dtype=bool)
                 _save["land_taumag_fresh"] = np.asarray(_ls_save[2], dtype=bool)
+            # D-REX-2: the previous step's turbulent surface fluxes the
+            # CAPE-diurnal forcing reads before the first resumed step.
+            for _k, _v in _sfl_save.items():
+                _save[_k] = np.asarray(_v)
+            # The forcing clock's day-0 origin (R-ex): the resumed link
+            # evaluates ``origin + abs_step*dt`` with the SAME origin float.
+            _origin = getattr(self, "_clock_day_origin", None)
+            if _origin is None:
+                _origin = getattr(self, "_clock_day_origin_ckpt", None)
+            if _origin is not None:
+                _save["clock_day_origin"] = np.asarray(float(_origin),
+                                                       dtype=np.float64)
             # Land cadence window + held land outputs (F31): the pending
             # samples' forcing reaches the land on the next link instead of
             # being dropped, and the resumed link needs no bootstrap step.
@@ -8430,6 +8616,29 @@ class ModelDriver:
                         _a = np.asarray(scatter_to_local(
                             jnp.asarray(_a), part, "cell"))
                     self._carry_aux[_k] = _a
+            # D-REX-2 lagged turbulent fluxes + the forcing-clock origin
+            # (R-ex).  Same stale-persistence rule; absent keys = a checkpoint
+            # written before they were persisted (the loop cold-seeds, and
+            # logs it).  Cell arrays scatter to this rank's band under MPI.
+            for _stale in [k for k in self._carry_aux
+                           if k in _SFC_FLUX_LAG_CKPT_KEYS]:
+                del self._carry_aux[_stale]
+            self._clock_day_origin = None
+            self._clock_day_origin_ckpt = (
+                float(d["clock_day_origin"]) if "clock_day_origin" in d.files
+                else None)
+            # A reused driver's model still holds the PREVIOUS run's slots;
+            # a checkpoint without the lagged fluxes must cold-start them.
+            if getattr(self, "model", None) is not None:
+                self.model._sfc_diag = None
+            for _k in d.files:
+                if _k not in _SFC_FLUX_LAG_CKPT_KEYS:
+                    continue
+                _a = np.asarray(d[_k])
+                if _mpi and _a.ndim >= 1 and _a.shape[0] == part.nCells_global:
+                    _a = np.asarray(scatter_to_local(
+                        jnp.asarray(_a), part, "cell"))
+                self._carry_aux[_k] = _a
             # Land cadence window + held land outputs (F31): same
             # stale-persistence rule; _run_column validates and adopts them.  A
             # checkpoint without them restarts the window empty (the pending
@@ -11750,6 +11959,25 @@ class ModelDriver:
                 "its first step (zero-length run?)")
         return out
 
+    def _column_daily_forcing_active(self) -> bool:
+        """Whether the column loop threads daily external forcing (ozone /
+        aerosol / GHG / CMIP experiment) -- the ``_ext_forcing`` gate of
+        :meth:`_run_column`, and the forcing half of its D-REX-3 predicate.
+        Valid after ``_setup_external_forcing``.
+
+        Aerosol-CCN specified-Nc fill needs ``forcing["aerosol_od"]`` in the
+        MICROPHYSICS step regardless of the radiation scheme (the second
+        indirect / KK2000 ``Nc^-1.79`` effect is independent of how radiation
+        is solved).  Without it an --aerosol-ccn run on gray radiation would
+        never thread aerosol_od and the microphysics fill would raise its
+        (then-misleading) fail-fast.  Requires a real aerosol source."""
+        cfg = self.config
+        return bool(_external_forcing_active(
+            cfg.radiation in ("rrtmg", "rrtmgp"),
+            self._ozone_ext_active, self._aerosol_active,
+            self._aerosol_lw_active, self._ghg_active, bool(self._experiment),
+        ) or (cfg.nc_from_aerosol and self._aerosol_active))
+
     def _run_column(self, start_step: int = 0, start_day: float | None = None) -> str:
         """Run MPAS model with the unified physics pipeline.
 
@@ -12420,6 +12648,65 @@ class ModelDriver:
         # ``model.step`` the first time it is used.
         RAD_UPDATE_STEPS = max(1, int(cfg.rad_update_steps))
         _subcycle_rad = RAD_UPDATE_STEPS > 1 and cfg.radiation != "none"
+        # Radiation phase (R-ex): the held surface/TOA flux slots are not
+        # persisted, so a resumed link must start on a radiation boundary
+        # (its first step then re-solves radiation exactly as the unbroken
+        # run does), and no checkpoint may be written anywhere else.  Same
+        # shape as the physics-window guard above.
+        if _subcycle_rad and start_step % RAD_UPDATE_STEPS != 0:
+            raise ValueError(
+                f"rad_update_steps={RAD_UPDATE_STEPS}: restart step "
+                f"{start_step} is not on a radiation boundary (the held "
+                "radiation fluxes are not persisted); restart from a "
+                "checkpoint whose absolute step is a multiple of the cadence")
+        # Only a run that WRITES checkpoints is constrained (the final
+        # checkpoint lands at n_steps_total; with checkpointing off there is
+        # nothing to resume from, so any length is fine).
+        if (_subcycle_rad and CHECKPOINT_INTERVAL > 0
+                and (n_steps_total % RAD_UPDATE_STEPS != 0
+                     or CHECKPOINT_INTERVAL % RAD_UPDATE_STEPS != 0)):
+            raise ValueError(
+                f"rad_update_steps={RAD_UPDATE_STEPS}: the run length "
+                f"({n_steps_total} steps) and the checkpoint interval "
+                f"({CHECKPOINT_INTERVAL} steps) must both be multiples of the "
+                "radiation cadence so every checkpoint is a resumable "
+                "radiation boundary")
+        # Day-0 origin of the forcing clock (see ``_force_day`` below): a
+        # fresh run's is START_DAY itself, exactly; a resumed link takes the
+        # origin its checkpoint recorded (``clock_day_origin``), so every
+        # link's clock is the ONE float series the unbroken run would have
+        # produced.  A checkpoint from before the origin was recorded falls
+        # back to the reconstructed origin, snapped to cfg.start_day when
+        # within 0.1 s of it (logged: that restart is bitwise only if the
+        # snap was exact).
+        if start_step == 0:
+            _DAY_ORIGIN = float(START_DAY)
+        elif getattr(self, "_clock_day_origin_ckpt", None) is not None:
+            _DAY_ORIGIN = float(self._clock_day_origin_ckpt)
+            # D-REX-4 (user 2026-10-13): the start day (checkpoint names,
+            # diagnostics clock, CMOR feed) must be the day the saved origin
+            # implies; a different one (e.g. --restart-start-day) would run
+            # two clocks.  Refused.  The 1e-6 d tolerance (the snap below)
+            # only absorbs the rounding of the saved day's own expression.
+            _implied_day = _DAY_ORIGIN + start_step * DT / 86400.0
+            if abs(float(START_DAY) - _implied_day) > 1e-6:
+                raise ValueError(
+                    f"restart start day {float(START_DAY)!r} disagrees with "
+                    f"the day {_implied_day!r} implied by the checkpoint's "
+                    f"forcing-clock origin ({_DAY_ORIGIN!r} + step "
+                    f"{start_step} x dt={DT:g} s); refusing to run two "
+                    "clocks.  Drop --restart-start-day (or pass the "
+                    "checkpoint's own day).")
+        else:
+            _DAY_ORIGIN = START_DAY - start_step * DT / 86400.0
+            if abs(_DAY_ORIGIN - float(cfg.start_day)) < 1e-6:
+                _DAY_ORIGIN = float(cfg.start_day)
+            logger.warning(
+                "  Forcing clock: the checkpoint records no clock origin "
+                "(written before it was persisted); reconstructed %.9f d from "
+                "the restart day -- bitwise only if that reconstruction is "
+                "exact.", _DAY_ORIGIN)
+        self._clock_day_origin = _DAY_ORIGIN
         physics_fn_norad = (_build_physics(phys_cfg, need_rad=False)
                             if _subcycle_rad else None)
         if _subcycle_rad:
@@ -12657,6 +12944,9 @@ class ModelDriver:
                             "checkpoint ice_T_skin has non-finite values — "
                             "refusing to resume from a corrupt skin.")
                     self._ice_T_skin = _skin
+                    # Adopted: the staged copy would otherwise ride carry_aux
+                    # for the rest of the run (a continuous run holds none).
+                    self._carry_aux.pop("ice_T_skin", None)
                     logger.info(
                         "  MPAS ice skin: resumed from checkpoint "
                         f"(min {float(jnp.min(_skin)):.1f} K)")
@@ -13497,12 +13787,10 @@ class ModelDriver:
         # ``ghg_vmr`` values are wrapped in jnp.asarray so a monthly
         # value change stays a traced-value change (no retrace); the
         # dict KEY STRUCTURE is decided once here and never changes
-        # mid-run (pytree stability for the JIT'd step).
-        _ext_forcing = _external_forcing_active(
-            cfg.radiation in ("rrtmg", "rrtmgp"),
-            self._ozone_ext_active, self._aerosol_active,
-            self._aerosol_lw_active, self._ghg_active, bool(self._experiment),
-        )
+        # mid-run (pytree stability for the JIT'd step).  The gate (incl.
+        # the aerosol-CCN case) is ``_column_daily_forcing_active``, shared
+        # with the setup-time D-REX-5 refusal.
+        _ext_forcing = self._column_daily_forcing_active()
         # Transient solar file (CMIP6 TSI + optional 14-band spectral):
         # sampled DAILY like SST/ozone, threaded as traced
         # ``forcing["tsi"]``/["solar_spectral_fraction"] into the radiation
@@ -13515,15 +13803,33 @@ class ModelDriver:
         _solar_spectral = (_solar_ext
                            and cfg.solar_source == "spectral_file"
                            and cfg.radiation in ("rrtmg", "rrtmgp"))
-        # Aerosol-CCN specified-Nc fill needs ``forcing["aerosol_od"]`` in the
-        # MICROPHYSICS step regardless of the radiation scheme (the second
-        # indirect / KK2000 ``Nc^-1.79`` effect is independent of how
-        # radiation is solved).  Without this an --aerosol-ccn run on gray
-        # radiation would never thread aerosol_od and the microphysics fill
-        # would raise its (then-misleading) fail-fast.  Requires a real
-        # aerosol source.
-        if cfg.nc_from_aerosol and self._aerosol_active:
-            _ext_forcing = True
+        # D-REX-3 (user 2026-10-13): the daily ozone/aerosol cache is rebuilt
+        # from the CURRENT surface pressure whenever the forcing day bucket
+        # changes, and a resumed link always rebuilds on its first step
+        # (``_last_force_day`` starts None).  Bitwise only if the unbroken run
+        # also rebuilt at that step, i.e. the restart step opens a new bucket
+        # (a zero-step link rebuilds nothing).
+        # (Imported here: the later function-local import makes the name local
+        # to this whole function.)
+        from legoesm.forcing.time_utils import daily_forcing_bucket
+
+        def _mid_forcing_day(abs_step):
+            """Daily external forcing is on and ``abs_step`` opens no new
+            forcing-day bucket: a resume there is not bitwise (D-REX-3)."""
+            return _ext_forcing and (
+                daily_forcing_bucket(_DAY_ORIGIN + abs_step * DT / 86400.0)
+                == daily_forcing_bucket(
+                    _DAY_ORIGIN + (abs_step - 1) * DT / 86400.0))
+        if start_step > 0 and n_steps_total > 0 and _mid_forcing_day(
+                start_step):
+            raise ValueError(
+                f"restart at step {start_step} (day "
+                f"{_DAY_ORIGIN + start_step * DT / 86400.0!r}) is not on a "
+                "day boundary while daily external forcing (ozone/aerosol) "
+                "is active: the resumed run would rebuild the daily cache "
+                "from restart-time state, which the unbroken run did not, so "
+                "the restart is not bitwise.  Restart from a whole-day "
+                "checkpoint (with dt dividing 86400 s).")
         # Operator-split physics carry (prognostic TKE / convection state).
         # ``model.step`` stashes the OUT state on ``self.model._phys_state``;
         # feed it back next step.  SEEDED here (issue #405): starting from
@@ -13730,6 +14036,11 @@ class ModelDriver:
                     "  Restored physics state from checkpoint: %s",
                     sorted(_restored_ps),
                 )
+            # Adopted into the save channel below: drop the staging so the
+            # resumed run's carry_aux matches a continuous run's (R-ex).
+            for _k in [k for k in self._carry_aux
+                       if k.startswith("physstate_")]:
+                del self._carry_aux[_k]
         # Latest carry for save_checkpoint (#413) — updated every step.
         self._mpas_phys_state = _phys_state
 
@@ -13869,6 +14180,54 @@ class ModelDriver:
                         jnp.asarray(a, dtype=_q_air0.dtype).reshape(-1)
                         for a in static_land_roughness(
                             _lml_params, _lml_cfg, int(_q_air0.size)))
+        # D-REX-2 restore (R-ex); the land boundary outputs themselves ride
+        # the F31 land window below.
+        _ck_rex = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        _ncell_rex = int(self.state.T.data.shape[0])
+        # D-REX-2: the held turbulent surface fluxes of the step before the
+        # checkpoint.  Seeded into the model's slot tuple; the first resumed
+        # step's forcing reads them, and the step's own publication then
+        # replaces them slot-wise, exactly as in the unbroken run.
+        _sfl = {k: _ck_rex.pop(k) for k in _SFC_FLUX_LAG_CKPT_KEYS
+                if k in _ck_rex}
+        if _sfl:
+            if set(_sfl) != set(_SFC_FLUX_LAG_CKPT_KEYS):
+                raise ValueError(
+                    f"checkpoint carries a partial turbulent-flux payload "
+                    f"{sorted(_sfl)}; expected {_SFC_FLUX_LAG_CKPT_KEYS}")
+            from legoesm.core.field import Field as _SfcField
+            from legoesm.core.state import (
+                MPAS_SFC_DIAG_BASE_KEYS as _SDB,
+                MPAS_SFC_DIAG_EXTRA_KEYS as _SDE,
+            )
+            _slots = _sfc_flux_lag_slots()
+            # Full contract length: the duo column's slot-wise merge zips
+            # against the previous tuple, so a SHORTER seed would truncate
+            # the first step's publication (measured: slots 8/9 lost, land
+            # skipped).
+            _seeded = [None] * (len(_SDB) + len(_SDE))
+            for _k, _slot, _nm in zip(_SFC_FLUX_LAG_CKPT_KEYS, _slots,
+                                      ("shflx_sfc", "lhflx_sfc")):
+                _v = jnp.asarray(_sfl[_k]).reshape(-1)
+                if _v.shape != (_ncell_rex,):
+                    raise ValueError(
+                        f"checkpoint {_k} shape {tuple(_v.shape)} != "
+                        f"(nCells={_ncell_rex},) -- mesh mismatch.")
+                if not bool(jnp.all(jnp.isfinite(_v))):
+                    raise ValueError(
+                        f"checkpoint {_k} has non-finite values -- refusing "
+                        "to resume from a corrupt surface flux.")
+                _seeded[_slot] = _SfcField(_v, name=_nm, dims=("cell",),
+                                           units="W/m2")
+            self.model._sfc_diag = tuple(_seeded)
+            logger.info("  Surface turbulent fluxes (shflx/lhflx): resumed "
+                        "from checkpoint")
+        elif getattr(self, "_loaded_checkpoint_step_day", None) is not None:
+            logger.warning(
+                "  Surface turbulent fluxes: the checkpoint carries none "
+                "(written before they were persisted); the first resumed "
+                "step's CAPE-diurnal forcing sees zero shflx/lhflx. This "
+                "restart is not bit-identical to an unbroken run.")
         # Land cadence window + held land outputs from the checkpoint (F31):
         # the previous link's pending samples are summed into this link's
         # first window, and the held outputs feed the surface blend from the
@@ -13880,7 +14239,7 @@ class ModelDriver:
         if _land_ml_on and _lw_ck:
             (_land_a2s_sum, _land_a2s_n, _land_cz_wsum, _land_w_sum,
              (_lw_T, _lw_alb, _lw_qlast, _lw_qs, _lw_sh, _lw_lh,
-              _lw_ev)) = land_window_from_checkpoint(
+              _lw_ev, _lw_beta)) = land_window_from_checkpoint(
                 _lw_ck, _LAND_K,
                 int(jnp.asarray(self.state.p_s.data).reshape(-1).shape[0]))
             if _lw_T is not None:
@@ -13893,6 +14252,16 @@ class ModelDriver:
             if _land_qsfc_cells is not None and _lw_qs is not None:
                 _land_qsfc_cells, _land_shflx_cells = _lw_qs, _lw_sh
                 _land_lhflx_cells, _land_evap_cells = _lw_lh, _lw_ev
+            if _land_beta_cells is not None and _lw_beta is not None:
+                _land_beta_cells = _lw_beta
+            elif (_land_beta_cells is not None and _lw_T is not None
+                  and _land_qsfc_cells is not None):
+                logger.warning(
+                    "  MPAS land window: the checkpoint carries no held beta "
+                    "(written before it was persisted); beta is re-derived "
+                    "from the restored soil, not the unbroken run's held "
+                    "value. This restart is not bit-identical to an "
+                    "unbroken run.")
             logger.info(
                 "  MPAS land window: resumed from checkpoint (%d pending "
                 "sample(s) of %d; held land outputs %s)", _land_a2s_n,
@@ -14052,7 +14421,14 @@ class ModelDriver:
             # silently freeze. SST re-sampling below stays gated on _sst_forcing.
             if (_sst_forcing or _ext_forcing or _solar_ext
                     or self._segment_callback is not None):
-                _force_day = START_DAY + step * DT / 86400.0
+                # Anchored on the ABSOLUTE step from the run's day-0 origin:
+                # ``START_DAY + step*DT`` rounds differently from the unbroken
+                # run's ``0 + (start_step+step)*DT`` (1 ulp at step 219 of a
+                # 600 s day, measured), and that ulp reaches the solar zenith
+                # and the forcing interpolation -- a bitwise restart needs
+                # the same float.  ``_DAY_ORIGIN`` snaps to cfg.start_day
+                # when START_DAY is that origin advanced by start_step steps.
+                _force_day = _DAY_ORIGIN + (start_step + step) * DT / 86400.0
                 # floor, not int() — see daily_forcing_bucket (negative
                 # fractional days land in the wrong bucket under
                 # truncation; day_to_calendar already handles negative
@@ -14308,9 +14684,10 @@ class ModelDriver:
             # Radiation sub-cycle: solve RRTMGP on step 0 (cache warm-up,
             # always) and every RAD_UPDATE_STEPS-th step; reuse the held
             # heating (PhysicsState.rad_heating) in between.  ``step`` is
-            # job-local, so the first step of every job/restart link re-solves
-            # radiation and repopulates the cache before any held step reads
-            # it.  When subcycling is off, every step is a full step.
+            # job-local, but a restart link starts on a radiation boundary
+            # (the R-ex restart guard: start_step % RAD_UPDATE_STEPS == 0),
+            # so the job-local phase IS the unbroken run's absolute phase.
+            # When subcycling is off, every step is a full step.
             # Physics cadence: step 0 of every job is a physics step (the
             # cache is per-job, never persisted), then every
             # PHYS_UPDATE_STEPS-th; the held variant re-applies the cache in
@@ -14357,8 +14734,9 @@ class ModelDriver:
                     rad_update_steps=RAD_UPDATE_STEPS, hold_phys=_hold_phys,
                     phys_update_steps=PHYS_UPDATE_STEPS,
                     poststep=_poststep_state,
+                    # The eager loop's clock (R-ex absolute-step origin).
                     calendar=lambda k: self._calendar_for_radiation(
-                        START_DAY + k * DT / 86400.0),
+                        _DAY_ORIGIN + (start_step + k) * DT / 86400.0),
                     land_step=_land_step_fn if _land_ml_on else None,
                     land_state=self._land_ml_state if _land_ml_on else None,
                     marshal_land=_marshal_land_forcing if _land_ml_on else None,
@@ -14548,6 +14926,36 @@ class ModelDriver:
                         # Root-zone beta only until the humidity channel is
                         # live (or when the scheme solves none).
                         _land_beta_cells = _land_beta_fn(self._land_ml_state)
+                    if _is_mpas_cell_partitioned(self):
+                        # A halo cell steps its OWN land column, which is
+                        # never exchanged and drifts from the owner's; the
+                        # turbulence's cell->edge tendency projection reads
+                        # the halo cell's surface stress, so without this an
+                        # owned boundary edge is forced by a land column
+                        # nobody owns (measured: 1e-8 m/s restart drift on
+                        # exactly the boundary edges, zero with the land
+                        # stress off).  ``_land_call`` is rank-uniform
+                        # (step cadence + a loop-local None test), so every
+                        # rank issues this collective together.
+                        (_land_T_skin, _land_albedo_cells, _land_qsfc_step,
+                         _land_qsfc_cells, _land_shflx_cells,
+                         _land_lhflx_cells, _land_evap_cells,
+                         _land_beta_cells, _land_taumag_cells,
+                         _land_taumag_valid, _land_taumag_fresh
+                         ) = _exchange_halo_cell_fields(
+                            self._voronoi_layout.halo_exchange,
+                            (_land_T_skin, _land_albedo_cells,
+                             _land_qsfc_step, _land_qsfc_cells,
+                             _land_shflx_cells, _land_lhflx_cells,
+                             _land_evap_cells, _land_beta_cells,
+                             _land_taumag_cells, _land_taumag_valid,
+                             _land_taumag_fresh))
+                        self._land_T_skin_last = _land_T_skin
+                        self._land_qsfc_last = _land_qsfc_step
+                        if _land_taumag_cells is not None:
+                            self._land_taumag = _land_taumag_cells
+                            self._land_taumag_valid = _land_taumag_valid
+                            self._land_taumag_fresh = _land_taumag_fresh
                 # Publish the cadence state for the checkpoint writer (F31):
                 # Python references only, no device work.
                 self._land_window = land_window_checkpoint_payload(
@@ -14557,7 +14965,7 @@ class ModelDriver:
                     (_land_T_skin, _land_albedo_cells,
                      getattr(self, "_land_qsfc_last", None),
                      _land_qsfc_cells, _land_shflx_cells,
-                     _land_lhflx_cells, _land_evap_cells))
+                     _land_lhflx_cells, _land_evap_cells, _land_beta_cells))
                 if (step % _HARD_SAT_LOG_CADENCE_STEPS) == 0:
                     if _ls_seed_win is not None:
                         self._flush_land_stress_counts(
@@ -15115,7 +15523,17 @@ class ModelDriver:
                 None, int(_sed_cap_effective), n_steps_total,
                 running=_sed_req_window)
 
-        if run_status == "COMPLETED" and self._mpas_cmip_feed_on:
+        # The final checkpoint below is skipped when daily external forcing is
+        # on and the run ends mid-day (user 2026-10-13, case (c) there).  The
+        # CMOR write is skipped with it (user 2026-10-13): the chain resumes
+        # from the last whole-day checkpoint, whose CMOR sidecar must survive
+        # (the finalizer would retire it under the same day name) so the
+        # resumed run re-accumulates the span after it and writes it once.
+        _skip_final = (CHECKPOINT_INTERVAL > 0 and run_status == "COMPLETED"
+                       and n_steps_total % CHECKPOINT_INTERVAL != 0
+                       and _mid_forcing_day(start_step + n_steps_total))
+        if (run_status == "COMPLETED" and self._mpas_cmip_feed_on
+                and not _skip_final):
             self._finalize_mpas_cmip(
                 START_DAY + n_steps_total * DT / 86400.0)
 
@@ -15124,10 +15542,31 @@ class ModelDriver:
         # the last loop step already hit the periodic cadence, which would
         # re-write the identical file (wasted device→host transfer + I/O
         # every whole-multiple job boundary).
+        # (c) when daily external forcing is on and the run ends mid-day
+        # (user 2026-10-13): D-REX-3 refuses to resume such a checkpoint, and
+        # its name would overwrite (or pose as) a whole-day one, so the chain
+        # resumes from the last whole-day checkpoint instead.
         if (CHECKPOINT_INTERVAL > 0 and run_status == "COMPLETED"
                 and n_steps_total % CHECKPOINT_INTERVAL != 0):
             _final_day = START_DAY + n_steps_total * DT / 86400.0
-            self.save_checkpoint(start_step + n_steps_total, _final_day)
+            if _skip_final:
+                _msg = (
+                    f"run ended mid-day (step {start_step + n_steps_total}, "
+                    f"day {_final_day!r}) with daily external forcing "
+                    "(ozone/aerosol) active: the final partial-day state was "
+                    "NOT checkpointed; resumption must start from the last "
+                    "whole-day checkpoint (this run wrote none if it was "
+                    "shorter than one checkpoint interval, "
+                    f"{CHECKPOINT_INTERVAL} steps).")
+                if self._mpas_cmip_feed_on:
+                    _msg += (
+                        "  The CMOR NetCDF was NOT written either: the "
+                        "resumed run writes this span from that checkpoint's "
+                        "CMOR accumulator sidecar (kept).")
+                logger.warning(_msg)
+                print(f"WARNING: {_msg}", file=sys.stderr)
+            else:
+                self.save_checkpoint(start_step + n_steps_total, _final_day)
 
         elapsed = time.time() - t_start
         logger.info(f"MPAS run {run_status} in {elapsed:.1f}s")

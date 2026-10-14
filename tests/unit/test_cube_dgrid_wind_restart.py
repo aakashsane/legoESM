@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import glob
 import logging
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -37,6 +38,12 @@ def _cfg(out, days):
 def _winds(d):
     return tuple(np.asarray(getattr(d.state, f).data, np.float64)
                  for f in ("u_d", "v_d"))
+
+
+def _beside(ckpt, name):
+    """An edited copy of ``ckpt`` in its run directory, next to the run
+    manifest the restart version check reads."""
+    return Path(ckpt).parent / name
 
 
 def _resume(tmp, ckpt, tag):
@@ -91,7 +98,7 @@ def test_old_checkpoint_is_lifted_once_with_a_warning(leg1, caplog):
                 for x in ("", "_sha256")}
         assert drop <= set(z.keys())
         data = {k: z[k] for k in z.keys() if k not in drop}
-    old = tmp / "old_checkpoint_day_0001.npz"
+    old = _beside(ckpt, "old_checkpoint_day_0001.npz")
     np.savez(old, **data)
     with caplog.at_level(logging.WARNING):
         d = _resume(tmp, str(old), "leg2_old")
@@ -126,7 +133,7 @@ def test_corner_winds_from_another_state_are_refused(leg1, corrupt):
     data[key] = corrupt(data[key])
     for k in [k for k in data if k.endswith("_sha256")]:
         data.pop(k)                 # a pre-digest file: the average check
-    bad = tmp / "bad_checkpoint_day_0001.npz"
+    bad = _beside(ckpt, "bad_checkpoint_day_0001.npz")
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_bad", 2))
     d.setup()
@@ -148,7 +155,7 @@ def test_corruption_that_averages_out_is_refused(leg1):
     j = np.arange(data[key].shape[2])[None, :]
     data[key] = data[key] + (np.where((i + j) % 2 == 0, 1.0, -1.0)[None, :, :, None]
                              ).astype(data[key].dtype)
-    bad = tmp / "checker_checkpoint_day_0001.npz"
+    bad = _beside(ckpt, "checker_checkpoint_day_0001.npz")
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_checker", 2))
     d.setup()
@@ -181,7 +188,7 @@ def test_float64_winds_are_checked_bit_for_bit(leg1):
         data[f"carry_{k}"] = data[f"carry_{k}"].astype(np.float64)
         data[f"carry_{k}_sha256"] = np.asarray(
             ModelDriver._native_wind_digest(data[f"carry_{k}"]))
-    good = tmp / "f64_checkpoint_day_0001.npz"
+    good = _beside(ckpt, "f64_checkpoint_day_0001.npz")
     np.savez(good, **data)
     d = _resume(tmp, str(good), "leg2_f64")
     for x, y in zip(_winds(b1), _winds(d)):
@@ -189,7 +196,7 @@ def test_float64_winds_are_checked_bit_for_bit(leg1):
     key = f"carry_{ModelDriver._CORNER_WIND_KEYS[0]}"
     data[key] = data[key].copy()
     data[key].flat[7] = np.nextafter(data[key].flat[7], np.inf)
-    bad = tmp / "f64ulp_checkpoint_day_0001.npz"
+    bad = _beside(ckpt, "f64ulp_checkpoint_day_0001.npz")
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_f64ulp", 2))
     d.setup()
@@ -203,7 +210,7 @@ def test_one_digest_missing_is_refused(leg1):
     with np.load(ckpt, allow_pickle=True) as z:
         data = {k: z[k] for k in z.keys()}
     data.pop(f"carry_{ModelDriver._CORNER_WIND_KEYS[0]}_sha256")
-    bad = tmp / "halfdigest_checkpoint_day_0001.npz"
+    bad = _beside(ckpt, "halfdigest_checkpoint_day_0001.npz")
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_half", 2))
     d.setup()
@@ -217,7 +224,7 @@ def test_digests_without_winds_are_refused(leg1):
     with np.load(ckpt, allow_pickle=True) as z:
         data = {k: z[k] for k in z.keys()
                 if k not in {f"carry_{k}" for k in ModelDriver._CORNER_WIND_KEYS}}
-    bad = tmp / "orphan_checkpoint_day_0001.npz"
+    bad = _beside(ckpt, "orphan_checkpoint_day_0001.npz")
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_orphan", 2))
     d.setup()
@@ -244,7 +251,7 @@ def test_failed_load_then_save_keeps_the_carried_winds(leg1):
     tmp, _b1, ckpt = leg1
     d = _resume(tmp, ckpt, "leg2_failload")
     with pytest.raises(Exception):
-        d.load_checkpoint(str(tmp / "missing_checkpoint_day_0001.npz"))
+        d.load_checkpoint(str(_beside(ckpt, "missing_checkpoint_day_0001.npz")))
     d.save_checkpoint(1, 1.0)
     new = sorted(glob.glob(str(tmp / "leg2_failload" / "checkpoint_day_*.npz")))[-1]
     with np.load(new, allow_pickle=True) as z:

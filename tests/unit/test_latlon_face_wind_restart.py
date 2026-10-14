@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import glob
 import logging
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -40,6 +41,13 @@ def _cfg(out, days, **kw):
 def _winds(d):
     return (np.asarray(d.state.u_f.data, np.float64),
             np.asarray(d.state.v_f.data, np.float64))
+
+
+def _beside(ckpt, name):
+    """An edited copy of ``ckpt`` in its own run directory: a restart reads the
+    writing run's ``run_manifest.json`` beside the checkpoint, and refuses
+    (version drift) when there is none."""
+    return Path(ckpt).parent / name
 
 
 def _resume(tmp_path, ckpt, tag):
@@ -93,7 +101,7 @@ def test_old_checkpoint_is_lifted_once_with_a_warning(leg1, caplog):
     tmp, b1, ckpt = leg1
     with np.load(ckpt, allow_pickle=True) as z:
         data = {k: z[k] for k in z.keys() if "latlon_" not in k}
-    old = tmp / "old_checkpoint_day_0001.npz"
+    old = _beside(ckpt, "old_checkpoint_day_0001.npz")
     np.savez(old, **data)
     with caplog.at_level(logging.WARNING):
         d = _resume(tmp, str(old), "leg2_old")
@@ -131,7 +139,7 @@ def test_faces_from_another_state_are_refused(leg1, corrupt):
     data[key] = corrupt(data[key])
     for k in [k for k in data if k.endswith("_sha256")]:
         data.pop(k)                 # a pre-digest file: the average check
-    bad = tmp / "bad_checkpoint_day_0001.npz"
+    bad = _beside(ckpt, "bad_checkpoint_day_0001.npz")
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_bad", 2))
     d.setup()
@@ -159,7 +167,7 @@ def test_checkpoint_with_one_face_wind_is_refused(leg1):
     tmp, _b1, ckpt = leg1
     with np.load(ckpt, allow_pickle=True) as z:
         data = {k: z[k] for k in z.keys() if "latlon_v_face" not in k}
-    half = tmp / "half_checkpoint_day_0001.npz"
+    half = _beside(ckpt, "half_checkpoint_day_0001.npz")
     np.savez(half, **data)
     with pytest.raises(ValueError, match="only one of the face winds"):
         _resume(tmp, str(half), "leg2_half")

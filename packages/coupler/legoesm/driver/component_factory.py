@@ -747,12 +747,17 @@ def create_atmosphere_dycore(
     sigma,
     coeff_grid=None,
     fv3_duo_bundle=None,
+    latlon_native_grid=None,
 ) -> Any:
     """Resolve and instantiate the configured atmosphere dynamical core.
 
     ``fv3_duo_bundle``: the duo grid the driver built at grid creation
     (column lane only); the column model is built ON it so its mesh is
     the grid every forcing was regridded onto.
+
+    ``latlon_native_grid``: the lat-lon COLUMN lane's native grid (``grid``
+    is then its column mesh); the C-grid dycore is built on it and wrapped
+    in :class:`LatLonCGridColumnModel`.
 
     Parameters
     ----------
@@ -782,6 +787,13 @@ def create_atmosphere_dycore(
     """
     dc = config.dycore
     gc = config.grid
+    if dc.column_lane and dc.discretization == "latlon_cgrid":
+        if latlon_native_grid is None:
+            raise ValueError(
+                "create_atmosphere_dycore: the lat-lon column lane needs "
+                "latlon_native_grid (the driver builds it in _create_grid)")
+        grid = latlon_native_grid
+        coeff_grid = None
 
     model_type = dc.model_type
     discretization = dc.discretization
@@ -1486,6 +1498,12 @@ def create_atmosphere_dycore(
         model = CGridLatLonPrimitiveEquationModel(
             grid, sigma, cfg, dt=_effective_dt)
         model.effective_dt = _effective_dt
+        if dc.column_lane:
+            from legoesm.atmosphere.dynamics.gcm.latlon_cgrid_column import (
+                LatLonCGridColumnModel,
+            )
+            model = LatLonCGridColumnModel(model)
+            model.effective_dt = _effective_dt
         return model
 
     # ----- SFNO data-driven -----

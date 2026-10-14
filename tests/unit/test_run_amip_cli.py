@@ -948,6 +948,17 @@ def test_snow_albedo_responds_to_the_ageing_timescale():
     assert a_long > a_short + 0.05
 
 
+def test_latlon_qv_smooth_flag_flows_to_config():
+    parser = build_arg_parser()
+    cfg = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert cfg.latlon_qv_smooth_del4_m4s == 0.0
+    cfg = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--latlon-qv-smooth-del4-m4s", "5e13",
+    ]), parser))
+    assert cfg.latlon_qv_smooth_del4_m4s == 5e13
+
+
 def test_mpas_qv_biharmonic_flag_flows_to_config():
     """--mpas-qv-smooth-del4-m4s round-trip (scale-selective companion to the
     Laplacian, 2026-09-11); default OFF, and the two coefficients are
@@ -2246,8 +2257,6 @@ def test_config_yaml_loads_all_keys_are_valid_dests(cfg_file):
 # Decks that do NOT pass validate_strict (none is a production deck): name -> why.
 # Asserted to raise, so a fix (or a new error class) flips the test.
 _STRICT_FAILING_DECKS = {
-    "amip_sundqvist_latlon24.yaml":
-        "HISTORICAL Sundqvist/L36 lat-lon deck; known strict errors listed in its header",
     "amip_land_calibrated.yaml":
         "land overlay, not a standalone deck: no grid, so it lands on the default lane",
     "amip_campaign_mpas.yaml":
@@ -3467,6 +3476,16 @@ def test_sundqvist_latlon24_deck_pins_polar_filter():
     # knob to null, and sbm ignores it (sbm_precip_efficiency is its own knob)
     # — see the convective_precip_efficiency note in amip_sundqvist_latlon24.yaml.
     assert cfg.convective_precip_efficiency is None
+    # Repaired 2026-10-14: the lat-lon COLUMN lane, standard 20-level layout,
+    # and the pipeline lane's hidden q_v del4 (0.5x the dycore hyperdiffusion
+    # at n_lat 24) as the explicit lat-lon smoother.
+    assert cfg.dycore.column_lane is True
+    assert cfg.grid.sigma_layout == "standard"
+    from legoesm.driver.component_factory import compute_diffusion
+    from legoesm.grids.factory import create_grid
+    hd = compute_diffusion(create_grid("latlon", 24), cfg.dycore).hyperdiff
+    assert cfg.latlon_qv_smooth_del4_m4s == pytest.approx(0.5 * hd, rel=1e-12)
+    assert cfg.mpas_qv_smooth_del4_m4s == 0.0
 
 
 def test_enable_tiled_dycore_flag_flows_to_config():

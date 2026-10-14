@@ -1687,10 +1687,12 @@ class CoupledESMDriver:
             surface_temperature_for_lw_boundary,
         )
 
-        state = self._atm.state
+        state = self._atm.cell_centre_state()
         # Low-level winds/T/q/p_s for the ocean surface stress + bulk turbulent
         # fluxes.  Three atm-state layouts:
-        #   * cube/latlon  -> cell-centered u/v/T/p_s Fields, read directly.
+        #   * cube/latlon  -> cell-centered u/v/T/p_s Fields, read directly
+        #     (a lat-lon C-grid run carries face winds; this is their
+        #     cell-centre average).
         #   * MPAS/voronoi -> edge-normal velocity (state.v is None); Perot-
         #     reconstruct the cell-centered (zonal, meridional) winds.
         #   * SPECTRAL     -> the state is spectral COEFFICIENTS, so synthesize

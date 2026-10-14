@@ -49,6 +49,7 @@ from legoesm.core.field import Field
 # #1028: the D-grid -> cell-centre wind view used wherever the column physics
 # reads winds while the run carries FV3 D-staggered cube winds.
 from legoesm.core.operators_cdgrid import center_to_dgrid_vector, dgrid_to_center_vector
+from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import face_to_cell_winds
 from legoesm.core.tracers import make_full_moisture_registry
 from legoesm.thermo import saturation_mixing_ratio
 from legoesm.forcing.time_utils import day_to_calendar
@@ -457,8 +458,12 @@ def pack_carry(state, q_v, q_c, q_r, conv_prog=None, *,
     # (u_d/v_d at corners) instead of cell-centre u/v.  The carry stores the
     # arrays verbatim either way -- it is the state TYPE, rebuilt by
     # _rebuild_state, that tells the dycore which staggering they are.
-    _u_leaf = state.u_d if hasattr(state, "u_d") else state.u
-    _v_leaf = state.v_d if hasattr(state, "v_d") else state.v
+    # The lat-lon C-grid lane likewise may carry its native face winds
+    # (u_f/v_f, LatLonFaceWindState).
+    _u_leaf = (state.u_d if hasattr(state, "u_d")
+               else state.u_f if hasattr(state, "u_f") else state.u)
+    _v_leaf = (state.v_d if hasattr(state, "v_d")
+               else state.v_f if hasattr(state, "v_f") else state.v)
     return SegmentCarry(
         u=_promote(_u_leaf.data, storage),
         v=_promote(_v_leaf.data, storage),
@@ -554,13 +559,12 @@ def unpack_carry(carry, state_template):
     """
     # #1028: mirror of pack_carry -- restore onto u_d/v_d when the template
     # is the D-staggered cube state, onto u/v otherwise.
-    _wind_kw = (
-        {"u_d": state_template.u_d.replace(data=carry.u),
-         "v_d": state_template.v_d.replace(data=carry.v)}
-        if hasattr(state_template, "u_d") else
-        {"u": state_template.u.replace(data=carry.u),
-         "v": state_template.v.replace(data=carry.v)}
-    )
+    _wn = ("u_d", "v_d") if hasattr(state_template, "u_d") else (
+        ("u_f", "v_f") if hasattr(state_template, "u_f") else ("u", "v"))
+    _wind_kw = {
+        _wn[0]: getattr(state_template, _wn[0]).replace(data=carry.u),
+        _wn[1]: getattr(state_template, _wn[1]).replace(data=carry.v),
+    }
     new_state = state_template._replace(
         **_wind_kw,
         T=state_template.T.replace(data=carry.T),
@@ -1973,6 +1977,7 @@ def build_segment_fn(
     tiled_step_fn=None,
     budget_ledger: bool = False,
     persistent_dgrid: bool = False,
+    persistent_cgrid: bool = False,
 ):
     """Build a compiled segment function.
 
@@ -2110,6 +2115,15 @@ def build_segment_fn(
     # directions, and the tiled adapter converts to cell centres by
     # construction -- refuse LOUDLY rather than silently running the damped
     # cell-centre path this flag exists to remove.
+    if persistent_cgrid:
+        # Same dispatch hardening for the lat-lon C-grid face winds.
+        if persistent_dgrid:
+            raise ValueError("persistent_cgrid and persistent_dgrid are "
+                             "mutually exclusive (lat-lon vs cube winds).")
+        if owned_face_ids is not None or tiled_step_fn is not None:
+            raise ValueError(
+                "persistent_cgrid=True is not supported with owned_face_ids "
+                "or a tiled step: both enter and exit at cell centres.")
     if persistent_dgrid:
         if owned_face_ids is not None:
             raise ValueError(
@@ -2201,6 +2215,14 @@ def build_segment_fn(
     # ``fix_mass=False``.  Behaviour is unchanged because the segment
     # fixer is strictly stronger (anchored to ``carry.target_mass``).
     _dynamics_model = dycore_without_inner_mass_fixer(model) if fix_mass else model
+
+    def _lift_cgrid_increment(du_cell, dv_cell):
+        # The dycore's own physics-increment lift (interpolators + polar
+        # filter) and pole wall; walling the increment walls the sum because
+        # the carried pole v-faces are already zero.
+        du_f, dv_f = _dynamics_model.lift_wind_increment(
+            du_cell, dv_cell, own_polar_masks=True)
+        return du_f, _dynamics_model.wall_v(dv_f)
 
     def _make_single_step(forcing: SegmentForcing, step_fn=None):
         """Create the scan body closed over a specific forcing pytree.
@@ -2295,7 +2317,8 @@ def build_segment_fn(
                 dyn_state = _dynamics_model.step(
                     _rebuild_state(carry, _dynamics_model,
                                    advect_moisture=advect_moisture,
-                                   persistent_dgrid=persistent_dgrid),
+                                   persistent_dgrid=persistent_dgrid,
+                                   persistent_cgrid=persistent_cgrid),
                     _dt,
                 )
 
@@ -2311,6 +2334,11 @@ def build_segment_fn(
                 u_new = dyn_state.u_d.data
                 v_new = dyn_state.v_d.data
                 u_cc, v_cc = dgrid_to_center_vector(u_new, v_new)
+            elif hasattr(dyn_state, "u_f"):
+                # Lat-lon C-grid face winds carried natively.
+                u_new = dyn_state.u_f.data
+                v_new = dyn_state.v_f.data
+                u_cc, v_cc = face_to_cell_winds(u_new, v_new)
             else:
                 u_new = dyn_state.u.data
                 v_new = dyn_state.v.data
@@ -2707,7 +2735,8 @@ def build_segment_fn(
                     lift_wind_increment=(
                         (lambda du, dv: center_to_dgrid_vector(
                             du, dv, _dynamics_model.cdgrid))
-                        if persistent_dgrid else None))
+                        if persistent_dgrid else
+                        _lift_cgrid_increment if persistent_cgrid else None))
 
             # Shared operator-split TAIL (sat-adjust, moisture fixer/smoothing,
             # Rayleigh, carry pack) — ONE source for both branches.
@@ -2877,6 +2906,7 @@ def build_segment_fn(
         # carry.u/carry.v and the calls below are byte-identical.
         _u_phys, _v_phys = (
             dgrid_to_center_vector(carry.u, carry.v) if persistent_dgrid
+            else face_to_cell_winds(carry.u, carry.v) if persistent_cgrid
             else (carry.u, carry.v))
 
         # Clear-sky diagnostic (#843): the unfused rad refresh runs once per
@@ -3577,7 +3607,8 @@ _ADVECTED_TRACER_NAMES = (
 
 
 def _rebuild_state(carry: SegmentCarry, model, advect_moisture: bool = False,
-                   persistent_dgrid: bool = False):
+                   persistent_dgrid: bool = False,
+                   persistent_cgrid: bool = False):
     """Rebuild the model's expected state type from raw carry arrays.
 
     The dynamics model expects a NamedTuple with Field-wrapped arrays.
@@ -3609,13 +3640,24 @@ def _rebuild_state(carry: SegmentCarry, model, advect_moisture: bool = False,
             FV3HydrostaticState,
         )
         StateType = FV3HydrostaticState
-    _wname, _vname = ("u_d", "v_d") if persistent_dgrid else ("u", "v")
+    if persistent_cgrid:
+        from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
+            LatLonFaceWindState,
+        )
+        StateType = LatLonFaceWindState
+    _wname, _vname = (("u_d", "v_d") if persistent_dgrid else
+                      ("u_f", "v_f") if persistent_cgrid else ("u", "v"))
     # Build Fields with minimal metadata
-    u_f = Field(carry.u, name=_wname, dims=("face", "x", "y", "level"), units="m/s")
-    v_f = Field(carry.v, name=_vname, dims=("face", "x", "y", "level"), units="m/s")
-    T_f = Field(carry.T, name="T", dims=("face", "x", "y", "level"), units="K")
-    p_s_f = Field(carry.p_s, name="p_s", dims=("face", "x", "y"), units="Pa")
-    phis_f = Field(carry.phis, name="phis", dims=("face", "x", "y"), units="m2/s2")
+    _wdims = ((("lat", "lon_face", "level"), ("lat_face", "lon", "level"))
+              if persistent_cgrid else
+              (("face", "x", "y", "level"), ("face", "x", "y", "level")))
+    u_f = Field(carry.u, name=_wname, dims=_wdims[0], units="m/s")
+    v_f = Field(carry.v, name=_vname, dims=_wdims[1], units="m/s")
+    _d3, _d2 = ((("lat", "lon", "level"), ("lat", "lon")) if persistent_cgrid
+                else (("face", "x", "y", "level"), ("face", "x", "y")))
+    T_f = Field(carry.T, name="T", dims=_d3, units="K")
+    p_s_f = Field(carry.p_s, name="p_s", dims=_d2, units="Pa")
+    phis_f = Field(carry.phis, name="phis", dims=_d2, units="m2/s2")
 
     if advect_moisture:
         # Only the tracer-capable dycore states reach this branch (the
@@ -3625,7 +3667,7 @@ def _rebuild_state(carry: SegmentCarry, model, advect_moisture: bool = False,
         _units = {t.name: t.units for t in make_full_moisture_registry().tracers}
         tracers = {
             nm: Field(getattr(carry, nm), name=nm,
-                      dims=("face", "x", "y", "level"),
+                      dims=_d3,
                       units=_units.get(nm, "kg/kg"))
             for nm in _ADVECTED_TRACER_NAMES
             if getattr(carry, nm) is not None

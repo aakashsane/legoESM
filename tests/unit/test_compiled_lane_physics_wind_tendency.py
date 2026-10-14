@@ -52,7 +52,7 @@ def _run(tmp_path, monkeypatch, tag, grid, dycore, extra):
     d = ModelDriver(cfg, output_dir=str(out))
     d.setup()
     assert d.run(compiled=True) == "COMPLETED"
-    st = d._state_cc()
+    st = d.cell_centre_state()
     return (np.asarray(st.u.data, dtype=np.float64),
             np.asarray(st.v.data, dtype=np.float64))
 

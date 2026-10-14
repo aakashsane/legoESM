@@ -1494,6 +1494,9 @@ class ModelDriver:
         # prognostic winds are cell-centred (every lane except the cube
         # hydrostatic one that opts in).
         self._persistent_dgrid = False
+        # Set by _enter_persistent_cgrid() at run start: the lat-lon C-grid
+        # hydrostatic lane carries its native face winds between steps.
+        self._persistent_cgrid = False
         self.tracers: dict[str, jax.Array] = {}
         self.tracer_registry: TracerRegistry = moisture_registry_for(
             config.microphysics)
@@ -1847,6 +1850,11 @@ class ModelDriver:
         since these tracers are rank-local bands (mirrors the T_land limitation).
         """
         base = dict(self._carry_aux) if self._carry_aux else {}
+        if self._persistent_cgrid_active():
+            # The native face winds, so a restart resumes them exactly (the
+            # state itself is written at cell centres for every reader).
+            base[self._FACE_WIND_KEYS[0]] = self.state.u_f.data
+            base[self._FACE_WIND_KEYS[1]] = self.state.v_f.data
         dm = self._double_moment_step_inputs()
         for k, v in dm.items():
             base[f"dmtr_{k}"] = v
@@ -6779,7 +6787,7 @@ class ModelDriver:
     # driver that CARRIES the D state; this is that wiring.
     #
     # Everything that reads winds as cell-centred (physics inputs, CFL,
-    # diagnostics, output, checkpoints) goes through :meth:`_state_cc`, a
+    # diagnostics, output, checkpoints) goes through :meth:`cell_centre_state`, a
     # read-only view.  Nothing writes a converted state back over the native
     # winds, so the round trip never re-enters the prognostic path.
 
@@ -6855,7 +6863,7 @@ class ModelDriver:
             "staggering between steps (one cc->D lift at run start; the "
             "per-step cc round trip is gone).")
 
-    def _state_cc(self, state=None):
+    def cell_centre_state(self, state=None):
         """Cell-centre VIEW of the prognostic state — read-only.
 
         Identity when the run is not carrying D winds, so every call site is
@@ -6863,6 +6871,13 @@ class ModelDriver:
         ``self.state``: that would reinstate the projection this removes.
         """
         st = self.state if state is None else state
+        if self._persistent_cgrid_active():
+            from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
+                LatLonFaceWindState, facewind_to_hydrostatic,
+            )
+            if isinstance(st, LatLonFaceWindState):
+                return facewind_to_hydrostatic(st, self.grid)
+            return st
         if not self._persistent_dgrid_active():
             return st
         from legoesm.atmosphere.dynamics.gcm.primitive_eq_cdgrid import (
@@ -6883,6 +6898,17 @@ class ModelDriver:
         for this term -- what changes is that the CARRIED state is never
         projected back, which is where the eddy damping lived.
         """
+        if self._persistent_cgrid_active():
+            # The dycore's own physics-increment lift (interpolators + polar
+            # filter), then the pole wall on v.
+            du_f, dv_f = self.model.lift_wind_increment(
+                du_cc, dv_cc, own_polar_masks=True)
+            v_f = self.model.wall_v(self.state.v_f.data + dt * dv_f)
+            self.state = self.state._replace(
+                u_f=self.state.u_f.replace(data=self.state.u_f.data + dt * du_f),
+                v_f=self.state.v_f.replace(data=v_f),
+            )
+            return
         if not self._persistent_dgrid_active():
             self.state = self.state._replace(
                 u=self.state.u.replace(data=self.state.u.data + dt * du_cc),
@@ -6903,7 +6929,8 @@ class ModelDriver:
         must not care whether the run carries cell-centre or D-grid winds.
         """
         st = self.state
-        return (st.u_d.data if hasattr(st, "u_d") else st.u.data)
+        return (st.u_d.data if hasattr(st, "u_d")
+                else st.u_f.data if hasattr(st, "u_f") else st.u.data)
 
     def _scale_winds(self, factor):
         """Multiply the prognostic winds by ``factor`` (Rayleigh decay).
@@ -6913,6 +6940,12 @@ class ModelDriver:
         operation as scaling the centre winds and lifting.  A horizontally
         varying drag would NOT commute and must not use this helper.
         """
+        if self._persistent_cgrid_active():
+            self.state = self.state._replace(
+                u_f=self.state.u_f.replace(data=self.state.u_f.data * factor),
+                v_f=self.state.v_f.replace(data=self.state.v_f.data * factor),
+            )
+            return
         if not self._persistent_dgrid_active():
             self.state = self.state._replace(
                 u=self.state.u.replace(data=self.state.u.data * factor),
@@ -6923,6 +6956,112 @@ class ModelDriver:
             u_d=self.state.u_d.replace(data=self.state.u_d.data * factor),
             v_d=self.state.v_d.replace(data=self.state.v_d.data * factor),
         )
+
+    # Checkpoint carry_aux keys holding the lat-lon C-grid face winds.
+    _FACE_WIND_KEYS = ("latlon_u_face", "latlon_v_face")
+
+    def _persistent_cgrid_active(self) -> bool:
+        """True iff the run is carrying lat-lon C-grid face winds."""
+        return bool(getattr(self, "_persistent_cgrid", False))
+
+    def _enter_persistent_cgrid(self) -> None:
+        """Carry the lat-lon C-grid face winds between steps (run start).
+
+        Every lat-lon C-grid hydrostatic run does this; there is no switch.
+        Feeding cell-centre winds into the dycore every step lifts them to the
+        faces and averages them back each time, which removes most of the
+        eddy kinetic energy within a simulated day.  Lanes that cannot carry
+        the face winds REFUSE to run rather than silently running that damped
+        path.  The face winds come from the checkpoint when it saved them,
+        else they are lifted from the cell-centre state once, here.
+        """
+        self._persistent_cgrid = False
+        cfg = self.config
+        if not (cfg.grid.grid_type == "latlon"
+                and cfg.dycore.discretization == "latlon_cgrid"
+                and cfg.dycore.model_type == "hydrostatic"):
+            return
+        _why = None
+        if getattr(self, "_ensemble_size", 1) not in (None, 1):
+            _why = ("an ensemble run: the member axis would have to ride the "
+                    "face arrays and nothing covers that yet")
+        elif self._layout is not None or self._mpi_rank is not None:
+            _why = ("lat-lon band MPI: the band scatter/gather is written for "
+                    "cell-centre (n_lat) arrays")
+        elif self._is_spmd_multiprocess():
+            _why = "multi-process SPMD (the face sharding is unvalidated)"
+        elif (self._device_config is not None
+              and getattr(self._device_config, "mesh", None) is not None
+              and tuple(getattr(self._device_config, "tiling", (1, 1)))
+              != (1, 1)):
+            _why = "sub-domain tiling (the tiled adapter enters at cell centres)"
+        if _why is not None:
+            raise SystemExit(
+                "lat-lon C-grid hydrostatic runs carry their face winds between "
+                f"steps, and this lane cannot: {_why}.  Running it would "
+                "re-project the winds every step, which removes most of the "
+                "eddy kinetic energy within a day.  Run single-process "
+                "(one device, or the lat-band enable_latlon_spmd lanes).")
+        from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
+            LatLonFaceWindState, facewind_to_hydrostatic,
+            hydrostatic_to_facewind,
+        )
+        aux = self._carry_aux if isinstance(self._carry_aux, dict) else {}
+        # Removed from the aux carry only once validated, so a refused restart
+        # cannot be retried into a silent lift.
+        faces = [aux.get(k) for k in self._FACE_WIND_KEYS]
+        if isinstance(self.state, LatLonFaceWindState):
+            if any(f is not None for f in faces):
+                raise ValueError(
+                    "face winds are staged from a checkpoint but the state "
+                    "already carries faces; refusing to pick one silently")
+            self._persistent_cgrid = True
+            return
+        lifted = hydrostatic_to_facewind(self.state, self.grid)
+        if sum(f is not None for f in faces) == 1:
+            raise ValueError(
+                "checkpoint carries only one of the face winds "
+                f"{self._FACE_WIND_KEYS}; refusing to lift the other from "
+                "cell centres and mix the two")
+        if all(f is not None for f in faces):
+            u_f, v_f = (jnp.asarray(f) for f in faces)
+            if (u_f.shape != lifted.u_f.data.shape
+                    or v_f.shape != lifted.v_f.data.shape):
+                raise ValueError(
+                    f"checkpoint face winds {u_f.shape}/{v_f.shape} do not "
+                    f"match this grid's faces {lifted.u_f.data.shape}/"
+                    f"{lifted.v_f.data.shape}")
+            dt_ = lifted.u_f.data.dtype
+            lifted = lifted._replace(
+                u_f=lifted.u_f.replace(data=u_f.astype(dt_)),
+                v_f=lifted.v_f.replace(data=v_f.astype(dt_)))
+            # The checkpoint's cell-centre winds were written as the average
+            # of these faces; anything else means faces from another state.
+            view = facewind_to_hydrostatic(lifted, self.grid)
+            for name in ("u", "v"):
+                a = np.asarray(getattr(view, name).data, np.float64)
+                b = np.asarray(getattr(self.state, name).data, np.float64)
+                err = float(np.abs(a - b).max())
+                if not err <= 1e-5 * (1.0 + float(np.abs(b).max())):
+                    raise ValueError(
+                        f"checkpoint face winds do not average to its "
+                        f"cell-centre {name} (max diff {err:.3g} m/s): they "
+                        "belong to a different state")
+        elif getattr(self, "_loaded_checkpoint_step_day", None) is not None:
+            logger.warning(
+                "restart checkpoint has no saved face winds (a zarr "
+                "checkpoint, or one written before they were checkpointed): "
+                "lifting the cell-centre winds to "
+                "the C-grid faces once.  This restart is not bit-identical "
+                "to an uninterrupted run.")
+        self.state = lifted
+        self._persistent_cgrid = True
+        for k in self._FACE_WIND_KEYS:
+            aux.pop(k, None)
+        logger.info(
+            "lat-lon C-grid face winds are carried between steps "
+            "(u_f %s, v_f %s)", tuple(lifted.u_f.data.shape),
+            tuple(lifted.v_f.data.shape))
 
     def save_checkpoint(self, step: int, day: float) -> None:
         """Save checkpoint to output directory using unified restart API.
@@ -7518,7 +7657,7 @@ class ModelDriver:
                 ckpt_path = self._output_dir / f"checkpoint_day_{int(elapsed_day):04d}.npz"
                 save_restart(
                     path=ckpt_path,
-                    state=self._state_cc(),      # #1028: cc layout on disk
+                    state=self.cell_centre_state(),      # #1028: cc layout on disk
                     q_v=self.q_v,
                     step=step,
                     day=day,
@@ -7548,7 +7687,7 @@ class ModelDriver:
         # natively (new leaf names + a format stamp) is the follow-up that
         # removes even that.
         _state, _q_v, _q_c, _q_r = (
-            self._state_cc(), self.q_v, self.q_c, self.q_r)
+            self.cell_centre_state(), self.q_v, self.q_c, self.q_r)
         _carry_aux = self._checkpoint_carry_aux()
         if self._is_spmd_multiprocess():
             # Multi-controller SPMD (cs_spmd step 5a): every process holds
@@ -8795,6 +8934,7 @@ class ModelDriver:
         # before the time loop, so the run carries them between steps instead
         # of projecting cell-centre -> corner -> cell-centre every step.
         self._enter_persistent_dgrid()
+        self._enter_persistent_cgrid()
         # Checkpoint hook (a coupled driver passes its own save_checkpoint so
         # the FULL coupled state — not just the atmosphere — is written on a
         # periodic or wallclock-budget checkpoint).  Run-start wallclock anchor
@@ -15745,7 +15885,7 @@ class ModelDriver:
                     # #1028: max_wind is a cell-centre diagnostic (the #1049
                     # dead-jet gate reads it), so take the cc view -- identity
                     # unless the run carries D-staggered cube winds.
-                    _cc_ts = self._state_cc()
+                    _cc_ts = self.cell_centre_state()
                     T_arr = _cc_ts.T.data
                     u_arr = _cc_ts.u.data
                     v_arr = (_cc_ts.v.data
@@ -16858,7 +16998,13 @@ class ModelDriver:
             self.model, mesh, statics,
             fix_mass=cfg.dycore.fix_mass,
             rad_update_steps=ctx["RAD_UPDATE_STEPS"],
-            start_day=START_DAY + self._insolation_day_offset, ghg_keys=ghg_keys)
+            start_day=START_DAY + self._insolation_day_offset, ghg_keys=ghg_keys,
+            persistent_cgrid=self._persistent_cgrid_active())
+        from legoesm.parallel.latlon_spmd import to_vface_lower
+
+        def _v_full(v_lower):
+            # v_lower -> all n_lat+1 faces (the north pole face is the wall).
+            return jnp.concatenate([v_lower, jnp.zeros_like(v_lower[:1])], 0)
 
         # --- Seed the carry ONCE (cell-centered, full grid) and shard it; it
         # threads across every segment (held radiation / tke / conv_prog ride
@@ -16895,6 +17041,10 @@ class ModelDriver:
             tke=ctx["tke"], qke=ctx["qke"], gwd_spectrum=ctx["gwd_spectrum"],
             **_dm,
         )
+        if self._persistent_cgrid_active():
+            # n_lat+1 v-faces do not split into equal latitude bands: carry
+            # the n_lat-row v_lower layout (the dropped north face is the wall).
+            carry = carry._replace(v=to_vface_lower(carry.v))
         carry = shard_operator_split_carry(carry, mesh)
 
         if _io_rank:
@@ -16978,6 +17128,8 @@ class ModelDriver:
             # cannot reshard shards living on other processes' devices).
             carry_full = jax.tree.map(
                 lambda x: replicate_leaf(x, rep, multiprocess=_mp), carry)
+            if self._persistent_cgrid_active():
+                carry_full = carry_full._replace(v=_v_full(carry_full.v))
             state, self.q_v, self.q_c, self.q_r = unpack_carry(
                 carry_full, self.state)[:4]
             self.state = state
@@ -17074,9 +17226,14 @@ class ModelDriver:
                 # a no-op resharding of identical values when the callback does
                 # not mutate.  The non-driver carry fields (held radiation, tke,
                 # conv_prog) keep their threaded sharded values.
+                if self._persistent_cgrid_active():
+                    _u_fold = self.state.u_f.data
+                    _v_fold = to_vface_lower(self.state.v_f.data)
+                else:
+                    _u_fold, _v_fold = self.state.u.data, self.state.v.data
                 _fold = dict(
-                    u=jax.device_put(self.state.u.data, carry.u.sharding),
-                    v=jax.device_put(self.state.v.data, carry.v.sharding),
+                    u=jax.device_put(_u_fold, carry.u.sharding),
+                    v=jax.device_put(_v_fold, carry.v.sharding),
                     T=jax.device_put(self.state.T.data, carry.T.sharding),
                     p_s=jax.device_put(self.state.p_s.data, carry.p_s.sharding),
                     q_v=jax.device_put(self.q_v, carry.q_v.sharding),
@@ -17100,7 +17257,7 @@ class ModelDriver:
             # rank; the selfspawn route-B gate greps this line + the finite
             # magnitudes to confirm the federation integrated without a hang.
             _maxT = float(jnp.abs(self.state.T.data).max())
-            _maxU = float(jnp.abs(self.state.u.data).max())
+            _maxU = float(jnp.abs(self.cell_centre_state().u.data).max())
             logger.info(
                 "operator-split SPMD run: %s, %d steps, %d device(s) / %d "
                 "process(es), max|T|=%.3f max|u|=%.3f (%.1fs)",
@@ -17594,6 +17751,19 @@ class ModelDriver:
                 "model fitted on it meets a distribution it never saw (GLM "
                 "review) -- this refusal is fail-loud, not a resting place.")
 
+        # Lat-lon C-grid runs carry their face winds between steps; a training
+        # segment never enters run(), so it would integrate the cell-centre
+        # (eddy-damped) path production no longer runs.  Refuse (approved hard
+        # error) rather than fit a model to a different discretisation.
+        if (self.config.grid.grid_type == "latlon"
+                and self.config.dycore.discretization == "latlon_cgrid"
+                and self.config.dycore.model_type == "hydrostatic"):
+            raise NotImplementedError(
+                "build_training_segment does not carry the lat-lon C-grid face "
+                "winds production runs carry between steps, so it would train "
+                "on the cell-centre path that re-projects the winds every step "
+                "(most of the eddy kinetic energy gone within a day). Wire the "
+                "face winds into the training carry first.")
         ctx = self._prepare_run_context(0, day, restore_carry=False)
         cfg = self.config
         DT = ctx["DT"]
@@ -17613,6 +17783,7 @@ class ModelDriver:
         run_segment = build_segment_fn(
             model=self.model,
             persistent_dgrid=self._persistent_dgrid_active(),   # #1028
+            persistent_cgrid=self._persistent_cgrid_active(),
             tiled_step_fn=self._maybe_build_tiled_step(DT),
             step_unified=step_unified,
             step_unified_no_rad=None,
@@ -17896,6 +18067,7 @@ class ModelDriver:
         run_segment = build_segment_fn(
             model=self.model,
             persistent_dgrid=self._persistent_dgrid_active(),   # #1028
+            persistent_cgrid=self._persistent_cgrid_active(),
             tiled_step_fn=self._maybe_build_tiled_step(DT),
             step_unified=step_unified,
             step_unified_no_rad=step_unified_no_rad,
@@ -18278,8 +18450,8 @@ class ModelDriver:
                     _np.savez_compressed(
                         _dump_path,
                         T=_g(self.state.T.data), p_s=_g(self.state.p_s.data),
-                        u=_g(self._state_cc().u.data),
-                        v=_g(self._state_cc().v.data),
+                        u=_g(self.cell_centre_state().u.data),
+                        v=_g(self.cell_centre_state().v.data),
                         q_v=_g(self.q_v), q_c=_g(self.q_c), q_r=_g(self.q_r),
                         q_i=_g(_tr.get("q_i")), N_c=_g(_tr.get("N_c")),
                         N_i=_g(_tr.get("N_i")),
@@ -18405,7 +18577,7 @@ class ModelDriver:
             if _is_root_seg or _spmd_mc:
                 # #1028: the stability check reads cell-centre winds.
                 error = self.diagnostics.check_stability(
-                    self._state_cc(), elapsed_day)
+                    self.cell_centre_state(), elapsed_day)
             else:
                 error = None
             if self._mpi_rank is not None and not _spmd_mc:
@@ -18510,7 +18682,7 @@ class ModelDriver:
                 diag_info = self._sync_and_collect_diagnostics(
                     elapsed_day=elapsed_day,
                     day=day,
-                    state=self._state_cc(),      # #1028: diagnostics are cc
+                    state=self.cell_centre_state(),      # #1028: diagnostics are cc
                     q_v=self.q_v,
                     q_c=self.q_c,
                     q_r=self.q_r,
@@ -18548,7 +18720,7 @@ class ModelDriver:
                 # CFL is a CELL-CENTRE number (the dx estimate is the centre
                 # spacing), so it reads the cell-centre view -- identity off
                 # the persistent-D lane (#1028).
-                _cc_cfl = self._state_cc()
+                _cc_cfl = self.cell_centre_state()
                 if self._owned_face_ids is not None:
                     _ofi = self._owned_face_ids
                     _seg_max_cfl = float(cfl_number_from_state(
@@ -18610,6 +18782,7 @@ class ModelDriver:
                     run_segment = build_segment_fn(
                         model=self.model, step_unified=step_unified,
                         persistent_dgrid=self._persistent_dgrid_active(),  # #1028
+                        persistent_cgrid=self._persistent_cgrid_active(),
                         tiled_step_fn=self._maybe_build_tiled_step(DT),
                         step_unified_no_rad=step_unified_no_rad,
                         grid=self.grid, sigma_full=sigma_full, dsigma=dsigma,
@@ -18868,7 +19041,7 @@ class ModelDriver:
         # Physics reads winds at cell centres.  On the persistent-D lane this
         # is a READ-ONLY view of the corner winds (#1028); on every other lane
         # it is ``self.state`` itself, so the call below is byte-identical.
-        _cc_in = self._state_cc()
+        _cc_in = self.cell_centre_state()
 
         # Double-moment hydrometeor inputs (None unless the registry carries
         # them) so coupled radiation/microphysics see ice + droplet number.
@@ -18986,7 +19159,7 @@ class ModelDriver:
             _dycore_step()
             # Cell-centre view for the physics inputs (identity off the
             # persistent-D lane, #1028).
-            _cc_step = self._state_cc()
+            _cc_step = self.cell_centre_state()
 
             # (b) Physics with radiation sub-cycling
             need_rad_py = (RAD_UPDATE_STEPS <= 1) or ((step + 1) % RAD_UPDATE_STEPS == 0)
@@ -19142,7 +19315,7 @@ class ModelDriver:
                 diag_info = self._sync_and_collect_diagnostics(
                     elapsed_day=elapsed_day,
                     day=day,
-                    state=self._state_cc(),      # #1028: diagnostics are cc
+                    state=self.cell_centre_state(),      # #1028: diagnostics are cc
                     q_v=self.q_v,
                     q_c=self.q_c,
                     q_r=self.q_r,
@@ -19167,7 +19340,7 @@ class ModelDriver:
 
                 # Stability check (#1028: cell-centre winds)
                 error = self.diagnostics.check_stability(
-                    self._state_cc(), elapsed_day)
+                    self.cell_centre_state(), elapsed_day)
                 if error:
                     logger.warning(f"  {error}")
                     run_status = error

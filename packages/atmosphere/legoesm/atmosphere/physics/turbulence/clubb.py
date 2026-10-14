@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 6907)
+Table of contents (sections, in order; flag reference table at line 6927)
 -----------------------------------------------------------------------------
   1. [line  348] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  469] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -6220,6 +6220,29 @@ def virtual_potential_temperature_with_liquid(T, q_v, q_c, exner):
     return (virtual_temperature(T, q_v) - T * q_c) / exner
 
 
+def return_removed_water(dq_v_dt, removed, dp_g, q_v, dt, p_full, p_cut):
+    """Put back the column water [kg/m2/s] the top_lev taper removed.
+
+    CAM ``clubb_intr.F90`` (cesm2_1_rel 2075-2095): spread it uniformly per
+    unit mass [``dp_g`` kg/m2] over the levels below the cutoff (CAM ``k =
+    clubbtop+1..pver``; here ``p_full > p_cut``, bottom level always in, as
+    CAM keeps ``clubbtop <= pver-1``), unless it is negative and that would
+    drive ``q_v`` negative on one of those same levels -- then it all goes
+    into the bottom layer (``apply_to_surface``).  Nothing lands above the
+    cutoff, so the levels tested are exactly the levels changed, as in CAM.
+    ``dq_v_dt`` is the already-tapered vapour tendency [kg/kg/s, + =
+    moistening].
+    """
+    below = (p_full > p_cut).at[:, -1].set(True)
+    uniform = dq_v_dt + removed * below / jnp.sum(
+        dp_g * below, axis=1, keepdims=True)
+    bottom = dq_v_dt.at[:, -1].add(removed[:, 0] / dp_g[:, -1])
+    dries = below & (q_v + dt * uniform < 0.0)
+    return jnp.where(
+        (removed < 0.0) & jnp.any(dries, axis=1, keepdims=True),
+        bottom, uniform)
+
+
 def clubb_step(
     u: jax.Array,
     v: jax.Array,
@@ -6478,12 +6501,13 @@ def clubb_step(
         # 1543-1550, 1973-2003): u, v, thl, rt and the host liquid stay at the
         # host state there.  Same log-pressure taper w as the cloud fraction:
         # x_new = x + w (x_clubb - x) for u, v, T, q_v, q_c.  CAM's truncated
-        # grid passes no flux across top_lev; here the column water [kg/m2/s]
-        # and u, v momentum [kg/m/s2] the taper removes go back uniformly per
-        # unit mass where w > 0 (CAM tw_upper_diss), so the column changes only
-        # by the surface fluxes.  Water falls back to the bottom layer if the
-        # spread would drive any q_v negative (CAM apply_to_surface).  Heat:
-        # the column energy fixer in the caller closes it (weights w).
+        # grid passes no flux across top_lev; here the u, v momentum
+        # [kg/m/s2] the taper removes goes back uniformly per unit mass where
+        # w > 0, and the column water [kg/m2/s] uniformly per unit mass below
+        # the cutoff (CAM tw_upper_diss), so the column changes only by the
+        # surface fluxes.  Water falls back to the bottom layer if that would
+        # dry a level below the cutoff (CAM apply_to_surface).  Heat: the
+        # column energy fixer in the caller closes it (weights w).
         w = jax.nn.sigmoid(
             (jnp.log(jnp.clip(p_full, 1.0, None))
              - jnp.log(config.trop_cloud_top_press))
@@ -6499,13 +6523,9 @@ def clubb_step(
         dT_dt = w * dT_dt
         removed_water = _removed(dq_v_dt + dq_c_dt)
         dq_c_dt = w * dq_c_dt
-        dq_v_dt = w * dq_v_dt
-        uniform = dq_v_dt + removed_water * spread
-        bottom = dq_v_dt.at[:, -1].add(removed_water[:, 0] / dp_g[:, -1])
-        dq_v_dt = jnp.where(
-            (removed_water < 0.0)
-            & jnp.any(q_v + dt * uniform < 0.0, axis=1, keepdims=True),
-            bottom, uniform)
+        dq_v_dt = return_removed_water(
+            w * dq_v_dt, removed_water, dp_g, q_v, dt, p_full,
+            config.trop_cloud_top_press)
     if liquid_partition:
         diags = dict(diags, dq_c_dt=dq_c_dt)
     # KE removed by the momentum mixing + surface stress -> heat [K/s,

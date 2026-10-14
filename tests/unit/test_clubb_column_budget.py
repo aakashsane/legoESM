@@ -190,3 +190,35 @@ def test_water_pushed_down_from_above_the_cutoff_cannot_dry_a_layer_negative():
     out = _run(kw, dt=CLUBB_DT)
     q_new = np.asarray(kw["q_v"] + CLUBB_DT * out.dq_v_dt)
     assert np.all(q_new[:, :-1] >= 0.0), q_new.min(axis=1)
+
+
+def test_removed_water_lands_and_is_tested_only_below_the_cutoff():
+    """CAM clubb_intr.F90 (cesm2_1_rel 2075-2095) spreads the returned water
+    uniformly per unit mass over k = clubbtop+1..pver and tests negativity on
+    those same levels only; otherwise it all goes into the bottom layer."""
+    p_full = jnp.array([[1.0e4, 5.0e4, 9.0e4]])          # cutoff 1.5e4 Pa
+    dp_g = jnp.array([[1.0e3, 4.0e3, 4.0e3]])
+    dry, wet = -1.0e-3, 1.0e-3                             # removed [kg/m2/s]
+
+    def run(dq, removed, q_v, p_cut=1.5e4):
+        return np.asarray(clubb_mod.return_removed_water(
+            jnp.array([dq]), jnp.array([[removed]]), dp_g,
+            jnp.array([q_v]), 1.0, p_full, p_cut))[0]
+
+    # Nothing lands above the cutoff; a level above it going negative (here
+    # from its own tendency) is not tested, as in CAM.
+    np.testing.assert_allclose(
+        run([-1.0e-9, 0.0, 0.0], dry, [0.0, 1.0e-2, 1.0e-2]),
+        [-1.0e-9, dry / 8.0e3, dry / 8.0e3], rtol=1e-12)
+    # A level below the cutoff would go negative -> all into the bottom.
+    np.testing.assert_allclose(
+        run([0.0, 0.0, 0.0], dry, [1.0e-2, 0.0, 1.0e-2]),
+        [0.0, 0.0, dry / 4.0e3], rtol=1e-12)
+    # Positive return never falls back.
+    np.testing.assert_allclose(
+        run([0.0, 0.0, 0.0], wet, [0.0, 0.0, 0.0]),
+        [0.0, wet / 8.0e3, wet / 8.0e3], rtol=1e-12)
+    # Cutoff below every level: the bottom layer is always in the set.
+    np.testing.assert_allclose(
+        run([0.0, 0.0, 0.0], wet, [0.0, 0.0, 0.0], p_cut=1.0e5),
+        [0.0, 0.0, wet / 4.0e3], rtol=1e-12)

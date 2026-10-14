@@ -23,6 +23,9 @@ Round-C evidence is under
   artifact, review-disposition receipt, and runbook completeness guard.
 - `d2a4e061f`: re-anchor the shifted provenance citation, record the completed
   movie/first battery, and correct the clean-wrapper decoy assertion.
+- `7d6555aa3`: finalize the Round-C evidence and requested battery receipt.
+- `fd67594ba`: select and verify the explicit JAX backend before checkout
+  verification imports JAX; extend the decoy subprocess assertion.
 
 ## Independent-review findings
 
@@ -66,6 +69,16 @@ importing legoESM. Both call `require_checkout_import`, print the selected
 source/interpreter/NumPy, and refuse if `legoesm.ocean.__file__` is outside the
 owning checkout. Subprocess tests put a decoy `legoesm` first on the incoming
 path for every entry point and prove the real checkout wins.
+
+A final import-order audit found that checkout verification itself imports
+`legoesm.ocean`, which imports JAX. Commit `fd67594ba` therefore makes platform
+selection part of the bootstrap: analysis entry points explicitly select and
+verify CPU, while the long driver and short ladder apply their requested
+CPU/GPU backend and physical GPU index before the verification import. Every
+entry point prints `JAX_PLATFORM_OK`; the same decoy subprocess matrix asserts
+the CPU selection. The NEMO-only shell bootstrap also pins its verification
+process to CPU. This closes the possibility that a correct checkout could
+still initialize JAX on an implicit platform before CLI validation.
 
 ## One guarded deck
 
@@ -126,7 +139,7 @@ agent's inference:
 | Rank command | exit 1 after both NEMO runs; measured packaging import failure | fresh log and 8 s/2 s `run.log` files |
 | Rank scorer rerun | `all_bit_identical=True variables=21` | report SHA-256 `113fe89f7e3530bff1232ec84eb244423ff857b6baa37334d2f2fdb6dd6ebb44` |
 | 30-day smoke | exit 0, `WALL_SECONDS=504` | `dg_smoke/run.log`, SHA-256 `97a87bca3c2035b1764e7baf21422aa271f7257b14d276bd2f56df0705c2ad81` |
-| Three-year NEMO | **in progress**, not claimed complete; step 904,417 observed while closing this receipt | `operator_acquisition/nemo/dg_3yr/time.step` |
+| Three-year NEMO | **in progress**, not claimed complete; step 1,035,291 observed during the final audit | `operator_acquisition/nemo/dg_3yr/time.step` |
 | Fresh GPU/comparisons/movie | not started | acquisition commands below |
 
 ## Tests and evidence boundary
@@ -159,6 +172,14 @@ non-matrix requested battery file was rerun at `d2a4e061f`: **342 passed** in
 `8d63a51d613d60234ad8e6d12d7a4b41ea690eb26eb373745a768298bd7bf7e7`.
 Combined final requested coverage is **353 passed, one registered skip** over
 all 354 tests. No full-repository suite or optional 172,800-step scorer ran.
+
+After the platform-before-import audit, the complete reproduction-package set
+ran once more from clean commit `fd67594ba`: **67 passed** in 192.64 seconds.
+Its log SHA-256 is
+`fd2530fc14dd9884d970507c6bd417a802dc96a72da48f3e8610d23b5bf06a1b`.
+The citation gate at that commit again passed all 274 citations and nine
+controls; log SHA-256
+`08b0a8d570835cf71fbfb3d92ffbbf19d419206dac057d7806bdc0c1a6040399`.
 
 The movie repair arose during this round's permitted CPU execution. The first
 attempt left only a 48-byte partial after Python warned that ffmpeg's fork

@@ -2050,13 +2050,9 @@ class ExperimentConfig(NamedTuple):
                 "max(q, 0) tracer clamp, which CREATES mass at every "
                 "transport undershoot (+30 kg/m2/yr of water measured on "
                 "the AMIP century). Legacy bit-comparison mode only.")
-        if self.energy_consistent_moisture_clip:
-            _wlog.warning(
-                "NON-CONSERVING form selected: "
-                "energy_consistent_moisture_clip=True conserves "
-                "moist static energy but CREATES the clipped vapour "
-                "(water is NOT conserved by this floor) — the documented "
-                "exception to 'conserving form always'.")
+        # energy_consistent_moisture_clip creates water only in the dycore
+        # hard floor; the factory announces it where that floor runs
+        # (warn_if_vapour_floor_creates_water).
         if g.resolution <= 0:
             errors.append(f"grid.resolution must be > 0, got {g.resolution}")
         if g.nlev <= 0:

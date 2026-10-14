@@ -741,6 +741,34 @@ def refuse_unwired_energy_fixer(config: ExperimentConfig,
             f"explicitly on this lane.")
 
 
+#: Dycores whose end-of-step positivity stage passes
+#: ``energy_consistent_moisture_clip`` to :func:`apply_water_positivity`
+#: (spectral and FV3-duo pass ``energy_consistent=False``).
+_HARD_VAPOUR_FLOOR_SOLVERS = frozenset({
+    "mpas_primitive_equations",
+    "latlon_cgrid_primitive_equations",
+    "cdgrid_primitive_equations",
+})
+
+
+def warn_if_vapour_floor_creates_water(config: ExperimentConfig,
+                                       solver_name: str) -> None:
+    """Announce the one remaining water-creating vapour floor tied to
+    ``energy_consistent_moisture_clip``: the dycore HARD floor, which runs
+    only with ``mpas_conservative_tracer_clamp=False`` on a dycore that
+    passes the flag.  Everywhere else the flag's floor is the conserving
+    borrow, so nothing is announced (owner decision 2026-08-16: any
+    NON-conserving form announces itself)."""
+    if (config.energy_consistent_moisture_clip
+            and not config.dycore.mpas_conservative_tracer_clamp
+            and solver_name in _HARD_VAPOUR_FLOOR_SOLVERS):
+        logger.warning(
+            "NON-CONSERVING form selected: energy_consistent_moisture_clip"
+            "=True with mpas_conservative_tracer_clamp=False runs the "
+            "dycore hard water floor, which conserves moist static energy "
+            "but CREATES the clipped water (%s).", solver_name)
+
+
 def create_atmosphere_dycore(
     config: ExperimentConfig,
     grid,
@@ -801,6 +829,7 @@ def create_atmosphere_dycore(
 
     solver_name = _DRIVER_SUPPORTED[key]
     refuse_unwired_energy_fixer(config, solver_name)
+    warn_if_vapour_floor_creates_water(config, solver_name)
     if coeff_grid is None:
         coeff_grid = grid
     diff = compute_diffusion(coeff_grid, dc)

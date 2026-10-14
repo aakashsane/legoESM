@@ -237,6 +237,13 @@ def test_post_fix_run_registration_pins_fix_commit_and_gpu_zero():
     assert "post_fix" in registered["run_directory"]
 
 
+def test_post_qsr_run_registration_pins_live_stretch_fix_and_gpu_zero():
+    registered = CLIMATE.load_registered_legoesm_run("post_qsr_1b60b5807")
+    assert registered["commit"] == "1b60b580772873d906817ce3a56dcb67cc56e3c0"
+    assert registered["physical_gpu_index"] == 0
+    assert "post_qsr" in registered["run_directory"]
+
+
 def test_report_only_pattern_comparison_uses_common_finite_support():
     score = CLIMATE.paired_comparison(
         np.array([1.0, 2.0, np.nan]),

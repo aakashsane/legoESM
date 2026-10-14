@@ -1986,6 +1986,9 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
         shortwave_penetration_tendency,
     )
     from legoesm.ocean.vertical import compute_ocean_jacobian
+    from nemo_testcase_l2_gyre_round35_trazdf_matrix import (
+        read_trazdf_matrix,
+    )
 
     if jax.default_backend() != "cpu":
         raise RuntimeError("step-2 tracer discriminator requires CPU")
@@ -2017,7 +2020,8 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
     freshwater, surface = gyre_surface_forcings(card, state, 2)
     traced = LatLonCGridOceanModel(
         card.recipe.grid, card.recipe.z_coord, card.recipe.model_config,
-        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(tracer_process_trace=()),
+        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+            tracer_process_trace=(), vertical_solve_trace=True),
     ).step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
     traced = jax.device_get(traced)
 
@@ -2027,6 +2031,9 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
     )
     qsr_record = read_qsr_stage3_hires(
         oracle_root / "oracle_qsr_stage3_kt00000002.bin", expected_kt=2)
+    zdf_record = read_trazdf_matrix(
+        oracle_root / "oracle_trazdf_matrix_kt00000002.bin",
+        expect_kt=2, expected_domain=NEMO_DIMS)
     wet = expected_masks(card)["T"]
     e3 = np.asarray(card.recipe.z_coord.dz_ref, dtype=np.float64)
     qbb = np.asarray(1.0 + oracle["r3t_Kbb"], dtype=np.float64)
@@ -2099,6 +2106,46 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
         qsr_record["dT_dt"][..., :30],
         oracle["after_qsr_T"][..., :30]
         - oracle["after_sbc_T"][..., :30], wet)
+
+    def zdf_native(name: str, stop: int | None = None) -> np.ndarray:
+        value = np.asarray(zdf_record["arrays"][name], dtype=np.float64)
+        value = value[2:-2, 2:-2]
+        if value.ndim == 3 and stop is not None:
+            value = value[..., :stop]
+        return value.transpose(1, 0, 2) if value.ndim == 3 else value.T
+
+    vertical = traced.vertical_solve
+    vertical_expected = {
+        "heat_K": zdf_native("avt")[:, :, 1:30],
+        "isoneutral_K": zdf_native("ah_wslp2")[:, :, 1:30],
+        "effective_K": (
+            zdf_native("avt")[:, :, 1:30]
+            + zdf_native("ah_wslp2")[:, :, 1:30]),
+        "e3t_after": zdf_native("e3t_Kaa", 30),
+        "e3w_now": zdf_native("e3w_Kmm")[:, :, 1:30],
+        "content_T": zdf_native("rhs_T", 30),
+        "lower": zdf_native("zwi"),
+        "diagonal": zdf_native("zwd"),
+        "upper": zdf_native("zws"),
+        "solved_T": zdf_native("sol_T_pre_clamp", 30),
+    }
+    vertical_masks = {
+        name: wet[:, :, 1:] if value.shape[-1] == 29 else wet
+        for name, value in vertical_expected.items()
+    }
+    vertical_rows = [
+        exact_score(
+            f"GYRE-zco-r4.kt2.tra_zdf.{name}", expected,
+            np.asarray(getattr(vertical, name), dtype=np.float64),
+            vertical_masks[name],
+        )
+        for name, expected in vertical_expected.items()
+    ]
+    first_vertical = next(
+        (row["name"].rsplit(".", 1)[-1] for row in vertical_rows
+         if row["n_unequal"]),
+        "NONE",
+    )
     report = {
         "format": "nemo-testcase-l2-gyre-r4-step2-tracer-owner-v1",
         "worktree": worktree_stamp(),
@@ -2112,6 +2159,8 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
         "first_material_field": "T",
         "boundary_rows": boundary_rows,
         "executed_qsr_record_identity": qsr_increment_row,
+        "vertical_solve_rows": vertical_rows,
+        "first_remaining_vertical_operand_or_boundary": first_vertical,
         "one_variable_experiment": {
             "changed_variable": (
                 "Kbb qsr_2BD z_half/e3t stretch only: live 1+r3t(Kbb) "

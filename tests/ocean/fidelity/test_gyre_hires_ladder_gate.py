@@ -128,6 +128,14 @@ def test_scalar_step2_tracer_and_qsr_readers_follow_even_rk_slots():
     np.testing.assert_array_equal(
         qsr["dT_dt"], tracer["after_qsr_T"] - tracer["after_sbc_T"])
 
+    from nemo_testcase_l2_gyre_round35_trazdf_matrix import read_trazdf_matrix
+    zdf = read_trazdf_matrix(
+        root / "oracle_trazdf_matrix_kt00000002.bin",
+        expect_kt=2, expected_domain=GATE.NEMO_DIMS)
+    assert (zdf["header"]["jpi"], zdf["header"]["jpj"],
+            zdf["header"]["jpk"]) == GATE.NEMO_DIMS
+    assert np.asarray(zdf["arrays"]["rhs_T"]).shape == GATE.NEMO_DIMS
+
 
 def test_oracle_admission_refuses_root_and_digest_mutations(tmp_path):
     with pytest.raises(ValueError, match="unregistered oracle root"):

@@ -163,8 +163,8 @@ def _instrument_latlon():
                            dps)
         return on
 
-    def ef(pre, post, grid, sigma_coord, owned_mask=None):
-        dT = orig_ef(pre, post, grid, sigma_coord, owned_mask=owned_mask)
+    def ef(pre, post, grid, sigma_coord, **kw):   # owned_mask on newer trees
+        dT = orig_ef(pre, post, grid, sigma_coord, **kw)
         ph = sigma_coord.pressure_at_half(post[3])
         m = jnp.sum(jnp.sum(ph[..., 1:] - ph[..., :-1], axis=-1) * grid.area) / constants.g
         tag = "efix_mf" if _CTX["in_rails"] else "efix"

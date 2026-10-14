@@ -1984,6 +1984,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "humidity gradients. NOT monotone, so the q>=0 "
                              "floor can fire; setup refuses coefficients above "
                              "the explicit stability bound for the mesh+dt.")
+    parser.add_argument("--latlon-qv-smooth-del4-m4s", type=float, default=None,
+                        dest="latlon_qv_smooth_del4_m4s",
+                        help="Lat-lon COLUMN lane only: post-step horizontal "
+                             "q_v del4 diffusivity [m^4/s] on the lat-lon grid, "
+                             "then a water-mass-restoring floor (0=off, "
+                             "default).")
     parser.add_argument("--hines-total-rms-wind", type=float, default=None,
                         dest="hines_total_rms_wind",
                         help="Hines (1997) non-orographic GWD launch RMS wind "
@@ -2848,6 +2854,10 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
             args.mpas_qv_smooth_del4_m4s
             if args.mpas_qv_smooth_del4_m4s is not None
             else _EXPERIMENT_DEFAULTS.mpas_qv_smooth_del4_m4s),
+        latlon_qv_smooth_del4_m4s=(
+            args.latlon_qv_smooth_del4_m4s
+            if args.latlon_qv_smooth_del4_m4s is not None
+            else _EXPERIMENT_DEFAULTS.latlon_qv_smooth_del4_m4s),
         hard_sat_ice_curve=args.hard_sat_ice_curve,
         homogeneous_ice_nucleation=args.homogeneous_ice_nucleation,
         morrison_flavor=args.morrison_flavor,

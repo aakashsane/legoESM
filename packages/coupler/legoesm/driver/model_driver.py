@@ -733,6 +733,23 @@ def make_mpas_qv_smooth_fn(mesh, nu, dt, sigma_coord, nu4=0.0,
     return smooth
 
 
+def make_latlon_qv_smooth_fn(model, nu4, dt, sigma_coord):
+    """The lat-lon column lane's post-step q_v smoother as ONE compiled call
+    ``smooth(q, p_s)`` on columns: ``q + dt*hyperdiffusion_3d(q)`` on the
+    native lat-lon grid (the pipeline lane's operator, ``-nu4 * del^4``),
+    then :func:`_qv_level_conserving_floor` against the input, so the filter
+    neither creates nor destroys water and leaves ``p_s`` alone."""
+    from legoesm.core.operators_latlon_3d import hyperdiffusion_3d
+
+    @jax.jit
+    def smooth(q, p_s):
+        h = hyperdiffusion_3d(model.grid_of(q), model.grid, nu4)
+        raw = q + dt * model.columns_of(h).astype(q.dtype)
+        return _qv_level_conserving_floor(
+            raw, q, model.mesh.areaCell, sigma_coord.layer_thickness_dp(p_s))
+    return smooth
+
+
 def _spectral_full_physics(cfg) -> bool:
     """True when the spectral lane builds the unified (MPAS-style) physics."""
     return (cfg.radiation in ("rrtmg", "rrtmgp")
@@ -13897,6 +13914,21 @@ class ModelDriver:
             halo_refresh=_qv_halo_refresh,
             owned_mask=(None if self._voronoi_layout is None
                         else self._voronoi_layout.owned_mask_cells))
+        _qv_ll_nu4 = float(cfg.latlon_qv_smooth_del4_m4s)
+        if _qv_ll_nu4 > 0.0:
+            _ll_col = self._latlon_column_model()
+            if _ll_col is None:
+                raise ValueError(
+                    "latlon_qv_smooth_del4_m4s > 0 needs the lat-lon column "
+                    "lane; this run would silently ignore it")
+            if self.state.tracers is None or "q_v" not in self.state.tracers:
+                raise ValueError(
+                    "latlon_qv_smooth_del4_m4s > 0 needs a q_v tracer; this "
+                    "run has none (dry configuration)")
+            _qv_smooth_jit = make_latlon_qv_smooth_fn(
+                _ll_col, _qv_ll_nu4, DT, self.sigma)
+            logger.info("  lat-lon q_v del4 smoothing ON: nu4=%.4g m^4/s",
+                        _qv_ll_nu4)
 
         def _poststep_state(state):
             """Post-step dycore edits on the end-of-step state, shared by the
@@ -13910,7 +13942,7 @@ class ModelDriver:
             if _sponge_decay is not None:
                 state = state._replace(
                     u=state.u.replace(data=state.u.data * _sponge_decay))
-            if _qv_smooth_nu > 0.0 or _qv_smooth_nu4 > 0.0:
+            if _qv_smooth_nu > 0.0 or _qv_smooth_nu4 > 0.0 or _qv_ll_nu4 > 0.0:
                 _trc_sm = state.tracers
                 _new_trc_sm = dict(_trc_sm)
                 _new_trc_sm["q_v"] = _trc_sm["q_v"].replace(

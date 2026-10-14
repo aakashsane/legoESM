@@ -978,9 +978,8 @@ def test_host_liquid_above_the_cloud_top_cutoff_is_left_alone():
 
 
 def test_retained_liquid_above_the_cutoff_never_drives_vapour_negative():
-    """The moment mixing is not tapered above the cutoff, so it can take a
-    liquid-laden top layer's total water below the liquid kept there; the
-    retained liquid must then shrink, not leave q_v negative."""
+    """A liquid-laden top layer above the cutoff: the host state there is
+    kept (CAM top_lev), and neither q_v nor q_c may go negative."""
     col = _column()
     q_c = np.zeros((_NCOL, _NLEV))
     q_c[:, 0] = 1.0e-4                       # rt(top) >> rt(below): mixing dries it

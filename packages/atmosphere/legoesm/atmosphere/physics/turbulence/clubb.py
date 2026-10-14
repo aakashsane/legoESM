@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 6884)
+Table of contents (sections, in order; flag reference table at line 6907)
 -----------------------------------------------------------------------------
   1. [line  348] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  469] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -6461,34 +6461,57 @@ def clubb_step(
         # total water and the temperature carries that liquid's latent heat.
         # rcm is clip_rcm'd against rtm inside the closure, so q_v stays >= 0.
         rcm_new = flip_vertical(diags["rcm_grid"])
-        if config.trop_cloud_top_press > 0.0:
-            # CAM never runs CLUBB above top_lev, so the host liquid there is
-            # left alone: blend back to q_c with the same log-pressure taper as
-            # the cloud fraction. Total water still closes (q_v takes the rest).
-            _w_top = jax.nn.sigmoid(
-                (jnp.log(jnp.clip(p_full, 1.0, None))
-                 - jnp.log(config.trop_cloud_top_press))
-                / config.trop_cloud_taper_lnp_width)
-            # Bounded by the updated total water: the untapered moment mixing
-            # can dry a layer below the retained host liquid, and q_v = rtm -
-            # rcm must stay >= 0 (the PDF branch is already clip_rcm'd).
-            rcm_new = jnp.minimum(
-                _w_top * rcm_new + (1.0 - _w_top) * q_c,
-                jnp.maximum(flip_vertical(new_state.rtm), 0.0))
         q_new = flip_vertical(new_state.rtm) - rcm_new
         T_new = (flip_vertical(new_state.thlm) * exner
                  + (constants.L_v / constants.c_pd) * rcm_new)
         # REPLACES the host liquid, matching the reference; the seeding above is
         # what makes that reversible rather than a one-way ratchet.
-        diags = dict(diags, dq_c_dt=(rcm_new - q_c) / dt)
+        dq_c_dt = (rcm_new - q_c) / dt
     else:
         T_new = flip_vertical(new_state.thlm) * exner  # thl ~ theta, no liquid
         q_new = flip_vertical(new_state.rtm)
+        dq_c_dt = jnp.zeros_like(q_v)
+    dT_dt = (T_new - T) / dt
+    dq_v_dt = (q_new - q_v) / dt
+    if config.trop_cloud_top_press > 0.0:
+        # CAM never runs CLUBB above top_lev (clubb_intr.F90 cesm2_1_rel
+        # 1543-1550, 1973-2003): u, v, thl, rt and the host liquid stay at the
+        # host state there.  Same log-pressure taper w as the cloud fraction:
+        # x_new = x + w (x_clubb - x) for u, v, T, q_v, q_c.  CAM's truncated
+        # grid passes no flux across top_lev; here the column water [kg/m2/s]
+        # and u, v momentum [kg/m/s2] the taper removes go back uniformly per
+        # unit mass where w > 0 (CAM tw_upper_diss), so the column changes only
+        # by the surface fluxes.  Water falls back to the bottom layer if the
+        # spread would drive any q_v negative (CAM apply_to_surface).  Heat:
+        # the column energy fixer in the caller closes it (weights w).
+        w = jax.nn.sigmoid(
+            (jnp.log(jnp.clip(p_full, 1.0, None))
+             - jnp.log(config.trop_cloud_top_press))
+            / config.trop_cloud_taper_lnp_width)
+        dp_g = (p_half[:, 1:] - p_half[:, :-1]) / constants.g
+        spread = w / jnp.sum(dp_g * w, axis=1, keepdims=True)  # [kg/m2]^-1
+
+        def _removed(tend):
+            return jnp.sum(dp_g * (1.0 - w) * tend, axis=1, keepdims=True)
+
+        du_dt = w * du_dt + _removed(du_dt) * spread
+        dv_dt = w * dv_dt + _removed(dv_dt) * spread
+        dT_dt = w * dT_dt
+        removed_water = _removed(dq_v_dt + dq_c_dt)
+        dq_c_dt = w * dq_c_dt
+        dq_v_dt = w * dq_v_dt
+        uniform = dq_v_dt + removed_water * spread
+        bottom = dq_v_dt.at[:, -1].add(removed_water[:, 0] / dp_g[:, -1])
+        dq_v_dt = jnp.where(
+            (removed_water < 0.0)
+            & jnp.any(q_v + dt * uniform < 0.0, axis=1, keepdims=True),
+            bottom, uniform)
+    if liquid_partition:
+        diags = dict(diags, dq_c_dt=dq_c_dt)
     # KE removed by the momentum mixing + surface stress -> heat [K/s,
     # +warming] (review 2026-10-10 F14; CAM6 clubb_do_energyfix=.true.):
     # exact for the host update u += dt*du, T += dt*dT of this call.
-    dT_dt = (T_new - T) / dt + ke_dissipation_heating(u, v, du_dt, dv_dt, dt)
-    dq_v_dt = (q_new - q_v) / dt
+    dT_dt = dT_dt + ke_dissipation_heating(u, v, du_dt, dv_dt, dt)
     # Energy [W/m2, + up = into the air] the lower BCs actually supply to the
     # host's c_pd*T + L_v*q_v: the heat BC (latent-enthalpy correction
     # included) plus the water BC at the reference L_v.  Equals shflx + lhflx

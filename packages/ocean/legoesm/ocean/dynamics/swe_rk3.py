@@ -353,6 +353,15 @@ def swe_rk3_step(state, dt, surface_forcing, grid, z_coord, config,
     if surface_forcing is None:
         raise ValueError(
             "SWE RK3 step requires grid-native surface stress forcing")
+    unsupported = [
+        name for name in surface_forcing._fields
+        if name not in ("tau_i_native", "tau_j_native")
+        and getattr(surface_forcing, name) is not None
+    ]
+    if unsupported:
+        raise ValueError(
+            "SWE RK3 does not accept non-native surface forcing fields: "
+            + ", ".join(unsupported))
     tau_u = getattr(surface_forcing, "tau_i_native", None)
     tau_v = getattr(surface_forcing, "tau_j_native", None)
     if tau_u is None or tau_v is None:

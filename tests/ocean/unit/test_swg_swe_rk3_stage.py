@@ -356,6 +356,20 @@ def test_stage_replay_refuses_bypassed_time_and_vertical_physics_selectors(
                 card.recipe.z_coord, card.recipe.land_mask, bad)
 
 
+@pytest.mark.parametrize(
+    "field", [name for name in OceanSurfaceForcing._fields
+              if name not in ("tau_i_native", "tau_j_native")])
+def test_swe_step_refuses_each_non_native_surface_field(
+        card_and_model, field):
+    card, model = card_and_model
+    value = jnp.zeros((84, 84), dtype=jnp.float64)
+    forcing = OceanSurfaceForcing(
+        tau_i_native=value, tau_j_native=value)._replace(**{field: value})
+    with pytest.raises(ValueError, match=f"does not accept.*{field}"):
+        model.step(card.recipe.initial_state, card.dt_s,
+                   surface_forcing=forcing)
+
+
 @pytest.mark.parametrize("field,value", (
     ("lateral_viscosity_operator", "vector_laplacian"),
     ("lateral_viscosity_e3_weighting", "off"),

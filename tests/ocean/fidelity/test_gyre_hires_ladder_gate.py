@@ -127,6 +127,15 @@ def test_first_rk_difference_is_derived_in_stage_and_field_order():
     assert (owner_scale["stage"], owner_scale["field"]) == (2, "T")
 
 
+def test_step2_stage_records_are_registered_as_after_level():
+    from legoesm.ocean.fidelity.time_levels import time_level_for_dump
+
+    assert [
+        time_level_for_dump(f"oracle_stage_kt00000002_s{stage}.bin")
+        for stage in (1, 2, 3)
+    ] == ["after", "after", "after"]
+
+
 def test_all_math_flavour_oracles_are_admitted_by_content():
     expected_files = {
         ("r4", "vector"): 20,

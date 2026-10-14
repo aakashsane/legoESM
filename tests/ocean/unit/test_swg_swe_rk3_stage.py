@@ -116,6 +116,19 @@ def test_later_stage_and_full_step_dispatches_fail_closed(card_and_model):
         model.step(card.recipe.initial_state, card.dt_s)
 
 
+@pytest.mark.parametrize("override", ("grid", "vertex_mask"))
+def test_swe_step_refuses_grid_overrides(card_and_model, override):
+    card, model = card_and_model
+    forcing = OceanSurfaceForcing(
+        tau_i_native=jnp.zeros((84, 84), dtype=jnp.float64),
+        tau_j_native=jnp.zeros((84, 84), dtype=jnp.float64))
+    kwargs = {override: (card.recipe.grid if override == "grid"
+                         else jnp.ones((84, 84), dtype=jnp.float64))}
+    with pytest.raises(ValueError, match="does not accept grid overrides"):
+        model.step(card.recipe.initial_state, card.dt_s,
+                   surface_forcing=forcing, **kwargs)
+
+
 def test_normal_step_uses_the_jitted_three_stage_production_program(card_and_model):
     card, model = card_and_model
     src = swg_horizontal_coordinates()

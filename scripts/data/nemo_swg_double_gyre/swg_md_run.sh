@@ -165,7 +165,7 @@ if [[ "$mode" == smoke || "$mode" == three-year ]]; then
     printf 'REFUSE_INCOMPLETE_RUN: output.namelist.dyn missing\n' >&2; exit 70; }
   model_days=$((steps / cadence))
   deck_guard=$repo_root/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_deck_guard.py
-  "$python" "$deck_guard" --nemo-namelist output.namelist.dyn \
+  "$python" "$deck_guard" --nemo-run-dir . \
     --days "$model_days" --json deck_guard.json
   sha256sum deck_guard.json >>manifest.sha256
 fi

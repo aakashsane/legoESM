@@ -27,6 +27,9 @@
       "sysroot_linux-64": "2.34 h087de78_3"
     },
     "exact_conda_file": "scripts/data/nemo_swg_double_gyre/nemo-build-linux-64-explicit.txt",
+    "exact_conda_file_sha256": "9aa5e72d56547edeaf27ad6514a58457d39940aa3eb09514b8526381e10c81f5",
+    "exact_conda_packages": 122,
+    "exact_conda_hashes": "md5 on every package URL",
     "readable_conda_file": "scripts/data/nemo_swg_double_gyre/nemo-build-environment.yml",
     "cpp": "cpp -Dkey_nosignedzero",
     "cflags": "-O0",
@@ -34,15 +37,21 @@
   },
   "python": {
     "version": "3.13.0",
+    "conda_channel": "conda-forge",
+    "conda_build": "h9ebbce0_101_cp313",
+    "conda_match_spec": "python=3.13.0=h9ebbce0_101_cp313",
     "requirements_file": "scripts/data/nemo_swg_double_gyre/python-gpu-requirements.txt",
+    "requirements_file_sha256": "e82199080ef29768d348043f9bdd6a8b24a4017dfe7572bc70800d57d52e17d9",
     "packages": {
+      "certifi": "2026.4.22",
       "equinox": "0.13.7",
       "imageio-ffmpeg": "0.6.0",
       "jax": "0.10.0",
       "jax-cuda12-pjrt": "0.10.0",
       "jax-cuda12-plugin": "0.10.0",
       "jaxlib": "0.10.0",
-      "numpy": "2.4.4"
+      "numpy": "2.4.4",
+      "typing-extensions": "4.15.0"
     }
   },
   "hardware": {

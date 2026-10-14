@@ -4,7 +4,8 @@ This is a clean-machine runbook for a colleague who knows NEMO and Python but
 not legoESM. It builds the `SWG_DG` case, proves the two-line case variant is
 inert on shipped SWG, runs the 4,000 km eddying double gyre for three years in
 both models, compares annual states, compares matched daily-mean climate
-statistics, and makes a side-by-side movie.
+statistics, and makes a side-by-side movie. The workflow has nine numbered
+steps; the import check is part of environment step 1.
 
 The exact reference claim is deliberately narrow: on the pinned composition,
 legoESM end-of-day `ssh_m`, `u_m_s`, and `v_m_s` at days 365, 730, and 1095
@@ -62,6 +63,7 @@ Choose only paths on your machine:
 export LEGOESM_ROOT=/path/to/clean/legoesm
 export NEMO_ROOT=/path/to/new/nemo-5.0.2
 export NEMO_PREFIX=/path/to/new/nemo-build-environment
+export PYTHON_PREFIX=/path/to/new/python-3.13.0
 export PYTHON_ENV=/path/to/new/legoesm-swg-dg-python
 export REPRO=/path/to/new/swg-dg-reproduction
 ```
@@ -85,9 +87,18 @@ build-composition reproduction.
 conda create --prefix "$NEMO_PREFIX" --file \
   "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/nemo-build-linux-64-explicit.txt"
 export PATH="$NEMO_PREFIX/bin:$PATH"
+```
 
-python3.13 -c 'import sys; assert sys.version_info[:3] == (3, 13, 0)'
-python3.13 -m venv "$PYTHON_ENV"
+The exact NEMO lock has 122 package/build URLs and an MD5 on every URL. Create
+the exact Python 3.13.0 interpreter from conda-forge build
+`h9ebbce0_101_cp313`, then make the isolated virtual environment:
+
+```bash
+conda create --prefix "$PYTHON_PREFIX" --override-channels \
+  --channel conda-forge 'python=3.13.0=h9ebbce0_101_cp313' pip
+"$PYTHON_PREFIX/bin/python" -c \
+  'import sys; assert sys.version_info[:3] == (3, 13, 0)'
+"$PYTHON_PREFIX/bin/python" -m venv "$PYTHON_ENV"
 export PY="$PYTHON_ENV/bin/python"
 "$PY" -m pip install -r \
   "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/python-gpu-requirements.txt"
@@ -95,9 +106,9 @@ export JAX_ENABLE_X64=1
 mkdir -p "$REPRO"
 ```
 
-The exact conda file includes compiler/MPI/NetCDF build strings. The Python
-file includes JAX, jaxlib, CUDA plugin and PJRT 0.10.0 plus every imported
-package and CUDA wheel. Full values and the readable conda alternative are in
+The 40 Python pins include JAX, jaxlib, CUDA plugin and PJRT 0.10.0, every
+required CUDA wheel, `typing-extensions==4.15.0`, and
+`certifi==2026.4.22`. Full values and the readable conda alternative are in
 `swg_double_gyre_environment.md` and `.json`.
 
 Every command below binds imports to the checkout containing the script. Its
@@ -117,6 +128,43 @@ CHECKOUT_IMPORT_OK root=/your/legoesm ... numpy=2.4.4 ...
 
 The tools refuse if `legoesm.ocean` resolves outside this checkout. They also
 set CPU/GPU selection explicitly before importing JAX.
+
+### Package self-test boundary
+
+Run the same 18-file lane battery used for this package:
+
+```bash
+PYTHONPATH=packages/core:packages/ocean:packages/atmosphere:packages/coupler:packages/ice:packages/land:packages/ml:packages/tools:src \
+JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 "$PY" -m pytest -q \
+  tests/ocean/fidelity/test_nemo_testcase_receipt_citation_gate.py \
+  tests/ocean/unit/test_nemo_tsunami_card.py \
+  tests/ocean/fidelity/test_nemo_swg_check_records.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_climate.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_composition.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_restart_identity.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_round6.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_round7.py \
+  tests/ocean/fidelity/test_nemo_swg_geometry_gate.py \
+  tests/ocean/fidelity/test_nemo_swg_ladder.py \
+  tests/ocean/fidelity/test_nemo_tsunami_ladder.py \
+  tests/ocean/fidelity/test_swg_dg_reproduction_guards.py \
+  tests/ocean/fidelity/test_swg_dg_reproduction_shell.py \
+  tests/ocean/fidelity/test_swg_double_gyre_movie.py \
+  tests/ocean/unit/test_nemo_swg_card.py \
+  tests/ocean/unit/test_pv_flux_ene.py \
+  tests/ocean/unit/test_swg_swe_rk3_stage.py \
+  tests/ocean/validation/test_step_gradient_matrix.py
+```
+
+This Round-D tree collects 370 tests. On a machine with only the repository,
+expect **352 passed, 18 skipped**: four geometry tests need the external mesh;
+twelve historical ladder tests need admitted stage/restart/month records; one
+inventory test needs the preprocessed NEMO source tree; and one six-step GYRE
+gradient row is unconditionally skipped for its registered LLVM section-memory
+failure. Those 18 tests exercise external campaign evidence and are not guards
+for the portable package. The fixture-backed build/run/guard/comparator tests
+must run and may not silently skip. The reference-machine final count and log
+are cited in the Round-D receipt.
 
 ## 2. Build `SWG_DG`
 
@@ -188,14 +236,22 @@ checkout-binding preamble.
 
 The NEMO namelist patch and legoESM's `SWG_MADDISON_NAMELIST` are independent
 definitions, not one source of truth. On completion, `swg_md_run.sh` feeds
-NEMO's actual `output.namelist.dyn` to a cross-model guard. It compares 137
-resolved common values and permits only:
+the complete NEMO run directory to a cross-model guard. The guard resolves all
+131 fields read by the compiled SWE engine. It takes a value from
+`output.namelist.dyn` when NEMO echoes it; otherwise it applies NEMO's actual
+`namelist_ref` then `namelist_cfg` override order to the two content-hashed run
+inputs. It also compares the 16 case-specific physical values common to the
+echo and the legoESM card, for 158 comparison rows in total. Only these two
+output controls may differ:
 
 - `sn_cfctl.l_runstat`: NEMO completion output with no legoESM analogue; and
 - `nn_stock`: annual NEMO restart tiles versus daily legoESM NPZ output.
 
-Any other physical, numerical, or run-control difference fails. The guard
-therefore checks the deck NEMO actually read, not just the patch text.
+Any other physical, numerical, or run-control difference fails. NEMO's echo
+omits the 21-field `nambdy` group even though the executable reads it. Those
+values are therefore resolved from the hashed run inputs. `ocean.output` does
+not print a machine-readable `nambdy` value on this case, and the report says
+`not_printed` rather than claiming an unavailable cross-check.
 
 ```bash
 NEMO_RUNS="$REPRO/nemo"
@@ -214,7 +270,8 @@ export NEMO_RUN="$NEMO_RUNS/dg_3yr"
 
 The smoke is 51,840 steps. The three-year run is 1,892,160 steps with daily
 means and restarts at 630,720, 1,261,440, and 1,892,160. Each command prints
-`SWG_DG_DECK_GUARD PASS overlap=137 allowed_differences=2` before its final
+`SWG_DG_DECK_GUARD PASS compiled_reads=131/131 comparison_rows=158
+allowed_differences=2` before its final
 `NEMO_RUN_COMPLETE` line. Retain `output.namelist.dyn`, `deck_guard.json`,
 `run.log`, `run.stat`, `time.step`, and both manifests.
 
@@ -315,6 +372,9 @@ differences were:
 | days 1–365 | `2.286230926795696e-11` | `1.1921534939784983e-11` |
 | days 366–1095 | `2.2225409013199027e-11` | `1.402270660699756e-11` |
 
+Across both windows, the measured maxima are
+`2.286230926795696e-11` for kinetic energy and
+`1.402270660699756e-11` for eddy kinetic energy.
 These are measured reference values, not a cross-toolchain acceptance bar.
 NEMO daily means are fp32, and no sampling-uncertainty/post-decorrelation bar
 has been registered. Retain and report every metric.
@@ -368,10 +428,17 @@ On the reference machine this prints 30 zero-unequal rows and ends:
 SWG_DG_SHORT_LADDER EXACT composition=outer-scan backend=cpu first_difference=NONE
 ```
 
-To reproduce the operational device composition, rerun with
-`--backend gpu --gpu-device 0`. The report identifies the first differing
-step/field, unequal words, maximum residual, region, hashes, and a binding
-one-ULP control. Send that JSON with the full toolchain versions.
+Score the operational device composition with a separate output path:
+
+```bash
+"$PY" "$LADDER" --nemo-root "$REPRO/nemo/dg_ladder" \
+  --backend gpu --gpu-device 0 --composition outer-scan \
+  --json "$REPRO/short_ladder_outer_scan_gpu.json"
+```
+
+The report identifies the first differing step/field, unequal words, maximum
+residual, region, hashes, and a binding one-ULP control. Never reuse the CPU
+JSON path; the scorer refuses overwrites.
 
 The formal materialized composition is a useful discriminator and is expected
 to return exit 1 on the reference composition:
@@ -379,7 +446,7 @@ to return exit 1 on the reference composition:
 ```bash
 "$PY" "$LADDER" --nemo-root "$REPRO/nemo/dg_ladder" \
   --backend cpu --composition materialized \
-  --json "$REPRO/short_ladder_materialized.json"
+  --json "$REPRO/short_ladder_materialized.json" || test "$?" -eq 1
 ```
 
 Its first completed-state difference is:
@@ -388,10 +455,55 @@ Its first completed-state difference is:
 SWG_DG_SHORT_LADDER DEBT composition=materialized backend=cpu first_difference=step2.ssh_m bits=189
 ```
 
-The separate formal stage-entry ladder first differs at step 2 in 1,278 SSH
-words; that is a different registered statistic. Both remain open debt. The
-640 V-stress forcing words differing only by signed zero also remain reported,
-not excepted, pending the user's exactness-policy decision.
+Compare both reports with the committed reference behavior:
+
+```bash
+"$PY" "$LADDER" --compare-reference \
+  --outer-report "$REPRO/short_ladder_outer_scan.json" \
+  --materialized-report "$REPRO/short_ladder_materialized.json"
+```
+
+The required reference-machine lines are:
+
+```text
+SWG_DG_SHORT_LADDER_BASELINE outer-scan same as reference
+SWG_DG_SHORT_LADDER_BASELINE materialized same as reference
+```
+
+On another composition, the command instead prints the first step and field
+whose counts or maximum residual depart from the reference. To compare the GPU
+form, substitute `short_ladder_outer_scan_gpu.json` for `--outer-report`.
+
+Three often-confused debt counts describe different reductions:
+
+- **189** is the number of unequal wet SSH words in the materialized
+  completed state at step 2. The short-ladder command above produces it.
+- **1,278** is the number of unequal wet SSH words between legoESM's
+  materialized stage-1 output and NEMO's separately instrumented stage-2 entry
+  at step 2. Given an admitted instrumented stage root, this command produces
+  it:
+
+  ```bash
+  ROUND7="$LEGOESM_ROOT/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_round7.py"
+  export STAGE_ROOT=/path/to/instrumented/nemo/step2/stage-entry-records
+  "$PY" "$ROUND7" --root "$STAGE_ROOT" \
+    --json "$REPRO/formal_stage_entry_discriminator.json"
+  ```
+
+- **414,545** is the step-10 sum of materialized completed-state unequal words
+  over SSH, U, and V (`278,318 + 3,143 + 133,084`). It is the accumulated
+  endpoint of the same materialized-program debt, not a third comparison
+  boundary. This command produces that total:
+
+  ```bash
+  COMPOSITION="$LEGOESM_ROOT/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_composition.py"
+  "$PY" "$COMPOSITION" --root "$REPRO/nemo/dg_ladder" \
+    --json "$REPRO/step10_composition_discriminator.json"
+  ```
+
+The committed compact baseline records all 30 rows for both program forms.
+The 640 V-stress forcing words differing only by signed zero also remain
+reported, not excepted, pending the user's exactness-policy decision.
 
 ## Honest expectation across machines
 

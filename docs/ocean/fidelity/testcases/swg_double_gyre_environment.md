@@ -25,7 +25,11 @@ conda create --prefix "$NEMO_PREFIX" --file \
   "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/nemo-build-linux-64-explicit.txt"
 ```
 
-That explicit file is normative for bit-identity attempts. The companion
+That explicit file is normative for bit-identity attempts. It contains the
+122 measured package/build URLs and the MD5 supplied by conda for every URL;
+its SHA-256 is
+`9aa5e72d56547edeaf27ad6514a58457d39940aa3eb09514b8526381e10c81f5`.
+The companion
 `nemo-build-environment.yml` omits build strings and is a readable, more
 portable fallback when exact linux-64 artifacts are unavailable:
 
@@ -54,21 +58,25 @@ and hashes in its self-contained build manifest.
 
 ## Reconstruct Python/JAX
 
-Create a Python 3.13.0 virtual environment and install the restricted,
-fully-pinned dependency closure used by the driver, comparators, climate
-instrument, and movie:
+First create the measured Python interpreter from conda-forge. The exact
+reference build is `python 3.13.0 h9ebbce0_101_cp313`; do not rely on a
+distribution-provided `python3.13`:
 
 ```bash
-python3.13 -c 'import sys; assert sys.version_info[:3] == (3, 13, 0)'
-python3.13 -m venv "$PYTHON_ENV"
+conda create --prefix "$PYTHON_PREFIX" --override-channels \
+  --channel conda-forge 'python=3.13.0=h9ebbce0_101_cp313' pip
+"$PYTHON_PREFIX/bin/python" -c \
+  'import sys; assert sys.version_info[:3] == (3, 13, 0)'
+"$PYTHON_PREFIX/bin/python" -m venv "$PYTHON_ENV"
 PY="$PYTHON_ENV/bin/python"
 "$PY" -m pip install -r \
   "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/python-gpu-requirements.txt"
 ```
 
-The pin includes JAX, jaxlib, `jax-cuda12-plugin`, and
+The 40-package fully pinned closure includes JAX, jaxlib, `jax-cuda12-plugin`, and
 `jax-cuda12-pjrt` 0.10.0; NumPy 2.4.4; Equinox 0.13.7; every CUDA wheel build;
-NetCDF4; SciPy; Matplotlib; and imageio-ffmpeg. The package tools add their own
+NetCDF4 plus certifi 2026.4.22; typing-extensions 4.15.0; SciPy; Matplotlib;
+and imageio-ffmpeg. The package tools add their own
 checkout's package roots before imports and print `CHECKOUT_IMPORT_OK` with
 the selected Python, NumPy, and `legoesm.ocean` paths. They refuse an import
 from another checkout. No editable legoESM install is required.

@@ -501,7 +501,9 @@ def _full_xyz(values: np.ndarray, dims=NEMO_DIMS) -> np.ndarray:
     return values.reshape((nx, ny, nz), order="F")[2:-2, 2:-2].transpose(1, 0, 2)
 
 
-def read_tracer_stage3_hires(path: Path, *, dims=NEMO_DIMS) -> dict:
+def read_tracer_stage3_hires(
+    path: Path, *, dims=NEMO_DIMS, expected_kt: int = 1,
+) -> dict:
     """Read the P3 stage-3 tracer accumulator at the selected resolution."""
     with path.open("rb") as handle:
         magic = handle.read(16).decode("ascii").rstrip()
@@ -510,8 +512,11 @@ def read_tracer_stage3_hires(path: Path, *, dims=NEMO_DIMS) -> dict:
     version, kt, stage, kbb, kmm, krhs, kaa, nx, ny, nz, bits = header
     if magic != "NEMO_L2_RKTR3_1":
         raise ValueError(f"{path}: bad stage-3 tracer magic")
+    expected_slots = (
+        (1, 2, 3, 3) if expected_kt % 2 else (3, 2, 1, 1)
+    )
     if ((version, kt, stage, kbb, kmm, krhs, kaa, nx, ny, nz, bits)
-            != (1, 1, 3, 1, 2, 3, 3, *dims, 64)):
+            != (1, expected_kt, 3, *expected_slots, *dims, 64)):
         raise ValueError(f"{path}: bad stage-3 tracer header")
     n3, n2 = nx * ny * nz, nx * ny
     if values.size != 16 * n3 + 3 * n2 or not np.all(np.isfinite(values)):
@@ -532,6 +537,34 @@ def read_tracer_stage3_hires(path: Path, *, dims=NEMO_DIMS) -> dict:
         result[name] = block.reshape((nx, ny), order="F")[2:-2, 2:-2].T
     result.update({"Kbb": kbb, "Kmm": kmm, "Krhs": krhs, "Kaa": kaa})
     return result
+
+
+def read_qsr_stage3_hires(
+    path: Path, *, dims=NEMO_DIMS,
+    expected_kt: int = 1,
+) -> dict:
+    """Read the isolated executed ``tra_qsr`` increment."""
+    with path.open("rb") as handle:
+        magic = handle.read(16).decode("ascii").rstrip()
+        header = struct.unpack("=9i", handle.read(36))
+        values = np.fromfile(handle, dtype=np.float64)
+    version, kt, stage, kmm, krhs, nx, ny, nz, bits = header
+    expected_krhs = 3 if expected_kt % 2 else 1
+    if magic != "NEMO_L2_QSR___1":
+        raise ValueError(f"{path}: bad QSR magic")
+    if ((version, kt, stage, kmm, krhs, nx, ny, nz, bits)
+            != (1, expected_kt, 3, 2, expected_krhs, *dims, 64)):
+        raise ValueError(f"{path}: bad QSR header")
+    n2 = (nx - 4) * (ny - 4)
+    n3 = nx * ny * nz
+    if values.size != n2 + n3 or not np.all(np.isfinite(values)):
+        raise ValueError(f"{path}: bad QSR payload")
+    return {
+        "qsr": values[:n2].reshape((nx - 4, ny - 4), order="F").T,
+        "dT_dt": _full_xyz(values[n2:], dims),
+        "Kmm": kmm,
+        "Krhs": krhs,
+    }
 
 
 def _native_f_to_vertex(native: np.ndarray) -> np.ndarray:
@@ -1931,6 +1964,179 @@ def run_stage3_geometry_only(
     return report
 
 
+def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
+    """Replay the first material quarter-degree tracer split at stage 3."""
+    import jax
+    import jax.numpy as jnp
+
+    from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        LatLonCGridOceanModel,
+        _NEMOWSRK3TestHooks,
+    )
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        GYRE_R4_NAMELIST,
+        build_nemo_testcase_card,
+        gyre_surface_forcings,
+    )
+    from legoesm.ocean.fidelity.provenance import worktree_stamp
+    from legoesm.ocean.physics.shortwave_penetration import (
+        shortwave_penetration_tendency,
+    )
+    from legoesm.ocean.vertical import compute_ocean_jacobian
+
+    if jax.default_backend() != "cpu":
+        raise RuntimeError("step-2 tracer discriminator requires CPU")
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    admission = admit_oracle("r4_step2", "scalar", oracle_root)
+    namelist = GYRE_R4_NAMELIST._replace(
+        nn_itend=10, nn_stock=10, nn_write=10)
+    card = build_nemo_testcase_card("GYRE-zco", namelist=namelist)
+    ordinary = LatLonCGridOceanModel(
+        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+    state = card.recipe.initial_state
+    freshwater, surface = gyre_surface_forcings(card, state, 1)
+    state = ordinary.step(
+        state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+
+    # Preserve legoESM's hidden closure/RK memories, but bridge every primary
+    # NEMO before-level field.  The following source-order comparison is thus
+    # a step-2 operator walk, not a compounding step-1 trajectory comparison.
+    entry = read_entry(
+        oracle_root / "oracle_step_entry_kt00000002.bin", dims=NEMO_DIMS)
+    u, v = _redundant_faces(entry["u"], entry["v"])
+    state = state._replace(
+        T=state.T.replace(data=jnp.asarray(entry["T"][..., :30])),
+        S=state.S.replace(data=jnp.asarray(entry["S"][..., :30])),
+        u=state.u.replace(data=jnp.asarray(u)),
+        v=state.v.replace(data=jnp.asarray(v)),
+        eta=state.eta.replace(data=jnp.asarray(entry["ssh"])),
+    )
+    freshwater, surface = gyre_surface_forcings(card, state, 2)
+    traced = LatLonCGridOceanModel(
+        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config,
+        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(tracer_process_trace=()),
+    ).step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+    traced = jax.device_get(traced)
+
+    oracle = read_tracer_stage3_hires(
+        oracle_root / "oracle_rktracer_stage3_kt00000002.bin",
+        expected_kt=2,
+    )
+    qsr_record = read_qsr_stage3_hires(
+        oracle_root / "oracle_qsr_stage3_kt00000002.bin", expected_kt=2)
+    wet = expected_masks(card)["T"]
+    e3 = np.asarray(card.recipe.z_coord.dz_ref, dtype=np.float64)
+    qbb = np.asarray(1.0 + oracle["r3t_Kbb"], dtype=np.float64)
+    qmm = np.asarray(1.0 + oracle["r3t_Kmm"], dtype=np.float64)
+    qaa = np.asarray(1.0 + oracle["r3t_Kaa"], dtype=np.float64)
+    base = qbb[..., None] * oracle["Kbb_T"][..., :30]
+    nemo_boundaries = {
+        "geometry": base / qaa[..., None],
+        "advection": (
+            base + card.dt_s * qmm[..., None]
+            * oracle["after_advection_T"][..., :30]) / qaa[..., None],
+        "surface_boundary": (
+            base + card.dt_s * qmm[..., None]
+            * oracle["after_sbc_T"][..., :30]) / qaa[..., None],
+        "shortwave": (
+            base + card.dt_s * qmm[..., None]
+            * oracle["after_qsr_T"][..., :30]) / qaa[..., None],
+        "lateral_diffusion": (
+            base + card.dt_s * qmm[..., None]
+            * oracle["after_ldf_T"][..., :30]) / qaa[..., None],
+    }
+    b0, badv, bsbc, bqsr, bldf, _ = (
+        np.asarray(value, dtype=np.float64) for value in traced.boundaries)
+    lego_boundaries = {
+        "geometry": b0,
+        "advection": badv,
+        "surface_boundary": bsbc,
+        "shortwave": bqsr,
+        "lateral_diffusion": bldf,
+    }
+    boundary_rows = [
+        exact_score(
+            f"GYRE-zco-r4.kt2.stage3.{name}.T",
+            nemo_boundaries[name], lego_boundaries[name], wet)
+        for name in nemo_boundaries
+    ]
+
+    # Replay the removed arm with exactly one changed variable: the Kbb
+    # attenuation/thickness stretch is static one instead of live 1+r3t(Kbb).
+    live_stretch = np.asarray(compute_ocean_jacobian(
+        state.eta.data, state.H_bathy.data, card.recipe.z_coord))
+    live_qsr = np.asarray(shortwave_penetration_tendency(
+        surface.sw_down, card.recipe.z_coord.dz_ref,
+        card.recipe.z_coord.z_half_ref, jnp.asarray(live_stretch),
+        card.recipe.model_config.physics.shortwave_penetration,
+        rho_0=card.recipe.model_config.rho_0,
+        c_sw=card.recipe.model_config.physics.constants.c_sw,
+        z_half_stretch=jnp.asarray(live_stretch),
+    ))
+    static_qsr = np.asarray(shortwave_penetration_tendency(
+        surface.sw_down, card.recipe.z_coord.dz_ref,
+        card.recipe.z_coord.z_half_ref, jnp.asarray(live_stretch),
+        card.recipe.model_config.physics.shortwave_penetration,
+        rho_0=card.recipe.model_config.rho_0,
+        c_sw=card.recipe.model_config.physics.constants.c_sw,
+    ))
+    reverted_shortwave = (
+        bqsr + card.dt_s * np.asarray(traced.qsr_association.thickness_kbb)
+        * (static_qsr - live_qsr)
+        / np.maximum(qaa[..., None] * e3, 1.0e-10)
+    )
+    live_row = exact_score(
+        "one_variable.live_Kbb_stretch", nemo_boundaries["shortwave"],
+        bqsr, wet)
+    static_row = exact_score(
+        "one_variable.static_Kbb_stretch", nemo_boundaries["shortwave"],
+        reverted_shortwave, wet)
+    qsr_increment_row = exact_score(
+        "NEMO.executed_qsr_increment_vs_recorded_boundary",
+        qsr_record["dT_dt"][..., :30],
+        oracle["after_qsr_T"][..., :30]
+        - oracle["after_sbc_T"][..., :30], wet)
+    report = {
+        "format": "nemo-testcase-l2-gyre-r4-step2-tracer-owner-v1",
+        "worktree": worktree_stamp(),
+        "oracle_admission": admission,
+        "policy": "fp64/x64/cpu/libm certified",
+        "bridge": (
+            "NEMO kt=2 T/S/U/V/SSH primary state; legoESM hidden closure "
+            "and RK memories retained from its certified step 1"),
+        "step": 2,
+        "first_material_rk_stage": 3,
+        "first_material_field": "T",
+        "boundary_rows": boundary_rows,
+        "executed_qsr_record_identity": qsr_increment_row,
+        "one_variable_experiment": {
+            "changed_variable": (
+                "Kbb qsr_2BD z_half/e3t stretch only: live 1+r3t(Kbb) "
+                "versus the removed static-one default"),
+            "production_live": live_row,
+            "reverted_static": static_row,
+        },
+        "owner": (
+            "shared-physics Kbb qsr_2BD call omitted z_half_stretch, while "
+            "the stage-3 replacement subtracted the live-Kbb field"),
+        "compiled_nemo_sources": {
+            "stage3_call": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "stprk3_stg.f90:691-704"),
+            "live_stretch_kernel": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "traqsr.f90:615-645"),
+        },
+        "verdict": (
+            "CONFIRMED" if static_row["max_abs"] > live_row["max_abs"]
+            else "REFUTED"),
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
+    return report
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck", choices=tuple(DEFAULT_ORACLES), default="r4")
@@ -1940,6 +2146,7 @@ def main(argv=None) -> int:
     parser.add_argument("--ahm-root", type=Path, default=DEFAULT_AHM_ROOT)
     parser.add_argument("--stage2-composition-only", action="store_true")
     parser.add_argument("--stage3-geometry-only", action="store_true")
+    parser.add_argument("--step2-tracer-owner-only", action="store_true")
     parser.add_argument("--writer-identity-only", action="store_true")
     parser.add_argument("--writer-twin-root", type=Path)
     parser.add_argument("--writer-candidate-root", type=Path)
@@ -1969,7 +2176,10 @@ def main(argv=None) -> int:
             raise ValueError(
                 "writer identity arguments require --writer-identity-only")
         admission = admit_oracle(args.deck, args.math_flavour, args.oracle_root)
-        if args.stage2_composition_only and args.stage3_geometry_only:
+        narrow = sum((args.stage2_composition_only,
+                      args.stage3_geometry_only,
+                      args.step2_tracer_owner_only))
+        if narrow > 1:
             raise ValueError("choose only one narrow discriminator")
         if args.stage2_composition_only:
             if args.deck != "r4":
@@ -1985,6 +2195,13 @@ def main(argv=None) -> int:
                 Path(admission["root"]), args.output,
                 math_flavour=args.math_flavour,
             )
+        elif args.step2_tracer_owner_only:
+            if (args.deck, args.math_flavour) != ("r4", "scalar"):
+                raise ValueError(
+                    "step-2 tracer discriminator requires r4/scalar")
+            step2_admission = admit_oracle("r4_step2", "scalar")
+            report = run_step2_tracer_owner(
+                Path(step2_admission["root"]), args.output)
         else:
             report = run(
                 Path(admission["root"]), args.output,
@@ -1995,7 +2212,7 @@ def main(argv=None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     return 0 if report["verdict"] in (
-        "PASS", "RAW_UPDATE_AT_BAR", "REPORT_ONLY") else 1
+        "PASS", "RAW_UPDATE_AT_BAR", "REPORT_ONLY", "CONFIRMED") else 1
 
 
 if __name__ == "__main__":

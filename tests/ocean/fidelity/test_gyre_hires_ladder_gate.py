@@ -116,6 +116,19 @@ def test_scalar_step2_oracle_requires_scoped_writer_identity_and_plant():
     assert admitted["checked_proofs"]["active_word_plant"]["verdict"] == "DEBT"
 
 
+def test_scalar_step2_tracer_and_qsr_readers_follow_even_rk_slots():
+    root = Path(GATE.admit_oracle("r4_step2", "scalar")["root"])
+    tracer = GATE.read_tracer_stage3_hires(
+        root / "oracle_rktracer_stage3_kt00000002.bin", expected_kt=2)
+    qsr = GATE.read_qsr_stage3_hires(
+        root / "oracle_qsr_stage3_kt00000002.bin", expected_kt=2)
+    assert (tracer["Kbb"], tracer["Kmm"], tracer["Krhs"], tracer["Kaa"]) == (
+        3, 2, 1, 1)
+    assert (qsr["Kmm"], qsr["Krhs"]) == (2, 1)
+    np.testing.assert_array_equal(
+        qsr["dT_dt"], tracer["after_qsr_T"] - tracer["after_sbc_T"])
+
+
 def test_oracle_admission_refuses_root_and_digest_mutations(tmp_path):
     with pytest.raises(ValueError, match="unregistered oracle root"):
         GATE.admit_oracle("r4", "scalar", tmp_path)

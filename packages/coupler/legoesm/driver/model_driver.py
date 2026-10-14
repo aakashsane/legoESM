@@ -16643,9 +16643,38 @@ class ModelDriver:
             n_run, seg_len, kt, dc.n_devices,
             "kessler" if column_physics_fn is not None else "dynamics-only")
 
+        # No turbulence scheme: the pipeline's constant-coefficient surface
+        # exchange, against the SST/sea-ice blend re-sampled every segment.
+        _tile_sfc_fn = None
+        _seg_T_sfc = None
+        if (cfg.turbulence == "none" and cfg.surface_bulk_scheme == "constant"
+                and cfg.physics_parameterization == "none"):
+            if self.get_sst_sic is None:
+                raise ValueError(
+                    "turbulence='none' with surface_bulk_scheme='constant' "
+                    "applies the bulk surface exchange, which needs a "
+                    "prescribed SST/SIC source; this run has none. Set "
+                    "surface_bulk_scheme='none' to run without surface "
+                    "fluxes.")
+            from legoesm.atmosphere.physics.turbulence.integration import (
+                make_column_surface_bulk_fn)
+            from legoesm.forcing.surface_utils import (
+                blend_surface_temperature)
+            _tile_sfc_fn = make_column_surface_bulk_fn(
+                self.sigma, float(cfg.C_H), float(cfg.C_E))
+            _n_cube = int(self.grid.n)
+
+            def _seg_T_sfc(done):
+                _sst, _sic = self.get_sst_sic(
+                    START_DAY + (start_step + done) * DT / 86400.0)
+                return blend_surface_temperature(
+                    jnp.asarray(_sst).reshape(6, _n_cube, _n_cube),
+                    jnp.asarray(_sic).reshape(6, _n_cube, _n_cube),
+                    float(cfg.T_ice))
+
         enter, tiled_step, tiled_exit = make_tiled_cc_loop(
             self.model, mesh, kt=kt, dt=float(DT),
-            column_physics_fn=column_physics_fn)
+            column_physics_fn=column_physics_fn, surface_fn=_tile_sfc_fn)
         # M3b increment 1: each segment is ONE compiled lax.scan of the
         # blocked step — one host dispatch per SEGMENT instead of per step,
         # carry persistently tile-sharded, donated between segments.  At
@@ -16683,7 +16712,8 @@ class ModelDriver:
                 for nm in ("q_v", "q_c", "q_r")
             })
         template = self.state
-        blocked = enter(self.state)
+        blocked = (enter(self.state) if _seg_T_sfc is None
+                   else enter(self.state, T_sfc=_seg_T_sfc(0)))
 
         # #921: prime every NCCL clique the blocked step uses (the halo
         # collective-permutes + the in-stage mass-fixer psum) in a fixed,
@@ -16699,6 +16729,9 @@ class ModelDriver:
         step_done = 0
         while step_done < n_run:
             seg_n = min(seg_len, n_run - step_done)
+            if _seg_T_sfc is not None and step_done > 0:
+                blocked = {**blocked, "T_sfc": jax.device_put(
+                    _seg_T_sfc(step_done), blocked["T_sfc"].sharding)}
             blocked = _scanned(seg_n)(blocked)
             step_done += seg_n
             # Per-SEGMENT gather: coupler callback + host blowup guard

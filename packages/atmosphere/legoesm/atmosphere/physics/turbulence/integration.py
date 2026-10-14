@@ -1342,6 +1342,32 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
     return physics_fn
 
 
+def make_column_surface_bulk_fn(sigma_coord, C_H: float, C_E: float):
+    """Raw-array surface hook for the tiled cube step:
+    ``fn(T, p_s, q_v | None, u_low, v_low, T_sfc) -> (dT, dq_v | None)``,
+    the same law as :func:`make_surface_bulk_physics` (lowest layer, no
+    stress).  ``q_v=None`` (a dry lane): sensible heat only.
+    """
+    from legoesm.atmosphere.physics.turbulence.surface_layer import (
+        bottom_layer_surface_kick, constant_bulk_surface_fluxes)
+
+    def fn(T, p_s, q_v, u_low, v_low, T_sfc):
+        q_low = (jnp.zeros_like(T[..., -1]) if q_v is None else q_v[..., -1])
+        shflx, lhflx = constant_bulk_surface_fluxes(
+            T[..., -1], q_low, u_low, v_low,
+            sigma_coord.pressure_at_full(p_s)[..., -1], p_s, T_sfc, C_H, C_E)
+        if q_v is None:
+            lhflx = jnp.zeros_like(lhflx)
+        dT_low, dq_low, _ = bottom_layer_surface_kick(
+            shflx, lhflx, T_sfc, sigma_coord.layer_thickness_dp(p_s)[..., -1])
+        dT = jnp.zeros_like(T).at[..., -1].set(dT_low.astype(T.dtype))
+        if q_v is None:
+            return dT, None
+        return dT, jnp.zeros_like(q_v).at[..., -1].set(dq_low.astype(q_v.dtype))
+
+    return fn
+
+
 def make_spectral_surface_bulk_physics(C_H: float, C_E: float,
                                        latent: bool = True) -> Callable:
     """:func:`make_surface_bulk_physics` for the spectral PE lane.

@@ -1850,12 +1850,14 @@ class ModelDriver:
         since these tracers are rank-local bands (mirrors the T_land limitation).
         """
         base = dict(self._carry_aux) if self._carry_aux else {}
-        if self._persistent_cgrid_active():
-            # The native face winds, so a restart resumes them exactly (the
-            # state itself is written at cell centres for every reader).
+        # The native staggered winds, so a restart resumes them exactly (the
+        # state itself is written at cell centres for every reader).  Keyed on
+        # the state, not the lane flag: after a load the state is cell-centre
+        # until run start re-enters the lane, and the staged winds ride base.
+        if hasattr(self.state, "u_f"):
             self._stage_native_winds(base, self._FACE_WIND_KEYS,
                                      self.state.u_f.data, self.state.v_f.data)
-        if self._persistent_dgrid_active():
+        if hasattr(self.state, "u_d"):
             self._stage_native_winds(base, self._CORNER_WIND_KEYS,
                                      self.state.u_d.data, self.state.v_d.data)
         dm = self._double_moment_step_inputs()

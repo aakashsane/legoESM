@@ -178,3 +178,17 @@ def test_resume_on_another_latlon_scheme_drops_the_faces(leg1):
     new = sorted(glob.glob(str(tmp / "leg2_centered" / "checkpoint_day_*.npz")))[-1]
     with np.load(new, allow_pickle=True) as z:
         assert not any("latlon_" in k for k in z.keys())
+
+
+def test_load_then_save_keeps_the_saved_winds(leg1):
+    """Load, enter the staggered lane, load again and save without running:
+    the second load must not leave the lane flagged on a cell-centre state."""
+    tmp, _b1, ckpt = leg1
+    d = _resume(tmp, ckpt, "leg2_resave")
+    assert d._persistent_cgrid_active()
+    step, day = d.load_checkpoint(ckpt)
+    d.save_checkpoint(step, day)
+    new = sorted(glob.glob(str(tmp / "leg2_resave" / "checkpoint_day_*.npz")))[-1]
+    with np.load(ckpt, allow_pickle=True) as a, np.load(new, allow_pickle=True) as b:
+        for k in ModelDriver._FACE_WIND_KEYS:
+            np.testing.assert_array_equal(a[f"carry_{k}"], b[f"carry_{k}"])

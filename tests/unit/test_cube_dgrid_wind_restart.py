@@ -224,3 +224,29 @@ def test_digests_without_winds_are_refused(leg1):
     d.load_checkpoint(str(bad))
     with pytest.raises(ValueError, match="damaged"):
         d._enter_persistent_dgrid()
+
+
+def test_load_then_save_keeps_the_saved_winds(leg1):
+    """Load, enter the staggered lane, load again and save without running:
+    the second load must not leave the lane flagged on a cell-centre state."""
+    tmp, _b1, ckpt = leg1
+    d = _resume(tmp, ckpt, "leg2_resave")
+    assert d._persistent_dgrid_active()
+    step, day = d.load_checkpoint(ckpt)
+    d.save_checkpoint(step, day)
+    new = sorted(glob.glob(str(tmp / "leg2_resave" / "checkpoint_day_*.npz")))[-1]
+    with np.load(ckpt, allow_pickle=True) as a, np.load(new, allow_pickle=True) as b:
+        for k in ModelDriver._CORNER_WIND_KEYS:
+            np.testing.assert_array_equal(a[f"carry_{k}"], b[f"carry_{k}"])
+
+
+def test_failed_load_then_save_keeps_the_carried_winds(leg1):
+    tmp, _b1, ckpt = leg1
+    d = _resume(tmp, ckpt, "leg2_failload")
+    with pytest.raises(Exception):
+        d.load_checkpoint(str(tmp / "missing_checkpoint_day_0001.npz"))
+    d.save_checkpoint(1, 1.0)
+    new = sorted(glob.glob(str(tmp / "leg2_failload" / "checkpoint_day_*.npz")))[-1]
+    with np.load(new, allow_pickle=True) as z:
+        for k, x in zip(ModelDriver._CORNER_WIND_KEYS, _winds(d)):
+            np.testing.assert_array_equal(z[f"carry_{k}"], x)

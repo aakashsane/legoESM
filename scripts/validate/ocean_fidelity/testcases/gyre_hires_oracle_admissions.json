@@ -154,6 +154,54 @@
         "oracle_stage_kt00000001_s2.bin": "feed8e114a944b4970eb473779609d5000d52fbb77dbd7d4ad68cbd5da555a47",
         "oracle_stage_kt00000001_s3.bin": "41466ff9916c829baf59d12a241dc1346afe8e7c4afd8f1f97478fd7a3d6e09e"
       }
+    },
+    "r4_step2:scalar": {
+      "deck": "r4_step2",
+      "math_flavour": "scalar",
+      "compiler_math": "conda-scalarmath; -fno-tree-vectorize; scalar libm",
+      "producer_commit": "63cebeb37ea426cd647688f20e0e0250ae194f3f",
+      "root": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round7/oracle_gyre_r4_scalar_step2/run",
+      "manifest": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round7/oracle_gyre_r4_scalar_step2/manifest/oracle_records.sha256",
+      "manifest_sha256": "28e73955382c80179e2e244294ccc28dd4a67762fe826d9da19f887580b6d1f0",
+      "proofs": {
+        "writer_identity": {
+          "path": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round7/oracle_gyre_r4_scalar_step2/manifest/writer_identity.json",
+          "sha256": "57f3d3302a877cc367c5ba77e732162b4f4d65182a9a26532ff98a6a3da9250b",
+          "verdict": "PASS"
+        },
+        "active_word_plant": {
+          "path": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round7/oracle_gyre_r4_scalar_step2/manifest/writer_identity_active_plant.json",
+          "sha256": "4156140eaa2ad8363e8eb7314c5db7c37671d3e90dcf191dfaefd45b5052ad15",
+          "verdict": "DEBT"
+        }
+      },
+      "files": {
+        "nemo": "44aa72a5c1e9d694b7727093ffffa753f44ff1e43b1933f1ee5f39dfe3b66479",
+        "namelist_cfg": "6aa397b7b13b8675dfaa06f12be6d777e1a8190e1dd2d8c02e5a6acd23cef78c",
+        "oracle_step_entry_kt00000001.bin": "06ec5c5fd86f4e0a4b505e7a68b66a4f075adf051d5b0b03f25bfeda367dd3d6",
+        "oracle_step_entry_kt00000002.bin": "5ad84d2bf3a27b664a835933315ba2cccd79a8a7ef823d616a925d61b0466762",
+        "oracle_step_entry_kt00000003.bin": "82e9913f101c463b97eb57912d31d89012d7fa67119f8885dfc4d78aa44cd0bd",
+        "oracle_stage_kt00000001_s1.bin": "0fc5277d881246436f4a9b2741b2e1b9492eeed34f9b5c2a7f89ef9f1973cdf7",
+        "oracle_stage_kt00000001_s2.bin": "feed8e114a944b4970eb473779609d5000d52fbb77dbd7d4ad68cbd5da555a47",
+        "oracle_stage_kt00000001_s3.bin": "41466ff9916c829baf59d12a241dc1346afe8e7c4afd8f1f97478fd7a3d6e09e",
+        "oracle_stage_kt00000002_s1.bin": "42912e8fab07ceae0c08d8e2dc04cfb73e7227a696ec27018d9c02646018a13c",
+        "oracle_stage_kt00000002_s2.bin": "7a08730ad127e5c04f67a566f64f0562ff3144bbc4e29de946bee7b9a6eb7fca",
+        "oracle_stage_kt00000002_s3.bin": "9ad59626f3fd0fe1273de9d3814d450c98d1d4c417b23a0b21d757089f1af518",
+        "oracle_zdf_entry_kt00000001.bin": "6689e5ed76e2c6add7ac96cd064c20edfb0e5988c16afb10b963e96edc207f28",
+        "oracle_zdf_entry_kt00000002.bin": "eadf447ce4fbe534e96e324f67262fe5d4c0a270331e53524137c2ad37eaa4c1",
+        "oracle_rktracer_operands_kt00000001_s1.bin": "5caf81fb863245d928bea635668f795716ec13d5bb1476f81912826a45251b57",
+        "oracle_rktracer_operands_kt00000001_s2.bin": "8c75ac573253ba0dcc2e4fb56f3a6d15c4b0ac571806736382ce784f2abcdb13",
+        "oracle_rktracer_operands_kt00000002_s1.bin": "270c5700f8f911025473d5740d57119807849aa73f41dcd201af9433e24bf961",
+        "oracle_rktracer_operands_kt00000002_s2.bin": "3dc8a02999ade6e74da88231782a9f3f2aedbb18c179b01d3cbf80b4a436df87",
+        "oracle_tracer_transport_kt00000001_s3.bin": "7318db02b1b67f7146e5502ff00479679e793fb05a4328961241267591b9ac7c",
+        "oracle_tracer_transport_kt00000002_s3.bin": "2db8632629e1c9812afa3e60dc4cd4efd7086d102c1045dd7bf2e2a325baddf0",
+        "oracle_rktracer_stage3_kt00000001.bin": "d7e831a5cdc7643c78d68fb706be9ea5ad1114f3b5ddd3de5088a07edd9b01c7",
+        "oracle_rktracer_stage3_kt00000002.bin": "63a645b9c1c0df5e625af8704b46c6caf106b7b168b9d867b5a1b2f082012a4a",
+        "oracle_qsr_stage3_kt00000001.bin": "0320435a25165431fa999ddbc7c026e9c81aca5a9ad65f3909df680b9ffa0c16",
+        "oracle_qsr_stage3_kt00000002.bin": "29a1e4cb244423dd731e21636c0e4959c4a42496ed0000e2e64847591487a226",
+        "oracle_trazdf_matrix_kt00000001.bin": "108e379bd19992a0a0a4aa539b4c72d8b62d1eafa96f26e153d95c81c4b254e4",
+        "oracle_trazdf_matrix_kt00000002.bin": "b6dbbc0c64139bf9307dacac3efface0dd8909d03a3550cee145e3f70ac6fd53"
+      }
     }
   }
 }

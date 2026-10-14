@@ -107,6 +107,15 @@ def test_all_math_flavour_oracles_are_admitted_by_content():
             ]
 
 
+def test_scalar_step2_oracle_requires_scoped_writer_identity_and_plant():
+    admitted = GATE.admit_oracle("r4_step2", "scalar")
+    assert len(admitted["checked_files"]) == 25
+    assert admitted["producer_commit"] == (
+        "63cebeb37ea426cd647688f20e0e0250ae194f3f")
+    assert admitted["checked_proofs"]["writer_identity"]["verdict"] == "PASS"
+    assert admitted["checked_proofs"]["active_word_plant"]["verdict"] == "DEBT"
+
+
 def test_oracle_admission_refuses_root_and_digest_mutations(tmp_path):
     with pytest.raises(ValueError, match="unregistered oracle root"):
         GATE.admit_oracle("r4", "scalar", tmp_path)
@@ -124,6 +133,14 @@ def test_oracle_admission_refuses_root_and_digest_mutations(tmp_path):
     planted.write_text(json.dumps(registry), encoding="utf-8")
     with pytest.raises(ValueError, match=f"digest mismatch for {auxiliary}"):
         GATE.admit_oracle("r4", "scalar", admissions_path=planted)
+
+    registry = json.loads(GATE.ADMISSIONS_PATH.read_text(encoding="utf-8"))
+    registry["admissions"]["r4_step2:scalar"]["proofs"][
+        "writer_identity"
+    ]["sha256"] = "0" * 64
+    planted.write_text(json.dumps(registry), encoding="utf-8")
+    with pytest.raises(ValueError, match="proof digest mismatch for writer_identity"):
+        GATE.admit_oracle("r4_step2", "scalar", admissions_path=planted)
 
 
 def test_admitted_usrdef_binary_exposes_vector_and_scalar_sin_cos_no_exp():

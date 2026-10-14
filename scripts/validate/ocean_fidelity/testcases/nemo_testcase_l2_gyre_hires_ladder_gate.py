@@ -288,6 +288,25 @@ def admit_oracle(
         raise FileNotFoundError(f"ACQUISITION_NEEDED: {manifest}")
     if _sha256(manifest) != registered["manifest_sha256"]:
         raise ValueError(f"{key}: manifest digest mismatch")
+    checked_proofs = {}
+    for name, proof in registered.get("proofs", {}).items():
+        path = Path(proof["path"])
+        if not path.is_file():
+            raise FileNotFoundError(f"ACQUISITION_NEEDED: {path}")
+        actual = _sha256(path)
+        if actual != proof["sha256"]:
+            raise ValueError(f"{key}: proof digest mismatch for {name}")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{key}: malformed proof {name}: {exc}") from exc
+        if payload.get("verdict") != proof["verdict"]:
+            raise ValueError(f"{key}: proof verdict mismatch for {name}")
+        checked_proofs[name] = {
+            "path": str(path),
+            "sha256": actual,
+            "verdict": payload["verdict"],
+        }
     checked = {}
     for relative, expected in registered["files"].items():
         path = root / relative
@@ -305,6 +324,7 @@ def admit_oracle(
         "root": str(root),
         "manifest": str(manifest),
         "checked_files": checked,
+        "checked_proofs": checked_proofs,
     }
 
 

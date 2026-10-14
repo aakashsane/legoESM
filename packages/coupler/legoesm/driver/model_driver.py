@@ -13925,10 +13925,27 @@ class ModelDriver:
                 raise ValueError(
                     "latlon_qv_smooth_del4_m4s > 0 needs a q_v tracer; this "
                     "run has none (dry configuration)")
+            # Gershgorin on operators_latlon_3d.laplacian_3d's stencil: the
+            # diagonal is -g_c, g_c = 2/(dx^2/4) + 2/(dy^2/4), off-diagonals
+            # sum to g_c, so |lambda| <= 2*g_max and forward Euler on the
+            # biharmonic is stable for nu4*dt*g_max^2 <= 0.5 (the MPAS
+            # smoother's bound).
+            _g_ll = (2.0 / (np.asarray(_ll_col.grid.dx) ** 2 / 4.0)
+                     + 2.0 / (np.asarray(_ll_col.grid.dy)[:, None] ** 2 / 4.0))
+            _g_ll_max = float(_g_ll.max())
+            _cfl4_ll = _qv_ll_nu4 * DT * _g_ll_max ** 2
+            if _cfl4_ll > 0.5:
+                raise ValueError(
+                    f"latlon_qv_smooth_del4_m4s={_qv_ll_nu4:g} violates the "
+                    f"explicit-biharmonic stability bound: nu4*dt*g_max^2 = "
+                    f"{_cfl4_ll:.3f} > 0.5 (dt={DT:g}s, grid g_max="
+                    f"{_g_ll_max:.3e} 1/m^2). Max coefficient here: "
+                    f"{0.5 / (DT * _g_ll_max ** 2):.3e} m^4/s.")
             _qv_smooth_jit = make_latlon_qv_smooth_fn(
                 _ll_col, _qv_ll_nu4, DT, self.sigma)
-            logger.info("  lat-lon q_v del4 smoothing ON: nu4=%.4g m^4/s",
-                        _qv_ll_nu4)
+            logger.info("  lat-lon q_v del4 smoothing ON: nu4=%.4g m^4/s "
+                        "(nu4*dt*g_max^2=%.4f of 0.5 stability bound)",
+                        _qv_ll_nu4, _cfl4_ll)
 
         def _poststep_state(state):
             """Post-step dycore edits on the end-of-step state, shared by the

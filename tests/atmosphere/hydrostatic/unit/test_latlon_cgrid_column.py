@@ -508,9 +508,14 @@ def test_driver_latlon_qv_smoother_is_wired(tmp_path):
 
 def test_latlon_qv_smoother_needs_the_column_lane(tmp_path):
     _driver_cfg(tmp_path, latlon_qv_smooth_del4_m4s=1e14).validate_strict()
-    for over, frag in ((dict(column=False), "COLUMN lane"),
-                       (dict(), "finite in")):
-        v = -1.0 if not over else 1e14
+    for v, over, frag in ((1e14, dict(column=False), "COLUMN lane"),
+                          (-1.0, dict(), "finite in")):
         with pytest.raises(ValueError, match=frag):
             _driver_cfg(tmp_path, latlon_qv_smooth_del4_m4s=v,
                         **over).validate_strict()
+
+
+def test_driver_latlon_qv_smoother_refuses_an_unstable_coefficient(tmp_path):
+    drv = _driver(tmp_path, microphysics="kessler", latlon_qv_smooth_del4_m4s=1e18)
+    with pytest.raises(ValueError, match="stability bound"):
+        drv.run()

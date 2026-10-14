@@ -3,9 +3,9 @@
 This is a clean-machine runbook for a colleague who knows NEMO and Python but
 not legoESM. It builds the `SWG_DG` case, proves the two-line case variant is
 inert on shipped SWG, runs the 4,000 km eddying double gyre for three years in
-both models, compares annual states, compares matched daily-mean climate
+both models, compares annual states, computes matched daily-mean climate
 statistics, and makes a side-by-side movie. The workflow has nine numbered
-steps; the import check is part of environment step 1.
+steps; the environments and the package self-test are step 1.
 
 The exact reference claim is deliberately narrow: on the pinned composition,
 legoESM end-of-day `ssh_m`, `u_m_s`, and `v_m_s` at days 365, 730, and 1095
@@ -17,21 +17,61 @@ about dry/storage cells.
 
 You need:
 
-- network access to the NEMO Forge, conda-forge, and Python wheel index;
-- a clean legoESM checkout at this branch and a separate writable NEMO tree;
-- GNU/Linux x86-64, conda, Git, patch, and SHA-256 tools;
-- 32 CPU cores for NEMO and an idle CUDA GPU; the only tested GPU capacity is
-  32 GiB, so a smaller card is unmeasured;
+- network access to GitHub, the NEMO Forge, conda-forge, and the Python
+  wheel index;
+- the legoESM repository `https://github.com/climate-federation/legoESM`,
+  branch `fidelity/swg-double-gyre-standalone`, at the full commit the
+  maintainer sends with this guide (the hand-off commit; step 1 checks it),
+  and a separate writable NEMO tree;
+- GNU/Linux x86-64 with **glibc 2.34 or newer**; check with
+  `ldd --version | head -1`. The exact NEMO environment needs it: three of its
+  conda packages (`sysroot_linux-64` 2.34, `libsystemd0`, `libudev1`) declare
+  `__glibc >=2.34`, and the reference NEMO executable uses `GLIBC_2.34`
+  symbols. That means RHEL/Rocky 9, Ubuntu 22.04, Debian 12 or newer; on an
+  older host use a container with a newer glibc;
+- conda, Git, `patch`, the SHA-256 tools, and GNU binutils `ar` on the host:
+  the architecture file names a plain `ar` and the conda environment provides
+  only prefixed archivers, so the host's `ar` builds the NEMO library (the
+  build refuses with `REFUSE_ARCHIVER` when there is none);
+- 32 CPU cores for NEMO and an idle NVIDIA GPU. The only tested GPU is a
+  Tesla V100S-PCIE-32GB (32 GiB, compute capability 7.0) with driver
+  580.126.20 (measured on the reference host). The pinned CUDA wheels are
+  CUDA 12.9 Update 1, whose NVIDIA release notes list Linux driver
+  `>=575.57.08`; NVIDIA's CUDA 12 minor-version compatibility covers drivers
+  `>=525` and `<580`, and JAX documents `>=525` for its CUDA 12 wheels. Those
+  minimums are documented by NVIDIA and JAX, not measured here. Unset
+  `LD_LIBRARY_PATH` so a system CUDA cannot shadow the pinned wheels;
+- about 1.2 GiB of free memory for the package self-test of step 1 (its
+  measured peak);
 - at least 100 GiB free for outputs (the reference NEMO directory is
   56,985,134,712 bytes and the legoESM daily-mean directory is
   21,803,971,913 bytes); and
 - a scheduling window of about 7 hours on 32 CPU cores and 2.5 hours on one
-  GPU, plus storage-bound comparison/movie time.
+  GPU, plus about half an hour for the movie and storage-bound comparison
+  time.
 
-Those reservations round upward from the measured 22,918 s NEMO and 8,117 s
-GPU runs in `swg_double_gyre_reference_costs.json`. The current manifests and
-logs, not those planning values, are authoritative for your machine. Never
-pre-empt an occupied GPU.
+The reference host CPU is an Intel Xeon Gold 6242R. The three-year NEMO run
+took 22,918 s there for the reference build and 17,404 s for a fresh rebuild
+on the same host (byte-identical output); NEMO time depends on machine load.
+The GPU run took 8,117 s and the year-1 movie 1,794 s. These four times come
+from `swg_double_gyre_reference_costs.json`, which names each source log and
+its SHA-256. The current manifests and logs, not those planning values, are
+authoritative for your machine. Never pre-empt an occupied GPU.
+
+GPU generation: NVIDIA's cuDNN 9.21.0 support matrix lists compute capability
+7.5 and newer for the CUDA 12 build (the pin is cuDNN 9.21.1.3), so it does
+not list the V100S used here. The legoESM GPU path calls no convolution (a
+search of the ocean and core packages and of the driver finds none), and the
+V100S reference run completed, so that support change does not affect this
+package; JAX itself documents compute capability 5.2 and newer on CUDA 12.
+Another GPU generation may still change the last bit of the result (see
+"Honest expectation").
+
+Keep `$REPRO` (below) outside the legoESM checkout: the GPU wrapper refuses a
+checkout with untracked files. Put the `export` lines of step 1 in a file and
+`source` it in every new shell; no step relies on other shell state. Every
+tool that needs MPI or the compilers takes `--conda-prefix` and puts that
+prefix first on `PATH` itself, and every Python tool selects float64 itself.
 
 ## What you should see
 
@@ -42,35 +82,48 @@ bound to `swg_double_gyre_reference_costs.json`.
 | Step | Command below | Required final line | Reference time |
 |---|---|---|---|
 | Import check | Python environment check | `CHECKOUT_IMPORT_OK ...` | seconds |
+| Package self-test | eleven test files | the per-file lines of step 1 | 177 s |
 | Build variant | `build_swg_dg.sh --execute` | `BUILD_DONE .../tests/SWG_DG` | not benchmarked |
+| Namelist inventory | inventory command | `SWG_DG_NAMELIST_INVENTORY PASS groups=27 fields=336 ...` | seconds |
 | Case identity | `check_swg_dg_identity.sh --execute` | `SWG_DG_IDENTITY BIT_IDENTICAL variables=41 differing=0` | about 5 min in fresh operator run |
 | Rank control | `swg_dg_rankcheck.sh --execute` | `all_bit_identical=True variables=21` | 1-rank 8 s; 32-rank 2 s |
-| NEMO smoke | `swg_md_run.sh --smoke ... --execute` | `NEMO_RUN_COMPLETE label=dg_smoke steps=51840 ranks=32 ...` | about 8 min in fresh operator run |
-| NEMO long run | `swg_md_run.sh --three-year ... --execute` | `NEMO_RUN_COMPLETE label=dg_3yr steps=1892160 ranks=32 ...` | 22,918 s (6.366 h) |
+| NEMO smoke | `swg_md_run.sh --smoke ... --execute` | `NEMO_RUN_COMPLETE label=dg_smoke steps=51840 ranks=32 ...` | 504 s in fresh operator run |
+| NEMO long run | `swg_md_run.sh --three-year ... --execute` | `NEMO_RUN_COMPLETE label=dg_3yr steps=1892160 ranks=32 ...` | 22,918 s and 17,404 s |
+| NEMO tile check | tile-hash command | `NEMO_RESTART_TILES_MATCH_REFERENCE tiles=96` | seconds |
 | legoESM long run | GPU wrapper | `COMPLETED days=1095 backend=gpu ...` | 8,117 s (2.255 h) |
 | Annual checks | restart checker, three times | `SWG_DG_RESTART_IDENTITY PASS ... unequal=0 ...` | not benchmarked |
-| Climate checks | climate instrument, twice | `PASS ...` | storage-bound; not benchmarked |
-| Movie | movie tool | `SWG_DG_MOVIE COMPLETE frames=365 ...` | recorded in the command log |
+| Climate statistics | climate instrument, twice | `SWG_DG_CLIMATE_REPORT_WRITTEN window=... agreement_test=none ...` | storage-bound; not benchmarked |
+| Movie | movie tool | `SWG_DG_MOVIE COMPLETE frames=365 ...` | 1,794 s |
 
 “Not benchmarked” is intentional: this guide does not invent a cost where no
 timing artifact exists.
 
 ## 1. Reconstruct the environments
 
-Choose only paths on your machine:
+Choose only paths on your machine, and the hand-off commit:
 
 ```bash
+export LEGOESM_COMMIT=full-40-hex-commit-sent-with-this-guide
 export LEGOESM_ROOT=/path/to/clean/legoesm
 export NEMO_ROOT=/path/to/new/nemo-5.0.2
 export NEMO_PREFIX=/path/to/new/nemo-build-environment
 export PYTHON_PREFIX=/path/to/new/python-3.13.0
 export PYTHON_ENV=/path/to/new/legoesm-swg-dg-python
+export PY="$PYTHON_ENV/bin/python"
 export REPRO=/path/to/new/swg-dg-reproduction
+export TOOLS="$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre"
+export NEMO_RUN="$REPRO/nemo/dg_3yr"
+export LEGO_RUN="$REPRO/lego/dg_gpu_1095d_daily_mean"
 ```
 
-Clone and verify NEMO exactly:
+Clone and verify legoESM and NEMO exactly:
 
 ```bash
+git clone --branch fidelity/swg-double-gyre-standalone \
+  https://github.com/climate-federation/legoESM.git "$LEGOESM_ROOT"
+git -C "$LEGOESM_ROOT" checkout --detach "$LEGOESM_COMMIT"
+test "$(git -C "$LEGOESM_ROOT" rev-parse HEAD)" = "$LEGOESM_COMMIT"
+test -z "$(git -C "$LEGOESM_ROOT" status --porcelain)"
 git clone --branch 5.0.2 --single-branch \
   https://forge.nemo-ocean.eu/nemo/nemo.git "$NEMO_ROOT"
 git -C "$NEMO_ROOT" checkout --detach \
@@ -81,17 +134,17 @@ test "$(git -C "$NEMO_ROOT" rev-parse HEAD)" = \
 
 Recreate the exact linux-64 NEMO environment. Use the readable YAML only if
 the explicit build file cannot be solved; that fallback is no longer an exact
-build-composition reproduction.
+build-composition reproduction (it also pins `sysroot_linux-64=2.34`).
 
 ```bash
 conda create --prefix "$NEMO_PREFIX" --file \
   "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/nemo-build-linux-64-explicit.txt"
-export PATH="$NEMO_PREFIX/bin:$PATH"
 ```
 
 The exact NEMO lock has 122 package/build URLs and an MD5 on every URL. Create
 the exact Python 3.13.0 interpreter from conda-forge build
-`h9ebbce0_101_cp313`, then make the isolated virtual environment:
+`h9ebbce0_101_cp313`, then make the isolated virtual environment and install
+the model pins and the self-test pins:
 
 ```bash
 conda create --prefix "$PYTHON_PREFIX" --override-channels \
@@ -99,17 +152,29 @@ conda create --prefix "$PYTHON_PREFIX" --override-channels \
 "$PYTHON_PREFIX/bin/python" -c \
   'import sys; assert sys.version_info[:3] == (3, 13, 0)'
 "$PYTHON_PREFIX/bin/python" -m venv "$PYTHON_ENV"
-export PY="$PYTHON_ENV/bin/python"
 "$PY" -m pip install -r \
   "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/python-gpu-requirements.txt"
-export JAX_ENABLE_X64=1
+"$PY" -m pip install -r \
+  "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/python-selftest-requirements.txt"
 mkdir -p "$REPRO"
 ```
 
-The 40 Python pins include JAX, jaxlib, CUDA plugin and PJRT 0.10.0, every
-required CUDA wheel, `typing-extensions==4.15.0`, and
-`certifi==2026.4.22`. Full values and the readable conda alternative are in
-`swg_double_gyre_environment.md` and `.json`.
+The 40 model pins include JAX, jaxlib, CUDA plugin and PJRT 0.10.0, every
+required CUDA wheel, `typing-extensions==4.15.0`, and `certifi==2026.4.22`.
+The separate self-test file pins only the test tools at the reference
+versions: `pytest==9.0.3`, `pluggy==1.6.0`, `iniconfig==2.3.0`,
+`pygments==2.20.0`, and `PyYAML==6.0.3`. Full values and the readable conda
+alternative are in `swg_double_gyre_environment.md` and `.json`.
+
+Which of these commands were executed when this guide was written, and which
+were not: the conda lock is byte-identical to `conda list --explicit --md5` of
+the reference NEMO environment, every pin equals the version installed in the
+reference Python environment, and the package self-test below was run in an
+environment holding exactly the 45 pinned distributions (built from the
+reference environment's installed files, not downloaded). Nobody has yet run
+the two `conda create` commands or the two `pip install` commands from
+scratch, and the fresh reproduction of 2026-10-13 reused the reference
+environments.
 
 Every command below binds imports to the checkout containing the script. Its
 first line names that checkout, interpreter, NumPy version, and source file.
@@ -127,44 +192,89 @@ CHECKOUT_IMPORT_OK root=/your/legoesm ... numpy=2.4.4 ...
 ```
 
 The tools refuse if `legoesm.ocean` resolves outside this checkout. They also
-set CPU/GPU selection explicitly before importing JAX.
+set CPU/GPU selection and float64 explicitly before importing JAX.
 
-### Package self-test boundary
-
-Run the same 18-file lane battery used for this package:
+On the GPU host, a one-line driver check before anything long:
 
 ```bash
-PYTHONPATH=packages/core:packages/ocean:packages/atmosphere:packages/coupler:packages/ice:packages/land:packages/ml:packages/tools:src \
-JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 "$PY" -m pytest -q \
-  tests/ocean/fidelity/test_nemo_testcase_receipt_citation_gate.py \
-  tests/ocean/unit/test_nemo_tsunami_card.py \
-  tests/ocean/fidelity/test_nemo_swg_check_records.py \
-  tests/ocean/fidelity/test_nemo_swg_dg_climate.py \
-  tests/ocean/fidelity/test_nemo_swg_dg_composition.py \
-  tests/ocean/fidelity/test_nemo_swg_dg_restart_identity.py \
-  tests/ocean/fidelity/test_nemo_swg_dg_round6.py \
-  tests/ocean/fidelity/test_nemo_swg_dg_round7.py \
-  tests/ocean/fidelity/test_nemo_swg_geometry_gate.py \
-  tests/ocean/fidelity/test_nemo_swg_ladder.py \
-  tests/ocean/fidelity/test_nemo_tsunami_ladder.py \
+CUDA_VISIBLE_DEVICES=0 JAX_PLATFORMS=cuda "$PY" -c \
+  'import jax; print(jax.default_backend(), jax.devices())'
+```
+
+It must print `gpu` and one CUDA device without an error. This check was not
+executed when this guide was written (no GPU was available to that round).
+
+### Package self-test
+
+This self-test covers the reproduction package itself: the deck guard and its
+namelist inventory, the shell tools, the long-run driver, the annual,
+climate, rank and composition checkers, the short-ladder scorer, the movie
+tool, the environment files, and the legoESM card. Run each file in its own
+process:
+
+```bash
+cd "$LEGOESM_ROOT"
+for test_file in \
   tests/ocean/fidelity/test_swg_dg_reproduction_guards.py \
   tests/ocean/fidelity/test_swg_dg_reproduction_shell.py \
   tests/ocean/fidelity/test_swg_double_gyre_movie.py \
-  tests/ocean/unit/test_nemo_swg_card.py \
-  tests/ocean/unit/test_pv_flux_ene.py \
-  tests/ocean/unit/test_swg_swe_rk3_stage.py \
-  tests/ocean/validation/test_step_gradient_matrix.py
+  tests/ocean/fidelity/test_run_swg_double_gyre.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_climate.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_restart_identity.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_composition.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_round6.py \
+  tests/ocean/fidelity/test_nemo_swg_dg_round7.py \
+  tests/ocean/fidelity/test_nemo_swg_check_records.py \
+  tests/ocean/unit/test_nemo_swg_card.py; do
+  PYTHONPATH=packages/core:packages/ocean:packages/atmosphere:packages/coupler:packages/ice:packages/land:packages/ml:packages/tools:src \
+  JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 \
+    "$PY" -m pytest -q -p no:cacheprovider "$test_file"
+done
 ```
 
-This Round-D tree collects 370 tests. On a machine with only the repository,
-expect **352 passed, 18 skipped**: four geometry tests need the external mesh;
-twelve historical ladder tests need admitted stage/restart/month records; one
-inventory test needs the preprocessed NEMO source tree; and one six-step GYRE
-gradient row is unconditionally skipped for its registered LLVM section-memory
-failure. Those 18 tests exercise external campaign evidence and are not guards
-for the portable package. The fixture-backed build/run/guard/comparator tests
-must run and may not silently skip. The reference-machine final count and log
-are cited in the Round-D receipt.
+Measured result on a machine with only the repository (2026-10-14, reference
+host): the loop above, in an environment holding only the 45 pinned
+distributions, with every directory of external evidence hidden in a private
+mount namespace and the checkout mounted read-only. The committed record is
+`swg_dg_selftest_reference.json`.
+
+| Test file | Result | Wall time | Peak memory |
+|---|---|---|---|
+| `test_swg_dg_reproduction_guards.py` | 33 passed, 1 skipped | 27 s | 1.2 GiB |
+| `test_swg_dg_reproduction_shell.py` | 23 passed | 37 s | 0.6 GiB |
+| `test_swg_double_gyre_movie.py` | 2 passed | 12 s | 1.1 GiB |
+| `test_run_swg_double_gyre.py` | 8 passed | 57 s | 1.2 GiB |
+| `test_nemo_swg_dg_climate.py` | 9 passed | 10 s | 0.8 GiB |
+| `test_nemo_swg_dg_restart_identity.py` | 10 passed | 3 s | 0.6 GiB |
+| `test_nemo_swg_dg_composition.py` | 3 passed | 3 s | 0.6 GiB |
+| `test_nemo_swg_dg_round6.py` | 6 passed | 11 s | 0.9 GiB |
+| `test_nemo_swg_dg_round7.py` | 6 passed | 2 s | 0.2 GiB |
+| `test_nemo_swg_check_records.py` | 22 passed | 3 s | 0.6 GiB |
+| `test_nemo_swg_card.py` | 157 passed | 11 s | 1.0 GiB |
+| Total | 279 passed, 1 skipped | 177 s | 1.2 GiB (largest file) |
+
+The one skip is the optional live re-derivation of the namelist inventory;
+pytest prints its reason:
+
+```text
+tests/ocean/fidelity/test_swg_dg_reproduction_guards.py:441: set SWG_DG_PPSRC to a built tests/SWG_DG/BLD/ppsrc/nemo tree to re-derive the committed compiled-read inventory
+```
+
+Set `SWG_DG_PPSRC` to your built `tests/SWG_DG/BLD/ppsrc/nemo` after step 2
+to run it. Run with the external evidence visible on the reference machine,
+the same eleven files give the same result except that this optional test
+also runs when `SWG_DG_PPSRC` is set.
+
+The guard and environment tests also check that this Python environment holds
+exactly the pinned versions. The heavier gradient-matrix test
+(`tests/ocean/validation/test_step_gradient_matrix.py`) is not part of this
+self-test: it checks gradient health across many ocean configurations (one
+row is the SWG card's one-step gradient), needs `optax`, `xarray` and
+`pandas` (outside these pins), and one of its rows peaked at about 34 GB of
+memory in the Round-D review. It runs in the
+maintainers' lane battery, whose reference-machine log is cited in the
+Round-D receipt; its one row that reads external SWG records now skips with
+a stated reason when those records are absent.
 
 ## 2. Build `SWG_DG`
 
@@ -173,7 +283,6 @@ the committed scalar-math architecture, and applies the committed two-line
 `usrdef_zgr.F90` patch so the wet extent follows `rn_domsiz`.
 
 ```bash
-TOOLS="$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre"
 bash "$TOOLS/build_swg_dg.sh" \
   --nemo-root "$NEMO_ROOT" --conda-prefix "$NEMO_PREFIX" \
   --manifest-dir "$REPRO/build-manifest" --python "$PY"
@@ -184,19 +293,44 @@ bash "$TOOLS/build_swg_dg.sh" \
   sha256sum -c swg_dg_build_manifest.sha256)
 ```
 
-Preflight ends `PREFLIGHT_OK`; the build ends `BUILD_DONE`. Preserve the
-self-contained build manifest. It pins NEMO revision, compiler composition,
-architecture, patch, every case source, and executable.
+Preflight ends `PREFLIGHT_OK` and names the `ar` it will use; the build ends
+`BUILD_DONE`. Preserve the self-contained build manifest. It pins NEMO
+revision, compiler composition, architecture, archiver, patch, every case
+source, the executable, and this build's derived namelist inventory.
+
+Before `BUILD_DONE`, the build derives which namelist variables your
+executable can read and refuses unless that equals the committed inventory
+(`swg_dg_compiled_namelist_reads.json`). You can rerun that check on your
+build at any time:
+
+```bash
+"$PY" -I "$LEGOESM_ROOT/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_namelist_inventory.py" \
+  --source-root "$NEMO_ROOT/tests/SWG_DG/BLD/ppsrc/nemo"
+```
+
+Required line (measured on the reference build, the fresh rebuild, and the
+shipped-SWG build of the reference host):
+
+```text
+SWG_DG_NAMELIST_INVENTORY PASS groups=27 fields=336 excluded_reads=2 matches_committed_reference=True
+```
+
+The inventory is derived, not hand-listed: every namelist `READ` in a routine
+reachable from `nemo_gcm` in the preprocessed sources, whatever switch guards
+the call, so it includes groups this deck switches off. The two excluded
+reads are NEMO's own namelist self-test on a literal string.
 
 ## 3. Prove the variant is inert at 2,000 km
 
 ```bash
 bash "$TOOLS/check_swg_dg_identity.sh" \
   --nemo-root "$NEMO_ROOT" --arch-name swg-dg-scalarmath \
-  --output "$REPRO/case-identity" --python "$PY"
+  --output "$REPRO/case-identity" --python "$PY" \
+  --conda-prefix "$NEMO_PREFIX"
 bash "$TOOLS/check_swg_dg_identity.sh" \
   --nemo-root "$NEMO_ROOT" --arch-name swg-dg-scalarmath \
-  --output "$REPRO/case-identity" --python "$PY" --execute
+  --output "$REPRO/case-identity" --python "$PY" \
+  --conda-prefix "$NEMO_PREFIX" --execute
 ```
 
 The required result is:
@@ -213,10 +347,12 @@ steps when `rn_domsiz=2000000`.
 ```bash
 bash "$TOOLS/swg_dg_rankcheck.sh" \
   --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output "$REPRO/rank-control" --python "$PY"
+  --output "$REPRO/rank-control" --python "$PY" \
+  --conda-prefix "$NEMO_PREFIX"
 bash "$TOOLS/swg_dg_rankcheck.sh" \
   --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output "$REPRO/rank-control" --python "$PY" --execute
+  --output "$REPRO/rank-control" --python "$PY" \
+  --conda-prefix "$NEMO_PREFIX" --execute
 ```
 
 Expected final block:
@@ -232,55 +368,109 @@ NEMO arms completed because its bare interpreter imported another checkout;
 that measured packaging defect is fixed by the mandatory `--python` plus the
 checkout-binding preamble.
 
+All MPI steps launch with `$NEMO_PREFIX/bin/mpirun`, the Open MPI 5.0.10 of
+the lock, and add `--oversubscribe` (an Open MPI option). `--mpiexec` exists
+for a site launcher of that same Open MPI; another MPI is untested.
+
 ## 5. Run NEMO smoke and three-year decks
 
 The NEMO namelist patch and legoESM's `SWG_MADDISON_NAMELIST` are independent
 definitions, not one source of truth. On completion, `swg_md_run.sh` feeds
-the complete NEMO run directory to a cross-model guard. The guard resolves all
-131 fields read by the compiled SWE engine. It takes a value from
-`output.namelist.dyn` when NEMO echoes it; otherwise it applies NEMO's actual
-`namelist_ref` then `namelist_cfg` override order to the two content-hashed run
-inputs. It also compares the 16 case-specific physical values common to the
-echo and the legoESM card, for 158 comparison rows in total. Only these two
-output controls may differ:
+the complete NEMO run directory to a cross-model deck guard. The guard takes
+every one of the 336 fields of the derived inventory (27 namelist groups) and
+resolves its value from `output.namelist.dyn` when NEMO echoes the group,
+otherwise from NEMO's `namelist_ref` then `namelist_cfg` override order on the
+two content-hashed run inputs (`nambdy` is read but never echoed; ten more
+groups are switched off by this deck and so are not echoed either). Then:
+
+- 147 fields have a legoESM card counterpart and are compared with the card,
+  158 rows in all because `sn_cfctl` has 12 members;
+- the other 189 fields have no card counterpart (MPI layout, T/S input files,
+  runoff, and the switched-off groups). Each has a reason in the committed
+  registry `swg_dg_nemo_only_namelist_fields.json` and is pinned to the value
+  the reference run read, so any change refuses;
+- the guard refuses a field that is neither compared nor registered, a field
+  it cannot resolve, an echoed group or field outside the inventory, an
+  echoed group missing a field (a disappearing comparison row), a set of
+  echoed groups different from the reference run's, a line inside a read
+  group it cannot parse, a read group written twice in one namelist file
+  (NEMO reads only the first block), and a card field that is neither
+  matched by a read nor registered as card-only.
+
+Only these two output controls may differ:
 
 - `sn_cfctl.l_runstat`: NEMO completion output with no legoESM analogue; and
 - `nn_stock`: annual NEMO restart tiles versus daily legoESM NPZ output.
 
-Any other physical, numerical, or run-control difference fails. NEMO's echo
-omits the 21-field `nambdy` group even though the executable reads it. Those
-values are therefore resolved from the hashed run inputs. `ocean.output` does
-not print a machine-readable `nambdy` value on this case, and the report says
-`not_printed` rather than claiming an unavailable cross-check.
+What no namelist carries, and how it is bound: the card takes the reference
+density 1026 kg/m³, the Earth radius 6,371,229 m and the rotation rate
+(2π over NEMO's sidereal day) from legoESM's NEMO constants preset, and the
+500 m layer thickness from the card builder; NEMO hard-codes the same values
+in its SWE `nemogcm` initialisation, `phycst` and `usrdef_zgr`. Gravity is
+`rn_modified_grav`, a compared namelist field. The 19 card fields with no
+namelist counterpart are the four CPP keys (fixed by the build checks), the
+two periodicity flags (hard-coded closed in SWG `usr_def_nam`), and 13 values
+of the `namdrg`, `namdyn_spg`, `namzdf` and `namzdf_tke` groups, which the
+SWE executable never reads. None of these is compared by the guard; they are
+bound only by the pinned NEMO revision, the build manifest, and the annual
+end-to-end identity.
 
 ```bash
 NEMO_RUNS="$REPRO/nemo"
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$NEMO_RUNS" --python "$PY" --smoke dg_smoke 32
+  --output-root "$NEMO_RUNS" --python "$PY" --conda-prefix "$NEMO_PREFIX" \
+  --smoke dg_smoke 32
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$NEMO_RUNS" --python "$PY" --smoke dg_smoke 32 --execute
+  --output-root "$NEMO_RUNS" --python "$PY" --conda-prefix "$NEMO_PREFIX" \
+  --smoke dg_smoke 32 --execute
 
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$NEMO_RUNS" --python "$PY" --three-year dg_3yr 32
+  --output-root "$NEMO_RUNS" --python "$PY" --conda-prefix "$NEMO_PREFIX" \
+  --three-year dg_3yr 32
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$NEMO_RUNS" --python "$PY" --three-year dg_3yr 32 --execute
-export NEMO_RUN="$NEMO_RUNS/dg_3yr"
+  --output-root "$NEMO_RUNS" --python "$PY" --conda-prefix "$NEMO_PREFIX" \
+  --three-year dg_3yr 32 --execute
 (cd "$NEMO_RUN" && sha256sum -c manifest.sha256)
 ```
 
 The smoke is 51,840 steps. The three-year run is 1,892,160 steps with daily
 means and restarts at 630,720, 1,261,440, and 1,892,160. Each command prints
-`SWG_DG_DECK_GUARD PASS compiled_reads=131/131 comparison_rows=158
-allowed_differences=2` before its final
-`NEMO_RUN_COMPLETE` line. Retain `output.namelist.dyn`, `deck_guard.json`,
+
+```text
+SWG_DG_DECK_GUARD PASS compiled_reads=336 groups=27 card_compared=147 nemo_only_pinned=189 comparison_rows=347 allowed_differences=2
+```
+
+before its final `NEMO_RUN_COMPLETE` line. That guard line was measured by
+running the guard on the reference three-year run and on the fresh smoke and
+three-year runs; no launcher run has yet printed it, because the fresh runs
+predate the guard. Retain `output.namelist.dyn`, `deck_guard.json`,
 `run.log`, `run.stat`, `time.step`, and both manifests.
+
+Before spending GPU time, compare your 96 NEMO restart tiles with the hashes
+committed in the three annual reports. A match means your NEMO side is the
+reference NEMO side; a mismatch means a later departure starts on the NEMO
+side (build, toolchain or deck), not in legoESM:
+
+```bash
+for year in 1 2 3; do
+  "$PY" -c 'import json, sys
+tiles = json.load(open(sys.argv[1]))["provenance"]["NEMO"]["restart_files_sha256"]
+print("".join(f"{tiles[name]}  {name}\n" for name in sorted(tiles)), end="")' \
+    "$LEGOESM_ROOT/docs/ocean/fidelity/testcases/swg_dg_year${year}_restart_identity.json"
+done > "$REPRO/reference_nemo_restart_tiles.sha256"
+(cd "$NEMO_RUN" && sha256sum --quiet -c "$REPRO/reference_nemo_restart_tiles.sha256") \
+  && echo "NEMO_RESTART_TILES_MATCH_REFERENCE tiles=$(grep -c . "$REPRO/reference_nemo_restart_tiles.sha256")"
+```
+
+The fresh 2026-10-13 rebuild on the reference host prints
+`NEMO_RESTART_TILES_MATCH_REFERENCE tiles=96`; a tile changed by one byte
+prints `FAILED` for that tile and no match line.
 
 ## 6. Run legoESM
 
 Pick an idle physical GPU explicitly; the example uses device 0.
 
 ```bash
-export LEGO_RUN="$REPRO/lego/dg_gpu_1095d_daily_mean"
 PYTHON="$PY" "$LEGOESM_ROOT/scripts/run/run_swg_double_gyre_gpu.sh" \
   --gpu-device 0 --days 1095 --daily-means --output "$LEGO_RUN"
 "$PY" -c 'import json,sys; p=json.load(open(sys.argv[1])); m=p["device_memory_at_completion"]; assert p["status"]=="complete" and p["completed_days"]==1095 and p["wall_seconds"]>0 and m["supported"] and m["peak_bytes_in_use"]>0; print("GPU_MANIFEST PASS wall_seconds=%.3f peak_bytes_in_use=%d"%(p["wall_seconds"],m["peak_bytes_in_use"]))' \
@@ -351,7 +541,16 @@ The three committed reports beside this guide are the citable artifacts for
 that statement. They prove 1,227,520 wet words at each checkpoint, not a full
 restart or dry-cell comparison.
 
-## 8. Compare matched daily-mean climate
+Each report (and each climate report) records
+`matches_2026_10_13_reference_build`. It is true only when your NEMO
+executable, `namelist_cfg` and `namelist_ref` are byte-identical to the files
+of the 2026-10-13 reference run. Expect `false` on your machine: even the
+fresh rebuild on the reference host has a different executable hash and a
+`namelist_cfg` that differs in comments only, while its restart tiles are
+byte-identical. The flag records provenance; it is not a pass/fail result.
+The tile check of step 5 and the annual word counts are.
+
+## 8. Compute matched daily-mean climate statistics
 
 ```bash
 CLIMATE="$LEGOESM_ROOT/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_climate.py"
@@ -363,8 +562,34 @@ JAX_PLATFORMS=cpu "$PY" "$CLIMATE" \
   --start-day 366 --days 730 --output "$REPRO/climate_years2_3"
 ```
 
-Expected lines are `PASS year 1, spin-up -> ...` and
-`PASS years 2-3 -> ...`. On the pinned reference trajectory, maximum absolute
+Each command ends with a line of this form:
+
+```text
+SWG_DG_CLIMATE_REPORT_WRITTEN window=1-365 label='year 1, spin-up' agreement_test=none output=...
+SWG_DG_CLIMATE_REPORT_WRITTEN window=366-1095 label='years 2-3' agreement_test=none output=...
+```
+
+The instrument computes the statistics of both models and their differences
+and writes them; it applies no agreement test, which `agreement_test=none`
+states. No cross-toolchain acceptance bar exists yet: NEMO daily means are
+fp32, and no sampling-uncertainty or post-decorrelation bar has been
+registered. Retain and report every metric.
+
+The reference statistics come from the two committed reference reports,
+`swg_dg_climate_year1_reference_report.json` and
+`swg_dg_climate_years2_3_reference_report.json` (basin-mean daily values in
+m²/s²; mean, then minimum–maximum over the window; four significant digits):
+
+| Window | Model | KE mean (min–max) | EKE mean (min–max) |
+|---|---|---|---|
+| days 1–365 | NEMO | 0.01827 (5.521e-06–0.02257) | 0.01195 (0.001571–0.01566) |
+| days 1–365 | legoESM | 0.01827 (5.521e-06–0.02257) | 0.01195 (0.001571–0.01566) |
+| days 366–1095 | NEMO | 0.02252 (0.02182–0.02309) | 0.0147 (0.01201–0.02035) |
+| days 366–1095 | legoESM | 0.02252 (0.02182–0.02309) | 0.0147 (0.01201–0.02035) |
+
+The minimum–maximum range is the reference trajectory's own variability over
+the window, not an uncertainty bar. On the pinned reference trajectory the
+two models agree to the digits shown; the measured maxima of the day-by-day
 differences were:
 
 | Window | Basin-mean KE | Basin-mean EKE |
@@ -376,8 +601,6 @@ Across both windows, the measured maxima are
 `2.286230926795696e-11` for kinetic energy and
 `1.402270660699756e-11` for eddy kinetic energy.
 These are measured reference values, not a cross-toolchain acceptance bar.
-NEMO daily means are fp32, and no sampling-uncertainty/post-decorrelation bar
-has been registered. Retain and report every metric.
 
 ## 9. Render the matched movie
 
@@ -396,20 +619,25 @@ Expected line:
 SWG_DG_MOVIE COMPLETE frames=365 output=.../swg_dg_year1.mp4
 ```
 
-The two rows are NEMO and legoESM; columns are relative vorticity/f, SSH, and
-speed with shared per-frame scales. The tool verifies/hashes its inputs,
-starts ffmpeg before JAX threads, streams frames, and atomically publishes the
-MP4. It never presents a partial encode as complete.
+The reference movie took 1,794 s. The two rows are NEMO and legoESM; columns
+are relative vorticity/f, SSH, and speed with shared per-frame scales. The
+tool verifies/hashes its inputs, starts ffmpeg before JAX threads, streams
+frames, and atomically publishes the MP4. It never presents a partial encode
+as complete.
 
 ## If annual identity fails: make and score steps 1–10
 
-Do not change a tolerance. Make a one-rank NEMO restart at every step:
+Do not change a tolerance. First run the NEMO tile check of step 5: if it
+fails, the departure is on the NEMO side. Then make a one-rank NEMO restart at
+every step:
 
 ```bash
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$REPRO/nemo" --python "$PY" --short-ladder dg_ladder
+  --output-root "$REPRO/nemo" --python "$PY" --conda-prefix "$NEMO_PREFIX" \
+  --short-ladder dg_ladder
 bash "$TOOLS/swg_md_run.sh" --nemo-cfg "$NEMO_ROOT/tests/SWG_DG" \
-  --output-root "$REPRO/nemo" --python "$PY" --short-ladder dg_ladder --execute
+  --output-root "$REPRO/nemo" --python "$PY" --conda-prefix "$NEMO_PREFIX" \
+  --short-ladder dg_ladder --execute
 ```
 
 Score the same outer-scan composition used by the long GPU driver, first on
@@ -435,6 +663,13 @@ Score the operational device composition with a separate output path:
   --backend gpu --gpu-device 0 --composition outer-scan \
   --json "$REPRO/short_ladder_outer_scan_gpu.json"
 ```
+
+The GPU form scores the long-run driver's own case under its native
+transcendental policy. It has been tested only by a CPU emulation of an
+initialised GPU backend (it reaches its first input), never on GPU hardware,
+and no reference GPU ladder exists yet. The committed baseline below was
+measured on CPU, so a GPU report that departs from it is information about
+the GPU composition, not by itself a failure.
 
 The report identifies the first differing step/field, unequal words, maximum
 residual, region, hashes, and a binding one-ULP control. Never reuse the CPU
@@ -479,17 +714,14 @@ Three often-confused debt counts describe different reductions:
 - **189** is the number of unequal wet SSH words in the materialized
   completed state at step 2. The short-ladder command above produces it.
 - **1,278** is the number of unequal wet SSH words between legoESM's
-  materialized stage-1 output and NEMO's separately instrumented stage-2 entry
-  at step 2. Given an admitted instrumented stage root, this command produces
-  it:
-
-  ```bash
-  ROUND7="$LEGOESM_ROOT/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_round7.py"
-  export STAGE_ROOT=/path/to/instrumented/nemo/step2/stage-entry-records
-  "$PY" "$ROUND7" --root "$STAGE_ROOT" \
-    --json "$REPRO/formal_stage_entry_discriminator.json"
-  ```
-
+  materialized stage-1 output and NEMO's stage-2 entry at step 2. It needs a
+  NEMO build instrumented to write every stage entry, which this package does
+  not make for colleagues, so it is reference-only evidence: comparison (iv)
+  of `nemo_testcases_l1_swg_dg_round7_receipt.md`. The maintainers produced
+  it with the operator-only acquisition tool
+  `scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg/run.sh --deck maddison --run`
+  (which builds that instrumented executable with `makenemo`) followed by
+  `nemo_testcase_l1_swg_dg_round7.py --root` on its instrumented output.
 - **414,545** is the step-10 sum of materialized completed-state unequal words
   over SSH, U, and V (`278,318 + 3,143 + 133,084`). It is the accumulated
   endpoint of the same materialized-program debt, not a third comparison
@@ -502,8 +734,23 @@ Three often-confused debt counts describe different reductions:
   ```
 
 The committed compact baseline records all 30 rows for both program forms.
-The 640 V-stress forcing words differing only by signed zero also remain
-reported, not excepted, pending the user's exactness-policy decision.
+
+## Exactness policy (decided by the maintainer on 2026-10-13)
+
+- The bar is exact (zero unequal words) for the prognostic fields `ssh`, `u`
+  and `v`. No tolerance exists or is introduced.
+- The one exception is the sign of zero in forcing fields: the 640 V-stress
+  forcing words that differ only by the sign of zero. A machine check
+  enforces that the exception covers forcing fields only; it refuses a
+  signed-zero difference in a prognostic field.
+- The last-bit difference of the formal step-by-step replay (the materialized
+  composition: 189 words at step 2, 1,278 at the stage-2 entry, 414,545 by
+  step 10) is recorded debt, carried openly. The compiled-day program used for
+  the three-year comparison is exact at all three year ends.
+
+The committed composition discriminator JSON was produced before this ruling,
+so its `signed_zero_policy` field still carries the earlier
+`reported_as_DEBT_pending_user_ruling` label; the tools now write the ruling.
 
 ## Honest expectation across machines
 
@@ -517,11 +764,27 @@ opposite composition choice was the certified exact one.
 A compiler, XLA, or GPU change may therefore introduce a last-bit difference.
 This flow is chaotic, so individual eddies can decorrelate within weeks. After
 that, annual word comparison is not informative; the matched daily-mean
-climate statistics are the comparison. They should remain close, but no
-cross-toolchain acceptance bar exists yet.
+climate statistics of step 8 are the comparison, read against the reference
+values above. No cross-toolchain acceptance bar exists yet.
 
-If identity fails, report the exact environment/build/run manifests, first
-failing annual JSON, 1–10-step outer-scan JSON (and GPU device), materialized
-discriminator JSON, and both climate reports. That evidence separates deck,
-capture alignment, compiler, and composition differences without moving a
-bar.
+If identity fails, report the exact environment/build/run manifests, the NEMO
+tile-check line, the first failing annual JSON, the 1–10-step outer-scan JSON
+(and GPU device), the materialized discriminator JSON, and both climate
+reports. That evidence separates deck, capture alignment, compiler, and
+composition differences without moving a bar.
+
+## What the 2026-10-13 fresh reproduction covered
+
+The maintainers re-ran the NEMO half from a clean NEMO tree on the reference
+host with the tools at lane commit `6aea0af1b`, an earlier state of this
+package. It covered the build, the case identity, the rank control (whose
+wrapper exited 1 on the import defect described in step 4; the comparison
+was rescored by hand to `all_bit_identical=True`), the smoke run, and the
+three-year run, whose 96 restart tiles are byte-identical to the reference.
+It did not cover: creating either environment (it reused the reference conda
+prefix and Python environment), the package self-test, the deck guard inside
+the launcher (that launcher predated the guard, which was run on its outputs
+afterwards), the namelist inventory, the tile-check command (run on its
+outputs afterwards), or the current `--conda-prefix` interface. The GPU half
+of the fresh reproduction was running when this guide was written; its
+result is not part of this guide.

@@ -619,7 +619,12 @@ def main(argv=None) -> int:
     except Exception as exc:  # noqa: BLE001 - fail-closed instrument boundary
         print(f"REFUSE: {exc}", file=sys.stderr)
         return 2
-    print(f"PASS {report['label']} -> {args.output}")
+    # The instrument computes and records statistics for both models; it
+    # applies no agreement test, so its final line must not read as a verdict.
+    first, last = report["window_days"]
+    print(f"SWG_DG_CLIMATE_REPORT_WRITTEN window={first}-{last} "
+          f"label={report['label']!r} agreement_test=none "
+          f"output={args.output}")
     return 0
 
 

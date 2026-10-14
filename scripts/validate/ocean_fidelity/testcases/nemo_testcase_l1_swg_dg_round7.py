@@ -15,8 +15,16 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-CHECKOUT_IMPORT = bootstrap_checkout(__file__)
-from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
+
+def require(condition: bool, message: str) -> None:
+    """Fail closed without importing legoESM at module import.
+
+    The GPU short ladder loads this module after it has selected the GPU, so
+    a module-level checkout bootstrap (which defaults to CPU) would refuse
+    there; only :func:`main` binds the checkout and platform.
+    """
+    if not condition:
+        raise RuntimeError(message)
 
 ENTRY_RESTART_FIELDS = (
     ("ssh_k", "sshn", "T"),
@@ -147,8 +155,16 @@ def _first_debt(groups):
     return None
 
 
+# Maintainer ruling of 2026-10-13: the bar stays exact for prognostic fields;
+# the sign of zero in forcing fields is the one exception, and this check
+# (with its planted prognostic violation in the tests) is what enforces it.
+SIGNED_ZERO_POLICY = (
+    "maintainer_ruling_2026-10-13: prognostic fields exact; "
+    "sign of zero in forcing fields excepted")
+
+
 def signed_zero_scope(comparisons: dict[str, list[dict]]) -> dict:
-    """Classify signed-zero debt without changing its exact-DEBT verdict."""
+    """Classify signed-zero words; rows keep their exact word-level status."""
     observed = []
     violations = []
     for comparison, groups in comparisons.items():
@@ -166,7 +182,7 @@ def signed_zero_scope(comparisons: dict[str, list[dict]]) -> dict:
                     if field not in FORCING_SIGNED_ZERO_FIELDS:
                         violations.append(item)
     return {
-        "policy": "reported_as_DEBT_pending_user_ruling",
+        "policy": SIGNED_ZERO_POLICY,
         "forcing_field_allowlist": sorted(FORCING_SIGNED_ZERO_FIELDS),
         "observed": observed,
         "prognostic_or_unknown_violations": violations,
@@ -345,6 +361,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def main(argv=None) -> int:
+    bootstrap_checkout(__file__)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--json", type=Path, required=True)

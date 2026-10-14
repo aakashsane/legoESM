@@ -98,7 +98,10 @@ def test_signed_zero_scope_reports_forcing_debt_but_rejects_prognostic_scope():
     }
     scope = round7.signed_zero_scope(forcing)
     assert scope["forcing_only_observation"]
-    assert scope["policy"] == "reported_as_DEBT_pending_user_ruling"
+    assert scope["policy"] == (
+        "maintainer_ruling_2026-10-13: prognostic fields exact; "
+        "sign of zero in forcing fields excepted")
+    assert "pending" not in scope["policy"]
     assert not scope["prognostic_or_unknown_violations"]
 
     prognostic = {

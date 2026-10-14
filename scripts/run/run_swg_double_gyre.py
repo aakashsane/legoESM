@@ -77,6 +77,31 @@ def resolved_daily_namelist(days: int):
         nn_itend=days * cadence, nn_write=cadence, nn_stock=cadence)
 
 
+def build_case(namelist):
+    """Return the driver's card, model and steady wind forcing for a deck.
+
+    The GPU short ladder builds its case here too, so the 1-10 step scorer
+    and the long run integrate the same objects.
+    """
+    import jax
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import LatLonCGridOceanModel
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        build_swg_card,
+        swg_surface_wind,
+    )
+    from legoesm.ocean.state import OceanSurfaceForcing
+
+    card = build_swg_card(namelist)
+    model = LatLonCGridOceanModel(
+        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+    tau_u, tau_v = swg_surface_wind(namelist)
+    forcing = OceanSurfaceForcing(
+        tau_i_native=jax.numpy.asarray(tau_u, dtype=jax.numpy.float64),
+        tau_j_native=jax.numpy.asarray(tau_v, dtype=jax.numpy.float64),
+    )
+    return card, model, forcing
+
+
 def seed_steady_forcing_carry(state, forcing):
     """Seed the fixed-stress history so a scan carry has one pytree shape."""
     import jax.numpy as jnp
@@ -262,13 +287,7 @@ def run_long(
     device_selection = configure_runtime_device(mode, gpu_device)
     import jax
     from legoesm.core.precision import PrecisionPolicy, set_policy
-    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import LatLonCGridOceanModel
-    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
-        build_swg_card,
-        swg_surface_wind,
-        validate_swg_namelist,
-    )
-    from legoesm.ocean.state import OceanSurfaceForcing
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import validate_swg_namelist
 
     validate_swg_namelist(namelist)
     if type(days) is not int or days <= 0:
@@ -311,14 +330,7 @@ def run_long(
         raise FileExistsError(f"refusing to overwrite output directory {output}")
     wall_started = time.perf_counter()
 
-    card = build_swg_card(namelist)
-    model = LatLonCGridOceanModel(
-        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
-    tau_u, tau_v = swg_surface_wind(namelist)
-    forcing = OceanSurfaceForcing(
-        tau_i_native=jax.numpy.asarray(tau_u, dtype=jax.numpy.float64),
-        tau_j_native=jax.numpy.asarray(tau_v, dtype=jax.numpy.float64),
-    )
+    card, model, forcing = build_case(namelist)
     state = card.recipe.initial_state
     profile = None
     parity = None

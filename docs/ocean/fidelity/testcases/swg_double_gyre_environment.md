@@ -71,15 +71,44 @@ conda create --prefix "$PYTHON_PREFIX" --override-channels \
 PY="$PYTHON_ENV/bin/python"
 "$PY" -m pip install -r \
   "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/python-gpu-requirements.txt"
+"$PY" -m pip install -r \
+  "$LEGOESM_ROOT/scripts/data/nemo_swg_double_gyre/python-selftest-requirements.txt"
 ```
 
 The 40-package fully pinned closure includes JAX, jaxlib, `jax-cuda12-plugin`, and
 `jax-cuda12-pjrt` 0.10.0; NumPy 2.4.4; Equinox 0.13.7; every CUDA wheel build;
 NetCDF4 plus certifi 2026.4.22; typing-extensions 4.15.0; SciPy; Matplotlib;
-and imageio-ffmpeg. The package tools add their own
+and imageio-ffmpeg. The separate self-test file pins the test tools of the
+package self-test (pytest 9.0.3, pluggy 1.6.0, iniconfig 2.3.0, pygments
+2.20.0, PyYAML 6.0.3); the two files together are a closed set. Every pin of
+both files, and each file's SHA-256, is recorded in
+`swg_double_gyre_environment.json`, and the environment test refuses a pin
+that is not `name==version` at those versions. The package tools add their own
 checkout's package roots before imports and print `CHECKOUT_IMPORT_OK` with
 the selected Python, NumPy, and `legoesm.ocean` paths. They refuse an import
 from another checkout. No editable legoESM install is required.
+
+Neither `conda create` nor the two `pip install` commands above has been run
+from scratch yet. What was checked: the explicit lock is byte-identical to
+`conda list --explicit --md5` of the reference NEMO environment; every pin
+equals the version installed in the reference Python environment; and the
+package self-test ran in an environment holding exactly the 45 pinned
+distributions, assembled from the reference environment's installed files.
+
+## Host requirements
+
+| Requirement | Value | Basis |
+|---|---|---|
+| glibc | 2.34 or newer (`ldd --version \| head -1`) | measured: `sysroot_linux-64` 2.34, `libsystemd0` and `libudev1` in the lock declare `__glibc >=2.34`; the reference NEMO executable uses `GLIBC_2.34` symbols |
+| Archiver | host GNU binutils `ar` | read: the architecture's `%AR` is a plain `ar`; the conda environment provides only prefixed archivers |
+| NVIDIA driver, tested | 580.126.20 | measured on the reference host |
+| NVIDIA driver, CUDA 12.9 Update 1 | `>=575.57.08` | documented: NVIDIA release-note table of toolkit and driver versions |
+| NVIDIA driver, CUDA 12 minor-version compatibility | `>=525` and `<580` | documented: NVIDIA minor-version compatibility table; JAX documents `>=525` |
+
+The pinned cuDNN 9.21 is documented (cuDNN 9.21.0 support matrix) for compute
+capability 7.5 and newer only, while the reference GPU is compute capability
+7.0. The package's GPU path calls no convolution and the reference V100S run
+completed, so this does not affect it.
 
 ## Reference machine and capacity
 

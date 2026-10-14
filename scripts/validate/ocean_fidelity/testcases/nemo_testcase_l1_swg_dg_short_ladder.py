@@ -86,8 +86,14 @@ def run(root: Path, *, composition: str, backend: str,
     driver = _load("swg_dg_short_ladder_driver",
                    REPO_ROOT / "scripts/run/run_swg_double_gyre.py")
     namelist = ladder._deck_namelist("maddison")  # noqa: SLF001
-    card, masks, model, forcing = ladder._swg_production_case(  # noqa: SLF001
-        "short restart ladder", namelist=namelist)
+    if backend == "gpu":
+        # The certified ladder builder requires CPU libm arithmetic; the GPU
+        # form scores the long-run driver's own case under its native policy.
+        card, model, forcing = driver.build_case(namelist)
+        masks = ladder._card_masks(card)  # noqa: SLF001
+    else:
+        card, masks, model, forcing = ladder._swg_production_case(  # noqa: SLF001
+            "short restart ladder", namelist=namelist)
     shape = tuple(card.recipe.land_mask.shape)
     restarts = {
         step: composition_tool._load_single_rank_restart(  # noqa: SLF001

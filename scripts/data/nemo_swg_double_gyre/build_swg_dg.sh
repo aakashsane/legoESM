@@ -53,6 +53,10 @@ swg_dg_bind_checkout "$python"
   printf 'REFUSE_CONDA_PREFIX: not a directory: %s\n' "$conda_prefix" >&2; exit 66; }
 [[ -x "$conda_prefix/bin/mpif90" && -x "$conda_prefix/bin/gfortran" ]] || {
   printf 'REFUSE_TOOLCHAIN: mpif90/gfortran missing under %s/bin\n' "$conda_prefix" >&2; exit 66; }
+# The architecture's %AR is a plain `ar`; the conda environment provides only
+# prefixed archivers, so the host's GNU binutils `ar` builds the NEMO library.
+archiver=$(PATH="$conda_prefix/bin:$PATH" command -v ar) || {
+  printf 'REFUSE_ARCHIVER: no ar on PATH; install the host GNU binutils\n' >&2; exit 66; }
 [[ "$arch_name" =~ ^[A-Za-z0-9._-]+$ ]] || {
   printf 'REFUSE_ARCH_NAME: %s\n' "$arch_name" >&2; exit 64; }
 
@@ -96,8 +100,8 @@ expected_revision=dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796
   printf 'REFUSE_NEMO_REVISION: expected %s, got %s\n' "$expected_revision" "$revision" >&2; exit 68; }
 [[ -z "$(git -C "$nemo_root" status --porcelain --untracked-files=no)" ]] || {
   printf 'REFUSE_DIRTY_NEMO: tracked changes under %s\n' "$nemo_root" >&2; exit 68; }
-printf 'PREFLIGHT NEMO=%s revision=%s source=SWG target=SWG_DG arch=%s\n' \
-  "$nemo_root" "$revision" "$arch_name"
+printf 'PREFLIGHT NEMO=%s revision=%s source=SWG target=SWG_DG arch=%s ar=%s\n' \
+  "$nemo_root" "$revision" "$arch_name" "$archiver"
 printf 'WOULD_BUILD: ./makenemo -a SWG -n SWG_DG -m %s del_key key_xios\n' "$arch_name"
 if [[ "$execute" -ne 1 ]]; then
   printf 'PREFLIGHT_OK\n'
@@ -121,6 +125,11 @@ touch "$target_case"/MY_SRC/*.F90
   printf 'REFUSE_COMPILED_PATCH: patched limits absent\n' >&2; exit 70; }
 
 mkdir -p "$manifest_dir/artifacts/MY_SRC"
+# The deck guard is exhaustive only for the namelist reads of the committed
+# inventory; derive this build's reads and refuse a build that differs.
+"$python" -I "$repo_root/scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_namelist_inventory.py" \
+  --source-root "$target_case/BLD/ppsrc/nemo" \
+  --json "$manifest_dir/artifacts/compiled_namelist_reads.json"
 cp "$target_case/BLD/bin/nemo.exe" "$manifest_dir/artifacts/nemo.exe"
 cp "$source_patch" "$manifest_dir/artifacts/usrdef_zgr_domsiz.patch"
 cp "$arch_path" "$manifest_dir/artifacts/arch-$arch_name.fcm"
@@ -143,5 +152,6 @@ cp "$target_case"/MY_SRC/*.F90 "$manifest_dir/artifacts/MY_SRC/"
   printf 'cflags=-O0\n'
   printf 'gfortran=%s\n' "$(gfortran --version | head -1)"
   printf 'mpi=%s\n' "$(mpirun --version | head -1)"
+  printf 'archiver=%s %s\n' "$archiver" "$(ar --version | head -1)"
 } >"$manifest_dir/swg_dg_build_manifest.txt"
 printf 'BUILD_DONE %s\n' "$target_case"

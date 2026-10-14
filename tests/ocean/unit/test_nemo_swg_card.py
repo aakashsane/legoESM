@@ -24,7 +24,16 @@ _INVENTORY_PATH = (
     "testcases/nemo_testcase_l1_swg_namelist_inventory.py")
 _INV_SPEC = importlib.util.spec_from_file_location("swg_namelist_inventory", _INVENTORY_PATH)
 inventory = importlib.util.module_from_spec(_INV_SPEC); _INV_SPEC.loader.exec_module(inventory)
-_COMPILED_READS = inventory.EXPECTED_CARD_READS
+# The card's 13 frozen groups, re-spelled from the DERIVED compiled-read
+# inventory (committed JSON), so a hand edit on either side is visible here.
+_COMMITTED_READS = inventory.load_reference_inventory()
+_CARD_BY_LOWER = {name.lower(): name for name in SwgResolvedNamelist._fields}
+_COMPILED_READS = {
+    group: tuple(
+        _CARD_BY_LOWER.get(inventory.CARD_ALIASES.get(field, field).lower(), field)
+        for field in _COMMITTED_READS["groups"][group]["fields"])
+    for group in SWG_COMPILED_NAMELIST_READS
+}
 
 _ALL_CARD_FIELDS = (
     "sn_cfctl", "ln_timing", "ln_diacfl", "nn_isplt", "nn_jsplt", "nn_ictls",
@@ -314,12 +323,17 @@ def test_inventory_parser_directly_reads_multiline_fortran(tmp_path):
         "first", "second", "third")
 
 
-@pytest.mark.skipif(
-    not inventory.DEFAULT_SOURCE_ROOT.is_dir(), reason="compiled SWG source not mounted")
-def test_source_enumerator_matches_all_131_compiled_reads():
-    parsed = inventory.compiled_card_inventory(inventory.DEFAULT_SOURCE_ROOT)
-    inventory.validate_inventory(parsed)
-    assert parsed == SWG_COMPILED_NAMELIST_READS
+def test_every_derived_read_outside_the_frozen_groups_is_namusr_def_or_pinned():
+    """The 13 frozen groups are not the whole executable: the derivation adds
+    namusr_def (all card fields) and NEMO-only groups the deck guard pins."""
+    extra = set(_COMMITTED_READS["groups"]) - set(SWG_COMPILED_NAMELIST_READS)
+    assert "namusr_def" in extra
+    namusr_def = {
+        _CARD_BY_LOWER.get(inventory.CARD_ALIASES.get(field, field).lower())
+        for field in _COMMITTED_READS["groups"]["namusr_def"]["fields"]}
+    assert None not in namusr_def
+    assert _COMMITTED_READS["group_count"] == 27
+    assert _COMMITTED_READS["field_count"] == 336
 
 
 def test_engine_read_defaults_match_the_resolved_oracle_echo():

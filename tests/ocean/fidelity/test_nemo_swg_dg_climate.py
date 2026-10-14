@@ -270,3 +270,37 @@ def test_legoesm_provider_selects_later_window_and_gates_deck(tmp_path):
     manifest_path.write_text(json.dumps(manifest))
     with pytest.raises(Exception, match="differs at rn_shlat"):
         climate.legoesm_npz_provider(tmp_path, 2, start_day=2)
+
+
+def test_final_line_reports_written_statistics_not_agreement(
+        tmp_path, monkeypatch, capsys):
+    """Two clearly different trajectories must not print a bare PASS."""
+    def shifted(name):
+        base = _synthetic_provider(name)
+
+        def iterate():
+            for frame in base.iterate():
+                yield frame._replace(u=frame.u + 5.0)
+
+        return base._replace(iterate=iterate)
+
+    monkeypatch.setattr(climate, "nemo_ioipsl_provider",
+                        lambda root, days, start_day: _synthetic_provider("NEMO"))
+    monkeypatch.setattr(climate, "legoesm_npz_provider",
+                        lambda root, days, start_day: shifted("legoESM"))
+    monkeypatch.setattr(climate, "compare", lambda providers, days: {
+        provider.name: climate.diagnose(
+            provider, days=days, geometry=_geometry())
+        for provider in providers})
+    output = tmp_path / "climate"
+    assert climate.main([
+        "--nemo-root", str(tmp_path), "--legoesm-root", str(tmp_path),
+        "--start-day", "2", "--days", "2", "--output", str(output)]) == 0
+    line = capsys.readouterr().out.strip().splitlines()[-1]
+    assert line.startswith(
+        "SWG_DG_CLIMATE_REPORT_WRITTEN window=2-3 label='days 2-3' "
+        "agreement_test=none")
+    assert "PASS" not in line
+    report = json.loads((output / "swg_dg_climate_report.json").read_text())
+    assert report["comparison"]["metrics"]["basin_mean_ke_m2_s2"][
+        "max_absolute_difference"] > 0.0

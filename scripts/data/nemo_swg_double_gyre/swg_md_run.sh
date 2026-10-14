@@ -4,15 +4,19 @@ set -Eeuo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON [--mpiexec CMD] [--execute] <label> <nn_SWG> <dt_s> <steps> [ranks] [nn_stock]
-  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON [--mpiexec CMD] [--execute] --smoke <label> [ranks]
-  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON [--mpiexec CMD] [--execute] --three-year <label> [ranks]
-  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON [--mpiexec CMD] [--execute] --short-ladder <label>
+  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON --conda-prefix DIR [--mpiexec CMD] [--execute] <label> <nn_SWG> <dt_s> <steps> [ranks] [nn_stock]
+  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON --conda-prefix DIR [--mpiexec CMD] [--execute] --smoke <label> [ranks]
+  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON --conda-prefix DIR [--mpiexec CMD] [--execute] --three-year <label> [ranks]
+  swg_md_run.sh --nemo-cfg DIR --output-root DIR --python PYTHON --conda-prefix DIR [--mpiexec CMD] [--execute] --short-ladder <label>
 
 Default mode is a read-only preflight. Smoke is 30 days (51,840 steps);
 three-year is 1,095 days (1,892,160 steps) with annual restarts. The committed
 Maddison namelist patch defines the NEMO-side deck; completed daily runs are
 cross-checked against legoESM's independently encoded resolved card.
+--conda-prefix is the NEMO build environment: its bin/ is put first on PATH
+and its Open MPI mpirun is the default launcher. --mpiexec may name a site
+launcher for that same Open MPI (the tool adds --oversubscribe, an Open MPI
+option).
 EOF
 }
 
@@ -26,8 +30,9 @@ trap refuse_unhandled ERR
 
 nemo_cfg=
 output_root=
-mpiexec=mpirun
+mpiexec=
 python=
+conda_prefix=
 execute=0
 mode=generic
 positionals=()
@@ -37,6 +42,7 @@ while [[ $# -gt 0 ]]; do
     --output-root) output_root=${2-}; shift ;;
     --mpiexec) mpiexec=${2-}; shift ;;
     --python) python=${2-}; shift ;;
+    --conda-prefix) conda_prefix=${2-}; shift ;;
     --execute) execute=1 ;;
     --smoke) mode=smoke ;;
     --three-year) mode=three-year ;;
@@ -47,13 +53,17 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
-[[ -n "$nemo_cfg" && -n "$output_root" && -n "$python" ]] || {
-  printf 'REFUSE_USAGE: --nemo-cfg, --output-root, and --python are required\n' >&2; exit 64; }
+[[ -n "$nemo_cfg" && -n "$output_root" && -n "$python" && -n "$conda_prefix" ]] || {
+  printf 'REFUSE_USAGE: --nemo-cfg, --output-root, --python, and --conda-prefix are required\n' >&2; exit 64; }
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 repo_root=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
   printf 'REFUSE_NOT_WORKTREE: tool is outside a Git checkout\n' >&2; exit 66; }
 source "$here/checkout_env.bash"
 swg_dg_bind_checkout "$python"
+[[ -x "$conda_prefix/bin/mpirun" ]] || {
+  printf 'REFUSE_TOOLCHAIN: mpirun missing under %s/bin\n' "$conda_prefix" >&2; exit 66; }
+export PATH="$conda_prefix/bin:$PATH"
+mpiexec=${mpiexec:-$conda_prefix/bin/mpirun}
 [[ -d "$nemo_cfg" && -x "$nemo_cfg/BLD/bin/nemo.exe" \
    && -f "$nemo_cfg/EXP00/namelist_cfg" && -f "$nemo_cfg/EXP00/namelist_ref" ]] || {
   printf 'REFUSE_NEMO_CFG: incomplete built case %s\n' "$nemo_cfg" >&2; exit 66; }

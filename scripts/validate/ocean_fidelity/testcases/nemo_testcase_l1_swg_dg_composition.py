@@ -16,8 +16,15 @@ REPO_ROOT = HERE.parents[3]
 sys.path.insert(0, str(HERE))
 from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
-CHECKOUT_IMPORT = bootstrap_checkout(__file__)
-from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
+
+def require(condition: bool, message: str) -> None:
+    """Fail closed without importing legoESM at module import.
+
+    The GPU short ladder loads this module after selecting the GPU; only
+    :func:`main` binds the checkout and its CPU platform.
+    """
+    if not condition:
+        raise RuntimeError(message)
 
 
 def _load(name: str, path: Path):
@@ -158,7 +165,7 @@ def run(root: Path, *, steps: int = 10, plant: bool = True) -> dict:
             "outer_scan_all_restart_words_exact": scan_summary["all_bit_identical"],
             "materialized_prognostic_exact": materialized_summary[
                 "prognostic_bit_identical"],
-            "signed_zero_policy": "reported_as_DEBT_pending_user_ruling",
+            "signed_zero_policy": round7.SIGNED_ZERO_POLICY,
         },
         "control": control,
     }
@@ -171,6 +178,7 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def main(argv=None) -> int:
+    bootstrap_checkout(__file__)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True,
                         help="directory containing admitted step-10 restart")

@@ -11,3 +11,5 @@ scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg/usrdef_zgr_domsiz
 # the upstream Fortran/namelist trailing blanks so their recorded hashes bind.
 tests/ocean/fixtures/swg_dg/namelist_cfg.shipped whitespace=-blank-at-eol
 tests/ocean/fixtures/swg_dg/usrdef_zgr.F90.shipped whitespace=-blank-at-eol
+tests/ocean/fixtures/swg_dg/namelist_ref whitespace=-blank-at-eol
+tests/ocean/fixtures/swg_dg/namelist_cfg.maddison_3yr whitespace=-blank-at-eol

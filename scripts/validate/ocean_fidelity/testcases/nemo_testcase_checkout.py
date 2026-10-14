@@ -46,6 +46,11 @@ def bootstrap_checkout(
     elif gpu_device is not None:
         raise RuntimeError("gpu_device is valid only for the gpu platform")
     os.environ["JAX_PLATFORMS"] = JAX_PLATFORMS_FOR[jax_platform]
+    # Every entry point bound here builds the float64 SWG card.  Without x64
+    # the card's own geometry check refuses a correct input with a misleading
+    # "grid differs" message, so float64 is selected here, before JAX is
+    # imported, instead of being inherited from the caller's shell.
+    os.environ["JAX_ENABLE_X64"] = "1"
 
     path = Path(script).resolve()
     try:
@@ -64,6 +69,10 @@ def bootstrap_checkout(
     result = require_checkout_import(root)
     import jax
 
+    if not jax.config.jax_enable_x64:
+        raise RuntimeError(
+            "JAX x64 is disabled: JAX was imported with float32 before this "
+            "entry point selected float64; run the tool as its own process")
     actual_platform = jax.default_backend()
     if actual_platform != jax_platform:
         raise RuntimeError(

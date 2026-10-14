@@ -1500,6 +1500,56 @@ FILES = {
         NEMO / "tests/TSUNAMI_OMIP_L1_RK3/BLD/ppsrc/nemo/lbcnfd.f90"),
     "TSUNAMI_OMIP_L1_RK3/BLD/ppsrc/nemo/mppini.f90": (
         NEMO / "tests/TSUNAMI_OMIP_L1_RK3/BLD/ppsrc/nemo/mppini.f90"),
+    # --- SWG double-gyre reproduction package, round E receipt ---
+    'nemo_testcase_l1_swg_namelist_inventory.py': (
+        REPO / 'scripts/validate/ocean_fidelity/testcases/'
+        'nemo_testcase_l1_swg_namelist_inventory.py'),
+    'nemo_testcase_l1_swg_dg_deck_guard.py': (
+        REPO / 'scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_deck_guard.py'),
+    'nemo_testcase_checkout.py': (
+        REPO / 'scripts/validate/ocean_fidelity/testcases/nemo_testcase_checkout.py'),
+    'nemo_testcase_l1_swg_dg_round7.py': (
+        REPO / 'scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_round7.py'),
+    'nemo_testcase_l1_swg_dg_composition.py': (
+        REPO / 'scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_composition.py'),
+    'nemo_testcase_l1_swg_dg_short_ladder.py': (
+        REPO / 'scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_short_ladder.py'),
+    'nemo_testcase_l1_swg_dg_climate.py': (
+        REPO / 'scripts/validate/ocean_fidelity/testcases/nemo_testcase_l1_swg_dg_climate.py'),
+    'run_swg_double_gyre.py': (
+        REPO / 'scripts/run/run_swg_double_gyre.py'),
+    'test_step_gradient_matrix.py': (
+        REPO / 'tests/ocean/validation/test_step_gradient_matrix.py'),
+    'test_swg_dg_reproduction_guards.py': (
+        REPO / 'tests/ocean/fidelity/test_swg_dg_reproduction_guards.py'),
+    'test_swg_dg_reproduction_shell.py': (
+        REPO / 'tests/ocean/fidelity/test_swg_dg_reproduction_shell.py'),
+    'test_nemo_swg_dg_climate.py': (
+        REPO / 'tests/ocean/fidelity/test_nemo_swg_dg_climate.py'),
+    'test_nemo_swg_card.py': (
+        REPO / 'tests/ocean/unit/test_nemo_swg_card.py'),
+    'constants_config.py': (
+        REPO / 'packages/ocean/legoesm/ocean/constants_config.py'),
+    'SWG_DG/BLD/ppsrc/nemo/lib_mpp.f90': (
+        _SWG_DG_COMPILED / 'lib_mpp.f90'),
+    'SWG_DG/BLD/ppsrc/nemo/mppini.f90': (
+        _SWG_DG_COMPILED / 'mppini.f90'),
+    'SWG_DG/BLD/ppsrc/nemo/sbcmod.f90': (
+        _SWG_DG_COMPILED / 'sbcmod.f90'),
+    'SWG_DG/BLD/ppsrc/nemo/sbcrnf.f90': (
+        _SWG_DG_COMPILED / 'sbcrnf.f90'),
+    'SWG_DG/BLD/ppsrc/nemo/sbcwave.f90': (
+        _SWG_DG_COMPILED / 'sbcwave.f90'),
+    'SWG_DG/BLD/ppsrc/nemo/istate.f90': (
+        _SWG_DG_COMPILED / 'istate.f90'),
+    'SWG_DG/BLD/ppsrc/nemo/domain.f90': (
+        _SWG_DG_COMPILED / 'domain.f90'),
+    'SWG_DG/BLD/ppsrc/nemo/sbc_oce.f90': (
+        _SWG_DG_COMPILED / 'sbc_oce.f90'),
+    'SWG_DG/BLD/ppsrc/nemo/nemogcm.f90': (
+        _SWG_DG_COMPILED / 'nemogcm.f90'),
+    'SWG_DG/BLD/ppsrc/nemo/usrdef_nam.f90': (
+        _SWG_DG_COMPILED / 'usrdef_nam.f90'),
 }
 
 # citation -> the anchors that IDENTIFY its first and last line, plus the
@@ -6607,6 +6657,112 @@ CITATION_MAP = {
         ("DO jj = ntsj-( 0), ntej+(  0+1 ) ; DO ji = ntsi-( 0), ntei+(  0+1)", 1),
         ("END DO   ;   END DO", 2),
         21],
+    # --- SWG double-gyre reproduction package, round E receipt ---
+    'nemo_testcase_l1_swg_namelist_inventory.py:341':
+        'from_buffer = unit_name.startswith("numnam")',
+    'nemo_testcase_l1_swg_namelist_inventory.py:278':
+        'def _reachable(program: dict, entry: str) -> set[str]:',
+    'nemo_testcase_l1_swg_namelist_inventory.py:303':
+        'def derive_read_inventory(source_root: Path,',
+    'nemo_testcase_l1_swg_namelist_inventory.py:95': 'def _mask_strings(text: str) -> str:',
+    'nemo_testcase_l1_swg_namelist_inventory.py:388':
+        'def inventory_differences(derived: dict, reference: dict) -> list[str]:',
+    'nemo_testcase_l1_swg_namelist_inventory.py:437':
+        'print(f"SWG_DG_NAMELIST_INVENTORY PASS groups={derived[\'group_count\']} "',
+    'SWG_DG/BLD/ppsrc/nemo/lib_mpp.f90:2784':
+        'READ(cltest(MAX(INDEX(cltest,"&nl1 "),1):),nl1',
+    'SWG_DG/BLD/ppsrc/nemo/mppini.f90:201':
+        'READ(numnam_ref(MAX(INDEX(numnam_ref,"&nambdy "),1):),nambdy',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:51': 'CARD_ONLY = {',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:223': 'def resolve_inventory(',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:236':
+        'require(entries, f"echoed group {group} lacks compiled-read "',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:261':
+        'def classify_fields(inventory: dict, card_fields, registry: dict) -> dict:',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:282':
+        'require(not neither, "compiled-read field(s) neither compared with the "',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:326':
+        'f"echoed groups differ from the reference run: "',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:362':
+        'f"comparison rows {len(rows)} differ from the inventory\'s "',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:438':
+        'def _strict_inputs(run_dir: Path, inventory: dict):',
+    'nemo_testcase_l1_swg_dg_deck_guard.py:509': '"SWG_DG_DECK_GUARD PASS "',
+    'nemo_testcase_checkout.py:53': 'os.environ["JAX_ENABLE_X64"] = "1"',
+    'nemo_testcase_checkout.py:72': 'if not jax.config.jax_enable_x64:',
+    'SWG_DG/BLD/ppsrc/nemo/sbcmod.f90:365':
+        'IF( ln_blk      )   CALL sbc_blk_init              ! bulk formulae initialization',
+    'SWG_DG/BLD/ppsrc/nemo/sbcmod.f90:372':
+        'CALL sbc_rnf_init( Kmm )       ! Runof initialization',
+    'SWG_DG/BLD/ppsrc/nemo/sbcrnf.f90:331':
+        'IF( .NOT. ln_rnf ) THEN                      ! no specific treatment',
+    'SWG_DG/BLD/ppsrc/nemo/sbcmod.f90:378':
+        'CALL sbc_wave_init                     ! surface wave initialisation',
+    'SWG_DG/BLD/ppsrc/nemo/sbcwave.f90:417': 'IF( .NOT. ln_wave ) THEN',
+    'SWG_DG/BLD/ppsrc/nemo/istate.f90:102':
+        'CALL dta_tsd_init                   ! Initialisation of T & S input data',
+    'SWG_DG/BLD/ppsrc/nemo/domain.f90:192':
+        'IF( ln_c1d )   CALL     c1d_init                    ! 1D column configuration',
+    'SWG_DG/BLD/ppsrc/nemo/domain.f90:196':
+        'IF( ln_closea ) CALL dom_clo      ! Read in masks to define closed seas and lakes',
+    'SWG_DG/BLD/ppsrc/nemo/sbc_oce.f90:52':
+        'LOGICAL , PUBLIC ::   lk_oasis = .FALSE. !: OASIS unused',
+    'SWG_DG/BLD/ppsrc/nemo/mppini.f90:171':
+        'nn_hls = MAX(2, nn_hls)   ! nn_hls must be > 1',
+    'SWG_DG/BLD/ppsrc/nemo/nemogcm.f90:325':
+        'rho0        = 1026._wp                 !: volumic mass of reference     [kg/m3]',
+    'SWG_DG/BLD/ppsrc/nemo/usrdef_zgr.f90:161': 'pdepw_1d(2) = 500._wp',
+    'SWG_DG/BLD/ppsrc/nemo/usrdef_nam.f90:166':
+        'ldIperio = .FALSE.   ;   ldJperio = .FALSE.   ! SWG configuration : closed domain',
+    'constants_config.py:91': 'g=9.80665, rho_0=1026.0, c_sw=3991.86795711963,',
+    'constants_config.py:94':
+        'Omega=NEMO_OMEGA, R_earth=6371229.0,  # const-ok: NEMO phycst.F90 omega/ra',
+    'nemo_testcase_recipe.py:4245': 'thickness = np.full(native, 500.0)',
+    'nemo_testcase_l1_swg_dg_round7.py:364': 'bootstrap_checkout(__file__)',
+    'nemo_testcase_l1_swg_dg_composition.py:181': 'bootstrap_checkout(__file__)',
+    'nemo_testcase_l1_swg_dg_round7.py:19':
+        'def require(condition: bool, message: str) -> None:',
+    'nemo_testcase_l1_swg_dg_composition.py:20':
+        'def require(condition: bool, message: str) -> None:',
+    'nemo_testcase_l1_swg_dg_short_ladder.py:92':
+        'card, model, forcing = driver.build_case(namelist)',
+    'run_swg_double_gyre.py:80': 'def build_case(namelist):',
+    'run_swg_double_gyre.py:333': 'card, model, forcing = build_case(namelist)',
+    'nemo_testcase_l1_swg_dg_round7.py:161': 'SIGNED_ZERO_POLICY = (',
+    'nemo_testcase_l1_swg_dg_composition.py:168':
+        '"signed_zero_policy": round7.SIGNED_ZERO_POLICY,',
+    'nemo_testcase_l1_swg_dg_climate.py:625':
+        'print(f"SWG_DG_CLIMATE_REPORT_WRITTEN window={first}-{last} "',
+    'test_step_gradient_matrix.py:65':
+        'def _skip_without_admitted_swg_stage_record() -> None:',
+    'test_step_gradient_matrix.py:268': ('_skip_without_admitted_swg_stage_record()', 2),
+    'test_swg_dg_reproduction_guards.py:100':
+        'def test_gpu_short_ladder_loads_its_helpers_after_selecting_the_gpu(',
+    'test_swg_dg_reproduction_guards.py:132':
+        'def test_resolved_nemo_and_legoesm_decks_cover_every_compiled_read(tmp_path):',
+    'test_swg_dg_reproduction_guards.py:201': '_ECHO_PLANTS = {',
+    'test_swg_dg_reproduction_guards.py:261':
+        'def test_deck_guard_refuses_a_read_that_is_neither_compared_nor_registered():',
+    'test_swg_dg_reproduction_guards.py:277':
+        'def test_deck_guard_selects_float64_itself(tmp_path):',
+    'test_swg_dg_reproduction_guards.py:301':
+        'def test_annual_and_climate_tools_select_float64_themselves(tmp_path, relative):',
+    'test_swg_dg_reproduction_guards.py:397':
+        'def test_inventory_derives_every_reachable_read_and_nothing_else(tmp_path):',
+    'test_swg_dg_reproduction_guards.py:445':
+        'def test_live_build_derives_the_committed_inventory():',
+    'test_swg_dg_reproduction_guards.py:545':
+        'def test_environment_reconstruction_files_are_machine_readable_and_pinned():',
+    'test_swg_dg_reproduction_guards.py:654':
+        'def test_stranger_runbook_matches_its_committed_measurements():',
+    'test_swg_dg_reproduction_shell.py:148':
+        'def test_mpi_steps_refuse_a_prefix_without_its_mpi(tmp_path, name):',
+    'test_swg_dg_reproduction_shell.py:177':
+        'def test_build_and_identity_name_the_host_archiver_or_refuse(tmp_path):',
+    'test_nemo_swg_dg_climate.py:275':
+        'def test_final_line_reports_written_statistics_not_agreement(',
+    'test_nemo_swg_card.py:326':
+        'def test_every_derived_read_outside_the_frozen_groups_is_namusr_def_or_pinned():',
 }
 
 

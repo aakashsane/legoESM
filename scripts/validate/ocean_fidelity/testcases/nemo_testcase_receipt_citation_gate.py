@@ -4635,7 +4635,7 @@ CITATION_MAP = {
     'ocean_model_latlon_cgrid.py:8189': ('_g2 = _nemo_ws_stage_transport(', 1),
     'ocean_model_latlon_cgrid.py:8208': (
         '_stage3_hpg_operands = _stage_hpg_operands(', 1),
-    'nemo_testcase_l2_gyre_phase3_gate.py:323': (
+    'nemo_testcase_l2_gyre_phase3_gate.py:333': (
         'require(magic == "NEMO_L2_RKTRM_1", f"{path}: bad magic")', 1),
     'round38_oracle_trazdf_kt2/ocean.output:799': (
         'with Hollingsworth scheme (=1) or not (=0)       nn_dynkeg   =', 1),

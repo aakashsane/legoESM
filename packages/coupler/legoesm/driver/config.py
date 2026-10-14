@@ -3231,6 +3231,10 @@ class ExperimentConfig(NamedTuple):
                     f"physics_update_steps={_pus} (>= it) so radiation is "
                     "recomputed on physics steps; a held-physics step cannot "
                     "solve radiation")
+        # R-ex (D-REX-1) checkpoint/radiation alignment is NOT checked here:
+        # it depends on the EFFECTIVE timestep, which the driver may clamp
+        # (CFL) after this validation -- see
+        # checkpoint_radiation_cadence_error, called by ModelDriver.setup.
         _nmm = self.cld_macmic_num_steps
         if not isinstance(_nmm, int) or isinstance(_nmm, bool) or _nmm < 1:
             errors.append(
@@ -5252,6 +5256,39 @@ def land_stress_eligibility(cfg) -> tuple[bool, str]:
         return False, (f"land_surface_scheme={cfg.land_surface_scheme!r} is not "
                        f"one of {_LAND_STRESS_SCHEMES} on this lane")
     return True, ""
+
+
+def checkpoint_radiation_cadence_error(cfg) -> str | None:
+    """R-ex (D-REX-1): the column loop does not checkpoint the held radiation
+    fluxes, so every checkpoint must sit on a radiation boundary -- the
+    checkpoint cadence is an integer multiple of the radiation cadence (the
+    run loop also refuses a restart anywhere else).  ``None`` when aligned.
+
+    Call with the config holding the EFFECTIVE timestep (after the driver's
+    CFL / factory clamp): the alignment is a property of the steps the run
+    actually takes, and a requested dt the clamp reduces (C12 duo: 1920 s ->
+    600 s) can misalign where the effective one aligns, or vice versa.
+    """
+    # The run loop's own coercion, so a numpy / YAML-float cadence is
+    # judged here too instead of failing only once the loop starts.
+    rus = max(1, int(cfg.rad_update_steps))
+    ck_days = cfg.output.checkpoint_days
+    dt = cfg.dycore.dt
+    # Same predicate as the run loop's guard: radiation sub-cycles only when
+    # it runs at all, and the checkpoint interval is the loop's integer
+    # step count, int(checkpoint_days * 86400 / dt).
+    if not (cfg.column_loop_lane and rus > 1
+            and cfg.radiation != "none"
+            and ck_days and ck_days > 0 and dt > 0):
+        return None
+    ck_steps = int(ck_days * 86400.0 / dt)
+    if ck_steps % rus == 0:
+        return None
+    return (f"checkpoint_days={ck_days} ({ck_steps} steps at "
+            f"dt={dt:g} s) is not an integer multiple of "
+            f"rad_update_steps={rus}: the held radiation fluxes "
+            "are not checkpointed, so every checkpoint must sit on a "
+            "radiation boundary")
 
 
 def resolve_land_stress_from_land(cfg) -> bool:

@@ -92,7 +92,7 @@ Tests named above: `test_swg_dg_reproduction_guards.py:100` (GPU emulation),
 `:277` (float64), `:333` (annual and climate float64), `:429` (derivation),
 `:477` (live derivation), `:577` (exact pins), `:686` (runbook);
 `test_swg_dg_reproduction_shell.py:148` (prefix), `:177` (archiver);
-`test_nemo_swg_dg_climate.py:275` (final line);
+`test_nemo_swg_dg_climate.py:292` (final line);
 `test_nemo_swg_card.py:326` (derived groups beyond the frozen thirteen).
 
 ## Commands behind the evidence

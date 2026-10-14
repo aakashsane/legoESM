@@ -90,7 +90,7 @@ def run(root: Path, *, composition: str, backend: str,
         # The certified ladder builder requires CPU libm arithmetic; the GPU
         # form scores the long-run driver's own case under its native policy.
         card, model, forcing = driver.build_case(namelist)
-        masks = ladder._card_masks(card)  # noqa: SLF001
+        masks = ladder.card_masks(card)
     else:
         card, masks, model, forcing = ladder._swg_production_case(  # noqa: SLF001
             "short restart ladder", namelist=namelist)

@@ -365,7 +365,7 @@ def run_replay(stage_root: Path, deck: str, npz_path: Path, *, plant=False) -> d
     card = build_swg_card(namelist)
     model = LatLonCGridOceanModel(
         card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
-    masks = ladder._card_masks(card)  # noqa: SLF001 - exact ladder masks
+    masks = ladder.card_masks(card)
 
     entry = _stage_item(current)
     output = model.replay_swe_rk3_stage(entry, card.dt_s, 1, entry)

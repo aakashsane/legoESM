@@ -176,7 +176,7 @@ def test_legoesm_loader_refuses_fp32_even_when_other_admission_checks_pass(
         "namelist": {},
     }
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
-    monkeypatch.setattr(identity, "_require_legoesm_deck", lambda _: None)
+    monkeypatch.setattr(identity, "require_legoesm_deck", lambda _: None)
     with pytest.raises(RuntimeError, match="endpoint storage is not float64"):
         identity.load_legoesm_endpoint(endpoint, day=1, step=1_728)
 

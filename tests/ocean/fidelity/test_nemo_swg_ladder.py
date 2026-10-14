@@ -201,7 +201,7 @@ def test_recorded_stage3_wind_and_whole_step_inputs_are_discriminating():
     entries = lad.read_stage_entries(lad.DEFAULT_STAGE_ROOT)
     from legoesm.ocean.fidelity.nemo_testcase_recipe import build_swg_card
 
-    audit = lad._stage3_input_audit(entries, lad._card_masks(build_swg_card()))
+    audit = lad._stage3_input_audit(entries, lad.card_masks(build_swg_card()))
     assert all(row["bit_identical"]
                for row in audit["wind_before_vs_now"].values())
     assert all(not row["bit_identical"] and row["n_unequal"] > 0
@@ -228,7 +228,7 @@ def test_recorded_nonzero_stage_entry_one_ulp_plant_leaves_bar():
 def test_rows_use_card_t_u_v_masks_and_distinguish_wet_from_dry():
     from legoesm.ocean.fidelity.nemo_testcase_recipe import build_swg_card
 
-    masks = lad._card_masks(build_swg_card())
+    masks = lad.card_masks(build_swg_card())
     assert {name: mask.shape for name, mask in masks.items()} == {
         "T": (84, 84), "U": (84, 84), "V": (84, 84), "F": (84, 84)}
     assert all(mask.any() and not mask.all() for mask in masks.values())
@@ -246,7 +246,7 @@ def test_rows_use_card_t_u_v_masks_and_distinguish_wet_from_dry():
 def test_before_stress_uses_native_stagger_and_wrong_stagger_plant_fails(field, kind):
     from legoesm.ocean.fidelity.nemo_testcase_recipe import build_swg_card
 
-    masks = lad._card_masks(build_swg_card())
+    masks = lad.card_masks(build_swg_card())
     selected = lad._field_mask(field, masks)
     assert np.array_equal(selected, masks[kind])
     # The reviewer's reproduced defect selected T; 80 cells distinguish it

@@ -17,9 +17,9 @@ from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
 
 CHECKOUT_IMPORT = bootstrap_checkout(__file__, enforce_x64=__name__ == "__main__")
 from nemo_testcase_l1_swg_dg_climate import (  # noqa: E402
-    _require_legoesm_deck,
-    _require_nemo_deck,
     assemble_coordinate_tiles,
+    require_legoesm_deck,
+    require_nemo_deck,
 )
 from nemo_testcase_l1_swg_dg_round6 import bit_summary  # noqa: E402
 from nemo_testcase_phase3_trajectory_gate import require  # noqa: E402
@@ -200,7 +200,7 @@ def load_legoesm_endpoint(path: Path, *, day: int, step: int) -> tuple[dict, dic
             "endpoint did not use the one-JIT-per-day composition")
     require(manifest.get("steps_per_day") == 1_728,
             "legoESM daily cadence differs")
-    _require_legoesm_deck(manifest.get("namelist", {}))
+    require_legoesm_deck(manifest.get("namelist", {}))
     require(manifest.get("daily_sha256", {}).get(path.name) == sha256(path),
             "legoESM endpoint digest differs from its manifest")
     with np.load(path, allow_pickle=False) as saved:
@@ -296,7 +296,7 @@ def build_report(
 
 
 def run(nemo_root: Path, lego_npz: Path, *, day: int, step: int) -> dict:
-    deck_provenance = _require_nemo_deck(nemo_root)
+    deck_provenance = require_nemo_deck(nemo_root)
     coordinates, masks = _card_geometry()
     nemo_masks, mesh_provenance = load_nemo_mesh_masks(nemo_root, coordinates)
     for kind in "TUV":

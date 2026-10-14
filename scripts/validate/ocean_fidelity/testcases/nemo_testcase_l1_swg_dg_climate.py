@@ -57,7 +57,7 @@ def array_digest(value: np.ndarray) -> str:
     return hashlib.sha256(np.ascontiguousarray(value).tobytes()).hexdigest()
 
 
-def _require_legoesm_deck(namelist: dict) -> None:
+def require_legoesm_deck(namelist: dict) -> None:
     """Bind a legoESM manifest to the registered Maddison deck."""
     from legoesm.ocean.fidelity.nemo_testcase_recipe import (
         SWG_MADDISON_NAMELIST,
@@ -74,7 +74,7 @@ def _require_legoesm_deck(namelist: dict) -> None:
                 f"legoESM manifest deck differs at {field}")
 
 
-def _require_nemo_deck(root: Path) -> dict:
+def require_nemo_deck(root: Path) -> dict:
     """Bind an IOIPSL directory to its manifest and resolved SWG_DG deck."""
     executable = root / "nemo"
     require(executable.is_file(), f"missing NEMO executable {executable}")
@@ -205,7 +205,7 @@ def nemo_ioipsl_provider(
     import netCDF4
 
     require(start_day > 0 and days > 0, "NEMO window must be positive")
-    deck_provenance = _require_nemo_deck(root)
+    deck_provenance = require_nemo_deck(root)
     coordinates = _expected_coordinates()
     paths = {
         kind: sorted(root.glob(f"SWG_*_grid_{kind}_*.nc"))
@@ -301,7 +301,7 @@ def legoesm_npz_provider(
                 "legoesm-swg-double-gyre-daily-v1",
                 "legoesm-swg-double-gyre-daily-v2"},
             "unknown legoESM daily schema")
-    _require_legoesm_deck(manifest.get("namelist", {}))
+    require_legoesm_deck(manifest.get("namelist", {}))
     complete = [root / f"day{day:04d}.npz"
                 for day in range(1, total_days + 1)]
     require(sorted(root.glob("day????.npz")) == complete,
@@ -382,10 +382,10 @@ def diagnose(provider: DailyProvider, *, days: int, card=None,
     if geometry is None:
         if card is None:
             card = build_swg_card(SWG_MADDISON_NAMELIST)
-        from nemo_testcase_l1_swg_ladder import _card_masks
+        from nemo_testcase_l1_swg_ladder import card_masks
         source = swg_horizontal_coordinates(SWG_MADDISON_NAMELIST)
         geometry = {
-            "masks": _card_masks(card),
+            "masks": card_masks(card),
             "area": np.asarray(card.recipe.grid.area),
             "x": np.asarray(source["glamt"]),
             "y": np.asarray(source["gphit"]),

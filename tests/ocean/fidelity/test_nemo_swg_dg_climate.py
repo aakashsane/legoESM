@@ -15,6 +15,23 @@ climate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(climate)
 
 
+@pytest.mark.parametrize(
+    ("relative", "private_name"),
+    (
+        ("nemo_testcase_l1_swg_dg_climate.py", "_card_masks"),
+        ("nemo_testcase_l1_swg_dg_round6.py", "_card_masks"),
+        ("nemo_testcase_l1_swg_dg_short_ladder.py", "_card_masks"),
+        ("nemo_testcase_l1_swg_dg_restart_identity.py",
+         "_require_legoesm_deck"),
+        ("nemo_testcase_l1_swg_dg_restart_identity.py",
+         "_require_nemo_deck"),
+    ),
+)
+def test_dg_tools_do_not_import_private_sibling_helpers(relative, private_name):
+    source = (SCRIPT.parent / relative).read_text()
+    assert private_name not in source
+
+
 def test_coordinate_assembly_deduplicates_halos_and_refuses_bad_coverage():
     lon = np.tile(np.arange(3, dtype=np.float64), (2, 1))
     lat = np.tile(np.arange(2, dtype=np.float64)[:, None], (1, 3))

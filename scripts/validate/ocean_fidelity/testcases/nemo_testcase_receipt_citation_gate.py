@@ -6759,7 +6759,7 @@ CITATION_MAP = {
         'def test_mpi_steps_refuse_a_prefix_without_its_mpi(tmp_path, name):',
     'test_swg_dg_reproduction_shell.py:177':
         'def test_build_and_identity_name_the_host_archiver_or_refuse(tmp_path):',
-    'test_nemo_swg_dg_climate.py:275':
+    'test_nemo_swg_dg_climate.py:292':
         'def test_final_line_reports_written_statistics_not_agreement(',
     'test_nemo_swg_card.py:326':
         'def test_every_derived_read_outside_the_frozen_groups_is_namusr_def_or_pinned():',

@@ -82,16 +82,44 @@ def test_levante_chain_does_not_swap_one_forcing_channel():
     """The GPU chain (every Levante submit_*.sh) must not re-point one of the
     aerosol / CCN / volcanic products the sourced launcher names (its
     CENTURY_DECK branch used to swap volcanic alone for one-year pool files),
-    and must refuse before launch when one is missing."""
+    and must launch with the path flags."""
     text = (REPO / "scripts/cluster/levante/amip_mpas_gpu_chain.sbatch").read_text()
     code = "\n".join(line.split("#")[0] for line in text.splitlines())
     assert not re.search(r"\b(?:AEROSOL|AEROSOL_CCN|VOLCANIC)\s*:?=", code)
     assert '"${AMIP_PATH_FLAGS[@]}"' in code, "the launch no longer passes the path flags"
-    refusal = re.search(r'for _f in ([^;]*); do\s*\n'
-                        r'\s*\[\[ -f "\$\{_f\}" \]\] \|\| \{[^\n]*exit 3', code)
-    assert refusal, "no pre-launch existence check"
+
+
+# Every sbatch that sources amip_production.sh to launch run_amip.py must call
+# the shared refusal between the source line and the launch (review 2026-10-14).
+CHECKED_LAUNCHERS = ("scripts/cluster/levante/amip_mpas_gpu_chain.sbatch",
+                     "scripts/cluster/mpas_energy_1354/energy_budget_15d.sbatch",
+                     "scripts/cluster/mpas_energy_1354/energy_budget_smoke.sbatch")
+
+
+@pytest.mark.parametrize("launcher", CHECKED_LAUNCHERS)
+def test_launcher_refuses_before_launch_on_a_missing_forcing_file(launcher):
+    lines = [line.split("#")[0].strip()
+             for line in (REPO / launcher).read_text().splitlines()]
+    src = next(i for i, l in enumerate(lines)
+               if l.startswith("source") and "amip_production.sh" in l)
+    launch = next(i for i, l in enumerate(lines) if '"${AMIP_PATH_FLAGS[@]}"' in l)
+    assert "amip_require_forcing_files || exit 3" in lines[src + 1:launch], launcher
+
+
+@pytest.mark.parametrize("missing", ("AEROSOL", "AEROSOL_CCN", "VOLCANIC", None))
+def test_forcing_file_check_names_each_missing_product(tmp_path, missing):
+    env = {"PATH": "/usr/bin:/bin"}
     for var in ("AEROSOL", "AEROSOL_CCN", "VOLCANIC"):
-        assert f'"${{{var}}}"' in refusal[1], var
+        env[var] = str(tmp_path / f"{var}.nc")
+        if var != missing:
+            (tmp_path / f"{var}.nc").touch()
+    p = subprocess.run(
+        ["bash", "-c", f'source "{REPO / LAUNCHERS[0]}" >/dev/null; amip_require_forcing_files'],
+        env=env, capture_output=True, text=True, cwd=REPO)
+    if missing is None:
+        assert p.returncode == 0, p.stderr
+    else:
+        assert p.returncode == 3 and f"{missing}.nc" in p.stderr, (p.returncode, p.stderr)
 
 
 # Review 2026-10-10 F37: the coupled decks start in 1850, and a multi-year file

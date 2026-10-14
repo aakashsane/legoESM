@@ -89,11 +89,7 @@ if [[ "${CENTURY_DECK:-0}" == "1" ]]; then
 fi
 # shellcheck source=/dev/null
 source "${REPO}/config/amip/amip_production.sh"
-# Refuse at job start, before any compile or step time is spent: a missing
-# aerosol / CCN / volcanic product would otherwise die at the first forcing load.
-for _f in "${AEROSOL}" "${AEROSOL_CCN}" "${VOLCANIC}"; do
-    [[ -f "${_f}" ]] || { echo "missing forcing file ${_f}: stage it (see config/amip/amip_production.sh)" >&2; exit 3; }
-done
+amip_require_forcing_files || exit 3   # aerosol / CCN / volcanic staged?
 mkdir -p "${OUTDIR}"
 exec > >(tee -a "${OUTDIR}/slurm-${SLURM_JOB_ID:-local}.out") \
      2> >(tee -a "${OUTDIR}/slurm-${SLURM_JOB_ID:-local}.err" >&2)

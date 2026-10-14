@@ -170,3 +170,14 @@ fi
 if [[ -n "${AMIP_SSO}" ]]; then
   AMIP_PATH_FLAGS+=( --subgrid-orography-file "${AMIP_SSO}" )
 fi
+
+# Refuse at job start, before any compile or step time is spent, when the
+# aerosol / CCN aerosol / volcanic product is not staged: the run would
+# otherwise die at the first forcing load.  Call it right after sourcing:
+#   amip_require_forcing_files || exit 3
+amip_require_forcing_files() {
+  local _f
+  for _f in "${AEROSOL}" "${AEROSOL_CCN}" "${VOLCANIC}"; do
+    [[ -f "${_f}" ]] || { echo "missing forcing file ${_f}: stage it (see config/amip/amip_production.sh)" >&2; return 3; }
+  done
+}

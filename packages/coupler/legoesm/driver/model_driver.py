@@ -15995,7 +15995,9 @@ class ModelDriver:
                     dv_dt=t.dv_dt.replace(data=t.dv_dt.data + b.dv_dt.data),
                     dT_dt=t.dT_dt.replace(data=t.dT_dt.data + b.dT_dt.data),
                     dp_s_dt=t.dp_s_dt.replace(
-                        data=t.dp_s_dt.data + b.dp_s_dt.data))
+                        data=t.dp_s_dt.data + b.dp_s_dt.data),
+                    dphis_dt=t.dphis_dt.replace(
+                        data=t.dphis_dt.data + b.dphis_dt.data))
                 if b.tracer_tendencies is not None:
                     raise NotImplementedError(
                         "the lane physics returned tracer tendencies; summing "

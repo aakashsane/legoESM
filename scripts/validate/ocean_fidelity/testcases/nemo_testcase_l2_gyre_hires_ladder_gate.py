@@ -718,6 +718,7 @@ def run(
     oracle_root: Path, output: Path, *, deck: str = "r4",
     ahm_root: Path = DEFAULT_AHM_ROOT,
     math_flavour: str = "vector",
+    trajectory_only: bool = False,
 ) -> dict:
     import jax
     import jax.numpy as jnp
@@ -814,7 +815,7 @@ def run(
                     }
                 )
         steps.append({"kt": kt, "Nbb": oracle["Nbb"], "rows": rows})
-        if (deck == "r4_smag" and math_flavour == "vector"
+        if (not trajectory_only and deck == "r4_smag" and math_flavour == "vector"
                 and kt in (2, 3, 10)):
             # Rule 12: score the changed coefficient on NEMO's own Kbb
             # velocity input, not legoESM's already-diverged trajectory.
@@ -1010,7 +1011,7 @@ def run(
                     "operator arithmetic from inherited trajectory debt"
                 ),
             })
-        if kt == 1:
+        if kt == 1 and not trajectory_only:
             state = host_and_clear(state)
             for stage in (1, 2):
                 stage_model = LatLonCGridOceanModel(
@@ -1599,6 +1600,7 @@ def run(
         "smagorinsky_branch_census": smagorinsky_branch_census,
         "smagorinsky_operator": smagorinsky_operator,
         "controls": controls,
+        "trajectory_only": trajectory_only,
         "verdict": "PASS" if passed else "DEBT",
     }
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
@@ -2147,6 +2149,10 @@ def main(argv=None) -> int:
     parser.add_argument("--stage2-composition-only", action="store_true")
     parser.add_argument("--stage3-geometry-only", action="store_true")
     parser.add_argument("--step2-tracer-owner-only", action="store_true")
+    parser.add_argument(
+        "--trajectory-only", action="store_true",
+        help="score the ten entry records and one-ULP controls only",
+    )
     parser.add_argument("--writer-identity-only", action="store_true")
     parser.add_argument("--writer-twin-root", type=Path)
     parser.add_argument("--writer-candidate-root", type=Path)
@@ -2181,6 +2187,9 @@ def main(argv=None) -> int:
                       args.step2_tracer_owner_only))
         if narrow > 1:
             raise ValueError("choose only one narrow discriminator")
+        if narrow and args.trajectory_only:
+            raise ValueError(
+                "--trajectory-only cannot be combined with a discriminator")
         if args.stage2_composition_only:
             if args.deck != "r4":
                 raise ValueError("stage-2 composition-only gate requires deck r4")
@@ -2207,6 +2216,7 @@ def main(argv=None) -> int:
                 Path(admission["root"]), args.output,
                 deck=args.deck, ahm_root=args.ahm_root,
                 math_flavour=args.math_flavour,
+                trajectory_only=args.trajectory_only,
             )
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)

@@ -79,18 +79,38 @@ def test_two_legs_equal_the_straight_run(leg1):
     assert leg2.run(start_step=step, start_day=day) == "COMPLETED"
     for x, y in zip(_winds(straight), _winds(leg2)):
         np.testing.assert_array_equal(x, y)
+    for f in ("T", "p_s"):
+        np.testing.assert_array_equal(np.asarray(getattr(straight.state, f).data),
+                                      np.asarray(getattr(leg2.state, f).data))
 
 
 def test_old_checkpoint_is_lifted_once_with_a_warning(leg1, caplog):
     tmp, b1, ckpt = leg1
     with np.load(ckpt, allow_pickle=True) as z:
-        data = {k: z[k] for k in z.keys() if "cube_" not in k}
+        drop = {f"carry_{k}" for k in ModelDriver._CORNER_WIND_KEYS}
+        assert drop <= set(z.keys())
+        data = {k: z[k] for k in z.keys() if k not in drop}
     old = tmp / "old_checkpoint_day_0001.npz"
     np.savez(old, **data)
     with caplog.at_level(logging.WARNING):
         d = _resume(tmp, str(old), "leg2_old")
     assert "no saved D-grid winds" in caplog.text
     assert np.abs(_winds(b1)[0] - _winds(d)[0]).max() > 0.0
+
+
+def test_zarr_restart_lifts_with_a_warning(tmp_path, caplog):
+    """zarr does not round-trip the aux carry, so the corner winds are lifted
+    on restart and the warning says so (whether zarr should refuse is open)."""
+    cfg = _cfg(tmp_path / "z1", 1)
+    cfg = cfg._replace(output=cfg.output._replace(checkpoint_format="zarr"))
+    z1 = ModelDriver(cfg)
+    z1.setup()
+    assert z1.run() == "COMPLETED"
+    ckpt = sorted(glob.glob(str(tmp_path / "z1" / "checkpoint_day_*")))[-1]
+    with caplog.at_level(logging.WARNING):
+        d = _resume(tmp_path, ckpt, "z2")
+    assert "no saved D-grid winds (a zarr" in caplog.text
+    assert np.abs(_winds(z1)[0] - _winds(d)[0]).max() > 0.0
 
 
 @pytest.mark.parametrize("corrupt", [

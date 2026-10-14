@@ -7037,8 +7037,9 @@ class ModelDriver:
             lifted = lifted._replace(**{
                 f: getattr(lifted, f).replace(data=a.astype(b.dtype))
                 for f, a, b in zip(fields, new, cur)})
-            # The checkpoint's cell-centre winds were written from these
-            # staggered winds; anything else means winds from another state.
+            # The checkpoint's cell-centre winds were written by ``to_cc`` of
+            # these same staggered winds (``cell_centre_state`` at save), so
+            # the re-average is near-exact; anything else means another state.
             view = to_cc(lifted)
             for name in ("u", "v"):
                 a = np.asarray(getattr(view, name).data, np.float64)

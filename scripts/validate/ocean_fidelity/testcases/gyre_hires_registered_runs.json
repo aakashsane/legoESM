@@ -26,19 +26,6 @@
       "physical_gpu_index": 0,
       "label": "post_fix_b401ec3f3",
       "disposition": "post-fix Smagorinsky wall-coefficient repeat; controlling climate run when complete"
-    },
-    "post_qsr_1b60b5807": {
-      "run_directory": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/legoesm_runs/r4_smag_gpu_1825d_post_qsr_1b60b5807",
-      "commit": "1b60b580772873d906817ce3a56dcb67cc56e3c0",
-      "deck": "r4_smag",
-      "mode": "gpu-native",
-      "backend": "gpu",
-      "precision_policy": "fp64",
-      "transcendentals": "native",
-      "certified_policy": false,
-      "physical_gpu_index": 0,
-      "label": "post_qsr_1b60b5807",
-      "disposition": "post-live-stretch-QSR transcription-fix repeat; controlling climate run when complete"
     }
   }
 }

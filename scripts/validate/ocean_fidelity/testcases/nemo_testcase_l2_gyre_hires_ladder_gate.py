@@ -49,10 +49,208 @@ DEFAULT_AHM_ROOT = Path(
 ADMISSIONS_PATH = HERE / "gyre_hires_oracle_admissions.json"
 ORACLE_FLAVOURS = ("scalar", "vector")
 FIELDS = ("T", "S", "u", "v", "ssh")
+WRITER_STEP1_RECORDS = (
+    "oracle_stage_kt00000001_s1.bin",
+    "oracle_stage_kt00000001_s2.bin",
+    "oracle_stage_kt00000001_s3.bin",
+    "oracle_zdf_entry_kt00000001.bin",
+    "oracle_rktracer_operands_kt00000001_s1.bin",
+    "oracle_rktracer_operands_kt00000001_s2.bin",
+    "oracle_tracer_transport_kt00000001_s3.bin",
+    "oracle_rktracer_stage3_kt00000001.bin",
+    "oracle_qsr_stage3_kt00000001.bin",
+)
+WRITER_SCOPED_RECORDS = frozenset(
+    name for name in WRITER_STEP1_RECORDS
+    if "rktracer_operands" in name or "tracer_transport" in name
+)
+TRACER_STAGE12_ARRAYS = (
+    "zero_T", "zero_S", "zFu", "zFv", "zFw",
+    "after_advection_T", "after_advection_S",
+    "after_sbc_T", "after_sbc_S", "Kbb_T", "Kbb_S",
+    "Kmm_T", "Kmm_S", "Kaa_T", "Kaa_S",
+)
 
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _writer_loop_bounds(path: Path) -> dict:
+    """Read the P3 writer's own interior loop bounds from ``tra_zdf``."""
+    raw = path.read_bytes()[:80]
+    if len(raw) != 80 or raw[:16].decode("ascii").rstrip() != "NEMO_L2_TRAZD_1":
+        raise ValueError(f"{path}: not a complete tra_zdf header")
+    fields = (
+        "version", "kt", "stage", "Kbb", "Kmm", "Krhs", "Kaa",
+        "nx", "ny", "nz", "nzm1", "ntsi", "ntei", "ntsj", "ntej",
+        "bits",
+    )
+    header = dict(zip(fields, struct.unpack("=16i", raw[16:])))
+    if (header["version"], header["bits"], header["nzm1"]) != (
+            1, 64, header["nz"] - 1):
+        raise ValueError(f"{path}: malformed tra_zdf header")
+    if not (1 <= header["ntsi"] <= header["ntei"] <= header["nx"]
+            and 1 <= header["ntsj"] <= header["ntej"] <= header["ny"]):
+        raise ValueError(f"{path}: loop bounds outside the recorded domain")
+    return header
+
+
+def _read_full_tracer_stage12(path: Path) -> tuple[bytes, dict, np.ndarray]:
+    """Read the complete fixed-layout record, including its ignored trailer."""
+    raw = path.read_bytes()
+    if len(raw) < 60:
+        raise ValueError(f"{path}: short tracer-stage record")
+    magic = raw[:16].decode("ascii").rstrip()
+    header_values = struct.unpack("=11i", raw[16:60])
+    fields = (
+        "version", "kt", "stage", "Kbb", "Kmm", "Krhs", "Kaa",
+        "nx", "ny", "nz", "bits",
+    )
+    header = dict(zip(fields, header_values))
+    if magic != "NEMO_L2_RKTRA_1" or header["version"] != 1 \
+            or header["bits"] != 64 or header["stage"] not in (1, 2):
+        raise ValueError(f"{path}: malformed tracer-stage header")
+    values = np.frombuffer(raw, dtype=np.float64, offset=60)
+    n3 = header["nx"] * header["ny"] * header["nz"]
+    n2 = header["nx"] * header["ny"]
+    if values.size != len(TRACER_STAGE12_ARRAYS) * n3 + 3 * n2:
+        raise ValueError(f"{path}: malformed tracer-stage payload")
+    return raw[:60], header, values
+
+
+def _read_full_tracer_transport(path: Path) -> tuple[bytes, dict, np.ndarray]:
+    """Read the complete fixed-layout active-tracer transport record."""
+    raw = path.read_bytes()
+    if len(raw) < 60:
+        raise ValueError(f"{path}: short tracer-transport record")
+    magic = raw[:16].decode("ascii").rstrip()
+    header_values = struct.unpack("=11i", raw[16:60])
+    fields = (
+        "version", "kt", "stage", "Kbb", "Kmm", "Kaa", "Krhs",
+        "nx", "ny", "nz", "bits",
+    )
+    header = dict(zip(fields, header_values))
+    if magic != "NEMO_L2_TRTRP_1" or header["version"] != 1 \
+            or header["bits"] != 64 or header["stage"] != 3:
+        raise ValueError(f"{path}: malformed tracer-transport header")
+    values = np.frombuffer(raw, dtype=np.float64, offset=60)
+    n3 = header["nx"] * header["ny"] * header["nz"]
+    if values.size != 3 * n3:
+        raise ValueError(f"{path}: malformed tracer-transport payload")
+    return raw[:60], header, values
+
+
+def compare_scalar_writer_identity(
+    twin_root: Path,
+    candidate_root: Path,
+    zdf_record: Path,
+    *,
+    plant_active_word: bool = False,
+) -> dict:
+    """Prove a widened writer leaves every word consumed by the gates fixed.
+
+    NEMO allocates the tracer transport work arrays at full-halo extent but
+    initializes them only over ``ntsi:ntei``/``ntsj:ntej``.  The P3 readers
+    crop to that same box before any gate consumes a word.  Compare that box
+    exactly, retain raw byte identity for every other record and for the
+    ignored r3 trailer, and report (rather than silently discard) moving
+    uninitialized halo words.
+    """
+    bounds = _writer_loop_bounds(zdf_record)
+    rows = []
+    active_mismatches = 0
+    excluded = []
+    for name in WRITER_STEP1_RECORDS:
+        twin = twin_root / name
+        candidate = candidate_root / name
+        if not twin.is_file() or not candidate.is_file():
+            raise FileNotFoundError(
+                f"writer identity input missing: {twin if not twin.is_file() else candidate}")
+        if name not in WRITER_SCOPED_RECORDS:
+            equal = twin.read_bytes() == candidate.read_bytes()
+            active_mismatches += int(not equal)
+            rows.append({"record": name, "scope": "all_bytes", "exact": equal})
+            continue
+
+        stage12 = "rktracer_operands" in name
+        reader = (
+            _read_full_tracer_stage12 if stage12
+            else _read_full_tracer_transport
+        )
+        array_names = (
+            TRACER_STAGE12_ARRAYS if stage12 else ("zFu", "zFv", "zFw")
+        )
+        twin_header, twin_meta, twin_values = reader(twin)
+        cand_header, cand_meta, cand_values = reader(candidate)
+        if twin_header != cand_header or twin_meta != cand_meta:
+            raise ValueError(f"{name}: tracer-stage headers differ")
+        if (twin_meta["nx"], twin_meta["ny"], twin_meta["nz"]) != (
+                bounds["nx"], bounds["ny"], bounds["nz"]):
+            raise ValueError(f"{name}: domain differs from tra_zdf loop record")
+        nx, ny, nz = twin_meta["nx"], twin_meta["ny"], twin_meta["nz"]
+        n3, n2 = nx * ny * nz, nx * ny
+        candidate_values = np.array(cand_values, copy=True)
+        if plant_active_word and stage12 and name.endswith("_s1.bin"):
+            # First word in NEMO's own interior loop box of zFu.
+            offset = 2 * n3
+            index = ((bounds["ntsi"] - 1)
+                     + nx * (bounds["ntsj"] - 1))
+            candidate_values[offset + index] = np.nextafter(
+                candidate_values[offset + index], np.float64(np.inf))
+
+        record_active = 0
+        record_excluded = []
+        for array_index, array_name in enumerate(array_names):
+            begin = array_index * n3
+            left = twin_values[begin:begin + n3].reshape((nx, ny, nz), order="F")
+            right = candidate_values[begin:begin + n3].reshape(
+                (nx, ny, nz), order="F")
+            unequal = left.view(np.uint64) != right.view(np.uint64)
+            consumed = np.zeros((nx, ny, nz), dtype=bool)
+            consumed[
+                bounds["ntsi"] - 1:bounds["ntei"],
+                bounds["ntsj"] - 1:bounds["ntej"],
+                :,
+            ] = True
+            record_active += int(np.count_nonzero(unequal & consumed))
+            for index in np.argwhere(unequal & ~consumed):
+                i, j, k = (int(value) for value in index)
+                record_excluded.append({
+                    "array": array_name,
+                    "fortran_index_1based": [i + 1, j + 1, k + 1],
+                    "reason": "outside recorded ntsi:ntei/ntsj:ntej loop bounds",
+                })
+
+        trailer_left = twin_values[len(array_names) * n3:]
+        trailer_right = candidate_values[len(array_names) * n3:]
+        trailer_mismatches = int(np.count_nonzero(
+            trailer_left.view(np.uint64) != trailer_right.view(np.uint64)))
+        record_active += trailer_mismatches
+        active_mismatches += record_active
+        excluded.extend({"record": name, **item} for item in record_excluded)
+        rows.append({
+            "record": name,
+            "scope": "NEMO loop bounds plus complete r3 trailer",
+            "active_or_consumed_mismatches": record_active,
+            "excluded_uninitialized_halo_words": len(record_excluded),
+            "exact": record_active == 0,
+        })
+
+    report = {
+        "format": "gyre-scalar-step2-writer-identity-v1",
+        "loop_bounds": bounds,
+        "reader_scope": (
+            "all words returned by the P3 [2:-2,2:-2] tracer reader; "
+            "all bytes of every other consumed record"
+        ),
+        "rows": rows,
+        "excluded_words": excluded,
+        "plant_active_word": plant_active_word,
+        "active_or_consumed_mismatches": active_mismatches,
+        "verdict": "PASS" if active_mismatches == 0 else "DEBT",
+    }
+    return report
 
 
 def admit_oracle(
@@ -1722,9 +1920,34 @@ def main(argv=None) -> int:
     parser.add_argument("--ahm-root", type=Path, default=DEFAULT_AHM_ROOT)
     parser.add_argument("--stage2-composition-only", action="store_true")
     parser.add_argument("--stage3-geometry-only", action="store_true")
+    parser.add_argument("--writer-identity-only", action="store_true")
+    parser.add_argument("--writer-twin-root", type=Path)
+    parser.add_argument("--writer-candidate-root", type=Path)
+    parser.add_argument("--writer-zdf-record", type=Path)
+    parser.add_argument("--plant-writer-active-word", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
+        if args.writer_identity_only:
+            if not all((args.writer_twin_root, args.writer_candidate_root,
+                        args.writer_zdf_record)):
+                raise ValueError(
+                    "writer identity requires twin root, candidate root, "
+                    "and tra_zdf record")
+            report = compare_scalar_writer_identity(
+                args.writer_twin_root,
+                args.writer_candidate_root,
+                args.writer_zdf_record,
+                plant_active_word=args.plant_writer_active_word,
+            )
+            args.output.write_text(
+                json.dumps(report, indent=2) + "\n", encoding="utf-8")
+            print(json.dumps(report, indent=2))
+            return 0 if report["verdict"] == "PASS" else 1
+        if (args.writer_twin_root or args.writer_candidate_root
+                or args.writer_zdf_record or args.plant_writer_active_word):
+            raise ValueError(
+                "writer identity arguments require --writer-identity-only")
         admission = admit_oracle(args.deck, args.math_flavour, args.oracle_root)
         if args.stage2_composition_only and args.stage3_geometry_only:
             raise ValueError("choose only one narrow discriminator")

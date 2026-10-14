@@ -415,6 +415,16 @@ def make_ocean_physics(
                     sw_config,
                     rho_0=config.constants.rho_0,
                     c_sw=config.constants.c_sw,
+                    # ``nemo_qsr_2bd`` ignores the generic ``jacobian``
+                    # argument: NEMO's qsr_2BD evaluates both gdepw and e3t
+                    # with the live ``1+r3t(Kmm)`` factor.  This pipeline call
+                    # is the WS-RK3 Kbb evaluation, so hand it Kbb's live
+                    # factor explicitly.  Omitting this made Kbb static while
+                    # the stage-3 replacement subtracted a live-Kbb field,
+                    # leaving a material residual from step 2 onward.
+                    z_half_stretch=(
+                        J if sw_config.scheme == "nemo_qsr_2bd" else None
+                    ),
                 )
             dT_dt = dT_dt + sw_tend
 

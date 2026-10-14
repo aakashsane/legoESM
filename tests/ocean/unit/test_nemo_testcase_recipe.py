@@ -22,6 +22,7 @@ from legoesm.ocean.fidelity.nemo_testcase_recipe import (
     build_lock_exchange_zco_card,
     build_nemo_testcase_card,
     build_overflow_zps_card,
+    gyre_surface_forcings,
     gyre_horizontal_coordinates,
     gyre_surface_boundary_condition,
     gyre_vertical_ladder,
@@ -29,7 +30,7 @@ from legoesm.ocean.fidelity.nemo_testcase_recipe import (
     validate_nemo_testcase_card,
     validate_nemo_testcase_card_for_execution,
 )
-from legoesm.ocean.vertical import nemo_fe3mask_from_tmask
+from legoesm.ocean.vertical import compute_ocean_jacobian, nemo_fe3mask_from_tmask
 
 
 @pytest.fixture(autouse=True)
@@ -447,6 +448,63 @@ def test_gyre_r4_card_resolves_grid_clock_and_mixing_from_namelist():
         np.asarray(card.recipe.grid.dx_T), np.full((82, 122), 26500.0))
     sbc = gyre_surface_boundary_condition(card, card.dt_s)
     assert sbc.qsr_w_m2.shape == (82, 122)
+
+
+def test_gyre_nemo_qsr_pipeline_uses_live_kbb_stretch():
+    """The shared Kbb deposit must be the field stage 3 later subtracts."""
+    from legoesm.ocean.physics.shortwave_penetration import (
+        shortwave_penetration_tendency,
+    )
+
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    card = build_nemo_testcase_card("GYRE-zco")
+    state = card.recipe.initial_state
+    wet = jnp.asarray(card.recipe.land_mask) > 0.5
+    state = state._replace(
+        eta=state.eta.replace(
+            data=jnp.where(wet, jnp.asarray(0.25, dtype=jnp.float64), 0.0)))
+    _, surface = gyre_surface_forcings(card, state, 2)
+    model = LatLonCGridOceanModel(
+        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+    cc_state = state._replace(
+        u=state.u.replace(
+            data=0.5 * (state.u.data[:, :-1] + state.u.data[:, 1:])),
+        v=state.v.replace(
+            data=0.5 * (state.v.data[:-1] + state.v.data[1:])),
+    )
+    actual = model._physics_fn(
+        cc_state, card.recipe.grid, card.recipe.z_coord, surface).dT_dt.data
+    zero = model._physics_fn(
+        cc_state, card.recipe.grid, card.recipe.z_coord,
+        surface._replace(sw_down=jnp.zeros_like(surface.sw_down)),
+    ).dT_dt.data
+    actual_qsr = actual - zero
+    stretch = compute_ocean_jacobian(
+        state.eta.data, state.H_bathy.data, card.recipe.z_coord)
+    expected = shortwave_penetration_tendency(
+        surface.sw_down,
+        card.recipe.z_coord.dz_ref,
+        card.recipe.z_coord.z_half_ref,
+        stretch,
+        card.recipe.model_config.physics.shortwave_penetration,
+        rho_0=card.recipe.model_config.rho_0,
+        c_sw=card.recipe.model_config.physics.constants.c_sw,
+        z_half_stretch=stretch,
+    )
+    static = shortwave_penetration_tendency(
+        surface.sw_down,
+        card.recipe.z_coord.dz_ref,
+        card.recipe.z_coord.z_half_ref,
+        stretch,
+        card.recipe.model_config.physics.shortwave_penetration,
+        rho_0=card.recipe.model_config.rho_0,
+        c_sw=card.recipe.model_config.physics.constants.c_sw,
+    )
+    active = np.asarray(card.recipe.z_coord.is_active, dtype=bool)
+    np.testing.assert_array_equal(
+        np.asarray(actual_qsr)[active], np.asarray(expected)[active])
+    assert not np.array_equal(
+        np.asarray(expected)[active], np.asarray(static)[active])
 
 
 def test_gyre_five_year_clock_matches_nemo_completed_year_arithmetic():

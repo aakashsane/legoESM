@@ -17,11 +17,77 @@ GATE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GATE)
 
 
+def _write_writer_identity_fixture(root: Path, *, halo_changes: bool) -> Path:
+    root.mkdir()
+    dims = (6, 6, 2)
+    n3 = int(np.prod(dims))
+    n2 = dims[0] * dims[1]
+    zdf = root / "oracle_trazdf_matrix_kt00000001.bin"
+    zdf.write_bytes(
+        b"NEMO_L2_TRAZD_1 "
+        + struct.pack(
+            "=16i", 1, 1, 3, 1, 2, 3, 3, *dims, dims[2] - 1,
+            3, 4, 3, 4, 64,
+        )
+    )
+    for name in GATE.WRITER_STEP1_RECORDS:
+        if name in GATE.WRITER_SCOPED_RECORDS:
+            if "rktracer_operands" in name:
+                stage = 1 if name.endswith("_s1.bin") else 2
+                values = np.zeros(
+                    len(GATE.TRACER_STAGE12_ARRAYS) * n3 + 3 * n2,
+                    dtype=np.float64,
+                )
+                if halo_changes:
+                    array = 2 if stage == 1 else 4  # zFu / zFw
+                    full_index = 5 if stage == 1 else 0
+                    values[array * n3 + full_index] = np.nextafter(0.0, 1.0)
+                payload = (
+                    b"NEMO_L2_RKTRA_1 "
+                    + struct.pack(
+                        "=11i", 1, 1, stage, 1, 1, 3, 3, *dims, 64)
+                    + values.tobytes()
+                )
+            else:
+                values = np.zeros(3 * n3, dtype=np.float64)
+                payload = (
+                    b"NEMO_L2_TRTRP_1 "
+                    + struct.pack(
+                        "=11i", 1, 1, 3, 1, 2, 3, 3, *dims, 64)
+                    + values.tobytes()
+                )
+        else:
+            payload = f"exact:{name}".encode("ascii")
+        (root / name).write_bytes(payload)
+    return zdf
+
+
 def test_ladder_decks_have_distinct_preregistered_oracle_roots():
     assert set(GATE.DEFAULT_ORACLES) == {"r4", "r4_smag"}
     assert "round1/oracle_gyre_r4_stage" in str(GATE.DEFAULT_ORACLES["r4"])
     assert "round2/oracle_gyre_r4_smag_stage" in str(
         GATE.DEFAULT_ORACLES["r4_smag"])
+
+
+def test_writer_identity_excludes_only_nemo_out_of_loop_halo_and_plant_fires(
+    tmp_path,
+):
+    twin = tmp_path / "twin"
+    candidate = tmp_path / "candidate"
+    _write_writer_identity_fixture(twin, halo_changes=False)
+    zdf = _write_writer_identity_fixture(candidate, halo_changes=True)
+    report = GATE.compare_scalar_writer_identity(twin, candidate, zdf)
+    assert report["verdict"] == "PASS"
+    assert report["active_or_consumed_mismatches"] == 0
+    assert {
+        (row["array"], tuple(row["fortran_index_1based"]))
+        for row in report["excluded_words"]
+    } == {("zFu", (6, 1, 1)), ("zFw", (1, 1, 1))}
+
+    planted = GATE.compare_scalar_writer_identity(
+        twin, candidate, zdf, plant_active_word=True)
+    assert planted["verdict"] == "DEBT"
+    assert planted["active_or_consumed_mismatches"] == 1
 
 
 def test_all_math_flavour_oracles_are_admitted_by_content():

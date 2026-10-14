@@ -174,6 +174,9 @@ def test_daily_operator_recipes_pin_components_registration_and_one_rank():
     assert "sha256sum oracle_step_entry_kt*.bin" in run
     assert "REFUSE_RECORD_MANIFEST" in run
     assert "rg " not in build and "rg " not in run
+    assert 'CREATE_REFERENCE=GYRE_OMIP_L2_P3' in build
+    assert './makenemo -r "$CREATE_REFERENCE"' in build
+    assert 'cp -r "$SOURCE_CFG/MY_SRC/." "$TARGET_CFG/MY_SRC/"' in build
 
 
 def test_daily_writer_builder_read_only_preflight_applies_pinned_patch():
@@ -250,3 +253,7 @@ def test_scalar_step2_acquisition_preflight_pins_one_rank_and_scalar_math():
     assert "trazdf_round38_kt2.patch" in text
     assert "oracle_trazdf_matrix_kt00000001.bin" in text
     assert "oracle_trazdf_matrix_kt00000002.bin" in text
+    assert "--finalize-existing" in text
+    assert "--writer-identity-only" in text
+    assert "--plant-writer-active-word" in text
+    assert 'cmp "$SCALAR_TWIN' not in text

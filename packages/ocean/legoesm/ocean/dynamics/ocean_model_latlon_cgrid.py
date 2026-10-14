@@ -7692,8 +7692,13 @@ class LatLonCGridOceanModel:
                 from legoesm.ocean.physics.shortwave_penetration import (
                     shortwave_penetration_tendency,
                 )
-                _r3t_b = h_k_old[..., 0] / jnp.maximum(
-                    _h_ref_ws[..., 0], 1.0e-10)
+                # Reuse the exact Kbb expression used by the shared physics
+                # pipeline above.  The ratio of live/reference top thickness
+                # is algebraically the same value, but not necessarily the
+                # same fp64 word; subtracting a separately rounded qsr field
+                # from ``tend.dT_dt`` leaves a false source in Krhs.
+                _r3t_b = compute_ocean_jacobian(
+                    state.eta.data, state.H_bathy.data, _zc)
                 _r3t_m = _h_live_one_half[..., 0] / jnp.maximum(
                     _h_ref_ws[..., 0], 1.0e-10)
                 _qsr_stretch_override = (

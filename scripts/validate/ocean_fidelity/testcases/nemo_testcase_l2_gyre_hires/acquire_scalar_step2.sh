@@ -4,9 +4,12 @@ set -Eeuo pipefail
 # Operator-only scalar-libm acquisition for the unresolved second-step owner.
 # Preflight is read-only; only --run builds NEMO and launches the single rank.
 do_run=0
-[[ $# -eq 0 ]] || [[ $# -eq 1 && $1 == --run ]] || {
-  printf 'REFUSE_USAGE: expected [--run]\n' >&2; exit 64; }
-[[ $# -eq 0 ]] || do_run=1
+finalize_existing=0
+[[ $# -eq 0 ]] || [[ $# -eq 1 && $1 == --run ]] || \
+  [[ $# -eq 1 && $1 == --finalize-existing ]] || {
+  printf 'REFUSE_USAGE: expected [--run|--finalize-existing]\n' >&2; exit 64; }
+if [[ $# -eq 1 && $1 == --run ]]; then do_run=1; fi
+if [[ $# -eq 1 && $1 == --finalize-existing ]]; then finalize_existing=1; fi
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 repo=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
@@ -30,12 +33,58 @@ readonly PATCHED_STG_SHA=43d5cf571b94165599cb1e681fd88827079770c4007b3bef0e87f93
 readonly SOURCE_ZDF_SHA=cd7c446164d2813bb278130ba29cfaa103b736815d743b39c5748d4ccc7917ec
 readonly PATCHED_ZDF_SHA=6f28b8ec93daa40903bcc9e1800a619de52a8d21600059c375749dc59d7deaaa
 readonly SCALAR_TWIN=/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round6/operator_scalarmath_r4_stage
+readonly IDENTITY_GATE=$here/../nemo_testcase_l2_gyre_hires_ladder_gate.py
+readonly PYTHON=/home/dbalwada/legoESM/.venv/bin/python
+readonly LANE_PYTHONPATH=$repo/packages/core:$repo/packages/ocean:$repo/packages/atmosphere:$repo/packages/coupler:$repo/packages/ice:$repo/packages/land:$repo/packages/ml:$repo/packages/tools:$repo/src
+
+finalize_evidence() {
+  for record in \
+    oracle_stage_kt00000002_s1.bin oracle_stage_kt00000002_s2.bin \
+    oracle_stage_kt00000002_s3.bin oracle_zdf_entry_kt00000002.bin \
+    oracle_rktracer_operands_kt00000002_s1.bin \
+    oracle_rktracer_operands_kt00000002_s2.bin \
+    oracle_tracer_transport_kt00000002_s3.bin \
+    oracle_rktracer_stage3_kt00000002.bin oracle_qsr_stage3_kt00000002.bin \
+    oracle_trazdf_matrix_kt00000001.bin \
+    oracle_trazdf_matrix_kt00000002.bin; do
+    [[ -s $EVIDENCE/run/$record ]] || {
+      printf 'REFUSE_MISSING_RECORD: %s\n' "$record" >&2; return 70; }
+  done
+  mkdir -p "$EVIDENCE/manifest"
+  env PYTHONPATH="$LANE_PYTHONPATH" "$PYTHON" "$IDENTITY_GATE" \
+    --writer-identity-only \
+    --writer-twin-root "$SCALAR_TWIN" \
+    --writer-candidate-root "$EVIDENCE/run" \
+    --writer-zdf-record \
+      "$EVIDENCE/run/oracle_trazdf_matrix_kt00000001.bin" \
+    --output "$EVIDENCE/manifest/writer_identity.json"
+  if env PYTHONPATH="$LANE_PYTHONPATH" "$PYTHON" "$IDENTITY_GATE" \
+      --writer-identity-only \
+      --writer-twin-root "$SCALAR_TWIN" \
+      --writer-candidate-root "$EVIDENCE/run" \
+      --writer-zdf-record \
+        "$EVIDENCE/run/oracle_trazdf_matrix_kt00000001.bin" \
+      --plant-writer-active-word \
+      --output "$EVIDENCE/manifest/writer_identity_active_plant.json"; then
+    printf 'REFUSE_WRITER_IDENTITY_PLANT_MISSED\n' >&2
+    return 71
+  fi
+  grep -q '"verdict": "DEBT"' \
+    "$EVIDENCE/manifest/writer_identity_active_plant.json" || {
+    printf 'REFUSE_WRITER_IDENTITY_PLANT_DID_NOT_FIRE\n' >&2; return 71; }
+  (
+    cd "$EVIDENCE/run"
+    sha256sum oracle_*.bin >../manifest/oracle_records.sha256
+  )
+  printf 'ACQUISITION_DONE: %s (r4 scalar-math step-2 stages, tracer and tra_zdf operands)\n' \
+    "$EVIDENCE"
+}
 
 for path in "$PATCH" "$ZDF_BASE_PATCH" "$ZDF_KT2_PATCH" \
   "$DECK_PATCH" "$BASE_DECK" \
   "$SOURCE_CFG/MY_SRC/stprk3.F90" "$SOURCE_CFG/MY_SRC/stprk3_stg.F90" \
   "$SOURCE_CFG/WORK/trazdf.F90" \
-  "$BASE_EXP00/namelist_ref"; do
+  "$BASE_EXP00/namelist_ref" "$IDENTITY_GATE"; do
   [[ -f $path ]] || { printf 'REFUSE_MISSING_INPUT: %s\n' "$path" >&2; exit 66; }
 done
 [[ $(sha256sum "$SOURCE_CFG/MY_SRC/stprk3.F90" | awk '{print $1}') == $SOURCE_STP_SHA ]]
@@ -60,6 +109,12 @@ grep -q 'kt <= nit000 + 1' "$dry/trazdf.F90"
 
 printf 'PREFLIGHT: source=%s target=%s arch=conda-scalarmath ranks=1 evidence=%s\n' \
   "$SOURCE_NAME" "$TARGET_NAME" "$EVIDENCE"
+if [[ $finalize_existing -eq 1 ]]; then
+  [[ -d $EVIDENCE/run ]] || {
+    printf 'REFUSE_MISSING_EVIDENCE: %s\n' "$EVIDENCE/run" >&2; exit 68; }
+  finalize_evidence
+  exit 0
+fi
 if [[ $do_run -ne 1 ]]; then
   printf 'WOULD_RUN: EVIDENCE=%s %s --run\nPREFLIGHT_OK\n' "$EVIDENCE" "$0"
   exit 0
@@ -113,30 +168,4 @@ sha256sum "$EVIDENCE/run/nemo" "$EVIDENCE/run/namelist_cfg" \
   mpirun -np 1 ./nemo >run.user.log 2>&1
 )
 
-for record in \
-  oracle_stage_kt00000002_s1.bin oracle_stage_kt00000002_s2.bin \
-  oracle_stage_kt00000002_s3.bin oracle_zdf_entry_kt00000002.bin \
-  oracle_rktracer_operands_kt00000002_s1.bin \
-  oracle_rktracer_operands_kt00000002_s2.bin \
-  oracle_tracer_transport_kt00000002_s3.bin \
-  oracle_rktracer_stage3_kt00000002.bin oracle_qsr_stage3_kt00000002.bin \
-  oracle_trazdf_matrix_kt00000001.bin \
-  oracle_trazdf_matrix_kt00000002.bin; do
-  [[ -s $EVIDENCE/run/$record ]] || {
-    printf 'REFUSE_MISSING_RECORD: %s\n' "$record" >&2; exit 70; }
-done
-for record in oracle_stage_kt00000001_s1.bin oracle_stage_kt00000001_s2.bin \
-  oracle_stage_kt00000001_s3.bin oracle_zdf_entry_kt00000001.bin \
-  oracle_rktracer_operands_kt00000001_s1.bin \
-  oracle_rktracer_operands_kt00000001_s2.bin \
-  oracle_tracer_transport_kt00000001_s3.bin \
-  oracle_rktracer_stage3_kt00000001.bin oracle_qsr_stage3_kt00000001.bin; do
-  cmp "$SCALAR_TWIN/$record" "$EVIDENCE/run/$record" || {
-    printf 'REFUSE_WRITER_MOVED_STEP1: %s\n' "$record" >&2; exit 71; }
-done
-(
-  cd "$EVIDENCE/run"
-  sha256sum oracle_*.bin >../manifest/oracle_records.sha256
-)
-printf 'ACQUISITION_DONE: %s (r4 scalar-math step-2 stages, tracer and tra_zdf operands)\n' \
-  "$EVIDENCE"
+finalize_evidence

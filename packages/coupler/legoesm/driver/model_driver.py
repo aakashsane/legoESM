@@ -6981,6 +6981,10 @@ class ModelDriver:
                 and cfg.dycore.discretization == "latlon_cgrid"
                 and cfg.dycore.model_type == "hydrostatic"):
             return
+        if self._latlon_column_model() is not None:
+            # The column lane's state already holds the native C-grid state
+            # (face winds included) and steps it directly.
+            return
         _why = None
         if getattr(self, "_ensemble_size", 1) not in (None, 1):
             _why = ("an ensemble run: the member axis would have to ride the "

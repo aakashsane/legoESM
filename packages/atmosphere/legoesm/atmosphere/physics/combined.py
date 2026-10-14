@@ -292,9 +292,11 @@ def make_physics(
             f"{cld_macmic_num_steps} they are evaluated in parallel on the same "
             "state and summed, leaving the microphysical sinks evaluated on the "
             "pre-exchange liquid.")
-    if surface_bulk_coeffs is not None and model_type != "mpas":
+    if surface_bulk_coeffs is not None and model_type not in ("mpas",
+                                                              "spectral_pe"):
         raise ValueError(
-            "surface_bulk_coeffs is wired for model_type='mpas' only; "
+            "surface_bulk_coeffs is wired for model_type 'mpas' and "
+            "'spectral_pe' only; "
             f"{model_type!r} would silently drop the surface exchange.")
     if model_type == "hydrostatic":
         fn = _make_hydrostatic_combined(
@@ -307,6 +309,7 @@ def make_physics(
             config, dt,
             sfc_albedo_override=sfc_albedo_override,
             sfc_emissivity_override=sfc_emissivity_override,
+            surface_bulk_coeffs=surface_bulk_coeffs,
         )
     elif model_type == "mpas":
         # MPAS (Voronoi mesh) uses the unified hydrostatic combined path.
@@ -1464,6 +1467,7 @@ def _make_nonhydrostatic_combined(config: PhysicsConfig, dt: float) -> Callable:
 def _make_spectral_pe_combined(
     config: PhysicsConfig, dt: float,
     sfc_albedo_override=None, sfc_emissivity_override=None,
+    surface_bulk_coeffs=None,
 ) -> Callable:
     tagged_fns = []
     # Same producer gate as the hydrostatic combined: routing the CLUBB
@@ -1502,6 +1506,17 @@ def _make_spectral_pe_combined(
             True,
             _turb_field,
         ))
+    if surface_bulk_coeffs is not None:
+        if config.turbulence.scheme != "none":
+            raise ValueError(
+                "surface_bulk_coeffs adds the bulk surface exchange for a lane "
+                "with no turbulence scheme; turbulence="
+                f"{config.turbulence.scheme!r} already owns the surface flux, "
+                "so both would apply it.")
+        from legoesm.atmosphere.physics.turbulence.integration import (
+            make_spectral_surface_bulk_physics)
+        tagged_fns.append((make_spectral_surface_bulk_physics(
+            *surface_bulk_coeffs), False, None))
     if config.microphysics.scheme != "none":
         tagged_fns.append((make_microphysics_physics(config.microphysics, "spectral_pe", dt), False, None))
     if config.gravity_wave_drag.scheme != "none":

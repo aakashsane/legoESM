@@ -15100,6 +15100,14 @@ class ModelDriver:
         S_0 = float(cfg.S_0)
         T_ice = cfg.T_ice
 
+        # No turbulence scheme: the same constant-coefficient surface exchange
+        # as the lat-lon/cube pipeline (sensible heat only on the dry path).
+        _sp_bulk = (
+            (float(cfg.C_H), float(cfg.C_E))
+            if (cfg.turbulence == "none" and cfg.surface_bulk_scheme == "constant"
+                and cfg.physics_parameterization == "none")
+            else None)
+
         # Precompute spectral transform constants
         _im_over_a = 1j * self.grid.ms.astype(jnp.float64) / a
         _one_over_a = 1.0 / a
@@ -15169,6 +15177,18 @@ class ModelDriver:
             if self._hs_newtonian_relax is not None:
                 dT_dt_rad = dT_dt_rad + self._hs_newtonian_relax(
                     T_g, p_s_g, self._grid_lat)
+
+            if _sp_bulk is not None:
+                from legoesm.atmosphere.physics.turbulence.surface_layer import (
+                    bottom_layer_surface_kick, constant_bulk_surface_fluxes)
+                _zero_low = jnp.zeros_like(T_g[..., -1])
+                _shflx, _ = constant_bulk_surface_fluxes(
+                    T_g[..., -1], _zero_low, u_g[..., -1], v_g[..., -1],
+                    p_full[..., -1], p_s_g, T_sfc, *_sp_bulk)
+                _dT_low, _, _ = bottom_layer_surface_kick(
+                    _shflx, _zero_low, T_sfc,
+                    self.sigma.layer_thickness_dp(p_s_g)[..., -1])
+                dT_dt_rad = dT_dt_rad.at[..., -1].add(_dT_low)
 
             # Rayleigh friction
             du_dt = -k_f * u_g
@@ -15300,6 +15320,8 @@ class ModelDriver:
             )
             _combined_fn = make_physics(
                 phys_cfg, model_type="spectral_pe", dt=DT,
+                surface_bulk_coeffs=(None if _sp_bulk is None
+                                     else (*_sp_bulk, True)),
             )
 
             def _amip_physics_fn(state, grid, sigma_coord, forcing_data=None):

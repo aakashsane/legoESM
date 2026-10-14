@@ -1341,6 +1341,72 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
     return physics_fn
 
 
+def make_spectral_surface_bulk_physics(C_H: float, C_E: float,
+                                       latent: bool = True) -> Callable:
+    """:func:`make_surface_bulk_physics` for the spectral PE lane.
+
+    Signature ``(state, grid, sigma_coord, grid_fields=None, forcing=None)
+    -> SpectralHydrostaticState``; ``forcing["T_sfc"]`` is the lane's
+    per-step (flattened) blended surface temperature.  No ``q_v`` tracer (or
+    ``latent=False``): sensible heat only.
+    """
+    from legoesm.atmosphere.physics.turbulence.surface_layer import (
+        bottom_layer_surface_kick, constant_bulk_surface_fluxes)
+
+    def physics_fn(state, grid, sigma_coord, grid_fields=None, forcing=None):
+        if forcing is None or forcing.get("T_sfc") is None:
+            raise ValueError(
+                "surface bulk exchange needs the lane's per-step "
+                "forcing['T_sfc']; none was given, so there is no surface "
+                "temperature to exchange with.")
+        fields = grid_fields
+        if fields is None:
+            fields = spectral_pe_to_grid(state, grid, sigma_coord)
+        T, p_s = fields["T"], fields["p_s"]
+        _moist = (latent and state.tracers is not None
+                  and "q_v" in state.tracers)
+        if _moist:
+            _qv_raw = state.tracers["q_v"]
+            _qv = _qv_raw.data if hasattr(_qv_raw, "data") else _qv_raw
+            q_low = _qv.reshape(T.shape)[..., -1]
+        else:
+            q_low = jnp.zeros_like(T[..., -1])
+        T_sfc = jnp.asarray(forcing["T_sfc"]).reshape(p_s.shape)
+        shflx, lhflx = constant_bulk_surface_fluxes(
+            T[..., -1], q_low, fields["u"][..., -1], fields["v"][..., -1],
+            sigma_coord.pressure_at_full(p_s)[..., -1], p_s, T_sfc, C_H, C_E)
+        if not _moist:
+            lhflx = jnp.zeros_like(lhflx)
+        dT_low, dq_low, _ = bottom_layer_surface_kick(
+            shflx, lhflx, T_sfc, sigma_coord.layer_thickness_dp(p_s)[..., -1])
+        dT = jnp.zeros_like(T).at[..., -1].set(dT_low.astype(T.dtype))
+        tracers_tend = None
+        if state.tracers is not None:
+            tracers_tend = {}
+            for name, template in state.tracers.items():
+                _d = template.data if hasattr(template, "data") else template
+                arr = jnp.zeros_like(_d)
+                if name == "q_v" and _moist:
+                    arr = arr.reshape(T.shape).at[..., -1].set(
+                        dq_low.astype(_d.dtype)).reshape(_d.shape)
+                tracers_tend[name] = (template.replace(data=arr)
+                                      if hasattr(template, "replace") else arr)
+        zero_3d = jnp.zeros_like(state.vor_hat.data)
+        return SpectralHydrostaticState(
+            vor_hat=state.vor_hat.replace(data=zero_3d),
+            div_hat=state.div_hat.replace(data=zero_3d),
+            T_hat=state.T_hat.replace(data=sh_analysis_3d(grid, dT)),
+            lnps_hat=state.lnps_hat.replace(
+                data=jnp.zeros_like(state.lnps_hat.data)),
+            phis_hat=state.phis_hat.replace(
+                data=jnp.zeros_like(state.phis_hat.data)),
+            tracers=tracers_tend,
+        )
+
+    physics_fn._wants_forcing = True
+    return physics_fn
+
+
 # ===========================================================================
 # Non-hydrostatic Compressible Euler
 # ===========================================================================

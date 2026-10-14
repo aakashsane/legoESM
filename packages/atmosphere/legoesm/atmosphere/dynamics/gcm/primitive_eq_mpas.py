@@ -355,6 +355,18 @@ def vertical_del4_T_tendency(
                    / _w.sum(axis=-1, keepdims=True))
 
 
+def validate_vert4_flux_form_tracers(names) -> None:
+    """Raise on a vertical-filter form selection that names no known per-mass
+    water/number tracer (a typo, or a string that ``tuple()`` split into
+    characters).  Static Python check on the config value."""
+    _unknown = [n for n in names if n not in BORROW_ELIGIBLE_TRACERS]
+    if _unknown:
+        raise ValueError(
+            f"vert4_flux_form_tracers: unknown tracer names {_unknown} for the "
+            f"vertical filter scheme (expected per-mass water/number tracers "
+            f"such as q_v)")
+
+
 def vertical_del4_tracer_tendency_flux(
     q_3d: jax.Array, nu_vert4: float, layer_mass: jax.Array,
 ) -> jax.Array:
@@ -450,6 +462,10 @@ def mpas_hydrostatic_tendencies(
     MPASHydrostaticTendencies
     """
     _hybrid = isinstance(sigma_coord, HybridSigmaPressureCoordinate)
+    # Typo guard on the static tracer-form selection, whether or not the
+    # filter runs (nu_vert4_T = 0 or <= 2 levels) and whether or not the state
+    # carries tracers: a misspelled name is an error, never silently unused.
+    validate_vert4_flux_form_tracers(config.vert4_flux_form_tracers)
 
     # Fail-early dispatch guard on the STATIC config value (never on a tracer):
     # an unknown scheme must raise, and a scheme the hybrid lane cannot honour
@@ -896,15 +912,9 @@ def mpas_hydrostatic_tendencies(
             # mass-weighted flux form (no projection); the rest keep the
             # projected form.  Static Python selection on the tracer names.
             # A known water/number name this state does not carry (e.g. the
-            # q_v default on a passive-tracer-only state) is simply unused; any
-            # other name is a typo (or a string split into characters) and
-            # raises here, on every lane that builds this config.
-            _unknown = [n for n in config.vert4_flux_form_tracers
-                        if n not in BORROW_ELIGIBLE_TRACERS]
-            if _unknown:
-                raise ValueError(
-                    f"vert4_flux_form_tracers: unknown tracer names {_unknown} "
-                    f"(expected per-mass water/number tracers such as q_v)")
+            # q_v default on a passive-tracer-only state) is simply unused; a
+            # name that is no water/number tracer at all raised at function
+            # entry (``validate_vert4_flux_form_tracers``).
             _flux_set = tuple(n for n in config.vert4_flux_form_tracers
                               if n in _tnames)
             if not _flux_set:

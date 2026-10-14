@@ -166,6 +166,19 @@ def test_unknown_tracer_name_raises(names):
             state, mesh, coord, cfg._replace(vert4_flux_form_tracers=names), None, 0.0)
 
 
+@pytest.mark.parametrize("names", [("qv",), tuple("q_v")])
+def test_unknown_tracer_name_raises_with_the_filter_off(names):
+    """The typo guard does not depend on the filter running: nu_vert4_T = 0 and
+    a dry state (no tracers) must still refuse a misspelled name."""
+    from legoesm.atmosphere.dynamics.gcm.primitive_eq_mpas import mpas_hydrostatic_tendencies
+    mesh, coord, cfg, state = _tracer_state()
+    off = cfg._replace(nu_vert4_T=0.0, vert4_flux_form_tracers=names)
+    with pytest.raises(ValueError, match="unknown tracer names"):
+        mpas_hydrostatic_tendencies(state, mesh, coord, off, None, 0.0)
+    with pytest.raises(ValueError, match="unknown tracer names"):
+        mpas_hydrostatic_tendencies(state._replace(tracers=None), mesh, coord, off, None, 0.0)
+
+
 def test_new_fields_are_appended_last():
     """Positional ABI: the new fields sit at the end of both NamedTuples."""
     from legoesm.atmosphere.dynamics.gcm.primitive_eq_mpas import MPASPrimitiveEquationConfig

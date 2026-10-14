@@ -57,6 +57,12 @@ def test_daily_vector_oracle_admission_checks_all_boundaries():
     assert admission["math_flavour"] == "vector"
 
 
-def test_daily_oracle_refuses_unregistered_scalar_flavour():
-    with pytest.raises(ValueError, match="unregistered daily oracle"):
-        GATE.admit_daily_oracle(GATE.DEFAULT_ORACLE_ROOT, "scalar")
+def test_daily_scalar_oracle_admission_checks_all_boundaries():
+    admission = GATE.admit_daily_oracle(
+        GATE.DEFAULT_SCALAR_ORACLE_ROOT, "scalar")
+    entries = [name for name in admission["checked_files"]
+               if name.startswith("oracle_step_entry_")]
+    assert len(entries) == 31
+    assert admission["math_flavour"] == "scalar"
+    assert admission["producer_commit"] == (
+        "63cebeb37ea426cd647688f20e0e0250ae194f3f")

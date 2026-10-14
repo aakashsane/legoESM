@@ -30,6 +30,10 @@ DEFAULT_ORACLE_ROOT = Path(
     "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/"
     "round6/oracle_gyre_r4_smag_daily_stage/run"
 )
+DEFAULT_SCALAR_ORACLE_ROOT = Path(
+    "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/"
+    "round7/oracle_gyre_r4_smag_daily_stage_scalar/run"
+)
 STEPS_PER_DAY = 24
 NDAYS = 30
 

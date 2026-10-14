@@ -11,8 +11,6 @@ import numpy as np
 import pytest
 
 from legoesm import constants
-from legoesm.atmosphere.physics.turbulence.surface_layer import (
-    bottom_layer_surface_kick, constant_bulk_surface_fluxes)
 from legoesm.thermo import charged_latent_heat, saturation_specific_humidity
 
 
@@ -28,6 +26,8 @@ def _inputs():
 
 
 def test_constant_bulk_fluxes_follow_the_law():
+    from legoesm.atmosphere.physics.turbulence.surface_layer import (
+        constant_bulk_surface_fluxes)
     T_low, q_low, u, v, p_low, p_s, T_sfc = _inputs()
     C_H, C_E = 1.3e-3, 1.5e-3
     shflx, lhflx = constant_bulk_surface_fluxes(
@@ -44,6 +44,8 @@ def test_constant_bulk_fluxes_follow_the_law():
 
 
 def test_equilibrium_gives_zero_flux():
+    from legoesm.atmosphere.physics.turbulence.surface_layer import (
+        constant_bulk_surface_fluxes)
     T_low, _, u, v, p_low, p_s, _ = _inputs()
     q_sat = saturation_specific_humidity(T_low, p_s)
     shflx, lhflx = constant_bulk_surface_fluxes(
@@ -53,6 +55,8 @@ def test_equilibrium_gives_zero_flux():
 
 
 def test_kick_inverts_the_charged_latent_heat():
+    from legoesm.atmosphere.physics.turbulence.surface_layer import (
+        bottom_layer_surface_kick)
     T_sfc = jnp.array([300.0, 260.0])
     shflx = jnp.array([20.0, -5.0])
     lhflx = jnp.array([150.0, 10.0])

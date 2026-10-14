@@ -5327,3 +5327,25 @@ def test_forcing_hold_outside_file_years_round_trips_and_defaults_off():
         base + ["--forcing-hold-outside-file-years"]), parser))
     assert off.forcing_hold_outside_file_years is False
     assert on.forcing_hold_outside_file_years is True
+
+
+def test_mpas_vert4_flux_form_tracers_flag_flows_to_dycore_config():
+    """--mpas-vert4-flux-form-tracers reaches DycoreConfig as a tuple; absent
+    means the default (q_v, owner decision 2026-10); the bare flag means none."""
+    parser = build_arg_parser()
+    cfg_default = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert cfg_default.dycore.mpas_vert4_flux_form_tracers == ("q_v",)
+    cfg_none = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--mpas-vert4-flux-form-tracers"]), parser))
+    assert cfg_none.dycore.mpas_vert4_flux_form_tracers == ()
+    cfg_set = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--mpas-vert4-flux-form-tracers", "q_v",
+    ]), parser))
+    assert cfg_set.dycore.mpas_vert4_flux_form_tracers == ("q_v",)
+    # a typo'd tracer name is refused at validation (the dycore would skip it)
+    for typo in (("qv",), ("trc_q_v",), "q_v", ""):
+        bad = cfg_set._replace(dycore=cfg_set.dycore._replace(
+            mpas_vert4_flux_form_tracers=typo))
+        with pytest.raises(ValueError, match="mpas_vert4_flux_form_tracers"):
+            bad.validate_strict()

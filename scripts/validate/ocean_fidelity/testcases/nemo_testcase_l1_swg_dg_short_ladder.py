@@ -17,7 +17,7 @@ REFERENCE_BASELINE = (
     REPO_ROOT / "docs/ocean/fidelity/testcases/"
     "swg_dg_short_ladder_reference.json")
 sys.path.insert(0, str(HERE))
-from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
+from nemo_testcase_checkout import JAX_PLATFORMS_FOR, bootstrap_checkout  # noqa: E402
 
 
 def require(condition: bool, message: str) -> None:
@@ -56,10 +56,10 @@ def _configure_backend(backend: str, gpu_device: str | None) -> None:
         require(gpu_device is not None and gpu_device.isdigit(),
                 "GPU ladder requires --gpu-device with a physical index")
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu_device
-        os.environ["JAX_PLATFORMS"] = "gpu"
+        os.environ["JAX_PLATFORMS"] = JAX_PLATFORMS_FOR["gpu"]
     else:
         require(gpu_device is None, "--gpu-device is valid only with --backend gpu")
-        os.environ["JAX_PLATFORMS"] = "cpu"
+        os.environ["JAX_PLATFORMS"] = JAX_PLATFORMS_FOR["cpu"]
 
 
 def run(root: Path, *, composition: str, backend: str,

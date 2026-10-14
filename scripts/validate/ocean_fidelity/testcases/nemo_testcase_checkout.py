@@ -18,6 +18,11 @@ _PACKAGE_ROOTS = (
     "src",
 )
 
+# JAX 0.10 reads JAX_PLATFORMS=gpu as "cuda or rocm" and refuses to start when ROCm is
+# absent; the CUDA plugin's platform name is "cuda", and jax.default_backend() then
+# still reports "gpu".
+JAX_PLATFORMS_FOR = {"cpu": "cpu", "gpu": "cuda"}
+
 
 def bootstrap_checkout(
         script: str | Path, *, jax_platform: str = "cpu",
@@ -40,7 +45,7 @@ def bootstrap_checkout(
         os.environ["CUDA_VISIBLE_DEVICES"] = gpu_device
     elif gpu_device is not None:
         raise RuntimeError("gpu_device is valid only for the gpu platform")
-    os.environ["JAX_PLATFORMS"] = jax_platform
+    os.environ["JAX_PLATFORMS"] = JAX_PLATFORMS_FOR[jax_platform]
 
     path = Path(script).resolve()
     try:

@@ -182,8 +182,8 @@ def test_gpu_device_is_explicit_and_not_pinned_to_one(monkeypatch):
     selected = driver.configure_runtime_device("gpu-native", "0", environ)
     assert selected == {
         "requested_physical_gpu": "0", "CUDA_VISIBLE_DEVICES": "0",
-        "JAX_PLATFORMS": "gpu"}
-    assert environ == {"CUDA_VISIBLE_DEVICES": "0", "JAX_PLATFORMS": "gpu"}
+        "JAX_PLATFORMS": "cuda"}
+    assert environ == {"CUDA_VISIBLE_DEVICES": "0", "JAX_PLATFORMS": "cuda"}
     selected = driver.configure_runtime_device("gpu-native", "3", environ)
     assert selected["requested_physical_gpu"] == "3"
     with pytest.raises(ValueError, match="requires --gpu-device"):

@@ -51,6 +51,20 @@ def _fixture_run(tmp_path: Path, *, reference: str | None = None) -> Path:
     return run
 
 
+def test_gpu_entry_points_request_the_cuda_platform_name(monkeypatch):
+    # JAX 0.10 refuses JAX_PLATFORMS=gpu on a CUDA-only install (it also tries ROCm).
+    checkout = _load("swg_dg_checkout_test", TOOLS / "nemo_testcase_checkout.py")
+    assert checkout.JAX_PLATFORMS_FOR == {"cpu": "cpu", "gpu": "cuda"}
+    monkeypatch.delenv("JAX_PLATFORMS", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    short._configure_backend("gpu", "0")
+    import os
+    assert os.environ["JAX_PLATFORMS"] == "cuda"
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "0"
+    short._configure_backend("cpu", None)
+    assert os.environ["JAX_PLATFORMS"] == "cpu"
+
+
 def test_resolved_nemo_and_legoesm_decks_cover_all_compiled_reads(tmp_path):
     result = deck.run(_fixture_run(tmp_path), 1095)
     assert result["compiled_inventory_fields_resolved"] == 131

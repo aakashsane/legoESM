@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CHECKOUT_TOOLS = (
     REPO_ROOT / "scripts/validate/ocean_fidelity/testcases")
 sys.path.insert(0, str(CHECKOUT_TOOLS))
-from nemo_testcase_checkout import bootstrap_checkout  # noqa: E402
+from nemo_testcase_checkout import JAX_PLATFORMS_FOR, bootstrap_checkout  # noqa: E402
 
 SECONDS_PER_DAY = 86_400
 SCAN_PARITY_ATOL = 1.0e-12
@@ -50,11 +50,11 @@ def configure_runtime_device(
                 "gpu-native mode requires --gpu-device with one physical "
                 "non-negative GPU index")
         target["CUDA_VISIBLE_DEVICES"] = gpu_device
-        target["JAX_PLATFORMS"] = "gpu"
+        target["JAX_PLATFORMS"] = JAX_PLATFORMS_FOR["gpu"]
     elif gpu_device is not None:
         raise ValueError("--gpu-device is valid only with gpu-native mode")
     else:
-        target["JAX_PLATFORMS"] = "cpu"
+        target["JAX_PLATFORMS"] = JAX_PLATFORMS_FOR["cpu"]
     return {
         "requested_physical_gpu": gpu_device,
         "CUDA_VISIBLE_DEVICES": target.get("CUDA_VISIBLE_DEVICES"),

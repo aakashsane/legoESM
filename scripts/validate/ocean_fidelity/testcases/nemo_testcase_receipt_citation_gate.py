@@ -1444,7 +1444,7 @@ CITATION_MAP = {
         '&         * wvmask(ji,jj,jk)', 11],
     'GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:215-221': [
         ('CASE ( np_HYB )', 2),
-        'r3t(:,:,Kaa) = r1_2 * ( r3t(:,:,Kbb) + r3ta(:,:) )', 7],
+        ('r3t(:,:,Kaa) = r1_2 * ( r3t(:,:,Kbb) + r3ta(:,:) )', 2), 7],
     'GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:604-634': [
         'Phase-3 L2 WRITE-only tracer-stage operand stream',
         ('& WRITE(l1_unit) ts(:,:,:,jp_tem,Krhs), ts(:,:,:,jp_sal,Krhs)', 2),
@@ -3817,7 +3817,7 @@ CITATION_MAP = {
         'pt(ji,jj,jk,jn,Kaa) = zrhs - zwi(ji,jk)', 19],
     'ocean_model_latlon_cgrid.py:9968-10094': [
         'T=state_new.T.replace(data=_adv_content_T)',
-        ('z_coord=z_coord, config=config, iwm_fields=iwm_fields)', 2), 120],
+        ('z_coord=z_coord, config=config, iwm_fields=iwm_fields)', 2), 127],
     'ocean_model_latlon_cgrid.py:12241-12247': [
         'K_v_cell = K_v_cell.astype(state.T.data.dtype)',
         'K_v_cell = K_v_cell + K33_iso.astype(state.T.data.dtype)', 7],
@@ -3863,7 +3863,7 @@ CITATION_MAP = {
         '+ dt * h_one_half * stage_source_rates[2][1])', 64],
     'ocean_model_latlon_cgrid.py:7630-7787': [
         '_stage3_T_rate = (',
-        '/ jnp.maximum(_h_live_one_half, 1.0e-10),', 145],
+        '/ jnp.maximum(_h_live_one_half, 1.0e-10),', 158],
     # Extent 433 -> 434 at the 2026-09-25 merge, 434 -> 437 in round 226,
     # then 437 -> 438 in round 230, 438 -> 439 in round 231, 439 -> 440 in
     # round 233, 440 -> 444 in round 235, and 444 -> 453 in round 237: the
@@ -5559,7 +5559,7 @@ CITATION_MAP = {
     # --- ORCA2 round 101: sufficient owner of the merged GYRE year move ---
     'ocean_model_latlon_cgrid.py:7484-7495': [
         'nemo_r3t_rk3_stage1_stretch,',
-        '_qt_13 = nemo_r3t_rk3_stage1_stretch(', 11],
+        '_qt_13 = nemo_r3t_rk3_stage1_stretch(', 12],
     'eos.py:975-1006': [
         'def nemo_r3t_rk3_stage1_stretch(',
         ('return jnp.where(wet, nemo_source_round(one + r3_stage), one)', 1),

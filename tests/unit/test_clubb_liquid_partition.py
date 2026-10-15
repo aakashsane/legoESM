@@ -72,7 +72,8 @@ def _run(config, col, dt=300.0, pass_qc=True, *, on=None):
     return clubb_turbulence_prognostic(
         col["u"], col["v"], col["T"], col["q_v"], moments,
         col["p_full"], col["p_half"], col["z_full"], col["z_half"],
-        col["T_sfc"], col["q_sfc"], col["rho"], dt, config, **kw)
+        col["T_sfc"], col["q_sfc"], col["rho"], dt, config, **kw,
+        lat=jnp.zeros((_NCOL,)))                  # equator [rad]
 
 
 _OFF = CLUBBConfig(prognostic=True)

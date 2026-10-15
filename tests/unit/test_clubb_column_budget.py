@@ -67,7 +67,8 @@ def _column(ncol=3, nlev=24, seed=0, p_top=2.0e4, log_p=False):
     rho = compute_rho(T, p_full, q_v=q_v)
     return dict(u=a(u), v=a(v), T=T, q_v=q_v, q_c=a(q_c), p_full=p_full,
                 p_half=p_half, z_full=z_full, z_half=z_half,
-                T_sfc=T[:, -1] + 2.0, q_sfc=1.1 * q_v[:, -1], rho=rho)
+                T_sfc=T[:, -1] + 2.0, q_sfc=1.1 * q_v[:, -1], rho=rho,
+                lat=jnp.zeros((ncol,)))           # equator [rad]
 
 
 def _run(kw, dt=DT, cfg=None, carry=None, with_carry=False):
@@ -79,7 +80,7 @@ def _run(kw, dt=DT, cfg=None, carry=None, with_carry=False):
     out, carry = clubb_turbulence_prognostic(
         kw["u"], kw["v"], kw["T"], kw["q_v"], carry, kw["p_full"],
         kw["p_half"], kw["z_full"], kw["z_half"], kw["T_sfc"], kw["q_sfc"],
-        kw["rho"], dt, cfg, q_c=kw["q_c"])
+        kw["rho"], dt, cfg, q_c=kw["q_c"], lat=kw["lat"])
     return (out, carry) if with_carry else out
 
 
@@ -192,25 +193,25 @@ def test_water_pushed_down_from_above_the_cutoff_cannot_dry_a_layer_negative():
     assert np.all(q_new[:, :-1] >= 0.0), q_new.min(axis=1)
 
 
-def test_removed_water_lands_and_is_tested_only_below_the_cutoff():
+def test_removed_water_lands_and_is_tested_only_below_clubbtop():
     """CAM clubb_intr.F90 (cesm2_1_rel 2075-2095) spreads the returned water
     uniformly per unit mass over k = clubbtop+1..pver and tests negativity on
     those same levels only; otherwise it all goes into the bottom layer."""
-    p_full = jnp.array([[1.0e4, 5.0e4, 9.0e4]])          # cutoff 1.5e4 Pa
+    below = jnp.array([[False, True, True]])              # clubbtop = 0
     dp_g = jnp.array([[1.0e3, 4.0e3, 4.0e3]])
     dry, wet = -1.0e-3, 1.0e-3                             # removed [kg/m2/s]
 
-    def run(dq, removed, q_v, p_cut=1.5e4):
+    def run(dq, removed, q_v):
         return np.asarray(clubb_mod.return_removed_water(
             jnp.array([dq]), jnp.array([[removed]]), dp_g,
-            jnp.array([q_v]), 1.0, p_full, p_cut))[0]
+            jnp.array([q_v]), 1.0, below))[0]
 
-    # Nothing lands above the cutoff; a level above it going negative (here
+    # Nothing lands above clubbtop; a level above it going negative (here
     # from its own tendency) is not tested, as in CAM.
     np.testing.assert_allclose(
         run([-1.0e-9, 0.0, 0.0], dry, [0.0, 1.0e-2, 1.0e-2]),
         [-1.0e-9, dry / 8.0e3, dry / 8.0e3], rtol=1e-12)
-    # A level below the cutoff would go negative -> all into the bottom.
+    # A level below clubbtop would go negative -> all into the bottom.
     np.testing.assert_allclose(
         run([0.0, 0.0, 0.0], dry, [1.0e-2, 0.0, 1.0e-2]),
         [0.0, 0.0, dry / 4.0e3], rtol=1e-12)
@@ -218,7 +219,3 @@ def test_removed_water_lands_and_is_tested_only_below_the_cutoff():
     np.testing.assert_allclose(
         run([0.0, 0.0, 0.0], wet, [0.0, 0.0, 0.0]),
         [0.0, wet / 8.0e3, wet / 8.0e3], rtol=1e-12)
-    # Cutoff below every level: the bottom layer is always in the set.
-    np.testing.assert_allclose(
-        run([0.0, 0.0, 0.0], wet, [0.0, 0.0, 0.0], p_cut=1.0e5),
-        [0.0, 0.0, wet / 4.0e3], rtol=1e-12)

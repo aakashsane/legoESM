@@ -257,6 +257,20 @@ def _read_turb_carry(phys_state, carry_field, ncol, nlev, scheme_config, dtype):
     return carry if carry.shape == (ncol, nlev) else floor
 
 
+def _prognostic_clubb_lat_kwargs(carry_field, lat_fn):
+    """``{"lat": lat_fn()}`` [rad, (ncol,)] for prognostic CLUBB, else ``{}``.
+
+    Prognostic CLUBB locates CAM's chemistry tropopause (its ``clubbtop``),
+    whose polar rule and fallback need the column latitudes; it raises when
+    they are missing.  ``lat_fn`` is only called for that scheme, so other
+    kernels (which do not accept the kwarg) and grids stay untouched.  A
+    static build-time decision on ``carry_field``, never on array values.
+    """
+    if carry_field != "clubb_moments":
+        return {}
+    return {"lat": lat_fn()}
+
+
 def _prognostic_clubb_rad_kwargs(carry_field, phys_state, nCells, nlev, dtype):
     """Radheating kwargs for the ``turb_fn`` call, prognostic CLUBB only.
 
@@ -724,6 +738,8 @@ def _make_hydrostatic_turbulence(
                 u_col, v_col, T_col, q_v_col, tke_in,
                 p_full_col, p_half_col, z_full, z_half,
                 T_sfc, q_sfc, rho, dt, step_config,
+                **_prognostic_clubb_lat_kwargs(
+                    carry_field, lambda: jnp.reshape(grid.lat, (ncol,))),
             )
             tke_out = tke_new
         else:
@@ -1161,6 +1177,13 @@ def _make_mpas_turbulence(
         _rad_kw = _prognostic_clubb_rad_kwargs(
             carry_field, phys_state, nCells, nlev, _state_dtype)
 
+        def _mesh_lat():
+            if not hasattr(mesh, "latCell"):
+                raise ValueError(
+                    "prognostic CLUBB needs cell latitudes (mesh.latCell) for "
+                    "CAM's chemistry tropopause; this mesh has none.")
+            return jnp.reshape(jnp.asarray(mesh.latCell), (nCells,))
+
         if needs_tke:
             tke_in = _read_turb_carry(
                 phys_state, carry_field, nCells, nlev, scheme_config, _state_dtype)
@@ -1169,6 +1192,7 @@ def _make_mpas_turbulence(
                 p_full_col, p_half_col, z_full, z_half,
                 T_sfc, q_sfc, rho, dt, step_config,
                 **_sfc_kw, **_rad_kw,
+                **_prognostic_clubb_lat_kwargs(carry_field, _mesh_lat),
             )
             tke_out = tke_new
         else:
@@ -1603,6 +1627,9 @@ def _make_spectral_pe_turbulence(
                 u_col, v_col, T_col, q_v_col, tke_in,
                 p_full_col, p_half_col, z_full, z_half,
                 T_sfc, q_sfc, rho, dt, step_config, **_liq_kw,
+                # Gaussian latitudes [rad] (n_lat,), lat-major like the columns.
+                **_prognostic_clubb_lat_kwargs(
+                    carry_field, lambda: jnp.repeat(grid.lat, n_lon)),
             )
             tke_out = tke_new
         else:

@@ -223,9 +223,9 @@ module.  Its exact aggregate final line is:
 
 `FULL_LANE_BATTERY_SPLIT_PASS: 128 passed, 2 deselected across 10 clean pytest processes`
 
-The receipt citation gate at clean commit `284d29d34` reports `PASS` for all
-six citations and zero full-map audit failures.  Shifting the cited
-`zdfsh2` range by two lines reports `FAIL`, as planted.
+The final receipt citation gate at clean commit `53c81b4b3` reports `PASS` for
+all seven citations with zero citation and full-map audit failures.  The
+shifted-`zdfsh2` plant at that same commit reports `FAIL`, as required.
 
 ## Compiled-source citations
 

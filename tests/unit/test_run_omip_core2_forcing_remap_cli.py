@@ -109,6 +109,9 @@ def _scan_remap_guard():
                  if isinstance(s, ast.If) and "forcing_remap" in body_src[i])
     build = next(i for i, s in enumerate(body_src)
                  if "build_omip2_scan_block_fn(model" in s)
+    # Reachable: no unconditional exit between the branch entry and the guard.
+    assert not any(isinstance(s, (ast.Return, ast.Raise))
+                   for s in scan.body[:guard])
     return scan.body[guard], guard < build
 
 

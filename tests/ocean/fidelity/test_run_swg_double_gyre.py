@@ -5,14 +5,29 @@ import importlib.util
 import json
 from pathlib import Path
 
+import jax
 import numpy as np
 import pytest
+from legoesm.core.precision import get_policy, set_policy
 
 _PATH = (Path(__file__).resolve().parents[3]
          / "scripts/run/run_swg_double_gyre.py")
 _SPEC = importlib.util.spec_from_file_location("run_swg_double_gyre", _PATH)
 driver = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(driver)
+_LAST_RESTORED = [None, None]
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_precision():
+    previous_policy = get_policy()
+    previous_x64 = bool(jax.config.jax_enable_x64)
+    try:
+        yield
+    finally:
+        set_policy(previous_policy)
+        jax.config.update("jax_enable_x64", previous_x64)
+        _LAST_RESTORED[:] = [previous_policy, previous_x64]
 
 
 def test_resolved_maddison_clock_is_exactly_daily():
@@ -116,6 +131,11 @@ def test_scanned_program_matches_nontrivial_python_steps_on_tiny_grid():
     assert np.any(np.asarray(python_state.u.data) != 0.0)
 
 
+def test_scanned_program_test_restores_precision_policy():
+    assert (get_policy(), bool(jax.config.jax_enable_x64)) == tuple(
+        _LAST_RESTORED)
+
+
 def test_compiled_day_mean_matches_post_step_production_states_on_tiny_grid():
     import jax
     from legoesm.core.precision import PrecisionPolicy, set_policy
@@ -163,6 +183,11 @@ def test_compiled_day_mean_matches_post_step_production_states_on_tiny_grid():
         assert np.allclose(expected, np.asarray(actual), rtol=0.0, atol=1.0e-18)
     # A final-state substitution cannot satisfy this daily-mean test.
     assert np.any(np.asarray(means[1]) != np.asarray(final.u.data[:, 1:, 0]))
+
+
+def test_compiled_day_mean_test_restores_precision_policy():
+    assert (get_policy(), bool(jax.config.jax_enable_x64)) == tuple(
+        _LAST_RESTORED)
 
 
 def test_daily_mean_output_refuses_certified_cpu_mode(tmp_path):

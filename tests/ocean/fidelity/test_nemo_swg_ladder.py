@@ -1,12 +1,14 @@
 """SWG restart/stage reader and fail-closed ladder tests."""
 from __future__ import annotations
 
-import importlib.util
 import hashlib
+import importlib.util
 from pathlib import Path
 
+import jax
 import numpy as np
 import pytest
+from legoesm.core.precision import get_policy, set_policy
 
 _P = (Path(__file__).resolve().parents[3] / "scripts/validate/ocean_fidelity/"
       "testcases/nemo_testcase_l1_swg_ladder.py")
@@ -14,6 +16,19 @@ _S = importlib.util.spec_from_file_location("swg_ladder", _P)
 lad = importlib.util.module_from_spec(_S); _S.loader.exec_module(lad)
 ROOT = lad.DEFAULT_ROOT
 MONTH_ROOT = lad.DEFAULT_MONTH_ROOT
+_LAST_RESTORED = [None, None]
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_precision():
+    previous_policy = get_policy()
+    previous_x64 = bool(jax.config.jax_enable_x64)
+    try:
+        yield
+    finally:
+        set_policy(previous_policy)
+        jax.config.update("jax_enable_x64", previous_x64)
+        _LAST_RESTORED[:] = [previous_policy, previous_x64]
 
 
 def test_maddison_deck_selects_admitted_card_clocks_and_roots():
@@ -89,6 +104,13 @@ def test_maddison_admission_and_restart_reader_use_run_resolution():
     rebuilt = lad._restart_candidate(state)
     assert all(np.array_equal(rebuilt[name], records[1][name])
                for name in lad.RESTART_FIELDS)
+
+
+@pytest.mark.skipif(not lad.DG_STAGE_ROOT.is_dir(),
+                    reason="admitted SWG_DG stage records not mounted")
+def test_maddison_admission_test_restores_precision_policy():
+    assert (get_policy(), bool(jax.config.jax_enable_x64)) == tuple(
+        _LAST_RESTORED)
 
 
 @pytest.mark.skipif(not ROOT.is_dir(), reason="SWG probe not mounted")

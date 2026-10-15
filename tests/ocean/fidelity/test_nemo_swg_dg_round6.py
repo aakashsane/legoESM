@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from legoesm.core.precision import get_policy, set_policy
 
 _PATH = (Path(__file__).resolve().parents[3]
          / "scripts/validate/ocean_fidelity/testcases/"
@@ -15,6 +16,19 @@ _PATH = (Path(__file__).resolve().parents[3]
 _SPEC = importlib.util.spec_from_file_location("swg_dg_round6", _PATH)
 round6 = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(round6)
+_LAST_RESTORED = [None, None]
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_precision():
+    previous_policy = get_policy()
+    previous_x64 = bool(jax.config.jax_enable_x64)
+    try:
+        yield
+    finally:
+        set_policy(previous_policy)
+        jax.config.update("jax_enable_x64", previous_x64)
+        _LAST_RESTORED[:] = [previous_policy, previous_x64]
 
 
 def test_bit_summary_is_word_exact_for_signed_zero_and_one_ulp():
@@ -114,3 +128,8 @@ def test_tiny_statement_bisect_reproduces_production_stage_word_for_word():
         np.asarray(probes["baseline"]), np.asarray(production.ssh_k))
     assert tuple(probes) == round6.PROBE_NAMES
     assert np.any(np.asarray(probes["zonal_difference"]) != 0.0)
+
+
+def test_tiny_statement_bisect_test_restores_precision_policy():
+    assert (get_policy(), bool(jax.config.jax_enable_x64)) == tuple(
+        _LAST_RESTORED)

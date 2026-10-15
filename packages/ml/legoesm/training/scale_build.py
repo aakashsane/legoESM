@@ -511,13 +511,6 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
         )
         _radiation = _validated_wb_radiation(cfg, yml)
         _cl = dict(yml.get("classical", {}))
-        params = build_variant(
-            "classical", nlev=nlev,
-            overrides={
-                "spatial_surface": bool(_cl.get("spatial_surface", False)),
-                "spatial_init_std": float(_cl.get("spatial_init_std", 0.0)),
-                "spatial_seed": int(_cl.get("spatial_seed", 0)),
-            })
         # Every family named explicitly in the YAML: a classical model carries
         # one of each, and defaulting them silently is how a campaign ends up
         # comparing models that differ in more than the variable under test.
@@ -529,6 +522,39 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
             cloud_scheme=str(_cl.get("cloud", "xu_randall")),
             surface_bulk_scheme=str(_cl.get("surface_bulk", "constant")),
         )
+        # NO INERT PARAMETERS, structurally (owner 2026-10-15: a fixed
+        # parameter must have no gradient at all, not a zero one): only the
+        # knobs the selected schemes read are arrays, as in run_aimip; the
+        # rest are plain floats outside the differentiated tree.  With ERA5
+        # surface fluxes prescribed the classical surface knobs are fixed by
+        # policy (inert_params.PRESCRIBED_SURFACE_LEAF_MARKERS) and leave the
+        # tree here too, instead of being probed and frozen afterwards.
+        from legoesm.training.aimip_params import (
+            aimip_classical_trainable_names,
+        )
+        from legoesm.training.inert_params import (
+            PRESCRIBED_SURFACE_LEAF_MARKERS,
+        )
+        _trainable = aimip_classical_trainable_names(
+            convection=_schemes["convection_scheme"],
+            turbulence=_schemes["turbulence_scheme"],
+            gwd=_schemes["gwd_scheme"],
+            microphysics=_schemes["microphysics_scheme"],
+            cloud=_schemes["cloud_scheme"],
+            radiation=_radiation,
+            surface_bulk_scheme=_schemes["surface_bulk_scheme"])
+        if bool(yml.get("era5_surface_fluxes", False)):
+            _trainable = frozenset(
+                n for n in _trainable
+                if not any(m in n for m in PRESCRIBED_SURFACE_LEAF_MARKERS))
+        params = build_variant(
+            "classical", nlev=nlev,
+            overrides={
+                "spatial_surface": bool(_cl.get("spatial_surface", False)),
+                "spatial_init_std": float(_cl.get("spatial_init_std", 0.0)),
+                "spatial_seed": int(_cl.get("spatial_seed", 0)),
+                "trainable": _trainable,
+            })
         reject_no_surface_flux_with_era5_fluxes(yml)
         _rad_interval = int(_cl.get("rad_update_interval_steps", 6))
 

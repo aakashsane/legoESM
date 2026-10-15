@@ -284,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
             "--aerosol-forcing", "external",
             "--aerosol-file", str(_AEROSOL_FILE),
             "--aerosol-ccn-file", str(_AEROSOL_CCN_FILE),
-            "--aerosol-reference-aod", "0.05",
+            "--aerosol-reference-aod", "0.03",   # = production (run_amip.py default)
         ]
     if not args.no_volcanic and not args.no_aerosol and args.volcanic_scale > 0:
         cmd += [

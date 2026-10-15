@@ -76,6 +76,9 @@ def test_levante_python_launcher_names_the_production_products(monkeypatch, caps
     for flag in FORCING_PRODUCTS:
         assert got.get(flag) == want[flag], (flag, got.get(flag), want[flag])
     assert "--volcanic-aerosol-lw" in cmd
+    # Production deck sets no reference AOD, so it runs run_amip.py's
+    # default 0.03; this launcher passed 0.05 (user decision 3a, 2026-10-14).
+    assert cmd[cmd.index("--aerosol-reference-aod") + 1] == "0.03"
 
 
 def test_levante_chain_does_not_swap_one_forcing_channel():

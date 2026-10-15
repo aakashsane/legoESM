@@ -173,6 +173,28 @@ def test_checkpoint_with_one_face_wind_is_refused(leg1):
         _resume(tmp, str(half), "leg2_half")
 
 
+def test_resume_into_sfno_drops_the_faces(tmp_path):
+    """A same-shape SFNO Gaussian run (10x20 lat-lon vs T5) loads a lat-lon
+    checkpoint but does not carry face winds; it must not re-save them next
+    to its newer state."""
+    c = _cfg(tmp_path / "ll", 1)
+    a = ModelDriver(c._replace(grid=c.grid._replace(resolution=10)))
+    a.setup()
+    assert a.run(compiled=True) == "COMPLETED"
+    ckpt = sorted(glob.glob(str(tmp_path / "ll" / "checkpoint_day_*.npz")))[-1]
+    c = _cfg(tmp_path / "sfno", 2)
+    d = ModelDriver(c._replace(
+        grid=GridConfig(grid_type="gaussian", resolution=5, nlev=4),
+        dycore=c.dycore._replace(discretization="sfno", energy_fixer=False)))
+    d.setup()
+    step, day = d.load_checkpoint(ckpt)
+    d._enter_persistent_cgrid()
+    d.save_checkpoint(step, day)
+    new = sorted(glob.glob(str(tmp_path / "sfno" / "checkpoint_day_*.npz")))[-1]
+    with np.load(new, allow_pickle=True) as z:
+        assert not any("latlon_" in k for k in z.keys())
+
+
 def test_load_then_save_keeps_the_saved_winds(leg1):
     """Load, enter the staggered lane, load again and save without running:
     the second load must not leave the lane flagged on a cell-centre state."""

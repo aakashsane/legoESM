@@ -377,7 +377,8 @@ def build_trainable_params(
     both = sorted((include_set | tier0_set) & exclude_set)
     if both:
         raise ValueError(
-            f"parameter(s) {both} are both requested (include) and excluded; "
+            f"parameter(s) {both} are both requested (include / include_tier0) "
+            "and excluded; "
             "an excluded parameter has no gradient and cannot be trained.")
 
     raw: dict[str, jax.Array] = {}

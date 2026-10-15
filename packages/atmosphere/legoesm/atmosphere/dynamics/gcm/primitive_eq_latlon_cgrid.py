@@ -1514,6 +1514,7 @@ class CGridLatLonPrimitiveEquationModel(IntegrationMixin):
         # Conservation fixer for mass — fp64 budget accumulator
         # (iter-12 mirrors compute_mass; see docstring there).
         if self.config.fix_mass:
+            _pre_mf = state
             acc = conservation_accumulator()
             # ``grid_total_area`` is a precomputed scalar on the grid;
             # avoids recomputing ``jnp.sum(area)`` every step (one
@@ -1585,6 +1586,18 @@ class CGridLatLonPrimitiveEquationModel(IntegrationMixin):
                 state = state._replace(tracers=new_tracers)
 
             state = state._replace(p_s=p_s_post)
+            if self.config.energy_fixer:
+                # The mass fixer sits outside the energy window (after
+                # physics): return the energy its p_s shift changed as a
+                # uniform heating [K, +warming] (F15 V8, vote B).  Same
+                # cell-centre energy and global reduction as the fixer.
+                def _cc(s):
+                    return (s.T, _face_to_cell_u(s.u), _face_to_cell_v(s.v),
+                            s.p_s, s.phis)
+                _dT_mf = gridded_energy_fixer_dT(
+                    _cc(_pre_mf), _cc(state), grid, sigma_coord)
+                state = state._replace(
+                    T=state.T + _dT_mf.astype(state.T.dtype))
 
         # #1354/#1515: shared tracer positivity stage — this lane previously had
         # NO tracer floor, so negatives from non-monotone transport persisted.

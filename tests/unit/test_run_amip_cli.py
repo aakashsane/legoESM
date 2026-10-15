@@ -5211,6 +5211,17 @@ def test_production_deck_pins_the_zm_land_fraction_policy():
     assert keys["zm_land_fraction"] == "required"
 
 
+def test_production_deck_pins_the_reference_aod():
+    """User decision 2026-10-15: production's reference AOD (0.03) is a deck
+    row, not the run_amip default; the duo deck inherits it via include."""
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    amip = _repo_root() / "config" / "amip"
+    for deck in ("amip_production.yaml", "amip_production_fv3duo_c24.yaml"):
+        keys = load_yaml_config(str(amip / deck), build_arg_parser())
+        assert keys["aerosol_reference_aod"] == 0.03, deck
+        assert _resolved_deck_fields(amip / deck)["aerosol_reference_aod"] == 0.03, deck
+
+
 def test_mpas_land_params_refresh_flag_flows_to_config():
     """--mpas-land-params-refresh round-trip: default ON (user 2026-09-29),
     --no- form reaches the config, and a YAML false pin is honoured."""

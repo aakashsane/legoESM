@@ -135,8 +135,10 @@ def test_faces_from_another_state_are_refused(leg1, corrupt):
     tmp, b1, ckpt = leg1
     with np.load(ckpt, allow_pickle=True) as z:
         data = {k: z[k] for k in z.keys()}
-    key = next(k for k in data if "latlon_u_face" in k)
+    key = next(k for k in data if k.endswith("latlon_u_face"))
     data[key] = corrupt(data[key])
+    for k in [k for k in data if k.endswith("_sha256")]:
+        data.pop(k)                 # a pre-digest file: the average check
     bad = _beside(ckpt, "bad_checkpoint_day_0001.npz")
     np.savez(bad, **data)
     d = ModelDriver(_cfg(tmp / "leg2_bad", 2))
@@ -169,3 +171,32 @@ def test_checkpoint_with_one_face_wind_is_refused(leg1):
     np.savez(half, **data)
     with pytest.raises(ValueError, match="only one of the face winds"):
         _resume(tmp, str(half), "leg2_half")
+
+
+def test_resume_on_another_latlon_scheme_drops_the_faces(leg1):
+    """A lat-lon run that does not carry face winds (here 'centered') must
+    not re-save the checkpoint's faces next to its newer state."""
+    tmp, _b1, ckpt = leg1
+    c = _cfg(tmp / "leg2_centered", 2)
+    d = ModelDriver(c._replace(dycore=c.dycore._replace(
+        discretization="centered")))
+    d.setup()
+    step, day = d.load_checkpoint(ckpt)
+    assert d.run(start_step=step, start_day=day, compiled=False) == "COMPLETED"
+    new = sorted(glob.glob(str(tmp / "leg2_centered" / "checkpoint_day_*.npz")))[-1]
+    with np.load(new, allow_pickle=True) as z:
+        assert not any("latlon_" in k for k in z.keys())
+
+
+def test_load_then_save_keeps_the_saved_winds(leg1):
+    """Load, enter the staggered lane, load again and save without running:
+    the second load must not leave the lane flagged on a cell-centre state."""
+    tmp, _b1, ckpt = leg1
+    d = _resume(tmp, ckpt, "leg2_resave")
+    assert d._persistent_cgrid_active()
+    step, day = d.load_checkpoint(ckpt)
+    d.save_checkpoint(step, day)
+    new = sorted(glob.glob(str(tmp / "leg2_resave" / "checkpoint_day_*.npz")))[-1]
+    with np.load(ckpt, allow_pickle=True) as a, np.load(new, allow_pickle=True) as b:
+        for k in ModelDriver._FACE_WIND_KEYS:
+            np.testing.assert_array_equal(a[f"carry_{k}"], b[f"carry_{k}"])

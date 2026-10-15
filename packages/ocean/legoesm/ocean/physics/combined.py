@@ -417,11 +417,11 @@ def make_ocean_physics(
                     c_sw=config.constants.c_sw,
                     # ``nemo_qsr_2bd`` ignores the generic ``jacobian``
                     # argument: NEMO's qsr_2BD evaluates both gdepw and e3t
-                    # with the live ``1+r3t(Kmm)`` factor.  This pipeline call
-                    # is the WS-RK3 Kbb evaluation, so hand it Kbb's live
-                    # factor explicitly.  Omitting this made Kbb static while
-                    # the stage-3 replacement subtracted a live-Kbb field,
-                    # leaving a material residual from step 2 onward.
+                    # with the live ``1+r3t(Kmm)`` factor, once, at stage 3.
+                    # NEMO has no step-entry evaluation: this pipeline field
+                    # exists only so the rk3_ws program can subtract it and
+                    # add the Kmm call.  Its live entry factor makes that
+                    # subtraction exact; other integrators refuse the scheme.
                     z_half_stretch=(
                         J if sw_config.scheme == "nemo_qsr_2bd" else None
                     ),

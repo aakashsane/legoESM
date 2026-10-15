@@ -4847,6 +4847,19 @@ class LatLonCGridOceanModel:
             raise ValueError(
                 "NEMO rk3_ws is one coupled momentum/tracer stage program; "
                 "select rk3_ws for both integrators or for neither")
+        # NEMO calls tra_qsr once per step, inside stage 3, with Kmm
+        # (compiled stprk3_stg.f90:691-704).  Only this rk3_ws stage program
+        # replaces the shared pipeline's entry field with that Kmm call.
+        _sw_pen_cfg = getattr(
+            getattr(config, "physics", None), "shortwave_penetration", None)
+        if (getattr(_sw_pen_cfg, "scheme", None) == "nemo_qsr_2bd"
+                and config.tracer_time_integrator != "rk3_ws"):
+            raise ValueError(
+                "physics.shortwave_penetration.scheme='nemo_qsr_2bd' is "
+                "NEMO's stage-3 Kmm tra_qsr and is wired only into rk3_ws; "
+                f"tracer_time_integrator={config.tracer_time_integrator!r} "
+                "would retain a step-entry field. Select rk3_ws or another "
+                "shortwave scheme")
         if config.tracer_time_integrator == "rk3_ws":
             if config.tracer_advection != "fct2":
                 raise ValueError(
@@ -7469,6 +7482,7 @@ class LatLonCGridOceanModel:
             _qu_aa, _qv_aa = _qco_ratios(state_new.eta.data)
             from legoesm.ocean.eos import (
                 nemo_r3t_rk3_stage1_stretch,
+                nemo_r3t_rk3_stage2_stretch,
                 nemo_r3t_stretch,
             )
 
@@ -7699,8 +7713,21 @@ class LatLonCGridOceanModel:
                 # from ``tend.dT_dt`` leaves a false source in Krhs.
                 _r3t_b = compute_ocean_jacobian(
                     state.eta.data, state.H_bathy.data, _zc)
-                _r3t_m = _h_live_one_half[..., 0] / jnp.maximum(
-                    _h_ref_ws[..., 0], 1.0e-10)
+                # Compiled stprk3_stg.f90:215-221 forms Kmm by averaging the
+                # two already-rounded endpoint ratios.  Both the live-
+                # thickness quotient and _qt_12's ratio-of-mean SSH are the
+                # same real number but not the same fp64 composition.
+                _nemo_qsr_kmm_stretch = nemo_r3t_rk3_stage2_stretch(
+                    _zc,
+                    state.eta.data,
+                    state_new.eta.data,
+                    state.H_bathy.data,
+                )
+                _r3t_m = jnp.where(
+                    _h_ref_ws[..., 0] > 0.0,
+                    _nemo_qsr_kmm_stretch,
+                    0.0,
+                )
                 _qsr_stretch_override = (
                     self._nemo_ws_test_hooks.stage3_qsr_stretch_override)
                 if _qsr_stretch_override is not None:

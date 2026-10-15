@@ -507,6 +507,88 @@ def test_gyre_nemo_qsr_pipeline_uses_live_kbb_stretch():
         np.asarray(expected)[active], np.asarray(static)[active])
 
 
+def test_nemo_qsr_2bd_refuses_integrators_without_stage3_kmm_call():
+    from legoesm.ocean.fidelity.nemo_recipe import build_nemo_gyre_recipe
+    from legoesm.ocean.physics.shortwave_penetration import (
+        ShortwavePenetrationConfig,
+    )
+
+    recipe = build_nemo_gyre_recipe()
+    qsr = ShortwavePenetrationConfig(
+        scheme="nemo_qsr_2bd", water_type="I", nemo_time_step_s=14400.0)
+
+    def with_qsr(cfg):
+        return cfg._replace(
+            physics=cfg.physics._replace(shortwave_penetration=qsr))
+
+    rk3 = recipe.model_config._replace(
+        momentum_time_integrator="rk3", tracer_time_integrator="rk3")
+    # Each half of the refused pair remains legal on its own.
+    LatLonCGridOceanModel(recipe.grid, recipe.z_coord, rk3)
+    LatLonCGridOceanModel(
+        recipe.grid, recipe.z_coord, with_qsr(recipe.model_config))
+    with pytest.raises(ValueError, match="nemo_qsr_2bd"):
+        LatLonCGridOceanModel(recipe.grid, recipe.z_coord, with_qsr(rk3))
+
+
+def test_stage3_two_band_solar_uses_source_literal_kmm_stretch():
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        _NEMOWSRK3TestHooks,
+    )
+    from legoesm.ocean.physics.shortwave_penetration import (
+        shortwave_penetration_tendency,
+    )
+    from legoesm.ocean.eos import nemo_r3t_rk3_stage2_stretch
+
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    card = build_nemo_testcase_card("GYRE-zco")
+    wet = jnp.asarray(card.recipe.land_mask) > 0.5
+    state = card.recipe.initial_state._replace(
+        eta=card.recipe.initial_state.eta.replace(
+            data=jnp.where(wet, jnp.asarray(0.25, dtype=jnp.float64), 0.0)))
+    freshwater, surface = gyre_surface_forcings(card, state, 2)
+    trace = LatLonCGridOceanModel(
+        card.recipe.grid,
+        card.recipe.z_coord,
+        card.recipe.model_config,
+        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(tracer_process_trace=()),
+    ).step(state, card.dt_s, freshwater=freshwater, surface_forcing=surface)
+    stretch = jnp.where(
+        wet,
+        nemo_r3t_rk3_stage2_stretch(
+            card.recipe.z_coord,
+            state.eta.data,
+            trace.state_after.eta.data,
+            state.H_bathy.data,
+        ),
+        0.0,
+    )
+    cfg = card.recipe.model_config
+    expected = shortwave_penetration_tendency(
+        surface.sw_down,
+        card.recipe.z_coord.dz_ref,
+        card.recipe.z_coord.z_half_ref,
+        stretch,
+        cfg.physics.shortwave_penetration,
+        rho_0=cfg.rho_0,
+        c_sw=cfg.physics.constants.c_sw,
+        z_half_stretch=stretch,
+    )
+    active = np.asarray(card.recipe.z_coord.is_active, dtype=bool)
+    np.testing.assert_array_equal(
+        np.asarray(trace.qsr_association.qsr_kmm)[active],
+        np.asarray(expected)[active],
+    )
+    old_stretch = (
+        np.asarray(trace.qsr_association.thickness_kmm)[..., 0]
+        / np.asarray(card.recipe.z_coord.dz_ref)[..., 0]
+    )
+    assert not np.array_equal(
+        np.asarray(stretch)[np.asarray(wet)],
+        old_stretch[np.asarray(wet)],
+    )
+
+
 def test_gyre_five_year_clock_matches_nemo_completed_year_arithmetic():
     """Compiled usrdef_sbc.f90:92,105-106 over the operator's full run."""
     set_policy(PrecisionPolicy.fp64(transcendentals="libm"))

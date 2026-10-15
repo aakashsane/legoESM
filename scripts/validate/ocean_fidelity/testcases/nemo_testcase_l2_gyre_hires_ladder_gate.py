@@ -2720,6 +2720,206 @@ def run_step2_vertical_owner(oracle_root: Path, output: Path) -> dict:
     return report
 
 
+def _kmm_stretch_scores(card, tracer, qsr, eta_b, eta_a, prefix: str):
+    """Compare the stage-3 stretch compositions on NEMO state inputs."""
+    import jax.numpy as jnp
+
+    from legoesm.ocean.eos import (
+        nemo_r3t_rk3_stage2_stretch,
+        nemo_r3t_stretch,
+    )
+    from legoesm.ocean.physics.shortwave_penetration import (
+        shortwave_penetration_tendency,
+    )
+    from legoesm.ocean.vertical import compute_layer_thickness
+
+    zc, cfg = card.recipe.z_coord, card.recipe.model_config
+    wet = expected_masks(card)["T"]
+    wet2, nz = wet[..., 0], wet.shape[-1]
+    eta_b = jnp.asarray(eta_b, dtype=jnp.float64)
+    eta_a = jnp.asarray(eta_a, dtype=jnp.float64)
+    depth = card.recipe.initial_state.H_bathy.data
+
+    def stretch(eta):
+        return np.asarray(nemo_r3t_stretch(
+            zc, eta, depth, evaluation="nemo_reciprocal"))
+
+    def thickness(eta):
+        return np.asarray(compute_layer_thickness(
+            eta, depth, zc,
+            min_water_column_m=cfg.min_water_column_m))
+
+    one = np.float64(1.0)
+    column = np.asarray(depth, dtype=np.float64)
+    r1_ht = np.where(
+        column > 0.0,
+        one / np.where(column > 0.0, column, one),
+        0.0,
+    )
+    r3t_bb = np.asarray(eta_b) * r1_ht
+    r3t_aa = np.asarray(eta_a) * r1_ht
+    record = one + tracer["r3t_Kmm"]
+    candidates = {
+        # Compiled stprk3_stg.f90:221: mean the two already-formed ratios.
+        "nemo_statement_mean_of_ratios": one + np.float64(0.5) * (
+            r3t_bb + r3t_aa),
+        "production_source_literal": np.asarray(
+            nemo_r3t_rk3_stage2_stretch(zc, eta_b, eta_a, depth)),
+        # The WS-RK3 stage weights' own Kmm word.
+        "legoesm_ratio_of_mean_eta": stretch(
+            np.float64(0.5) * (eta_b + eta_a)),
+        # The round-8 qsr_2BD expression under review.
+        "round8_qsr_mean_thickness": (
+            (np.float64(0.5) * (thickness(eta_b) + thickness(eta_a)))[
+                ..., 0]
+            / np.maximum(
+                thickness(jnp.zeros_like(eta_b))[..., 0], 1.0e-10)
+        ),
+    }
+    rows = [
+        exact_score(
+            f"{prefix}r3t.Kbb.ssh_times_r1_ht_0_vs_record",
+            tracer["r3t_Kbb"], r3t_bb, wet2),
+        exact_score(
+            f"{prefix}r3t.Kaa.ssh_times_r1_ht_0_vs_record",
+            tracer["r3t_Kaa"], r3t_aa, wet2),
+    ] + [
+        exact_score(
+            f"{prefix}stretch.Kmm.{name}_vs_record", record, value, wet2)
+        for name, value in candidates.items()
+    ]
+    plant = exact_score(
+        f"{prefix}control.one_ulp_Kmm_stretch",
+        record,
+        candidates["production_source_literal"],
+        wet2,
+        plant_one_ulp=True,
+    )
+    before = tracer["after_sbc_T"][..., :nz]
+    accumulated = tracer["after_qsr_T"][..., :nz]
+    qsr_rows = []
+    for name, value in candidates.items():
+        increment = np.asarray(shortwave_penetration_tendency(
+            jnp.asarray(qsr["qsr"]),
+            zc.dz_ref,
+            zc.z_half_ref,
+            jnp.asarray(value),
+            cfg.physics.shortwave_penetration,
+            rho_0=cfg.rho_0,
+            c_sw=cfg.physics.constants.c_sw,
+            z_half_stretch=jnp.asarray(value),
+        ), dtype=np.float64)
+        qsr_rows.append(accumulated_component_score(
+            f"{prefix}tra_qsr.accumulator.{name}_stretch",
+            before, accumulated, increment, wet))
+    return rows, qsr_rows, plant
+
+
+def run_stage3_kmm_stretch(oracle_root: Path, output: Path) -> dict:
+    """Measure F3 on quarter-degree and shipped one-degree NEMO inputs."""
+    import jax
+
+    from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        GYRE_R4_NAMELIST,
+        build_nemo_testcase_card,
+    )
+    from legoesm.ocean.fidelity.provenance import worktree_stamp
+    import nemo_testcase_l2_gyre_phase3_gate as one_degree
+
+    if jax.default_backend() != "cpu" or not jax.config.x64_enabled:
+        raise RuntimeError(
+            "stage-3 Kmm stretch discriminator requires CPU with x64")
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    admission = admit_oracle("r4_step2", "scalar", oracle_root)
+    card = build_nemo_testcase_card(
+        "GYRE-zco",
+        namelist=GYRE_R4_NAMELIST._replace(
+            nn_itend=10, nn_stock=10, nn_write=10),
+    )
+    entry = read_entry(
+        oracle_root / "oracle_step_entry_kt00000002.bin", dims=NEMO_DIMS)
+    after = read_stage(
+        oracle_root / "oracle_stage_kt00000002_s3.bin",
+        3,
+        dims=NEMO_DIMS,
+        expected_kt=2,
+        expected_kaa=STEP2_STAGE_KAA[3],
+    )
+    rows, qsr_rows, plant = _kmm_stretch_scores(
+        card,
+        read_tracer_stage3_hires(
+            oracle_root / "oracle_rktracer_stage3_kt00000002.bin",
+            expected_kt=2),
+        read_qsr_stage3_hires(
+            oracle_root / "oracle_qsr_stage3_kt00000002.bin",
+            expected_kt=2),
+        entry["ssh"],
+        after["ssh"],
+        "r4.kt2.",
+    )
+
+    root_1deg = Path(one_degree.SCALAR_MATH_ROOT)
+    one_degree_admission = one_degree.require_scalar_math_roots(
+        root_1deg, root_1deg, root_1deg)
+    rows_1deg, qsr_rows_1deg, plant_1deg = _kmm_stretch_scores(
+        build_nemo_testcase_card("GYRE-zco"),
+        one_degree.read_tracer_stage3(
+            root_1deg / "oracle_rktracer_stage3_kt00000001.bin"),
+        one_degree.read_qsr_stage3(
+            root_1deg / "oracle_qsr_stage3_kt00000001.bin"),
+        one_degree.read_entry(
+            root_1deg / "oracle_step_entry_kt00000001.bin")["ssh"],
+        one_degree.read_stage(
+            root_1deg / "oracle_stage_kt00000001_s3.bin", 3)["ssh"],
+        "one_degree.kt1.",
+    )
+    controls = [plant, plant_1deg]
+    scientific_rows = rows + rows_1deg
+    scientific_qsr_rows = qsr_rows + qsr_rows_1deg
+    exact_source = [
+        row for row in scientific_rows + scientific_qsr_rows
+        if ("nemo_statement_mean_of_ratios" in row["name"]
+            or "production_source_literal" in row["name"])
+    ]
+    legacy_debt = [
+        row for row in scientific_rows + scientific_qsr_rows
+        if "round8_qsr_mean_thickness" in row["name"]
+    ]
+    discriminated = (
+        all(row["n_unequal"] == 0 for row in exact_source)
+        and all(row["n_unequal"] > 0 for row in legacy_debt)
+        and all(row["n_unequal"] == 1 for row in controls)
+    )
+    report = {
+        "format": "nemo-testcase-l2-gyre-stage3-kmm-stretch-v1",
+        "worktree": worktree_stamp(),
+        "oracle_admission": admission,
+        "one_degree_root": str(root_1deg),
+        "one_degree_admission": one_degree_admission,
+        "policy": "fp64/x64/cpu/libm certified; direct kernel replay",
+        "inputs": (
+            "NEMO Kbb and stage-3 sea surfaces: r4 kt=2 and shipped "
+            "one-degree kt=1"
+        ),
+        "stretch_rows": scientific_rows,
+        "qsr_accumulator_rows": scientific_qsr_rows,
+        "controls": controls,
+        "compiled_nemo_sources": {
+            "stage_weight": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "stprk3_stg.f90:215-221"),
+            "consumer": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "traqsr.f90:615-645"),
+        },
+        "verdict": "CONFIRMED_COMPOSITION" if discriminated else "DEBT",
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
+    return report
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck", choices=tuple(DEFAULT_ORACLES), default="r4")
@@ -2731,6 +2931,7 @@ def main(argv=None) -> int:
     parser.add_argument("--stage3-geometry-only", action="store_true")
     parser.add_argument("--step2-tracer-owner-only", action="store_true")
     parser.add_argument("--step2-vertical-owner-only", action="store_true")
+    parser.add_argument("--stage3-kmm-stretch-only", action="store_true")
     parser.add_argument(
         "--trajectory-only", action="store_true",
         help="score the ten entry records and one-ULP controls only",
@@ -2767,7 +2968,8 @@ def main(argv=None) -> int:
         narrow = sum((args.stage2_composition_only,
                       args.stage3_geometry_only,
                       args.step2_tracer_owner_only,
-                      args.step2_vertical_owner_only))
+                      args.step2_vertical_owner_only,
+                      args.stage3_kmm_stretch_only))
         if narrow > 1:
             raise ValueError("choose only one narrow discriminator")
         if narrow and args.trajectory_only:
@@ -2801,6 +3003,13 @@ def main(argv=None) -> int:
             step2_admission = admit_oracle("r4_step2", "scalar")
             report = run_step2_vertical_owner(
                 Path(step2_admission["root"]), args.output)
+        elif args.stage3_kmm_stretch_only:
+            if (args.deck, args.math_flavour) != ("r4", "scalar"):
+                raise ValueError(
+                    "stage-3 Kmm stretch discriminator requires r4/scalar")
+            step2_admission = admit_oracle("r4_step2", "scalar")
+            report = run_stage3_kmm_stretch(
+                Path(step2_admission["root"]), args.output)
         else:
             report = run(
                 Path(admission["root"]), args.output,
@@ -2813,6 +3022,7 @@ def main(argv=None) -> int:
         return 2
     return 0 if report["verdict"] in (
         "PASS", "RAW_UPDATE_AT_BAR", "REPORT_ONLY", "CONFIRMED_OWNER",
+        "CONFIRMED_COMPOSITION",
         "DOMINANT_BOUNDARY",
         ) else 1
 

@@ -543,6 +543,16 @@ def _build_mode_components_spectral(cfg, yml, column_mesh=None):
             cloud=_schemes["cloud_scheme"],
             radiation=_radiation,
             surface_bulk_scheme=_schemes["surface_bulk_scheme"])
+        # The spatial surface fields are read only with a land mask
+        # (make_aimip_classical_spectral_physics), and this lane passes none,
+        # so every one of them would be a fixed parameter in the trained tree.
+        # Asking to train them is refused (owner decision 5, 2026-10-15).
+        if bool(_cl.get("spatial_surface", False)):
+            raise ValueError(
+                "classical.spatial_surface: true asks to train the spatial "
+                "surface fields, but the WB classical physics is built without "
+                "a land mask, so none of them is ever read: each would be a "
+                "fixed parameter with no gradient. Set it to false.")
         if bool(yml.get("era5_surface_fluxes", False)):
             _trainable = frozenset(
                 n for n in _trainable

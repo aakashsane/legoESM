@@ -297,31 +297,11 @@ def has_spatial_surface_leaves(model) -> bool:
     )
 
 
-def freeze_spatial_updates(optimizer, model):
-    """Zero every optimizer update of the spatial-surface fields ``model``
-    froze as unread (``AIMIPSpatialSurfaceParams.frozen``), AdamW's decoupled
-    weight decay included: their gradient is already cut, this keeps their
-    VALUES fixed too.  ``optimizer`` unchanged when nothing is frozen."""
-    sp = getattr(model, "spatial_surface", None)
-    if sp is None:
-        sp = getattr(getattr(model, "classical", None), "spatial_surface", None)
-    names = frozenset(getattr(sp, "frozen", ()) or ())
-    if not names:
-        return optimizer
-
-    def _mask(tree):
-        def _m(path, _leaf):
-            k = jax.tree_util.keystr(path)
-            return "spatial_surface" in k and any(f"['{n}']" in k for n in names)
-        return jax.tree_util.tree_map_with_path(_m, tree)
-    return optax.chain(optimizer, optax.masked(optax.set_to_zero(), _mask))
-
-
 def _trainable_raw_values(grads) -> dict:
     """``{name: grad}`` of the trainable leaves the no-inert gate judges: the
     ``raw_values`` of a bare physics-params model or of an
     ``AIMIPTrainableBundle`` (classical + spec-driven scheme halves), plus the
-    AIMIP spatial-surface coefficients not frozen as unread.  Frozen
+    AIMIP spatial-surface coefficients (unread fields are never built).  Frozen
     (non-array) knobs carry no gradient (``None``) and are not judged."""
     parts = ([("", grads.raw_values)] if hasattr(grads, "raw_values") else
              [("classical.", grads.classical.raw_values),
@@ -3630,7 +3610,6 @@ def _train_spectral_loop(
     else:
         optimizer = base_optimizer
 
-    optimizer = freeze_spatial_updates(optimizer, model)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     # --- mid-epoch (per-chunk) resume (#942) ---------------------------------

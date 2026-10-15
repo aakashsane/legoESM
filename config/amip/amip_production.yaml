@@ -382,6 +382,11 @@ solar_spectral_band_order: rrtmg_sw   # explicit: SSI_frac is in RRTMG-SW band o
 ozone_forcing: external
 ghg_forcing: external
 aerosol_forcing: external
+aerosol_reference_aod: 0.03  # 550 nm background AOD of the built-in reference
+                             # aerosol field, read only when no aerosol file is
+                             # given (the production launchers give one). Written
+                             # out so it rests on no default (user decision
+                             # 2026-10-15); equals the run_amip default.
 # A date outside a multi-year forcing file's years raises (explicit: the
 # end-record hold is an opt-in for deliberate experiments only; F37).
 forcing_hold_outside_file_years: false

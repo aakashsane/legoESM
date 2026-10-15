@@ -71,8 +71,8 @@
 #   SIC=${ICON_ROOT}/0019/sst_and_seaice/r0001/bc_sic_1979_2016.nc
 : "${SOLAR:=${ICON_ROOT}/common/solar_radiation/swflux_14band_cmip6_1850-2299-v3.2.nc}"
 : "${GHG:=${ICON_ROOT}/independent/greenhouse_gases/greenhouse_historical_plus.nc}"
-# Ozone/aerosol/volcanic default to the merged 1979-2014 transient files (432
-# monthly records each, El Chichon + Pinatubo included) so the DEFAULT run is
+# Ozone defaults to the merged 1979-2014 transient file (432 monthly records),
+# aerosol and volcanic to 1850-2014 products (below), so the DEFAULT run is
 # CMIP6-compliant for the full AMIP period. The old single-year (Kinne 1979,
 # volcanic 1979) and 1950-1999 ozone pool files silently freeze/hold forcing
 # past their coverage — only override back to them for deliberate fixed-forcing
@@ -85,7 +85,13 @@
 # them here with scripts/data/adapt_cmip6_aerosol.py (see the Ginsburg twin).
 : "${AEROSOL:=${FORCING_1979_2014}/aeropt_macv2sp_sw_b14_tot_1850-2014_MACv1bg.nc}"
 : "${AEROSOL_CCN:=${FORCING_1979_2014}/aeropt_macv2sp_sw_b14_fin_1850-2014_MACv1bg.nc}"
-: "${VOLCANIC:=${FORCING_1979_2014}/bc_aeropt_cmip6_volc_lw_b16_sw_b14_1979-2014.nc}"
+# Volcanic: ETH CMIP6 stratospheric aerosol v4.0.0 (ECHAM6 SW + LW bands),
+# 1850-2014, the SAME product as the Ginsburg twin (review 2026-10-10 F33/F37).
+# Its 1979-2014 records equal the old *_1979-2014.nc file; the loader output
+# differs only by calendar stamps and the first half of January 1979 (#1948).
+# Build it here before a launch: scripts/data/adapt_cesm_forcing.py volcanic
+# --years 1850 2014 on the raw CMIP_ECHAM6_radiation_v4.nc (see the twin).
+: "${VOLCANIC:=${FORCING_1979_2014}/bc_aeropt_cmip6_volc_lw_b16_sw_b14_1850-2014_IACETH-v4.nc}"
 # CLM surfdata for the multilayer Richards land model (use_multilayer_land): the
 # PFT/texture/glacier surface map. Compute nodes have NO internet, so the auto-
 # download in clm_surface_map.download_clm_surfdata() FAILS (SSL) — this file
@@ -164,3 +170,14 @@ fi
 if [[ -n "${AMIP_SSO}" ]]; then
   AMIP_PATH_FLAGS+=( --subgrid-orography-file "${AMIP_SSO}" )
 fi
+
+# Refuse at job start, before any compile or step time is spent, when the
+# aerosol / CCN aerosol / volcanic product is not staged: the run would
+# otherwise die at the first forcing load.  Call it right after sourcing:
+#   amip_require_forcing_files || exit 3
+amip_require_forcing_files() {
+  local _f
+  for _f in "${AEROSOL}" "${AEROSOL_CCN}" "${VOLCANIC}"; do
+    [[ -f "${_f}" ]] || { echo "missing forcing file ${_f}: stage it (see config/amip/amip_production.sh)" >&2; return 3; }
+  done
+}

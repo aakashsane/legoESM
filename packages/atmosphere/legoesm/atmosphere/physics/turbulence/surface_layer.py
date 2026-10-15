@@ -280,6 +280,13 @@ def latent_enthalpy_correction(lhflx, evap):
     return lhflx - constants.L_v * evap   # latent-ok: moist-enthalpy reference L_v of the atmosphere
 
 
+# --- constant-coefficient bulk exchange (ExperimentConfig.C_H / C_E defaults) ---
+# The one home of the default neutral transfer coefficients; the experiment
+# config's C_H / C_E defaults reference these.
+C_H_BULK_DEFAULT = 0.0044
+C_E_BULK_DEFAULT = 0.0044
+
+
 def constant_bulk_surface_fluxes(T_low, q_low, u_low, v_low, p_low, p_s,
                                  T_sfc, C_H, C_E):
     """Constant-coefficient bulk ``(shflx, lhflx)`` [W/m2, positive up] at the

@@ -77,8 +77,47 @@ def test_make_physics_refuses_bulk_next_to_turbulence_and_on_other_models():
         make_physics(PhysicsConfig(turbulence=TurbulenceConfig(scheme="louis")),
                      model_type="mpas", surface_bulk_coeffs=(1e-3, 1e-3, True))
     with pytest.raises(ValueError, match="silently drop"):
-        make_physics(PhysicsConfig(), model_type="hydrostatic",
+        make_physics(PhysicsConfig(), model_type="nonhydrostatic",
                      surface_bulk_coeffs=(1e-3, 1e-3, True))
+
+
+def test_make_physics_applies_the_default_bulk_when_turbulence_is_off():
+    """Direct callers get the default exchange too: no surface temperature at
+    all refuses (no silent no-flux); a prescribed skin is exchanged with,
+    column by column (the 'no override' sentinel exchanges nothing); None
+    opts out."""
+    from legoesm.atmosphere.forcing.scm.scm import (
+        make_column_state, make_scm_grid)
+    from legoesm.atmosphere.physics.combined import PhysicsConfig, make_physics
+    from legoesm.atmosphere.physics.physics_state import init_physics_state
+    from legoesm.grids.vertical import create_sigma_coordinate
+    from legoesm.atmosphere.physics.convection.config import ConvectionConfig
+    from legoesm.atmosphere.physics.radiation.config import RadiationConfig
+    from legoesm.atmosphere.physics.turbulence.config import TurbulenceConfig
+    nlev = 8
+    cfg = PhysicsConfig(radiation=RadiationConfig(scheme="none"),
+                        convection=ConvectionConfig(scheme="none"),
+                        turbulence=TurbulenceConfig(scheme="none"))
+    grid = make_scm_grid(latitude_deg=0.0)
+    sigma = create_sigma_coordinate(nlev, sigma_top=0.01)
+    state = make_column_state(nlev, T_profile=jnp.linspace(220.0, 290.0, nlev))
+
+    def dT(fn, **kw):
+        out = fn(state, grid, sigma, **kw)
+        return (out[0] if isinstance(out, tuple) else out).dT_dt.data
+
+    fn = make_physics(cfg, model_type="hydrostatic", dt=60.0)
+    with pytest.raises(ValueError, match="surface temperature"):
+        fn(state, grid, sigma)
+    ps = init_physics_state(ncol=1, nlev=nlev, physics_config=cfg)
+    assert float(jnp.max(jnp.abs(dT(fn, phys_state=ps)))) == 0.0
+    hot = dT(fn, phys_state=ps._replace(
+        surface_T_sfc_override=jnp.full((1,), 300.0)))
+    assert float(hot[..., -1].max()) > 0.0
+    assert float(jnp.max(jnp.abs(hot[..., :-1]))) == 0.0
+    off = make_physics(cfg, model_type="hydrostatic", dt=60.0,
+                       surface_bulk_coeffs=None)
+    assert float(jnp.max(jnp.abs(dT(off)))) == 0.0
 
 
 # --- every lane: constant vs none after 2 steps, all other physics off -------
@@ -154,7 +193,11 @@ LANES = {
 
 
 def _run_lane(tmp_path, grid, dyc, extra, ndev):
-    env = {**os.environ, "JAX_ENABLE_X64": "1", "JAX_PLATFORMS": "cpu",
+    # A child launched inside a Slurm step must not inherit the step's MPI
+    # launch variables (Open MPI would treat it as a direct srun launch).
+    base = {k: v for k, v in os.environ.items()
+            if not k.startswith(("SLURM_", "PMI", "PMIX", "OMPI_"))}
+    env = {**base, "JAX_ENABLE_X64": "1", "JAX_PLATFORMS": "cpu",
            "XLA_FLAGS": f"--xla_force_host_platform_device_count={ndev}"}
     proc = subprocess.run(
         [sys.executable, "-c", _LANE_SCRIPT, str(tmp_path), json.dumps(grid),

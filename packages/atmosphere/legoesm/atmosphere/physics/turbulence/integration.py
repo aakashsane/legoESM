@@ -1270,9 +1270,11 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
     applied to the lowest layer.  Heat and moisture only, no surface stress
     (the pipeline's bulk path applies none either).
 
-    Signature ``(state, mesh, sigma_coord, forcing) -> HydrostaticTendencies``;
-    the surface temperature is the lane's ``forcing["T_sfc"]`` (any shape that
-    reshapes to ``p_s``).
+    Signature ``(state, mesh, sigma_coord, forcing, phys_state) ->
+    HydrostaticTendencies``; the surface temperature is the lane's
+    ``forcing["T_sfc"]`` (any shape that reshapes to ``p_s``), else a
+    prescribed ``phys_state.surface_T_sfc_override`` (the single-column
+    model's prescribed skin, as the turbulence schemes read it).
     Edge winds are reconstructed to cells (Perot); a state carrying cell
     winds (``state.v`` present: the FV3-duo column view, a cell-centred
     lat-lon state) hands them over directly.  A dry deck
@@ -1281,12 +1283,21 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
     from legoesm.atmosphere.physics.turbulence.surface_layer import (
         bottom_layer_surface_kick, constant_bulk_surface_fluxes)
 
-    def physics_fn(state, mesh, sigma_coord, forcing=None):
-        if forcing is None or forcing.get("T_sfc") is None:
+    def physics_fn(state, mesh, sigma_coord, forcing=None, phys_state=None):
+        _valid = None      # per-column mask: a prescribed skin exists
+        if forcing is not None and forcing.get("T_sfc") is not None:
+            T_sfc_in = forcing["T_sfc"]
+        elif getattr(phys_state, "surface_T_sfc_override", None) is not None:
+            from legoesm.atmosphere.physics.physics_state import (
+                SFC_T_OVERRIDE_VALID_MIN)
+            T_sfc_in = phys_state.surface_T_sfc_override
+            _valid = T_sfc_in > SFC_T_OVERRIDE_VALID_MIN
+        else:
             raise ValueError(
-                "surface bulk exchange needs the lane's per-step "
-                "forcing['T_sfc']; none was given, so there is no surface "
-                "temperature to exchange with.")
+                "surface bulk exchange needs a surface temperature (the "
+                "lane's forcing['T_sfc'] or a prescribed "
+                "phys_state.surface_T_sfc_override); none was given. Pass "
+                "surface_bulk_coeffs=None for no surface exchange.")
         T = state.T.data
         p_s = state.p_s.data
         if state.v is not None:
@@ -1298,7 +1309,11 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
         # A dry deck carries no vapour: sensible heat only.
         _moist = (latent and state.tracers is not None
                   and "q_v" in state.tracers)
-        T_sfc = jnp.asarray(forcing["T_sfc"]).reshape(p_s.shape)
+        T_sfc = jnp.asarray(T_sfc_in).reshape(p_s.shape)
+        if _valid is not None:
+            # No prescribed skin in a column (the sentinel): no exchange there.
+            _valid = _valid.reshape(p_s.shape)
+            T_sfc = jnp.where(_valid, T_sfc, T[..., -1])
         if _moist:
             _qv_raw = state.tracers["q_v"]
             _qv = _qv_raw.data if hasattr(_qv_raw, "data") else _qv_raw
@@ -1310,6 +1325,9 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
             sigma_coord.pressure_at_full(p_s)[..., -1], p_s, T_sfc, C_H, C_E)
         if not _moist:
             lhflx = jnp.zeros_like(lhflx)
+        if _valid is not None:
+            shflx = jnp.where(_valid, shflx, 0.0)
+            lhflx = jnp.where(_valid, lhflx, 0.0)
         dT_low, dq_low, evap = bottom_layer_surface_kick(
             shflx, lhflx, T_sfc, sigma_coord.layer_thickness_dp(p_s)[..., -1])
         dT = jnp.zeros_like(T).at[..., -1].set(dT_low.astype(T.dtype))
@@ -1339,6 +1357,7 @@ def make_surface_bulk_physics(C_H: float, C_E: float,
         )
 
     physics_fn._wants_forcing = True
+    physics_fn._wants_phys_state_ro = True
     return physics_fn
 
 
@@ -1380,12 +1399,22 @@ def make_spectral_surface_bulk_physics(C_H: float, C_E: float,
     from legoesm.atmosphere.physics.turbulence.surface_layer import (
         bottom_layer_surface_kick, constant_bulk_surface_fluxes)
 
-    def physics_fn(state, grid, sigma_coord, grid_fields=None, forcing=None):
-        if forcing is None or forcing.get("T_sfc") is None:
+    def physics_fn(state, grid, sigma_coord, grid_fields=None, forcing=None,
+                   phys_state=None):
+        _valid = None      # per-column mask: a prescribed skin exists
+        if forcing is not None and forcing.get("T_sfc") is not None:
+            T_sfc_in = forcing["T_sfc"]
+        elif getattr(phys_state, "surface_T_sfc_override", None) is not None:
+            from legoesm.atmosphere.physics.physics_state import (
+                SFC_T_OVERRIDE_VALID_MIN)
+            T_sfc_in = phys_state.surface_T_sfc_override
+            _valid = T_sfc_in > SFC_T_OVERRIDE_VALID_MIN
+        else:
             raise ValueError(
-                "surface bulk exchange needs the lane's per-step "
-                "forcing['T_sfc']; none was given, so there is no surface "
-                "temperature to exchange with.")
+                "surface bulk exchange needs a surface temperature (the "
+                "lane's forcing['T_sfc'] or a prescribed "
+                "phys_state.surface_T_sfc_override); none was given. Pass "
+                "surface_bulk_coeffs=None for no surface exchange.")
         fields = grid_fields
         if fields is None:
             fields = spectral_pe_to_grid(state, grid, sigma_coord)
@@ -1398,12 +1427,19 @@ def make_spectral_surface_bulk_physics(C_H: float, C_E: float,
             q_low = _qv.reshape(T.shape)[..., -1]
         else:
             q_low = jnp.zeros_like(T[..., -1])
-        T_sfc = jnp.asarray(forcing["T_sfc"]).reshape(p_s.shape)
+        T_sfc = jnp.asarray(T_sfc_in).reshape(p_s.shape)
+        if _valid is not None:
+            # No prescribed skin in a column (the sentinel): no exchange there.
+            _valid = _valid.reshape(p_s.shape)
+            T_sfc = jnp.where(_valid, T_sfc, T[..., -1])
         shflx, lhflx = constant_bulk_surface_fluxes(
             T[..., -1], q_low, fields["u"][..., -1], fields["v"][..., -1],
             sigma_coord.pressure_at_full(p_s)[..., -1], p_s, T_sfc, C_H, C_E)
         if not _moist:
             lhflx = jnp.zeros_like(lhflx)
+        if _valid is not None:
+            shflx = jnp.where(_valid, shflx, 0.0)
+            lhflx = jnp.where(_valid, lhflx, 0.0)
         dT_low, dq_low, _ = bottom_layer_surface_kick(
             shflx, lhflx, T_sfc, sigma_coord.layer_thickness_dp(p_s)[..., -1])
         dT = jnp.zeros_like(T).at[..., -1].set(dT_low.astype(T.dtype))
@@ -1431,6 +1467,7 @@ def make_spectral_surface_bulk_physics(C_H: float, C_E: float,
         )
 
     physics_fn._wants_forcing = True
+    physics_fn._wants_phys_state_ro = True
     return physics_fn
 
 

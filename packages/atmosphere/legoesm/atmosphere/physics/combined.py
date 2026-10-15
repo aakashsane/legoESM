@@ -168,7 +168,7 @@ def make_physics(
     physics_cadence: str = "off",
     physics_cadence_steps: int = 1,
     cld_macmic_num_steps: int = 1,
-    surface_bulk_coeffs=None,
+    surface_bulk_coeffs="default",
 ) -> Callable:
     """Create a combined physics function for a dynamical core.
 
@@ -292,16 +292,32 @@ def make_physics(
             f"{cld_macmic_num_steps} they are evaluated in parallel on the same "
             "state and summed, leaving the microphysical sinks evaluated on the "
             "pre-exchange liquid.")
-    if surface_bulk_coeffs is not None and model_type not in ("mpas",
-                                                              "spectral_pe"):
+    # Surface exchange with no turbulence scheme (``surface_bulk_coeffs``
+    # ``(C_H, C_E, latent)``): "default" = the default-coefficient bulk law
+    # whenever turbulence is "none" on a model type that carries it; ``None``
+    # = no surface exchange (surface_bulk_scheme="none").  The nonhydrostatic
+    # lane has no bulk module.
+    _bulk_models = ("hydrostatic", "mpas", "spectral_pe")
+    if isinstance(surface_bulk_coeffs, str):
+        if surface_bulk_coeffs != "default":
+            raise ValueError(
+                f"surface_bulk_coeffs={surface_bulk_coeffs!r}: pass "
+                "'default', None, or (C_H, C_E, latent).")
+        from legoesm.atmosphere.physics.turbulence.surface_layer import (
+            C_E_BULK_DEFAULT, C_H_BULK_DEFAULT)
+        surface_bulk_coeffs = (
+            (C_H_BULK_DEFAULT, C_E_BULK_DEFAULT, True)
+            if (config.turbulence.scheme == "none"
+                and model_type in _bulk_models) else None)
+    if surface_bulk_coeffs is not None and model_type not in _bulk_models:
         raise ValueError(
-            "surface_bulk_coeffs is wired for model_type 'mpas' and "
-            "'spectral_pe' only; "
+            f"surface_bulk_coeffs is wired for model_type {_bulk_models}; "
             f"{model_type!r} would silently drop the surface exchange.")
     if model_type == "hydrostatic":
         fn = _make_hydrostatic_combined(
             config, dt, column_mesh=column_mesh, need_rad=need_rad,
-            cld_macmic_num_steps=cld_macmic_num_steps)
+            cld_macmic_num_steps=cld_macmic_num_steps,
+            surface_bulk_coeffs=surface_bulk_coeffs)
     elif model_type == "nonhydrostatic":
         fn = _make_nonhydrostatic_combined(config, dt)
     elif model_type == "spectral_pe":

@@ -1698,6 +1698,7 @@ def make_aimip_classical_spectral_physics(
     if not split_rad:
         combined_raw = make_physics(
             physics_config, model_type="spectral_pe", dt=dt,
+            surface_bulk_coeffs=None,   # this lane runs its own surface flux
             sfc_albedo_override=_sfc_albedo_override,
             sfc_emissivity_override=_sfc_emissivity_override,
         )
@@ -1778,7 +1779,9 @@ def make_aimip_classical_spectral_physics(
             "(turbulence.scheme='clubb', diagnostic or prognostic); got "
             f"turbulence.scheme={turb_cfg.scheme!r} (cloud_scheme={cloud_scheme!r})."
         )
-    non_rad_raw = make_physics(non_rad_cfg, model_type="spectral_pe", dt=dt)
+    # this lane runs its own surface flux
+    non_rad_raw = make_physics(non_rad_cfg, model_type="spectral_pe", dt=dt,
+                               surface_bulk_coeffs=None)
     rad_only_raw = make_radiation_physics(
         rad_cfg, "spectral_pe",
         sfc_albedo_override=_sfc_albedo_override,

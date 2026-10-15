@@ -96,12 +96,14 @@ def test_kappa_operator_validator_rebuilds_the_lloyd50_restart_mesh():
     root = pathlib.Path(__file__).resolve().parents[2]
     src = (root / "scripts/validate/ocean_fidelity/"
            "mpas_treguier_kappa_operators.py").read_text()
-    call = next(n for n in ast.walk(ast.parse(src))
-                if isinstance(n, ast.Call) and n.args
-                and isinstance(n.args[0], ast.Constant)
-                and n.args[0].value == "--lloyd")
-    assert {k.arg: ast.literal_eval(k.value)
-            for k in call.keywords}["default"] == 50
+    import re
+    calls = [n for n in ast.walk(ast.parse(src))
+             if isinstance(n, ast.Call) and n.args
+             and isinstance(n.args[0], ast.Constant)
+             and n.args[0].value == "--lloyd"]
+    assert len(calls) == 1
+    default = next(k.value for k in calls[0].keywords if k.arg == "default")
+    assert ast.literal_eval(default) == 50
     sb = (root / "scripts/cluster/omip_nemo/"
           "_mpas_kappa_operators.sbatch").read_text()
-    assert "--lloyd 50" in sb and "--lloyd 20" not in sb
+    assert re.findall(r"--lloyd[ =](\d+)", sb) == ["50"]

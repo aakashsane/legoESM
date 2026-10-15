@@ -7681,15 +7681,15 @@ def main() -> int:
         raise SystemExit(
             "--relative-winds/--wind-vfac is not wired for --grid cubed_sphere "
             "(parked); supported grids: tripole / latlon_bathy / mpas.")
-    # NEMO's SCRIP weights target the eORCA1 tripole; on every other grid the
-    # shared sampler raises only at the first forcing step, after the model
-    # build (user 2026-10-15, decisions 8 + 6) -- refuse here instead.
+    # NEMO's SCRIP weights target the eORCA1 tripole; on latlon_bathy /
+    # cubed_sphere / mpas the shared sampler raises only at the first forcing
+    # step, after the model build (user 2026-10-15, decisions 8 + 6) -- refuse
+    # every non-tripole grid here instead.
     if args.grid != "tripole" and args.forcing_remap != "bilinear":
         raise SystemExit(
             f"--forcing-remap {args.forcing_remap} is wired for --grid tripole "
-            f"only (NEMO's weight files target eORCA1); --grid {args.grid} "
-            "would build the model and then fail at the first forcing step.  "
-            "Use --forcing-remap bilinear.")
+            f"only (NEMO's weight files target eORCA1), not --grid "
+            f"{args.grid}.  Use --forcing-remap bilinear.")
 
     # --spmd-persistent-state combo validation (scaling-M2): fail BEFORE the
     # jax.distributed bootstrap / any expensive setup.

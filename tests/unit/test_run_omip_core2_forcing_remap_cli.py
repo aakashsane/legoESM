@@ -147,6 +147,8 @@ class _PastSetupGuards(Exception):
     ("latlon_bathy", "nemo_scrip", True),
     ("cubed_sphere", "nemo_scrip", True),
     ("mpas", "bilinear", False),
+    ("latlon_bathy", "bilinear", False),
+    ("cubed_sphere", "bilinear", False),
     ("tripole", "nemo_scrip", False),
 ])
 def test_non_tripole_grids_refuse_nemo_scrip_before_the_model_build(

@@ -404,13 +404,21 @@ def _build_skeleton(variant, cfg, spec_cfg, grid):
       (neural_gcm_spectral.train_sfno_full_spectral, ~L3153).
     """
     if variant == "classical":
-        from legoesm.training.aimip_params import AIMIPClassicalParams
+        from legoesm.training.aimip_params import (
+            AIMIPClassicalParams, aimip_spatial_unread_fields,
+        )
         # Matches _train_aimip_classical: spatial_surface + init_std + seed all
-        # read from the SAME cfg keys with the SAME defaults.
+        # read from the SAME cfg keys with the SAME defaults, and the spatial
+        # fields its schemes never read are not built (as in training).
         skeleton = AIMIPClassicalParams.from_defaults(
             spatial_surface=bool(cfg.get("aimip_spatial_surface", False)),
             spatial_init_std=float(cfg.get("aimip_spatial_init_std", 0.0)),
             spatial_seed=int(cfg.get("aimip_spatial_seed", 0)),
+            spatial_unread=aimip_spatial_unread_fields(
+                turbulence=str(cfg.get("aimip_turbulence",
+                                       _default_schemes()["turbulence"])),
+                surface_bulk_scheme=str(
+                    cfg.get("aimip_surface_bulk_scheme", "constant"))),
         )
         # aimip_trainable_schemes wraps the checkpoint in an
         # AIMIPTrainableBundle (legacy leaves + spec-driven scheme params);

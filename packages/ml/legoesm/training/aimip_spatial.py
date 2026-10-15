@@ -302,9 +302,11 @@ class AIMIPSpatialSurfaceParams(eqx.Module):
     """
 
     fields: dict[str, SpatialField]
-    # Fields the resolved schemes never read (no-inert rule, review F5): their
-    # gradient is cut in ``evaluate`` and the first-step gate skips them.
-    # Static, so the checkpoint leaf layout is unchanged.
+    # Fields the resolved schemes never read (no-inert rule, review F5). They
+    # are NOT built (decision 5, 2026-10-15: a fixed parameter has no gradient
+    # at all, not a zero one), so ``fields`` lacks them and the physics falls
+    # back to the scalar knob, which those schemes do not read either. Kept
+    # here only as the record of what was dropped.
     frozen: frozenset = eqx.field(static=True, default=frozenset())
 
     @staticmethod
@@ -321,7 +323,9 @@ class AIMIPSpatialSurfaceParams(eqx.Module):
         Each :class:`SpatialField` receives an independently-keyed
         random init when ``init_std > 0``; the key is split per field
         so swapping the field set leaves earlier inits stable across
-        runs that touch different field names.
+        runs that touch different field names.  Names in ``frozen`` (unread
+        by the resolved schemes) are not built at all; the others keep the
+        key of their position in :data:`SPATIAL_FIELD_NAMES`.
         """
         if init_std > 0.0 and key is None:
             key = jax.random.PRNGKey(0)
@@ -342,6 +346,7 @@ class AIMIPSpatialSurfaceParams(eqx.Module):
                     key=keys[i],
                 )
                 for i, (name, spec) in enumerate(_FIELD_SPECS.items())
+                if name not in frozenset(frozen)
             },
             frozen=frozenset(frozen),
         )
@@ -363,9 +368,7 @@ class AIMIPSpatialSurfaceParams(eqx.Module):
         """
         baselines = baselines or {}
         return {
-            name: (eqx.tree_at(lambda f: f.coeffs, field,
-                               jax.lax.stop_gradient(field.coeffs))
-                   if name in self.frozen else field).evaluate(
+            name: field.evaluate(
                 grid, land_mask=land_mask,
                 f_0_override=baselines.get(name),
             )

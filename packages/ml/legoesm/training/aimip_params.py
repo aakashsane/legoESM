@@ -268,6 +268,24 @@ _SPATIAL_FIELD_READ_WITH = {"Cd_neutral": "surface_Cd_neutral",
                             "z0": "surface_z0"}
 
 
+def aimip_spatial_unread_fields(*, turbulence, surface_bulk_scheme) -> frozenset:
+    """Spatial surface fields the resolved surface path never reads.
+
+    The same rule ``AIMIPClassicalParams.from_defaults`` derives from the
+    trainable knob names (a field is read exactly when its scalar knob is),
+    stated on the two scheme choices that decide it, for callers that build a
+    checkpoint template without a trainable set (eval / AMIP replay).
+    """
+    if surface_bulk_scheme not in _SURFACE_KNOBS_BY_BULK:
+        raise ValueError(
+            f"unknown surface bulk scheme {surface_bulk_scheme!r}; expected "
+            f"one of {sorted(_SURFACE_KNOBS_BY_BULK)}")
+    read = (set(_SURFACE_KNOBS_BY_BULK[surface_bulk_scheme])
+            if turbulence in _SURFACE_CARRYING_TURBULENCE else set())
+    return frozenset(f for f, k in _SPATIAL_FIELD_READ_WITH.items()
+                     if k not in read)
+
+
 def aimip_classical_trainable_names(*, convection, turbulence, gwd,
                                     microphysics, cloud, radiation,
                                     surface_bulk_scheme) -> frozenset:
@@ -335,6 +353,7 @@ class AIMIPClassicalParams(eqx.Module):
         spatial_init_std: float = 0.0,
         spatial_seed: int = 0,
         trainable=None,
+        spatial_unread=None,
     ) -> "AIMIPClassicalParams":
         """Initialize all knobs at (or just inside) their canonical defaults.
 
@@ -372,6 +391,11 @@ class AIMIPClassicalParams(eqx.Module):
             array, so ``eqx.filter_value_and_grad`` and the optimizer skip it
             (frozen out of the trainable set; no-inert-parameters rule).
             ``None`` keeps every knob an array (checkpoint templates).
+        spatial_unread : iterable of str or None
+            Spatial fields NOT built because the resolved schemes never read
+            them (``aimip_spatial_unread_fields``). ``None`` derives them from
+            ``trainable`` (a field is read exactly when its scalar knob is);
+            ``trainable=None`` and ``spatial_unread=None`` build every field.
         """
         names = {c.name for c in AIMIP_CLASSICAL_CONSTRAINTS}
         if trainable is not None:
@@ -410,13 +434,20 @@ class AIMIPClassicalParams(eqx.Module):
                            else float(raw_c))
         spatial = None
         if spatial_surface:
+            derived = frozenset(f for f, k in _SPATIAL_FIELD_READ_WITH.items()
+                                if trainable is not None and k not in trainable)
+            if spatial_unread is None:
+                spatial_unread = derived
+            elif trainable is not None and frozenset(spatial_unread) != derived:
+                raise ValueError(
+                    f"spatial_unread {sorted(spatial_unread)} disagrees with "
+                    f"the fields the trainable knobs leave unread "
+                    f"{sorted(derived)}")
             spatial = AIMIPSpatialSurfaceParams.from_defaults(
                 dtype=param_dtype,
                 init_std=spatial_init_std,
                 key=jax.random.PRNGKey(int(spatial_seed)),
-                frozen=({f for f, k in _SPATIAL_FIELD_READ_WITH.items()
-                         if k not in trainable}
-                        if trainable is not None else ()),
+                frozen=spatial_unread,
             )
         return AIMIPClassicalParams(
             raw_values=raw,

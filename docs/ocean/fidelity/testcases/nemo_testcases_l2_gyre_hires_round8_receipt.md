@@ -5,11 +5,11 @@ Date: 2026-10-13
 Incoming lane tip: `63cebeb37ea426cd647688f20e0e0250ae194f3f`
 
 > **Round-9 correction (2026-10-15).**  The shipped-card "trajectory
-> regression" discussed below compared the corrected implementation with a
-> saved legoESM baseline; it was not a legoESM-versus-NEMO gate.  Its failure
-> proved that shared code moved, not that the NEMO match worsened.  Direct
-> before/after scoring against NEMO, reported in the round-9 receipt, shows
-> that the round-8 QSR fix moved the shipped card substantially closer.
+> regression" discussed below was a cellwise oracle-relative control.  It
+> correctly failed because particular corrected cells worsened against NEMO
+> by more than its two-row-scale-ULP bar, even though the aggregate row maxima
+> moved closer in 37/70 rows, farther in 15, and stayed unchanged in 18.
+> Direct before/after numbers are reported in the round-9 receipt.
 > Also, the claim below that the record *localized* the next owner to `avt`
 > was too strong: the first differing listed boundary only nominated `avt`.
 > Round 9 performs the missing one-variable NEMO-`avt` substitution before

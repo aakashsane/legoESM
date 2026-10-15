@@ -15,15 +15,16 @@ non-certified and statistical.
 **The material step-2 tracer transcription defect is fixed; the exact rung
 remains DEBT.**  Substituting NEMO's recorded `avt` reduces the solved
 temperature residual from `1.81572090696136e-9 K` to
-`1.177724584522366e-12 K` (a `1541.7x` reduction).  The single owner is the
-sea-surface time level used in the TKE shear divisor: NEMO calls the closure
-with the step-entry slot in both formal positions, while legoESM had passed
-the half-step surface needed by the later implicit tracer solve into the
-closure too.  Routing those users separately leaves `1.1795009413617663e-12
-K` in the production solve, at the pre-solve floor.
+`1.177724584522366e-12 K` (a `1541.7x` reduction).  The sea-surface time
+level used in the TKE shear divisor is the dominant owner of the material
+`1.8e-9 K` component: NEMO calls the closure with the step-entry slot in both
+formal positions, while legoESM had passed the half-step surface needed by
+the later implicit tracer solve into the closure too.  Routing those users
+separately leaves `1.1795009413617663e-12 K` in the production solve, at the
+pre-solve floor.  That remaining residual is not assigned an owner.
 
-The plain and Smagorinsky quarter-degree ladders improve by roughly three
-orders at entry `kt=3`, but neither is bit-exact.  The first remaining
+The plain and Smagorinsky quarter-degree temperature rows improve by roughly
+three orders at entry `kt=3`, but neither ladder is bit-exact.  The first remaining
 zero-word miss is entry `kt=2` temperature (`1.0658141036401503e-14 K`);
 the largest entry-`kt=3` residual is SSH (`1.8483e-11 m`).  No term owner is
 claimed for either remaining boundary.
@@ -35,11 +36,13 @@ did not prove ownership.  `step2_vertical_owner.json` adds a same-graph,
 one-variable substitution at the executed `tra_zdf` seam.  The production
 solve and a seam with no replacement both give `1.81572090696136e-9 K`.
 NEMO `avt` gives `1.177724584522366e-12 K`; NEMO `avm` gives no improvement.
-The active input plant moves the solve, and the recorded coefficient and
-solution identities pass.
+The active input plant moves the solve, and the recorded coefficient identity
+passes.  The no-replacement seam is itself `DEBT` by `1.0658e-14 K`, but it
+passes its preregistered passive limit and preserves the production maximum.
 
-The differing `avt/avm` ratio occupies 227 wet cells, all at the first
-interface; none is on the background floor or EVD arm.  Replacing only those
+Above the registered `1e-12` relative threshold, the differing `avt/avm`
+ratio occupies 227 wet cells, all at the first interface; none is on the
+background floor or EVD arm.  Replacing only those
 ratio cells leaves `1.9632295789051568e-11 K`, while replacing their
 complement leaves the original maximum.  This ratio reconstruction is a
 sensitivity split, not a claim that the writer recorded NEMO's private
@@ -49,9 +52,10 @@ Prandtl work array.
 solve retains half-step `eta_now`; TKE shear separately receives step-entry
 `state.eta`.  After the change, the direct production solve is
 `1.1795009413617663e-12 K`, NEMO-`avt` substitution is
-`1.177724584522366e-12 K`, no ratio/common-factor cells remain, `avt` differs
-by at most `9.107298248878237e-18 m2/s` (42 ULP), and `avm` by at most 22
-ULP.  The probe labels this final tiny comparison `CONFOUNDED` because its
+`1.177724584522366e-12 K`, no ratio/common-factor cells remain above the
+registered `1e-12` relative threshold, `avt` differs by at most
+`9.107298248878237e-18 m2/s` (42 ULP), and `avm` by at most 22 ULP.  The
+probe labels this final tiny comparison `CONFOUNDED` because its
 pre-registered passive-seam relative bar becomes stricter than the residual;
 the quantitative substitution, not that label, supports the fix.
 
@@ -165,10 +169,11 @@ distance to NEMO.  Direct scalar-math ten-step scoring is:
 
 Round 8 moved 37/70 rows closer to NEMO, 15 farther, and left 18 unchanged.
 Round 9 moves 42/70 closer than the incoming tip, 13 farther, and leaves 15
-unchanged.  Thus round 8's old regression failure did not mean the NEMO match
-worsened: that gate compared against a saved legoESM trajectory and proved
-only that shared code moved.  A new no-slack ceiling test covers all seventy
-current NEMO residuals and has a one-row worsening plant.
+unchanged.  Round 8's regression was a cellwise oracle-relative control: it
+correctly fired because some cells worsened against NEMO by more than its
+two-row-scale-ULP bar, even though aggregate maxima moved closer in 37 rows
+and farther in 15.  A new no-slack ceiling test covers all seventy current
+row maxima and has a one-row worsening plant.
 
 The round-8 receipt now carries that correction and retracts its unmeasured
 `avt` localization.  The round-190 receipt now retracts the claim that its
@@ -212,8 +217,15 @@ OPEN, in order:
 ## Tests and evidence
 
 The focused helper, production, admission, and instrument tests pass; each
-landed behavior has a recorded failing reversion above.  The final lane
-battery and citation-gate results are appended after their clean runs.
+landed behavior has a recorded failing reversion above.  The repository's
+documented JAX compiler limit required the established lane battery to run by
+module.  Its exact aggregate final line is:
+
+`FULL_LANE_BATTERY_SPLIT_PASS: 128 passed, 2 deselected across 10 clean pytest processes`
+
+The receipt citation gate at clean commit `284d29d34` reports `PASS` for all
+six citations and zero full-map audit failures.  Shifting the cited
+`zdfsh2` range by two lines reports `FAIL`, as planted.
 
 ## Compiled-source citations
 
@@ -232,6 +244,9 @@ ratios at
 `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:215-221`.
 Stage 3 calls the solar kernel once with Kmm, in tracer execution order, at
 `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3_stg.f90:691-725`.
+That same stage passes Kmm geometry into the implicit vertical tracer solve,
+whose content equation applies the Kmm live thickness at
+`GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/trazdf.f90:284-289`.
 The two-band kernel uses that same live stretch in attenuation depth and
 layer thickness at
 `GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/traqsr.f90:615-645`.

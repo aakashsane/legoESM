@@ -25,7 +25,20 @@
       "certified_policy": false,
       "physical_gpu_index": 0,
       "label": "post_fix_b401ec3f3",
-      "disposition": "post-fix Smagorinsky wall-coefficient repeat; controlling climate run when complete"
+      "disposition": "post-fix Smagorinsky wall-coefficient repeat; predates the round-8 QSR and round-9 TKE-shear fixes"
+    },
+    "post_round9_219db484b": {
+      "run_directory": "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/legoesm_runs/r4_smag_gpu_1825d_post_round9_219db484b",
+      "commit": "219db484b018e719f829730377e9e883ad25c7bb",
+      "deck": "r4_smag",
+      "mode": "gpu-native",
+      "backend": "gpu",
+      "precision_policy": "fp64",
+      "transcendentals": "native",
+      "certified_policy": false,
+      "physical_gpu_index": 0,
+      "label": "post_round9_219db484b",
+      "disposition": "post-round-9 rerun: Smagorinsky fmask, live QSR stretch, TKE shear time level, and source-literal Kmm stretch fixed"
     }
   }
 }

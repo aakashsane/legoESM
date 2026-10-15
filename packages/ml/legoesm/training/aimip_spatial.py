@@ -296,7 +296,8 @@ class AIMIPSpatialSurfaceParams(eqx.Module):
     """Bundle of learnable spatial surface and surface-radiation fields.
 
     Holds a :class:`SpatialField` for each name in
-    :data:`SPATIAL_FIELD_NAMES`.  ``evaluate`` returns a dict mapping
+    :data:`SPATIAL_FIELD_NAMES` the resolved schemes read (the unread ones,
+    listed in ``frozen``, are not built).  ``evaluate`` returns a dict mapping
     name -> ``(n_lat, n_lon)`` array suitable for substitution into
     :class:`SurfaceLayerConfig` and :class:`GrayRadiationConfig`.
     """

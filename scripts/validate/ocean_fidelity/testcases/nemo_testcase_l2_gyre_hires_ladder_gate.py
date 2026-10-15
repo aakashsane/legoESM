@@ -2279,6 +2279,447 @@ def run_step2_tracer_owner(oracle_root: Path, output: Path) -> dict:
     return report
 
 
+def split_tke_coefficient_residual(
+    nemo_avt: np.ndarray,
+    nemo_avm: np.ndarray,
+    lego_avt: np.ndarray,
+    lego_avm: np.ndarray,
+    mask: np.ndarray,
+    *,
+    relative_threshold: float = 1.0e-12,
+    viscosity_floor: float = 1.2e-4,
+    diffusivity_floor: float = 1.2e-5,
+    evd_value: float = 100.0,
+) -> dict:
+    """Separate avt/avm-ratio and common-viscosity coefficient debts.
+
+    NEMO applies independent floors before the inverse-Prandtl update
+    (compiled ``zdftke.f90:681-692``).  The ratio therefore isolates a
+    *relative* avt/avm discrepancy, but does not by itself name pdlr unless
+    the floor branches are separately excluded.
+    """
+
+    def ratio(avt: np.ndarray, avm: np.ndarray) -> np.ndarray:
+        avm = np.asarray(avm, dtype=np.float64)
+        return np.asarray(avt, dtype=np.float64) / np.where(
+            avm > 0.0, avm, 1.0)
+
+    def relative(candidate: np.ndarray, reference: np.ndarray) -> np.ndarray:
+        reference = np.asarray(reference, dtype=np.float64)
+        return (
+            np.abs(np.asarray(candidate, dtype=np.float64) - reference)
+            / np.maximum(np.abs(reference), np.finfo(np.float64).tiny)
+        )
+
+    active = np.asarray(mask, dtype=bool)
+    ratio_relative = relative(
+        ratio(lego_avt, lego_avm), ratio(nemo_avt, nemo_avm))
+    common_relative = relative(lego_avm, nemo_avm)
+    ratio_cells = active & (ratio_relative > relative_threshold)
+    # With nn_avb=nn_havtb=0, compiled zdfphy.f90:205-228 makes
+    # avmb/avtb the two scalar namelist floors.  If both viscosities exceed
+    # avmb and both final diffusivities exceed avtb, each nested MAX in
+    # zdftke.f90:681-692 is inactive and avt/avm is exactly p_pdlr.
+    pdlr_candidate = (
+        active
+        & (np.asarray(nemo_avm) > viscosity_floor)
+        & (np.asarray(lego_avm) > viscosity_floor)
+        & (np.asarray(nemo_avt) > diffusivity_floor)
+        & (np.asarray(lego_avt) > diffusivity_floor)
+        # zdfphy.f90:347-359 applies EVD after TKE.  Those post-EVD words do
+        # not expose p_pdlr even though they are above the background floors.
+        & (np.asarray(nemo_avm) != evd_value)
+        & (np.asarray(lego_avm) != evd_value)
+        & (np.asarray(nemo_avt) != evd_value)
+        & (np.asarray(lego_avt) != evd_value)
+    )
+    pdlr_cells = ratio_cells & pdlr_candidate
+    common = active & (common_relative > relative_threshold)
+    return {
+        "ratio_mask": ratio_cells,
+        "pdlr_candidate_mask": pdlr_cells,
+        "common_factor_mask": common,
+        "summary": {
+            "relative_threshold": relative_threshold,
+            "avt_avm_ratio_cells": int(np.count_nonzero(ratio_cells)),
+            "avt_avm_ratio_levels": sorted(
+                int(value)
+                for value in np.unique(np.nonzero(ratio_cells)[2])
+            ),
+            "avt_avm_ratio_max_relative": float(
+                np.max(ratio_relative[active])
+            ),
+            "pdlr_candidate_cells": int(np.count_nonzero(pdlr_cells)),
+            "ratio_cells_on_a_floor_or_evd": int(np.count_nonzero(
+                ratio_cells & ~pdlr_candidate
+            )),
+            "viscosity_floor": viscosity_floor,
+            "diffusivity_floor": diffusivity_floor,
+            "evd_replacement_value": evd_value,
+            "common_factor_cells": int(np.count_nonzero(common)),
+            "common_factor_levels": sorted(
+                int(value) for value in np.unique(np.nonzero(common)[2])
+            ),
+            "common_factor_max_relative": float(np.max(common_relative[active])),
+        },
+    }
+
+
+def classify_vertical_owner(
+    baseline: dict,
+    substituted: dict,
+    passive: dict,
+    plant: dict,
+    *,
+    record_identity: dict | None = None,
+    fp64_ok: bool = True,
+    reduction_factor: float = 1.0e2,
+    passive_fraction: float = 1.0e-3,
+) -> dict:
+    """Fail closed around the controlled coefficient substitution.
+
+    ``baseline`` and ``substituted`` are produced by the same fixed-shape
+    selector graph.  The separate production call is only a passive-seam
+    control and may differ by last-bit JAX composition; it must remain small
+    relative to the baseline residual and cannot establish ownership merely
+    by sharing the same maximum.
+    """
+    baseline_max = float(baseline["max_abs"])
+    substituted_max = float(substituted["max_abs"])
+    passive_max = float(passive["max_abs"])
+    plant_fired = int(plant["n_unequal"]) > 0 and float(plant["max_abs"]) > 0.0
+    record_exact = (
+        record_identity is not None
+        and int(record_identity["n_unequal"]) == 0
+    )
+    passive_limit = passive_fraction * baseline_max
+    passive_ok = baseline_max > 0.0 and passive_max <= passive_limit
+    reduced = (
+        baseline_max > 0.0
+        and substituted_max <= baseline_max / reduction_factor
+    )
+    removed = int(substituted["n_unequal"]) == 0
+    if not plant_fired or not passive_ok or not record_exact or not fp64_ok:
+        verdict = "CONFOUNDED"
+    elif removed:
+        verdict = "CONFIRMED_OWNER"
+    elif reduced:
+        verdict = "DOMINANT_BOUNDARY"
+    else:
+        verdict = "NO_REGISTERED_DOMINANCE"
+    return {
+        "verdict": verdict,
+        "baseline_max_abs": baseline_max,
+        "substituted_max_abs": substituted_max,
+        "reduction_factor": (
+            baseline_max / substituted_max
+            if substituted_max > 0.0 else None
+        ),
+        "required_reduction_factor": reduction_factor,
+        "passive_max_abs": passive_max,
+        "passive_limit": passive_limit,
+        "passive_ok": passive_ok,
+        "plant_fired": plant_fired,
+        "record_exact": record_exact,
+        "fp64_ok": fp64_ok,
+        "residual_removed": removed,
+    }
+
+
+def run_step2_vertical_owner(oracle_root: Path, output: Path) -> dict:
+    """Substitute recorded NEMO vertical coefficients in the step-2 solve."""
+    import jax
+    import jax.numpy as jnp
+
+    from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        _NEMOVerticalSolveTestInput,
+        _NEMOWSRK3TestHooks,
+        LatLonCGridOceanModel,
+    )
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        GYRE_R4_NAMELIST,
+        build_nemo_testcase_card,
+        gyre_surface_forcings,
+    )
+    from legoesm.ocean.fidelity.provenance import worktree_stamp
+    from nemo_testcase_l2_gyre_round35_trazdf_matrix import read_trazdf_matrix
+
+    if jax.default_backend() != "cpu":
+        raise RuntimeError("step-2 vertical owner discriminator requires CPU")
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    admission = admit_oracle("r4_step2", "scalar", oracle_root)
+    namelist = GYRE_R4_NAMELIST._replace(
+        nn_itend=10, nn_stock=10, nn_write=10)
+    card = build_nemo_testcase_card(
+        "GYRE-zco",
+        namelist=namelist,
+    )
+
+    ordinary = LatLonCGridOceanModel(
+        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+    state = card.recipe.initial_state
+    freshwater, surface = gyre_surface_forcings(card, state, 1)
+    state = jax.device_get(ordinary.step(
+        state, card.dt_s, freshwater=freshwater, surface_forcing=surface))
+
+    # Hold legoESM's carried closure/RK memories fixed while bridging every
+    # primary NEMO before-level field.  This is the same controlled step-2
+    # entry used by ``run_step2_tracer_owner``.
+    entry = read_entry(
+        oracle_root / "oracle_step_entry_kt00000002.bin", dims=NEMO_DIMS)
+    u, v = _redundant_faces(entry["u"], entry["v"])
+    state = state._replace(
+        T=state.T.replace(data=jnp.asarray(entry["T"][..., :30])),
+        S=state.S.replace(data=jnp.asarray(entry["S"][..., :30])),
+        u=state.u.replace(data=jnp.asarray(u)),
+        v=state.v.replace(data=jnp.asarray(v)),
+        eta=state.eta.replace(data=jnp.asarray(entry["ssh"])),
+    )
+    freshwater, surface = gyre_surface_forcings(card, state, 2)
+
+    record = read_trazdf_matrix(
+        oracle_root / "oracle_trazdf_matrix_kt00000002.bin",
+        expect_kt=2,
+        expected_domain=NEMO_DIMS,
+    )
+
+    def native(name: str, stop: int | None = None) -> np.ndarray:
+        value = np.asarray(record["arrays"][name], dtype=np.float64)
+        value = value[2:-2, 2:-2]
+        if stop is not None:
+            value = value[..., :stop]
+        return value.transpose(1, 0, 2)
+
+    masks = expected_masks(card)
+    wet, interface_wet = masks["T"], masks["T"][:, :, 1:]
+    nemo_avt = native("avt")[:, :, 1:30]
+    nemo_solved = native("sol_T_pre_clamp", 30)
+    zdf1 = read_zdf_entry(
+        oracle_root / "oracle_zdf_entry_kt00000001.bin", dims=NEMO_DIMS)
+    zdf2 = read_zdf_entry(
+        oracle_root / "oracle_zdf_entry_kt00000002.bin",
+        dims=NEMO_DIMS,
+        expected_kt=2,
+        expected_level=3,
+    )
+    nemo_avm = zdf2["avm"][:, :, 1:30]
+
+    model = LatLonCGridOceanModel(
+        card.recipe.grid,
+        card.recipe.z_coord,
+        card.recipe.model_config,
+        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+            tracer_process_trace=(), vertical_solve_trace=True),
+    )
+
+    def run(step_state, override=None):
+        return jax.device_get(model.step(
+            step_state,
+            card.dt_s,
+            freshwater=freshwater,
+            surface_forcing=surface,
+            _vertical_K_test_override=override,
+        ))
+
+    free = run(state)
+    native_dtypes = {
+        "state_T": str(state.T.data.dtype),
+        "heat_K": str(free.vertical_solve.heat_K.dtype),
+        "viscosity_K": str(free.vertical_solve.viscosity_K.dtype),
+        "solved_T": str(free.vertical_solve.solved_T.dtype),
+        "area_T": str(card.recipe.grid.area_T.dtype),
+        "dz_ref": str(card.recipe.z_coord.dz_ref.dtype),
+        "h_partial": str(card.recipe.z_coord.h_partial.dtype),
+        "bathymetry": str(state.H_bathy.data.dtype),
+    }
+    fp64_ok = jax.config.x64_enabled and all(
+        value == "float64" for value in native_dtypes.values())
+    if not fp64_ok:
+        raise RuntimeError(
+            f"step-2 vertical discriminator requires native fp64: "
+            f"x64={jax.config.x64_enabled}, dtypes={native_dtypes}")
+    own = {
+        name: np.asarray(getattr(free.vertical_solve, name), dtype=np.float64)
+        for name in (
+            "heat_K", "viscosity_K", "effective_K", "e3w_now",
+            "e3t_after", "content_T", "solved_T",
+        )
+    }
+
+    def fixed(
+        *, heat: np.ndarray | None = None,
+        viscosity: np.ndarray | None = None,
+    ) -> _NEMOVerticalSolveTestInput:
+        selectors = np.zeros(6, dtype=np.bool_)
+        selectors[0] = heat is not None
+        selectors[1] = viscosity is not None
+        return _NEMOVerticalSolveTestInput(
+            heat_K=jnp.asarray(own["heat_K"] if heat is None else heat),
+            viscosity_K=jnp.asarray(
+                own["viscosity_K"] if viscosity is None else viscosity),
+            formed_K=jnp.asarray(own["effective_K"]),
+            tracer_e3w=jnp.asarray(own["e3w_now"]),
+            tracer_e3t=jnp.asarray(own["e3t_after"]),
+            temperature_content=jnp.asarray(own["content_T"]),
+            replace=jnp.asarray(selectors),
+        )
+
+    split = split_tke_coefficient_residual(
+        nemo_avt, nemo_avm, own["heat_K"], own["viscosity_K"],
+        interface_wet,
+        viscosity_floor=namelist.rn_avm0_m2_s,
+        diffusivity_floor=namelist.rn_avt0_m2_s,
+        evd_value=namelist.rn_evd_m2_s,
+    )
+    ratio_cells = split["ratio_mask"]
+    pdlr_cells = split["pdlr_candidate_mask"]
+    # These are ratios of already-rounded final coefficients, not records of
+    # NEMO's executed p_pdlr operand.  The reciprocal arms distinguish ratio
+    # versus common-factor sensitivity only; exact p_pdlr attribution would
+    # require a new writer operand.
+    nemo_final_ratio = np.divide(
+        nemo_avt, nemo_avm, out=np.zeros_like(nemo_avt),
+        where=pdlr_cells,
+    )
+    lego_final_ratio = np.divide(
+        own["heat_K"], own["viscosity_K"],
+        out=np.zeros_like(own["heat_K"]), where=pdlr_cells,
+    )
+    plant_scale = np.float64(1.0 + 2.0 ** -40)
+    arms = {
+        "seam_disabled": fixed(),
+        "nemo_avt": fixed(heat=nemo_avt),
+        "nemo_avm": fixed(viscosity=nemo_avm),
+        "nemo_avt_ratio_cells": fixed(
+            heat=np.where(ratio_cells, nemo_avt, own["heat_K"])),
+        "nemo_avt_pdlr_candidate_cells": fixed(
+            heat=np.where(pdlr_cells, nemo_avt, own["heat_K"])),
+        "nemo_final_ratio_lego_common_factor": fixed(
+            heat=np.where(
+                pdlr_cells,
+                nemo_final_ratio * own["viscosity_K"],
+                own["heat_K"],
+            )),
+        "lego_final_ratio_nemo_common_factor": fixed(
+            heat=np.where(
+                pdlr_cells, lego_final_ratio * nemo_avm, own["heat_K"])),
+        "nemo_avt_other_cells": fixed(
+            heat=np.where(ratio_cells, own["heat_K"], nemo_avt)),
+        "control_scaled_nemo_avt": fixed(
+            heat=np.where(interface_wet, nemo_avt * plant_scale, nemo_avt)),
+    }
+    results = {name: run(state, override) for name, override in arms.items()}
+
+    # Test whether wrong step-1 closure memories, rather than the live step-2
+    # coefficient statement, own the boundary.
+    memory_avm = jnp.asarray(np.where(
+        interface_wet, zdf1["avm"][:, :, 1:30], 0.0))
+    memory_avt = jnp.asarray(np.where(
+        interface_wet, zdf1["avt"][:, :, 1:30], 0.0))
+    results["nemo_step1_avm_memory"] = run(state._replace(
+        tke_avm=state.tke_avm.replace(data=memory_avm)))
+    results["nemo_step1_avt_memory"] = run(state._replace(
+        tke_avt=state.tke_avt.replace(data=memory_avt)))
+
+    def solved_row(name: str, result) -> dict:
+        return exact_score(
+            f"GYRE-zco-r4.kt2.{name}.solved_T",
+            nemo_solved,
+            np.asarray(result.vertical_solve.solved_T, dtype=np.float64),
+            wet,
+        )
+
+    rows = {"production": solved_row("production", free)}
+    rows.update({name: solved_row(name, result)
+                 for name, result in results.items()})
+    passive = exact_score(
+        "control.seam_disabled_vs_production_solved_T",
+        own["solved_T"],
+        np.asarray(results["seam_disabled"].vertical_solve.solved_T),
+        wet,
+    )
+    plant = exact_score(
+        "control.scaled_vs_recorded_avt_solved_T",
+        np.asarray(results["nemo_avt"].vertical_solve.solved_T),
+        np.asarray(results["control_scaled_nemo_avt"].vertical_solve.solved_T),
+        wet,
+    )
+    record_identity = exact_score(
+        "NEMO.kt2.tra_zdf_avt_vs_zdf_entry_avt",
+        zdf2["avt"][:, :, 1:30], nemo_avt, interface_wet)
+    classification = classify_vertical_owner(
+        rows["seam_disabled"], rows["nemo_avt"], passive, plant,
+        record_identity=record_identity, fp64_ok=fp64_ok,
+    )
+    verdict = classification["verdict"]
+    report = {
+        "format": "nemo-testcase-l2-gyre-r4-step2-vertical-owner-v1",
+        "worktree": worktree_stamp(),
+        "oracle_admission": admission,
+        "policy": "fp64/x64/cpu/libm certified",
+        "native_dtypes": native_dtypes,
+        "bridge": (
+            "NEMO kt=2 T/S/U/V/SSH primary state; legoESM hidden closure "
+            "and RK memories retained from its step 1"
+        ),
+        "record_identity": record_identity,
+        "coefficient_rows": {
+            "avt": exact_score(
+                "production.heat_K_vs_NEMO_avt", nemo_avt,
+                own["heat_K"], interface_wet),
+            "avm": exact_score(
+                "production.viscosity_K_vs_NEMO_avm", nemo_avm,
+                own["viscosity_K"], interface_wet),
+        },
+        "coefficient_decomposition": split["summary"],
+        "solved_temperature_rows": rows,
+        "controls": {
+            "passive_seam": passive,
+            "active_scale_plant": plant,
+            "plant_scale": float(plant_scale),
+        },
+        "classification": classification,
+        "owner": (
+            "executed tra_zdf avt coefficient boundary"
+            if verdict == "CONFIRMED_OWNER" else
+            "executed tra_zdf avt is a dominant boundary but does not remove "
+            "the residual"
+            if verdict == "DOMINANT_BOUNDARY" else
+            "avt substitution did not meet the registered dominance bar"
+            if verdict == "NO_REGISTERED_DOMINANCE" else
+            "unresolved: controls or reduction threshold did not pass"
+        ),
+        "compiled_nemo_sources": {
+            "closure_call": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "stprk3.f90:159-169"),
+            "coefficient": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "zdftke.f90:681-692"),
+            "consumer": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "trazdf.f90:393-458"),
+        },
+        "verdict": verdict,
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    np.savez_compressed(
+        output.with_suffix(".npz"),
+        nemo_avt=nemo_avt,
+        nemo_avm=nemo_avm,
+        production_avt=own["heat_K"],
+        production_avm=own["viscosity_K"],
+        production_solved_T=own["solved_T"],
+        nemo_solved_T=nemo_solved,
+        avt_avm_ratio_mask=ratio_cells,
+        pdlr_candidate_mask=pdlr_cells,
+        interface_wet=interface_wet,
+    )
+    print(json.dumps(report, indent=2))
+    return report
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--deck", choices=tuple(DEFAULT_ORACLES), default="r4")
@@ -2289,6 +2730,7 @@ def main(argv=None) -> int:
     parser.add_argument("--stage2-composition-only", action="store_true")
     parser.add_argument("--stage3-geometry-only", action="store_true")
     parser.add_argument("--step2-tracer-owner-only", action="store_true")
+    parser.add_argument("--step2-vertical-owner-only", action="store_true")
     parser.add_argument(
         "--trajectory-only", action="store_true",
         help="score the ten entry records and one-ULP controls only",
@@ -2324,7 +2766,8 @@ def main(argv=None) -> int:
         admission = admit_oracle(args.deck, args.math_flavour, args.oracle_root)
         narrow = sum((args.stage2_composition_only,
                       args.stage3_geometry_only,
-                      args.step2_tracer_owner_only))
+                      args.step2_tracer_owner_only,
+                      args.step2_vertical_owner_only))
         if narrow > 1:
             raise ValueError("choose only one narrow discriminator")
         if narrow and args.trajectory_only:
@@ -2351,6 +2794,13 @@ def main(argv=None) -> int:
             step2_admission = admit_oracle("r4_step2", "scalar")
             report = run_step2_tracer_owner(
                 Path(step2_admission["root"]), args.output)
+        elif args.step2_vertical_owner_only:
+            if (args.deck, args.math_flavour) != ("r4", "scalar"):
+                raise ValueError(
+                    "step-2 vertical discriminator requires r4/scalar")
+            step2_admission = admit_oracle("r4_step2", "scalar")
+            report = run_step2_vertical_owner(
+                Path(step2_admission["root"]), args.output)
         else:
             report = run(
                 Path(admission["root"]), args.output,
@@ -2362,7 +2812,9 @@ def main(argv=None) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     return 0 if report["verdict"] in (
-        "PASS", "RAW_UPDATE_AT_BAR", "REPORT_ONLY", "CONFIRMED") else 1
+        "PASS", "RAW_UPDATE_AT_BAR", "REPORT_ONLY", "CONFIRMED_OWNER",
+        "DOMINANT_BOUNDARY",
+        ) else 1
 
 
 if __name__ == "__main__":

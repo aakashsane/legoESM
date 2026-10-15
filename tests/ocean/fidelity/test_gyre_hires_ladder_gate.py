@@ -148,6 +148,94 @@ def test_step2_stage_records_are_registered_as_after_level():
     assert observed == [1, 2, 1]
 
 
+def test_step2_zdf_reader_requires_the_registered_step_number():
+    from nemo_testcase_l2_gyre_phase3_gate import read_zdf_entry
+
+    root = Path(GATE.admit_oracle("r4_step2", "scalar")["root"])
+    path = root / "oracle_zdf_entry_kt00000002.bin"
+    with pytest.raises(RuntimeError, match="bad header"):
+        read_zdf_entry(path, dims=GATE.NEMO_DIMS)
+    with pytest.raises(RuntimeError, match="bad header"):
+        read_zdf_entry(path, dims=GATE.NEMO_DIMS, expected_kt=2)
+    record = read_zdf_entry(
+        path, dims=GATE.NEMO_DIMS, expected_kt=2, expected_level=3)
+    assert record["avt"].shape == (82, 122, 31)
+
+
+def test_tke_coefficient_split_distinguishes_prandtl_and_common_factor():
+    nemo_avm = np.ones((1, 2, 2), dtype=np.float64)
+    nemo_avt = np.full_like(nemo_avm, 0.5)
+    lego_avm = np.array([[[1.0, 1.25], [1.0, 1.0]]])
+    lego_avt = np.array([[[0.6, 0.625], [0.5, 0.5]]])
+    mask = np.ones_like(nemo_avm, dtype=bool)
+
+    split = GATE.split_tke_coefficient_residual(
+        nemo_avt, nemo_avm, lego_avt, lego_avm, mask)
+
+    assert split["summary"]["avt_avm_ratio_cells"] == 1
+    assert split["summary"]["common_factor_cells"] == 1
+    assert split["ratio_mask"].tolist() == [[[True, False], [False, False]]]
+    assert split["pdlr_candidate_mask"].tolist() == [
+        [[True, False], [False, False]]
+    ]
+    assert split["common_factor_mask"].tolist() == [
+        [[False, True], [False, False]]
+    ]
+
+    # A ratio discrepancy on a namelist floor is empirical only: it cannot
+    # be attributed to pdlr because NEMO's nested MAX branch is active.
+    floor_avm = np.full((1, 1, 1), 1.2e-4)
+    floor_avt = np.full((1, 1, 1), 1.2e-5)
+    floor_split = GATE.split_tke_coefficient_residual(
+        floor_avt, floor_avm, floor_avt * 1.01, floor_avm,
+        np.ones_like(floor_avm, dtype=bool),
+    )
+    assert floor_split["ratio_mask"].item()
+    assert not floor_split["pdlr_candidate_mask"].item()
+    assert floor_split["summary"]["ratio_cells_on_a_floor_or_evd"] == 1
+
+    evd_split = GATE.split_tke_coefficient_residual(
+        np.array([[[100.0]]]), np.array([[[100.0]]]),
+        np.array([[[99.0]]]), np.array([[[100.0]]]),
+        np.ones((1, 1, 1), dtype=bool),
+    )
+    assert evd_split["ratio_mask"].item()
+    assert not evd_split["pdlr_candidate_mask"].item()
+
+
+def test_vertical_owner_classifier_refuses_same_max_passive_motion():
+    row = lambda maximum, unequal=1: {
+        "max_abs": maximum, "n_unequal": unequal,
+    }
+    confirmed = GATE.classify_vertical_owner(
+        row(1.0e-9), row(0.0, 0), row(1.0e-14), row(1.0e-12),
+        record_identity=row(0.0, 0))
+    assert confirmed["verdict"] == "CONFIRMED_OWNER"
+
+    merely_reduced = GATE.classify_vertical_owner(
+        row(1.0e-9), row(1.0e-13), row(1.0e-14), row(1.0e-12),
+        record_identity=row(0.0, 0))
+    assert merely_reduced["verdict"] == "DOMINANT_BOUNDARY"
+
+    # A passive field can move while retaining the same maximum residual.
+    confounded = GATE.classify_vertical_owner(
+        row(1.0e-9), row(1.0e-13), row(1.0e-9), row(1.0e-12),
+        record_identity=row(0.0, 0))
+    assert confounded["verdict"] == "CONFOUNDED"
+    missed_plant = GATE.classify_vertical_owner(
+        row(1.0e-9), row(1.0e-13), row(0.0, 0), row(0.0, 0),
+        record_identity=row(0.0, 0))
+    assert missed_plant["verdict"] == "CONFOUNDED"
+    bad_record = GATE.classify_vertical_owner(
+        row(1.0e-9), row(0.0, 0), row(0.0, 0), row(1.0e-12),
+        record_identity=row(1.0e-15))
+    assert bad_record["verdict"] == "CONFOUNDED"
+    weak_response = GATE.classify_vertical_owner(
+        row(1.0e-9), row(6.0e-10), row(0.0, 0), row(1.0e-12),
+        record_identity=row(0.0, 0))
+    assert weak_response["verdict"] == "NO_REGISTERED_DOMINANCE"
+
+
 def test_all_math_flavour_oracles_are_admitted_by_content():
     expected_files = {
         ("r4", "vector"): 20,

@@ -132,3 +132,40 @@ def test_scan_block_lane_refuses_nemo_scrip(remap, refused):
             exec(code, env)
     else:
         exec(code, env)  # no raise
+
+
+# --- user decision 2026-10-15: MPAS refuses nemo_scrip at setup, before build.
+
+
+class _PastSetupGuards(Exception):
+    pass
+
+
+@pytest.mark.parametrize("grid,remap,refused", [
+    ("mpas", "nemo_scrip", True),
+    ("mpas", "bilinear", False),
+    ("tripole", "nemo_scrip", False),
+])
+def test_mpas_refuses_nemo_scrip_before_the_model_build(monkeypatch, grid,
+                                                        remap, refused):
+    """Without the guard MPAS builds the model and only then dies in the
+    shared sampler at the first forcing step. ``_validate_spmd_persistent_state``
+    runs after the setup guards and before any bootstrap or build, so reaching
+    it means the combination got past setup."""
+    import sys
+
+    from scripts.run import run_omip_core2 as c2
+
+    def _stop(*a, **k):
+        raise _PastSetupGuards
+
+    monkeypatch.setattr(c2, "_validate_spmd_persistent_state", _stop)
+    monkeypatch.setattr(sys, "argv", ["run_omip_core2.py", "--grid", grid,
+                                      "--forcing-remap", remap,
+                                      "--output", "/o", "--no-emp"])
+    if refused:
+        with pytest.raises(SystemExit, match="--forcing-remap nemo_scrip"):
+            c2.main()
+    else:
+        with pytest.raises(_PastSetupGuards):
+            c2.main()

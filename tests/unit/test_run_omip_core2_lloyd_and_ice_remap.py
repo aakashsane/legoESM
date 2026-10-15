@@ -87,3 +87,21 @@ def test_driver_ice_sample_uses_the_ocean_forcing_remap():
     for c in calls:
         kw = {k.arg: ast.unparse(k.value) for k in c.keywords}
         assert kw.get("forcing_remap") == "args.forcing_remap", ast.unparse(c)
+
+
+def test_kappa_operator_validator_rebuilds_the_lloyd50_restart_mesh():
+    """User decision 2026-10-15: the OMIP restarts this validator reads were
+    built with 50 Lloyd iterations; its nCells check cannot tell 20 from 50."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[2]
+    src = (root / "scripts/validate/ocean_fidelity/"
+           "mpas_treguier_kappa_operators.py").read_text()
+    call = next(n for n in ast.walk(ast.parse(src))
+                if isinstance(n, ast.Call) and n.args
+                and isinstance(n.args[0], ast.Constant)
+                and n.args[0].value == "--lloyd")
+    assert {k.arg: ast.literal_eval(k.value)
+            for k in call.keywords}["default"] == 50
+    sb = (root / "scripts/cluster/omip_nemo/"
+          "_mpas_kappa_operators.sbatch").read_text()
+    assert "--lloyd 50" in sb and "--lloyd 20" not in sb

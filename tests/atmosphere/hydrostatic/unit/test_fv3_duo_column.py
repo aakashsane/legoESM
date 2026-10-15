@@ -1163,6 +1163,31 @@ def test_land_stress_from_land_reaches_the_boundary_layer_on_the_duo_columns(
     assert getattr(off, "_land_stress_last", None) is None
 
 
+def test_checkpoint_radiation_cadence_is_judged_on_the_clamped_dt(
+        tmp_path, monkeypatch):
+    """D-REX-1 alignment is a property of the steps the run TAKES: the
+    requested 1920 s clamps (CFL) to 600 s on C12, so one-day checkpoints
+    are 144 steps.  Radiation every 4 steps aligns (setup passes, though 45
+    requested-dt steps would not); every 5 does not (setup refuses, naming
+    the effective dt, though 45 requested-dt steps would align)."""
+    from legoesm.driver.model_driver import ModelDriver
+
+    def drv(name, rus):
+        d = tmp_path / name
+        d.mkdir()
+        c = _land_stress_cfg(d, monkeypatch, stress=None, days=1,
+                             dt=1920.0, rad_update_steps=rus)
+        return ModelDriver(
+            c._replace(output=c.output._replace(checkpoint_days=1)),
+            output_dir=d)
+    ok = drv("ok", 4)
+    ok.setup()
+    assert ok.config.dycore.dt == 600.0
+    with pytest.raises(ValueError,
+                       match=r"144 steps at dt=600 s.*rad_update_steps=5"):
+        drv("bad", 5).setup()
+
+
 def test_land_stress_rides_the_duo_column_checkpoint(tmp_path, monkeypatch):
     """The column lane checkpoints through the MPAS writer: the land stress
     (last valid |stress|, valid and fresh masks) is in the file, a fresh

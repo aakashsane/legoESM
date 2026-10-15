@@ -948,6 +948,17 @@ def test_snow_albedo_responds_to_the_ageing_timescale():
     assert a_long > a_short + 0.05
 
 
+def test_latlon_qv_smooth_flag_flows_to_config():
+    parser = build_arg_parser()
+    cfg = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert cfg.latlon_qv_smooth_del4_m4s == 0.0
+    cfg = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--latlon-qv-smooth-del4-m4s", "5e13",
+    ]), parser))
+    assert cfg.latlon_qv_smooth_del4_m4s == 5e13
+
+
 def test_mpas_qv_biharmonic_flag_flows_to_config():
     """--mpas-qv-smooth-del4-m4s round-trip (scale-selective companion to the
     Laplacian, 2026-09-11); default OFF, and the two coefficients are
@@ -2246,8 +2257,6 @@ def test_config_yaml_loads_all_keys_are_valid_dests(cfg_file):
 # Decks that do NOT pass validate_strict (none is a production deck): name -> why.
 # Asserted to raise, so a fix (or a new error class) flips the test.
 _STRICT_FAILING_DECKS = {
-    "amip_sundqvist_latlon24.yaml":
-        "HISTORICAL Sundqvist/L36 lat-lon deck; known strict errors listed in its header",
     "amip_land_calibrated.yaml":
         "land overlay, not a standalone deck: no grid, so it lands on the default lane",
     "amip_campaign_mpas.yaml":
@@ -3467,6 +3476,16 @@ def test_sundqvist_latlon24_deck_pins_polar_filter():
     # knob to null, and sbm ignores it (sbm_precip_efficiency is its own knob)
     # — see the convective_precip_efficiency note in amip_sundqvist_latlon24.yaml.
     assert cfg.convective_precip_efficiency is None
+    # Repaired 2026-10-14: the lat-lon COLUMN lane, standard 20-level layout,
+    # and the pipeline lane's hidden q_v del4 (0.5x the dycore hyperdiffusion
+    # at n_lat 24) as the explicit lat-lon smoother.
+    assert cfg.dycore.column_lane is True
+    assert cfg.grid.sigma_layout == "standard"
+    from legoesm.driver.component_factory import compute_diffusion
+    from legoesm.grids.factory import create_grid
+    hd = compute_diffusion(create_grid("latlon", 24), cfg.dycore).hyperdiff
+    assert cfg.latlon_qv_smooth_del4_m4s == pytest.approx(0.5 * hd, rel=1e-12)
+    assert cfg.mpas_qv_smooth_del4_m4s == 0.0
 
 
 def test_enable_tiled_dycore_flag_flows_to_config():
@@ -5192,6 +5211,17 @@ def test_production_deck_pins_the_zm_land_fraction_policy():
     assert keys["zm_land_fraction"] == "required"
 
 
+def test_production_deck_pins_the_reference_aod():
+    """User decision 2026-10-15: production's reference AOD (0.03) is a deck
+    row, not the run_amip default; the duo deck inherits it via include."""
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    amip = _repo_root() / "config" / "amip"
+    for deck in ("amip_production.yaml", "amip_production_fv3duo_c24.yaml"):
+        keys = load_yaml_config(str(amip / deck), build_arg_parser())
+        assert keys["aerosol_reference_aod"] == 0.03, deck
+        assert _resolved_deck_fields(amip / deck)["aerosol_reference_aod"] == 0.03, deck
+
+
 def test_mpas_land_params_refresh_flag_flows_to_config():
     """--mpas-land-params-refresh round-trip: default ON (user 2026-09-29),
     --no- form reaches the config, and a YAML false pin is honoured."""
@@ -5308,3 +5338,25 @@ def test_forcing_hold_outside_file_years_round_trips_and_defaults_off():
         base + ["--forcing-hold-outside-file-years"]), parser))
     assert off.forcing_hold_outside_file_years is False
     assert on.forcing_hold_outside_file_years is True
+
+
+def test_mpas_vert4_flux_form_tracers_flag_flows_to_dycore_config():
+    """--mpas-vert4-flux-form-tracers reaches DycoreConfig as a tuple; absent
+    means the default (q_v, owner decision 2026-10); the bare flag means none."""
+    parser = build_arg_parser()
+    cfg_default = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert cfg_default.dycore.mpas_vert4_flux_form_tracers == ("q_v",)
+    cfg_none = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--mpas-vert4-flux-form-tracers"]), parser))
+    assert cfg_none.dycore.mpas_vert4_flux_form_tracers == ()
+    cfg_set = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--mpas-vert4-flux-form-tracers", "q_v",
+    ]), parser))
+    assert cfg_set.dycore.mpas_vert4_flux_form_tracers == ("q_v",)
+    # a typo'd tracer name is refused at validation (the dycore would skip it)
+    for typo in (("qv",), ("trc_q_v",), "q_v", ""):
+        bad = cfg_set._replace(dycore=cfg_set.dycore._replace(
+            mpas_vert4_flux_form_tracers=typo))
+        with pytest.raises(ValueError, match="mpas_vert4_flux_form_tracers"):
+            bad.validate_strict()

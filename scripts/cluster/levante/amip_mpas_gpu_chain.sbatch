@@ -43,14 +43,15 @@ OUTDIR="${ROOT}/${NAME}"
 PKG="${REPO}/packages"
 
 # --- Century transient deck (opt-in: CENTURY_DECK=1) ------------------------
-# Select the era-correct OZONE (50-yr CMIP6 chunks) and VOLCANIC (per-year
-# CMIP6 files) for THIS link's simulated year, computed from the newest
-# checkpoint day + START_YEAR, BEFORE sourcing amip_production.sh (whose
-# `: "${VAR:=default}"` respects pre-set env).  Approximations, documented:
-# the file is pinned per LINK (<= ~1 sim-year timing error at link
-# boundaries), volcanic clamps to the available 1850-2014 range (post-2014
-# holds 2014 background), ozone holds the ssp-era file after 2014 if
-# present else the last historical chunk.  Off (default) = byte-identical.
+# Select the era-correct OZONE (50-yr CMIP6 chunks) for THIS link's simulated
+# year, computed from the newest checkpoint day + START_YEAR, BEFORE sourcing
+# amip_production.sh (whose `: "${VAR:=default}"` respects pre-set env).
+# Approximations, documented: the file is pinned per LINK (<= ~1 sim-year
+# timing error at link boundaries); ozone holds the ssp-era file after 2014 if
+# present else the last historical chunk.  Aerosol, CCN aerosol and volcanic
+# are NOT swapped here: the production 1850-2014 products already cover the
+# century, as on Ginsburg (review 2026-10-10 F33/F37); past 2014 they raise
+# unless --forcing-hold-outside-file-years.  Off (default) = byte-identical.
 if [[ "${CENTURY_DECK:-0}" == "1" ]]; then
     : "${START_YEAR:=1923}"
     _ICONP=/pool/data/ICON/grids/public/mpim
@@ -58,10 +59,6 @@ if [[ "${CENTURY_DECK:-0}" == "1" ]]; then
     _PRE_DAY=0
     [[ -n "${_PRE_CKPT}" ]] && _PRE_DAY=$(basename "${_PRE_CKPT}" | sed -E 's/checkpoint_day_0*([0-9]+)\.npz/\1/')
     SIM_YEAR=$(( START_YEAR + _PRE_DAY / 365 ))
-    _VOLC_YEAR=${SIM_YEAR}
-    (( _VOLC_YEAR < 1850 )) && _VOLC_YEAR=1850
-    (( _VOLC_YEAR > 2014 )) && _VOLC_YEAR=2014
-    export VOLCANIC="${_ICONP}/common/aerosol_volcanic_cmip6/bc_aeropt_cmip6_volc_lw_b16_sw_b14_${_VOLC_YEAR}.nc"
     _OZDIR="${_ICONP}/common/ozone_cmip6_forcing"
     if   (( SIM_YEAR < 1900 )); then _OZF="historical/vmro3_input4MIPs_ozone_CMIP_UReading-CCMI-1-0_gn_185001-189912.nc"
     elif (( SIM_YEAR < 1950 )); then _OZF="historical/vmro3_input4MIPs_ozone_CMIP_UReading-CCMI-1-0_gn_190001-194912.nc"
@@ -85,14 +82,14 @@ if [[ "${CENTURY_DECK:-0}" == "1" ]]; then
     : "${SST:=${_PCMDI}/ocean/mon/tosbcs/gn/${_V}/tosbcs_input4MIPs_SSTsAndSeaIce_CMIP_PCMDI-AMIP-1-1-10_gn_187001-202212.nc}"
     : "${SIC:=${_PCMDI}/seaIce/mon/siconcbcs/gn/${_V}/siconcbcs_input4MIPs_SSTsAndSeaIce_CMIP_PCMDI-AMIP-1-1-10_gn_187001-202212.nc}"
     export SST SIC
-    [[ -f "${VOLCANIC}" ]] || { echo "CENTURY_DECK: missing volcanic file ${VOLCANIC}" >&2; exit 3; }
     [[ -f "${OZONE}"    ]] || { echo "CENTURY_DECK: missing ozone file ${OZONE}"    >&2; exit 3; }
     [[ -f "${SST}"      ]] || { echo "CENTURY_DECK: missing SST file ${SST}"        >&2; exit 3; }
     [[ -f "${SIC}"      ]] || { echo "CENTURY_DECK: missing SIC file ${SIC}"        >&2; exit 3; }
-    echo "CENTURY_DECK: sim year ${SIM_YEAR} -> volcanic ${_VOLC_YEAR}, ozone $(basename "${_OZF}"), sst $(basename "${SST}")"
+    echo "CENTURY_DECK: sim year ${SIM_YEAR} -> ozone $(basename "${_OZF}"), sst $(basename "${SST}")"
 fi
 # shellcheck source=/dev/null
 source "${REPO}/config/amip/amip_production.sh"
+amip_require_forcing_files || exit 3   # aerosol / CCN / volcanic staged?
 mkdir -p "${OUTDIR}"
 exec > >(tee -a "${OUTDIR}/slurm-${SLURM_JOB_ID:-local}.out") \
      2> >(tee -a "${OUTDIR}/slurm-${SLURM_JOB_ID:-local}.err" >&2)

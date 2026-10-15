@@ -388,8 +388,22 @@ class DycoreConfig(NamedTuple):
     # the MPAS (serial + MPI), FV3-duo column, lat-lon C-grid and cube C-D
     # grid hydrostatic lanes (F15b); the other lanes (spectral, the
     # non-hydrostatic cores, FV3-duo non-column, sub-face-tiled cube) do not
-    # run it (the driver refuses True there, never silently).
+    # run it (the driver refuses True there, never silently).  On those
+    # lanes a dry-mass fixer that runs OUTSIDE the window (after physics on
+    # MPAS / lat-lon, after the dycore step on the segment lanes) is made
+    # energy-neutral the same way, as CAM's window covers its mass fixer
+    # (review 2026-10-14 F15 V8, vote B).
     energy_fixer: bool = True
+    # (appended last: positional ABI)
+    # Tracer names whose vertical del4 filter uses the mass-weighted FLUX form
+    # instead of the projected form (``vertical_del4_tracer_tendency_flux``).
+    # The projected form subtracts the column-mean tendency as a uniform
+    # mixing-ratio offset, which drains stratospheric water vapour (measured
+    # -0.4 ppmv/day at 45-70N, -3 ppmv/day in the tropics on e12_year).
+    # Default ("q_v",) since 2026-10 (owner decision after the 60-day A/B:
+    # 45-70N 70-150 hPa vapour 0.64 -> 4.05 ppmv, 100-200 hPa T -2.3 K).
+    # Empty = every tracer projected (the pre-2026-10 form, for bit-comparison).
+    mpas_vert4_flux_form_tracers: tuple = ("q_v",)
 
 
 class EvaluationConfig(NamedTuple):
@@ -1196,20 +1210,18 @@ class ExperimentConfig(NamedTuple):
 
     # Conservation
     fix_moisture: bool = False
-    # Issue #323: make the per-step ``max(q_v, 0)`` floor on the physics
-    # tracer update moist-static-energy-conserving (remove the latent heat
-    # of the clipped vapour sink).  Opt-in for the kessler+sbm wind blow-up;
-    # default off => bit-identical.  LANE-DEPENDENT (review 2026-10-10 F10):
-    # on the cube / lat-lon pipeline lanes (per-step, compiled, tiled, SPMD,
-    # training segments) True replaces the column-conserving vapour borrow
-    # with a hard floor that ADDS the clipped vapour (sum max(-q,0) dp/g per
-    # column, every step; nothing later removes it unless fix_moisture
-    # rescales globally).  In the dycores' own positivity stage (MPAS, duo
-    # column, cube C-D, lat-lon C-grid) the conserving borrow (dycore
-    # mpas_conservative_tracer_clamp, default True) takes precedence in
-    # core.conservation.apply_water_positivity, so the key does not create
-    # water there.  "True on all lanes" is therefore NOT the MPAS behaviour;
-    # False is the MPAS-equivalent setting on the pipeline lanes.
+    # Issue #323: the physics tracer update's vapour floor also books the
+    # latent heat of each cell's vapour change, so c_pd*T + L_v*q_v is
+    # unchanged per cell (opt-in for the kessler+sbm wind blow-up).
+    # LANE-DEPENDENT (review 2026-10-10 F10): on the cube / lat-lon pipeline
+    # lanes (per-step, compiled, tiled, SPMD, training segments) the floor is
+    # the same column-conserving vapour borrow as with False, plus that T
+    # correction (core.conservation.energy_consistent_moisture_floor); it
+    # creates water only in net-negative columns, like the borrow.  In the
+    # dycores' own positivity stage (MPAS, cube C-D, lat-lon C-grid) the key
+    # matters only with mpas_conservative_tracer_clamp=False, where the hard
+    # floor ADDS the clipped water (announced at dycore build); with the
+    # default borrow it is ignored there.
     energy_consistent_moisture_clip: bool = False
     # Resolved-wind moisture advection (issue #771): attach q_v/q_c/q_r/q_i/
     # q_s/q_g (+ the per-mass ice number N_i) to the dycore state each step so
@@ -1812,6 +1824,12 @@ class ExperimentConfig(NamedTuple):
     # nu4*dt*g_max^2 <= 0.5 at setup.  MPAS-only, same as the del2.  Default 0.0 pending the controlled
     # pair that picks the coefficient — see the arm before changing it.
     mpas_qv_smooth_del4_m4s: float = 0.0   # del4 diffusivity [m^4/s]
+    # Lat-lon COLUMN lane's post-step q_v del4: the lat-lon grid's own
+    # biharmonic (operators_latlon_3d.hyperdiffusion_3d), then the same
+    # water-mass-restoring floor as the MPAS smoother.  The lat-lon pipeline
+    # lane applies 0.5x the dycore hyperdiffusion unconditionally; on the
+    # column lane it is this explicit field.  0 = off.
+    latlon_qv_smooth_del4_m4s: float = 0.0   # del4 diffusivity [m^4/s]
     # Prognostic sea-ice skin temperature on the MPAS lane (Semtner 1976
     # zero-layer conduction + slab thermal inertia; forcing/surface_utils
     # helper).  The prescribed-SST anchor otherwise pins ice-covered cells
@@ -2052,13 +2070,9 @@ class ExperimentConfig(NamedTuple):
                 "max(q, 0) tracer clamp, which CREATES mass at every "
                 "transport undershoot (+30 kg/m2/yr of water measured on "
                 "the AMIP century). Legacy bit-comparison mode only.")
-        if self.energy_consistent_moisture_clip:
-            _wlog.warning(
-                "NON-CONSERVING form selected: "
-                "energy_consistent_moisture_clip=True conserves "
-                "moist static energy but CREATES the clipped vapour "
-                "(water is NOT conserved by this floor) — the documented "
-                "exception to 'conserving form always'.")
+        # energy_consistent_moisture_clip creates water only in the dycore
+        # hard floor; the factory announces it where that floor runs
+        # (warn_if_vapour_floor_creates_water).
         if g.resolution <= 0:
             errors.append(f"grid.resolution must be > 0, got {g.resolution}")
         if g.nlev <= 0:
@@ -2185,10 +2199,35 @@ class ExperimentConfig(NamedTuple):
             errors.append(f"dycore.corner_fill must be one of {CORNER_FILL_MODES}, "
                           f"got {d.corner_fill!r}")
         if d.column_lane:
-            if d.discretization != "fv3_duo":
+            if d.discretization not in ("fv3_duo", "latlon_cgrid"):
                 errors.append(
                     "dycore.column_lane: no column adapter for "
-                    f"dycore.discretization={d.discretization!r} (fv3_duo only)")
+                    f"dycore.discretization={d.discretization!r} "
+                    "(fv3_duo, latlon_cgrid)")
+            if d.discretization == "latlon_cgrid":
+                if (g.grid_type != "latlon" or d.model_type != "hydrostatic"):
+                    errors.append(
+                        "dycore.column_lane with latlon_cgrid needs "
+                        "grid_type='latlon' and model_type='hydrostatic' "
+                        f"(got {g.grid_type!r}, {d.model_type!r})")
+                if self.distributed or self.ensemble_size != 1:
+                    errors.append(
+                        "dycore.column_lane on latlon_cgrid is single device: "
+                        "no MPI band (distributed) and no ensemble axis")
+                # the column loop's MPAS q_v smoother is a Voronoi
+                # operator; this lane's is latlon_qv_smooth_del4_m4s
+                if self.output.budget_ledger:
+                    errors.append(
+                        "output.budget_ledger on the lat-lon column lane: its "
+                        "dycore publishes no per-step ledger, so no ledger "
+                        "would be written")
+                for _k in ("mpas_qv_smooth_del2_m2s", "mpas_qv_smooth_del4_m4s"):
+                    if float(getattr(self, _k, 0.0) or 0.0) != 0.0:
+                        errors.append(
+                            f"{_k}={getattr(self, _k)!r} on the lat-lon column "
+                            "lane: the column loop's q_v smoother needs the "
+                            "Voronoi mesh; set it to 0 (this lane's is "
+                            "latlon_qv_smooth_del4_m4s)")
             # every column lane: the columns are a VIEW of the native
             # state and only the dycore's step may move the winds
             if self.sponge_enabled:
@@ -3208,6 +3247,10 @@ class ExperimentConfig(NamedTuple):
                     f"physics_update_steps={_pus} (>= it) so radiation is "
                     "recomputed on physics steps; a held-physics step cannot "
                     "solve radiation")
+        # R-ex (D-REX-1) checkpoint/radiation alignment is NOT checked here:
+        # it depends on the EFFECTIVE timestep, which the driver may clamp
+        # (CFL) after this validation -- see
+        # checkpoint_radiation_cadence_error, called by ModelDriver.setup.
         _nmm = self.cld_macmic_num_steps
         if not isinstance(_nmm, int) or isinstance(_nmm, bool) or _nmm < 1:
             errors.append(
@@ -3526,6 +3569,19 @@ class ExperimentConfig(NamedTuple):
                 f"[m^2/s]) must be finite in [0, 1e8]; got "
                 f"{self.mpas_qv_smooth_del2_m2s!r}."
             )
+        if not (math.isfinite(self.latlon_qv_smooth_del4_m4s)
+                and 0.0 <= self.latlon_qv_smooth_del4_m4s <= 1.0e18):
+            errors.append(
+                f"latlon_qv_smooth_del4_m4s (horizontal q_v del4 diffusivity "
+                f"[m^4/s]) must be finite in [0, 1e18]; got "
+                f"{self.latlon_qv_smooth_del4_m4s!r}.")
+        elif (self.latlon_qv_smooth_del4_m4s != 0.0
+              and not (d.column_lane and d.discretization == "latlon_cgrid")):
+            errors.append(
+                "latlon_qv_smooth_del4_m4s is the lat-lon COLUMN lane's q_v "
+                "smoother (dycore.column_lane with latlon_cgrid); "
+                f"discretization={d.discretization!r}, column_lane="
+                f"{d.column_lane!r} would silently ignore it.")
         # Same shape one order up: 0 = off, and the ceiling is far above any
         # biharmonic a stable explicit step admits (the driver enforces the
         # mesh-specific bound nu4*dt*g_max^2 <= 0.5 at setup).
@@ -3585,11 +3641,13 @@ class ExperimentConfig(NamedTuple):
                     "only modifies the active drain — it would be silently "
                     "inert)."
                 )
-            if normalize_grid_type(self.grid.grid_type) != "mpas":
+            if not (normalize_grid_type(self.grid.grid_type) == "mpas"
+                    or (self.dycore.column_lane
+                        and self.dycore.discretization == "latlon_cgrid")):
                 errors.append(
-                    "hard_sat_ice_curve=True requires an MPAS grid (the "
-                    "ice-curve drain is only wired into the MPAS post-step "
-                    "hook; on grid_type="
+                    "hard_sat_ice_curve=True requires the column loop on MPAS "
+                    "or the lat-lon column lane (the ice-curve drain is only "
+                    "wired into its post-step hook; on grid_type="
                     f"{self.grid.grid_type!r} it would be silently inert)."
                 )
             if self.microphysics != "morrison":
@@ -3722,6 +3780,20 @@ class ExperimentConfig(NamedTuple):
                 "dycore.mpas_div_damp4_scale is wired into the hydrostatic MPAS dycore "
                 f"only; on discretization={d.discretization!r}/model_type={d.model_type!r} "
                 "it would be silently inert")
+        # Names must be known per-mass water/number tracers (typo guard; the
+        # dycore skips a valid name its state does not carry).  No inertness
+        # error: the default is non-empty and, like mpas_nu_vert4_T, simply
+        # unused off the MPAS lane or with the filter off.
+        _v4f = getattr(d, "mpas_vert4_flux_form_tracers", ())
+        from legoesm.core.conservation import BORROW_ELIGIBLE_TRACERS
+        if isinstance(_v4f, str):   # builders tuple() it into characters
+            errors.append(
+                "dycore.mpas_vert4_flux_form_tracers must be a list of tracer "
+                f"names, got the string {_v4f!r}")
+        elif _bad := [n for n in (_v4f or ()) if n not in BORROW_ELIGIBLE_TRACERS]:
+            errors.append(
+                f"dycore.mpas_vert4_flux_form_tracers: unknown tracer names {_bad} "
+                "(expected per-mass water/number tracers such as q_v)")
         if d.mpas_vert_advection_scheme not in _vert_adv_options:
             errors.append(
                 f"dycore.mpas_vert_advection_scheme must be one of "
@@ -5214,6 +5286,39 @@ def land_stress_eligibility(cfg) -> tuple[bool, str]:
         return False, (f"land_surface_scheme={cfg.land_surface_scheme!r} is not "
                        f"one of {_LAND_STRESS_SCHEMES} on this lane")
     return True, ""
+
+
+def checkpoint_radiation_cadence_error(cfg) -> str | None:
+    """R-ex (D-REX-1): the column loop does not checkpoint the held radiation
+    fluxes, so every checkpoint must sit on a radiation boundary -- the
+    checkpoint cadence is an integer multiple of the radiation cadence (the
+    run loop also refuses a restart anywhere else).  ``None`` when aligned.
+
+    Call with the config holding the EFFECTIVE timestep (after the driver's
+    CFL / factory clamp): the alignment is a property of the steps the run
+    actually takes, and a requested dt the clamp reduces (C12 duo: 1920 s ->
+    600 s) can misalign where the effective one aligns, or vice versa.
+    """
+    # The run loop's own coercion, so a numpy / YAML-float cadence is
+    # judged here too instead of failing only once the loop starts.
+    rus = max(1, int(cfg.rad_update_steps))
+    ck_days = cfg.output.checkpoint_days
+    dt = cfg.dycore.dt
+    # Same predicate as the run loop's guard: radiation sub-cycles only when
+    # it runs at all, and the checkpoint interval is the loop's integer
+    # step count, int(checkpoint_days * 86400 / dt).
+    if not (cfg.column_loop_lane and rus > 1
+            and cfg.radiation != "none"
+            and ck_days and ck_days > 0 and dt > 0):
+        return None
+    ck_steps = int(ck_days * 86400.0 / dt)
+    if ck_steps % rus == 0:
+        return None
+    return (f"checkpoint_days={ck_days} ({ck_steps} steps at "
+            f"dt={dt:g} s) is not an integer multiple of "
+            f"rad_update_steps={rus}: the held radiation fluxes "
+            "are not checkpointed, so every checkpoint must sit on a "
+            "radiation boundary")
 
 
 def resolve_land_stress_from_land(cfg) -> bool:

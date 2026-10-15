@@ -6990,7 +6990,8 @@ def run_omip_single(grid_type: str, args) -> dict:
                 tracer_advection=str(model.config.tracer_advection),
                 nlev=int(args.nlev),
                 halo_depth=halo_depth_for_config(model.config))
-            spmd_step = make_sharded_mpas_ocean_step(model, _layout)
+            spmd_step = make_sharded_mpas_ocean_step(model, _layout,
+                                                     land_mask=state.land_mask.data)
             spmd_gather = partial(gather_state_mpas_ocean_spmd, layout=_layout)
             spmd_gather_ice = spmd_gather      # generic pytree gather
             spmd_shard_stack = partial(shard_cell_stack_spmd, layout=_layout)
@@ -7010,7 +7011,8 @@ def run_omip_single(grid_type: str, args) -> dict:
                       f"{_nd} devices across {jax.process_count()} process(es) "
                       f"({jax.default_backend()}); cells/device={_layout.cells_per}, "
                       f"local incl. halo={_layout.max_lc}, ppermute rounds="
-                      f"{len(_layout.ppermute_perms)}.")
+                      f"{len(_layout.ppermute_perms)}, land-fill band capacity="
+                      f"{spmd_step.land_fill_band_capacity}.")
         elif jax.process_index() == 0:
             print("  SPMD (mpas): single device visible — flag is a no-op.")
     # Disarm the process-global SPMD backend on EVERY exit of the loop (a

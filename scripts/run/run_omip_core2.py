@@ -9944,6 +9944,15 @@ def main() -> int:
                 "an integrator slot mid-block that the restart neither records "
                 "nor continues.  Run the restartable leg on the host Python "
                 "loop (omit --scan-block).")
+        if args.forcing_remap != "bilinear":
+            # The on-device forcing stack is bilinear by construction and this
+            # branch returns before the host loop reads --forcing-remap, so
+            # nemo_scrip here would SILENTLY run bilinear (user 2026-10-14, 4a).
+            raise SystemExit(
+                f"[scan] --forcing-remap {args.forcing_remap} is not applied on "
+                "the --scan-block fast path (the on-device forcing stack is "
+                "bilinear only); use the host Python loop (omit --scan-block) "
+                "or --forcing-remap bilinear.")
         from legoesm.ocean.coupler.omip2_applicator import (
             build_core2_forcing_device_stack, build_omip2_scan_block_fn,
         )

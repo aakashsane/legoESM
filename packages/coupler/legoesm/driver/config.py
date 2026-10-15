@@ -386,7 +386,11 @@ class DycoreConfig(NamedTuple):
     # the MPAS (serial + MPI), FV3-duo column, lat-lon C-grid and cube C-D
     # grid hydrostatic lanes (F15b); the other lanes (spectral, the
     # non-hydrostatic cores, FV3-duo non-column, sub-face-tiled cube) do not
-    # run it (the driver refuses True there, never silently).
+    # run it (the driver refuses True there, never silently).  On those
+    # lanes a dry-mass fixer that runs OUTSIDE the window (after physics on
+    # MPAS / lat-lon, after the dycore step on the segment lanes) is made
+    # energy-neutral the same way, as CAM's window covers its mass fixer
+    # (review 2026-10-14 F15 V8, vote B).
     energy_fixer: bool = True
     # (appended last: positional ABI)
     # Tracer names whose vertical del4 filter uses the mass-weighted FLUX form

@@ -1111,14 +1111,42 @@ _INACTIVE_FIELDS_BY_CLOUD_SCHEME = {
 }
 
 
-def aimip_inactive_fields(*, cloud_scheme: str) -> frozenset:
+def aimip_inactive_fields(*, cloud_scheme: str, microphysics: str, gwd: str,
+                          subgrid_orography: bool,
+                          param_fixed: dict | None = None) -> frozenset:
     """Qualified ``scheme_key.field`` names with no gradient path under this
-    cloud scheme, frozen OUT of the trainable set by name (no-inert-parameters
+    scheme selection, frozen OUT of the trainable set by name (no-inert-parameters
     rule, the ``_inactive_keys`` pattern) rather than left to a measured
     freeze.  Pass to ``build_trainable_params(exclude=...)`` together with
     :func:`aimip_legacy_owned_fields` at every bundle build, so a trained
-    checkpoint and its evaluation skeleton share one tree."""
-    return _INACTIVE_FIELDS_BY_CLOUD_SCHEME.get(cloud_scheme, frozenset())
+    checkpoint and its evaluation skeleton share one tree.
+
+    The cloud-scheme set plus :func:`resolved_inactive_fields` of the config
+    the AIMIP factory builds for these names: ``MorrisonConfig`` defaults
+    with the deck's ``param_fixed`` pins for it (a pinned
+    ``warm_rain_scheme`` decides which warm-rain knobs are read), and
+    ``subgrid_orography`` = the lane's grid carries ``subgrid_topo_stddev``.
+    """
+    from legoesm.atmosphere.physics.combined import PhysicsConfig
+    from legoesm.atmosphere.physics.microphysics.config import (
+        MicrophysicsConfig,
+        MorrisonConfig,
+    )
+    from legoesm.core.param_overrides import apply_param_overrides
+
+    pins = (param_fixed or {}).get("atm.micro.MorrisonConfig", {})
+    probe = PhysicsConfig(
+        microphysics=MicrophysicsConfig(
+            scheme=microphysics,
+            morrison=apply_param_overrides(MorrisonConfig(), dict(pins))),
+        gravity_wave_drag=GravityWaveDragConfig(scheme=gwd))
+    return (_INACTIVE_FIELDS_BY_CLOUD_SCHEME.get(cloud_scheme, frozenset())
+            | resolved_inactive_fields(
+                probe, subgrid_orography=subgrid_orography))
+
+
+# Morrison warm-rain laws that read autocon_fact / accre_enhan_fact.
+_KK2000_WARM_RAIN = frozenset({"kk2000", "kk2000_cam6"})
 
 
 def resolved_inactive_fields(physics_config, *,
@@ -1128,8 +1156,10 @@ def resolved_inactive_fields(physics_config, *,
     ``assert_no_inert`` gate on the first gradient catches the rest).
 
     * Morrison ``k_au``/``k_ac``/``x_star``: read only by the
-      ``warm_rain_scheme == "seifert_beheng"`` branch (morrison.py); the
-      kk2000 laws carry their own knobs (``autocon_fact``, ``accre_enhan_fact``).
+      ``warm_rain_scheme == "seifert_beheng"`` branch (morrison.py).
+    * Morrison ``autocon_fact``/``accre_enhan_fact``: read only by the two
+      kk2000 laws, ``"kk2000"`` and ``"kk2000_cam6"`` (morrison.py); neither
+      Seifert-Beheng law reads them.
     * McFarlane ``h_topo``: the scalar fallback height, read only when no
       per-column subgrid-orography field is wired (mcfarlane.py).
       ``subgrid_orography`` = the driver wired one (production: SSO file).
@@ -1140,6 +1170,10 @@ def resolved_inactive_fields(physics_config, *,
             and micro.morrison.warm_rain_scheme != "seifert_beheng"):
         out |= {f"atm.micro.MorrisonConfig.{f}"
                 for f in ("k_au", "k_ac", "x_star")}
+    if (getattr(micro, "scheme", None) == "morrison"
+            and micro.morrison.warm_rain_scheme not in _KK2000_WARM_RAIN):
+        out |= {f"atm.micro.MorrisonConfig.{f}"
+                for f in ("autocon_fact", "accre_enhan_fact")}
     gwd = getattr(physics_config, "gravity_wave_drag", None)
     if subgrid_orography and "mcfarlane" in str(
             getattr(gwd, "scheme", "")).split("+"):

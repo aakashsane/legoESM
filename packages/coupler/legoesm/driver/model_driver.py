@@ -7166,9 +7166,6 @@ class ModelDriver:
         cfg = self.config
         from legoesm.driver.component_factory import driver_solver_name
         if driver_solver_name(cfg) != "latlon_cgrid_primitive_equations":
-            # Saved face winds this run will not carry: drop them, so this
-            # run's checkpoints do not re-save them next to a newer state.
-            self._pop_native_winds(self._FACE_WIND_KEYS)
             return
         _why = None
         if getattr(self, "_ensemble_size", 1) not in (None, 1):

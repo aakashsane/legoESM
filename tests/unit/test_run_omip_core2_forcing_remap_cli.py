@@ -134,7 +134,8 @@ def test_scan_block_lane_refuses_nemo_scrip(remap, refused):
         exec(code, env)  # no raise
 
 
-# --- user decision 2026-10-15: MPAS refuses nemo_scrip at setup, before build.
+# --- user decisions 2026-10-15 (8, 6): every non-tripole grid refuses
+# nemo_scrip at setup, before the model build.
 
 
 class _PastSetupGuards(Exception):
@@ -143,13 +144,15 @@ class _PastSetupGuards(Exception):
 
 @pytest.mark.parametrize("grid,remap,refused", [
     ("mpas", "nemo_scrip", True),
+    ("latlon_bathy", "nemo_scrip", True),
+    ("cubed_sphere", "nemo_scrip", True),
     ("mpas", "bilinear", False),
     ("tripole", "nemo_scrip", False),
 ])
-def test_mpas_refuses_nemo_scrip_before_the_model_build(monkeypatch, grid,
-                                                        remap, refused):
-    """Without the guard MPAS builds the model and only then dies in the
-    shared sampler at the first forcing step. ``_validate_spmd_persistent_state``
+def test_non_tripole_grids_refuse_nemo_scrip_before_the_model_build(
+        monkeypatch, grid, remap, refused):
+    """Without the guard a non-tripole grid builds the model and only then dies
+    in the shared sampler at the first forcing step. ``_validate_spmd_persistent_state``
     runs after the setup guards and before any bootstrap or build, so reaching
     it means the combination got past setup."""
     import sys

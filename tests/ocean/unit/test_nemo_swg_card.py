@@ -295,6 +295,9 @@ def test_swg_namelist_dispatch_refuses_unsupported_values():
         validate_swg_namelist(SWG_NAMELIST._replace(rn_Dt_s=0.0))
     with pytest.raises(ValueError, match="ln_meshmask must be a boolean"):
         validate_swg_namelist(SWG_NAMELIST._replace(ln_meshmask="invalid"))
+    for bad in (True, "0.2"):
+        with pytest.raises(ValueError, match="real values required"):
+            validate_swg_namelist(SWG_NAMELIST._replace(rn_tau_pa=bad))
 
 
 def test_resolved_inventory_is_the_frozen_compiled_and_card_inventory():

@@ -4122,6 +4122,12 @@ def validate_swg_namelist(namelist: SwgResolvedNamelist) -> None:
         "rn_Dt_s", "rn_domsiz_m", "rn_dx_m", "rn_modified_grav_m_s2",
         "rn_Uv_m_s", "rn_Lv_m",
     )
+    real_fields = positive_floats + (
+        "rn_tau_pa", "rn_rfr_s", "rn_beta_m_s", "rn_f0_s")
+    if any(isinstance(getattr(namelist, name), bool)
+           or not isinstance(getattr(namelist, name), (int, float))
+           for name in real_fields):
+        raise ValueError(f"SWG real values required for {real_fields}")
     if any(not math.isfinite(float(getattr(namelist, name)))
            or float(getattr(namelist, name)) <= 0.0 for name in positive_floats):
         raise ValueError(f"SWG positive finite values required for {positive_floats}")

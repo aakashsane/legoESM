@@ -150,6 +150,27 @@ def test_alternative_nemo_manifest_is_explicit_labelled_and_noncertified(
         CLIMATE._require_nemo_deck(root, alternative_manifest=manifest)
     with pytest.raises(Exception, match="not r4_smag"):
         CLIMATE._require_nemo_deck(root)
+    with pytest.raises(Exception, match="label requires"):
+        CLIMATE._require_nemo_deck(root, alternative_label="scalar_math")
+
+    monkeypatch.setattr(CLIMATE, "NEMO_MANIFEST", {
+        "nemo": "0" * 64,
+        "namelist_cfg": "1" * 64,
+        "namelist_ref": digests["namelist_ref"],
+    })
+    with pytest.raises(Exception, match="deck differs at namelist_cfg"):
+        CLIMATE._require_nemo_deck(
+            root, alternative_manifest=manifest,
+            alternative_label="scalar_math")
+
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8") + f"{'2' * 64}  extra\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception, match="inventory differs"):
+        CLIMATE._require_nemo_deck(
+            root, alternative_manifest=manifest,
+            alternative_label="scalar_math")
 
 
 def test_alternative_nemo_manifest_cannot_name_another_root(tmp_path):

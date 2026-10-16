@@ -122,6 +122,9 @@ FILES = {
         NEMO / "cfgs/GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/zdfphy.f90"),
     "GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/zdfsh2.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/zdfsh2.f90"),
+    "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/trazdf.f90": (
+        NEMO
+        / "cfgs/GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/trazdf.f90"),
     "GYRE_OMIP_L2_P3_DAILY/BLD/ppsrc/nemo/stprk3.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_DAILY/BLD/ppsrc/nemo/stprk3.f90"),
     "stp2d.F90": _OCE / "stp2d.F90",
@@ -1421,6 +1424,14 @@ FILES = {
 # recurring symbol is refused now, and every multi-line citation states its
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
+    # --- GYRE high-resolution round 10: scalar step-1 vertical solve ---
+    'GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/trazdf.f90:431-457': [
+        'zwt(:,1) = 0._wp',
+        'zwd(ji,jk) = (e3t_3d(ji,jj,jk) *(1._wp+r3t(ji,jj,Kaa)*tmask(ji,jj,jk))) - ( zwi(ji,jk) + zws(ji,jk) )',
+        27],
+    'GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/trazdf.f90:527-559': [
+        'pt(ji,jj,1,jn,Kaa) =       (e3t_3d(ji,jj,1) *(1._wp+r3t(ji,jj,Kbb)*tmask(ji,jj,1))) * pt(ji,jj,1,jn,Kbb )',
+        '&             / zwt(ji,jk) * tmask(ji,jj,jk)', 33],
     # --- GYRE high-resolution round 7: certified scalar-math program ---
     'GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/usrdef_sbc.f90:92-106': [
         'zyydd = REAL(nyear_len(1),wp)',

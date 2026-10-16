@@ -476,6 +476,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="MPAS vertical biharmonic hyperdiffusion of T "
                              "[1/s] — #930 2Δσ vertical-checkerboard cure "
                              "(0 disables)")
+    parser.add_argument("--mpas-vert4-flux-form-tracers", nargs="*",
+                        default=list(_DYCORE_DEFAULTS.mpas_vert4_flux_form_tracers),
+                        help="tracer names whose MPAS vertical del4 filter uses "
+                             "the mass-weighted flux form instead of the "
+                             "projected form (default: none; q_v takes the log "
+                             "form; a name here must not also be in "
+                             "--mpas-vert4-log-form-tracers)")
+    parser.add_argument("--mpas-vert4-log-form-tracers", nargs="*",
+                        default=list(_DYCORE_DEFAULTS.mpas_vert4_log_form_tracers),
+                        help="tracer names whose MPAS vertical del4 filter acts "
+                             "on ln(q + 1e-7) with a water-weighted mass-"
+                             "conserving flux (default: q_v; pass the flag with "
+                             "no names to free q_v for the flux form; a name "
+                             "here must not also be in "
+                             "--mpas-vert4-flux-form-tracers)")
     parser.add_argument("--mpas-conservative-tracer-clamp",
                         action=argparse.BooleanOptionalAction, default=True,
                         help="MPAS floors: borrow the clipped negative tracer "
@@ -524,7 +539,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         default=_DYCORE_DEFAULTS.energy_fixer,
                         help="CAM-style dycore total-energy fixer: return the "
                              "energy each dynamics step loses (damping KE, "
-                             "numerics) as a uniform heating before physics. "
+                             "numerics) as a uniform heating before physics, "
+                             "and the energy the dry-mass fixer moves with "
+                             "its p_s shift. "
                              "ON by default; wired on the MPAS, FV3-duo "
                              "column, lat-lon C-grid and cube C-D grid "
                              "hydrostatic lanes, refused on every other lane "
@@ -571,7 +588,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--restart-from", type=str, default=None)
     parser.add_argument("--restart-start-day", type=float, default=None,
                         help="Override start_day after loading checkpoint. "
-                             "Pass 0.0 at year boundaries to reset the day counter.")
+                             "Pass 0.0 at year boundaries to reset the day counter. "
+                             "Refused on the column lane when the checkpoint "
+                             "records its forcing-clock origin and this day "
+                             "disagrees with the day that origin implies.")
     parser.add_argument("--checkpoint-format", type=str,
                         default=_OUTPUT_DEFAULTS.checkpoint_format,
                         choices=["npz", "zarr"],
@@ -859,9 +879,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     # (constant / 0 / None / off) keep the prior AMIP behaviour byte-identical.
     parser.add_argument("--surface-bulk-scheme", type=str, default="constant",
                         choices=["constant", "coare3", "large_yeager",
-                                 "large_yeager_cesm"],
+                                 "large_yeager_cesm", "none"],
                         help="Surface-layer bulk-flux scheme (coare3 = COARE 3.0 "
-                             "MOST with convective gustiness; the tuned slab value). "
+                             "MOST with convective gustiness; the tuned slab value; "
+                             "none = no surface fluxes, needs --turbulence none "
+                             "and no land model). "
                              "Matches ExperimentConfig.validate_strict — 'most' is "
                              "not an accepted AMIP surface scheme (coare3 is the "
                              "MOST-with-gustiness variant).")
@@ -1982,6 +2004,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "humidity gradients. NOT monotone, so the q>=0 "
                              "floor can fire; setup refuses coefficients above "
                              "the explicit stability bound for the mesh+dt.")
+    parser.add_argument("--latlon-qv-smooth-del4-m4s", type=float, default=None,
+                        dest="latlon_qv_smooth_del4_m4s",
+                        help="Lat-lon COLUMN lane only: post-step horizontal "
+                             "q_v del4 diffusivity [m^4/s] on the lat-lon grid, "
+                             "then a water-mass-restoring floor (0=off, "
+                             "default).")
     parser.add_argument("--hines-total-rms-wind", type=float, default=None,
                         dest="hines_total_rms_wind",
                         help="Hines (1997) non-orographic GWD launch RMS wind "
@@ -2588,6 +2616,14 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         div_damp_scale=args.div_damp_scale,
         moisture_flux_form=args.moisture_flux_form,
         mpas_nu_vert4_T=args.mpas_nu_vert4_t,
+        mpas_vert4_flux_form_tracers=(
+            (args.mpas_vert4_flux_form_tracers,)
+            if isinstance(args.mpas_vert4_flux_form_tracers, str)   # YAML scalar
+            else tuple(args.mpas_vert4_flux_form_tracers or ())),
+        mpas_vert4_log_form_tracers=(
+            (args.mpas_vert4_log_form_tracers,)
+            if isinstance(args.mpas_vert4_log_form_tracers, str)    # YAML scalar
+            else tuple(args.mpas_vert4_log_form_tracers or ())),
         mpas_conservative_tracer_clamp=args.mpas_conservative_tracer_clamp,
         mpas_vert_advection_scheme=args.mpas_vert_advection_scheme,
         mpas_sponge_del2_top_layers=(args.mpas_sponge_del2_top_layers
@@ -2846,6 +2882,10 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
             args.mpas_qv_smooth_del4_m4s
             if args.mpas_qv_smooth_del4_m4s is not None
             else _EXPERIMENT_DEFAULTS.mpas_qv_smooth_del4_m4s),
+        latlon_qv_smooth_del4_m4s=(
+            args.latlon_qv_smooth_del4_m4s
+            if args.latlon_qv_smooth_del4_m4s is not None
+            else _EXPERIMENT_DEFAULTS.latlon_qv_smooth_del4_m4s),
         hard_sat_ice_curve=args.hard_sat_ice_curve,
         homogeneous_ice_nucleation=args.homogeneous_ice_nucleation,
         morrison_flavor=args.morrison_flavor,

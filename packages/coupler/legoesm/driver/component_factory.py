@@ -705,6 +705,16 @@ def fv3_duo_dynamics_for_layout(config: ExperimentConfig, bundle, cfg):
     return FV3DuoDynamicsModel(bundle, cfg)
 
 
+def driver_solver_name(config: ExperimentConfig) -> str | None:
+    """The solver ``create_atmosphere_dycore`` builds for ``config`` (None
+    when the combination is unsupported).  Gate on this, not on one
+    discretization spelling: several spellings build the same solver."""
+    from legoesm.driver.config import normalize_grid_type
+    return _DRIVER_SUPPORTED.get((
+        config.dycore.model_type, config.dycore.discretization,
+        normalize_grid_type(config.grid.grid_type)))
+
+
 def energy_fixer_wired(config: ExperimentConfig, solver_name: str) -> bool:
     """Whether the dycore ``solver_name`` runs ``DycoreConfig.energy_fixer``
     (the CAM-style global total-energy fixer, review 2026-10-10 F15): the
@@ -741,18 +751,51 @@ def refuse_unwired_energy_fixer(config: ExperimentConfig,
             f"explicitly on this lane.")
 
 
+#: Dycores whose end-of-step positivity stage passes
+#: ``energy_consistent_moisture_clip`` to :func:`apply_water_positivity`
+#: (spectral and FV3-duo pass ``energy_consistent=False``).
+_HARD_VAPOUR_FLOOR_SOLVERS = frozenset({
+    "mpas_primitive_equations",
+    "latlon_cgrid_primitive_equations",
+    "cdgrid_primitive_equations",
+})
+
+
+def warn_if_vapour_floor_creates_water(config: ExperimentConfig,
+                                       solver_name: str) -> None:
+    """Announce the one remaining water-creating vapour floor tied to
+    ``energy_consistent_moisture_clip``: the dycore HARD floor, which runs
+    only with ``mpas_conservative_tracer_clamp=False`` on a dycore that
+    passes the flag.  Everywhere else the flag's floor is the conserving
+    borrow, so nothing is announced (owner decision 2026-08-16: any
+    NON-conserving form announces itself)."""
+    if (config.energy_consistent_moisture_clip
+            and not config.dycore.mpas_conservative_tracer_clamp
+            and solver_name in _HARD_VAPOUR_FLOOR_SOLVERS):
+        logger.warning(
+            "NON-CONSERVING form selected: energy_consistent_moisture_clip"
+            "=True with mpas_conservative_tracer_clamp=False runs the "
+            "dycore hard water floor, which conserves moist static energy "
+            "but CREATES the clipped water (%s).", solver_name)
+
+
 def create_atmosphere_dycore(
     config: ExperimentConfig,
     grid,
     sigma,
     coeff_grid=None,
     fv3_duo_bundle=None,
+    latlon_native_grid=None,
 ) -> Any:
     """Resolve and instantiate the configured atmosphere dynamical core.
 
     ``fv3_duo_bundle``: the duo grid the driver built at grid creation
     (column lane only); the column model is built ON it so its mesh is
     the grid every forcing was regridded onto.
+
+    ``latlon_native_grid``: the lat-lon COLUMN lane's native grid (``grid``
+    is then its column mesh); the C-grid dycore is built on it and wrapped
+    in :class:`LatLonCGridColumnModel`.
 
     Parameters
     ----------
@@ -782,6 +825,13 @@ def create_atmosphere_dycore(
     """
     dc = config.dycore
     gc = config.grid
+    if dc.column_lane and dc.discretization == "latlon_cgrid":
+        if latlon_native_grid is None:
+            raise ValueError(
+                "create_atmosphere_dycore: the lat-lon column lane needs "
+                "latlon_native_grid (the driver builds it in _create_grid)")
+        grid = latlon_native_grid
+        coeff_grid = None
 
     model_type = dc.model_type
     discretization = dc.discretization
@@ -793,14 +843,11 @@ def create_atmosphere_dycore(
     # here too — the cost is one dict lookup.
     from legoesm.driver.config import normalize_grid_type
     grid_type = normalize_grid_type(gc.grid_type)
-
-    key = (model_type, discretization, grid_type)
-
-    if key not in _DRIVER_SUPPORTED:
+    solver_name = driver_solver_name(config)
+    if solver_name is None:
         _fail_unsupported(model_type, discretization, grid_type)
-
-    solver_name = _DRIVER_SUPPORTED[key]
     refuse_unwired_energy_fixer(config, solver_name)
+    warn_if_vapour_floor_creates_water(config, solver_name)
     if coeff_grid is None:
         coeff_grid = grid
     diff = compute_diffusion(coeff_grid, dc)
@@ -1064,6 +1111,8 @@ def create_atmosphere_dycore(
             time_integrator=_ti,
             # #930 cure: vertical biharmonic damping of the 2Δσ T checkerboard.
             nu_vert4_T=dc.mpas_nu_vert4_T,
+            vert4_flux_form_tracers=tuple(dc.mpas_vert4_flux_form_tracers),
+            vert4_log_form_tracers=tuple(dc.mpas_vert4_log_form_tracers),
             # Mass-conserving tracer positivity clamp (see DycoreConfig).
             conservative_tracer_clamp=dc.mpas_conservative_tracer_clamp,
             energy_consistent_moisture_clip=config.energy_consistent_moisture_clip,  # #1354/#1515 (no-op under the borrow)
@@ -1486,6 +1535,12 @@ def create_atmosphere_dycore(
         model = CGridLatLonPrimitiveEquationModel(
             grid, sigma, cfg, dt=_effective_dt)
         model.effective_dt = _effective_dt
+        if dc.column_lane:
+            from legoesm.atmosphere.dynamics.gcm.latlon_cgrid_column import (
+                LatLonCGridColumnModel,
+            )
+            model = LatLonCGridColumnModel(model)
+            model.effective_dt = _effective_dt
         return model
 
     # ----- SFNO data-driven -----

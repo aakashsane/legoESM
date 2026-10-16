@@ -72,7 +72,8 @@ def _run(config, col, dt=300.0, pass_qc=True, *, on=None):
     return clubb_turbulence_prognostic(
         col["u"], col["v"], col["T"], col["q_v"], moments,
         col["p_full"], col["p_half"], col["z_full"], col["z_half"],
-        col["T_sfc"], col["q_sfc"], col["rho"], dt, config, **kw)
+        col["T_sfc"], col["q_sfc"], col["rho"], dt, config, **kw,
+        lat=jnp.zeros((_NCOL,)))                  # equator [rad]
 
 
 _OFF = CLUBBConfig(prognostic=True)
@@ -335,11 +336,14 @@ def test_non_mpas_lanes_refuse_the_lever():
     )
     from legoesm.atmosphere.physics.turbulence.config import TurbulenceConfig
     tc = TurbulenceConfig(scheme="clubb", clubb=_ON, liquid_partition=True)
-    for lane in ("hydrostatic", "nonhydrostatic", "spectral_pe"):
+    for lane in ("hydrostatic", "nonhydrostatic"):
         with pytest.raises(NotImplementedError, match="liquid_partition"):
             make_turbulence_physics(tc, model_type=lane)
-    # The wired lane builds.
+    # The wired lanes build (spectral_pe routes dq_c_dt too; its
+    # prognostic-closure and tracer requirements are pinned in
+    # test_spectral_macmic_subcycle.py).
     make_turbulence_physics(tc, model_type="mpas")
+    make_turbulence_physics(tc, model_type="spectral_pe")
 
 
 def test_a_non_clubb_scheme_refuses_the_lever():
@@ -978,9 +982,8 @@ def test_host_liquid_above_the_cloud_top_cutoff_is_left_alone():
 
 
 def test_retained_liquid_above_the_cutoff_never_drives_vapour_negative():
-    """The moment mixing is not tapered above the cutoff, so it can take a
-    liquid-laden top layer's total water below the liquid kept there; the
-    retained liquid must then shrink, not leave q_v negative."""
+    """A liquid-laden top layer above the cutoff: the host state there is
+    kept (CAM top_lev), and neither q_v nor q_c may go negative."""
     col = _column()
     q_c = np.zeros((_NCOL, _NLEV))
     q_c[:, 0] = 1.0e-4                       # rt(top) >> rt(below): mixing dries it

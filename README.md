@@ -574,13 +574,17 @@ regenerate the run-status table:
 python scripts/experiment/validate_templates.py --write-status   # -> project_status.md
 ```
 
-`ModelDriver`-based runs (`legoesm run`, `run_amip.py`) and `run_omip_core2.py`
-write a `run_manifest.json` (resolved config + `state_digest` + legoESM commit +
+The production drivers (`legoesm run`, `run_amip.py`, `run_omip.py`,
+`run_omip_core2.py`, `run_lmip.py`, `run_coupled.py`, `run_dino.py`) write a
+`run_manifest.json` (resolved config + `state_digest` + legoESM commit +
 jax/numpy versions); extend it rather than adding a parallel tag/provenance
-system. It does **not** yet capture everything needed to reconstruct a run:
-physics-scheme parameters are rebuilt from code defaults, several drivers
-(`run_omip.py`, `run_lmip.py`, `run_coupled.py`, `run_dino.py`) write no
-manifest, `reproduce` reruns on whatever commit is checked out, and a bitwise
+system. Atmosphere (`ModelDriver`) runs also record every scheme config their
+kernels run with (convection, microphysics, turbulence, gravity-wave drag,
+radiation and clouds, land, forcing), including full overrides. `legoesm reproduce` refuses to rerun on
+different code unless `--allow-version-drift` is given, and refuses in every
+case when today's code does not rebuild the recorded configuration exactly or
+resolves different physics. The ocean, land, DINO and coupled drivers record
+their configs but `reproduce` does not rerun them yet, and a bitwise
 `--check` match can only be expected on identical software, hardware and device
 layout. See
 [docs/architecture/reproducibility.md](docs/architecture/reproducibility.md)

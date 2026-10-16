@@ -128,6 +128,25 @@ class CGridLatLonHydrostaticState(NamedTuple):
     tracers: dict = {}
 
 
+class LatLonFaceWindState(NamedTuple):
+    """Driver-facing lat-lon state that CARRIES the native C-grid face winds.
+
+    ``u_f`` (n_lat, n_lon+1, nlev) and ``v_f`` (n_lat+1, n_lon, nlev) are the
+    dycore's own face winds; T / p_s / phis / tracers are cell-centred, all
+    ``Field``-wrapped like ``HydrostaticState``.  Feeding this back into
+    :meth:`CGridLatLonPrimitiveEquationModel.step` every step keeps the winds
+    on the faces between steps; the ``HydrostaticState`` entry instead lifts
+    cell-centre winds to the faces and averages them back on EVERY step, which
+    removes most of the eddy kinetic energy within a simulated day.
+    """
+    u_f: Field
+    v_f: Field
+    T: Field
+    p_s: Field
+    phis: Field
+    tracers: dict | None = None
+
+
 class CGridLatLonPrimitiveEquationConfig(NamedTuple):
     """Configuration for the C-grid lat-lon hydrostatic PE model.
 
@@ -311,6 +330,53 @@ def hydrostatic_to_cgrid(
         phis=state.phis.data,
         tracers=tracers,
     )
+
+
+def face_to_cell_winds(u_face, v_face):
+    """Cell-centre view of C-grid face winds (the averaging
+    :func:`cgrid_to_hydrostatic` applies)."""
+    return _face_to_cell_u(u_face), _face_to_cell_v(v_face)
+
+
+def facewind_to_cgrid(state: LatLonFaceWindState) -> CGridLatLonHydrostaticState:
+    """Unwrap a :class:`LatLonFaceWindState` to the raw-array C-grid state."""
+    tracers = ({name: f.data for name, f in state.tracers.items()}
+               if state.tracers else {})
+    return CGridLatLonHydrostaticState(
+        u=state.u_f.data, v=state.v_f.data, T=state.T.data,
+        p_s=state.p_s.data, phis=state.phis.data, tracers=tracers)
+
+
+def cgrid_to_facewind(state: CGridLatLonHydrostaticState) -> LatLonFaceWindState:
+    """Wrap a raw-array C-grid state as a :class:`LatLonFaceWindState`."""
+    dims_3d = ("lat", "lon", "level")
+    dims_2d = ("lat", "lon")
+    tracers = None
+    if state.tracers:
+        tracers = {name: Field(data=arr, name=name, dims=dims_3d, units="kg/kg")
+                   for name, arr in state.tracers.items()}
+    return LatLonFaceWindState(
+        u_f=Field(data=state.u, name="u_f", dims=("lat", "lon_face", "level"),
+                  units="m/s"),
+        v_f=Field(data=state.v, name="v_f", dims=("lat_face", "lon", "level"),
+                  units="m/s"),
+        T=Field(data=state.T, name="T", dims=dims_3d, units="K"),
+        p_s=Field(data=state.p_s, name="p_s", dims=dims_2d, units="Pa"),
+        phis=Field(data=state.phis, name="phis", dims=dims_2d,
+                   units="m^2/s^2"),
+        tracers=tracers)
+
+
+def hydrostatic_to_facewind(state: HydrostaticState,
+                            grid: LatLonGrid) -> LatLonFaceWindState:
+    """Lift cell-centre winds to the faces ONCE (run start / old restart)."""
+    return cgrid_to_facewind(hydrostatic_to_cgrid(state, grid))
+
+
+def facewind_to_hydrostatic(state: LatLonFaceWindState,
+                            grid: LatLonGrid) -> HydrostaticState:
+    """Cell-centre VIEW of a face-wind state (face winds averaged)."""
+    return cgrid_to_hydrostatic(facewind_to_cgrid(state), grid)
 
 
 def cgrid_to_hydrostatic(
@@ -1313,6 +1379,48 @@ class CGridLatLonPrimitiveEquationModel(IntegrationMixin):
     # Public API — matches the driver contract
     # ------------------------------------------------------------------
 
+    def lift_wind_increment(self, du_cell, dv_cell, *, grid=None,
+                            polar_mask=None, polar_mask_v=None,
+                            own_polar_masks: bool = False):
+        """Cell-centre wind increments -> u/v face increments.
+
+        The interpolators the RK coupling uses, then the polar Fourier filter
+        the dycore applies to its own physics increments when the filter is
+        on.  ``grid`` defaults to the model's; ``own_polar_masks`` takes the
+        model's own filter masks (``None`` masks = no filter).  Linear in the increments.  The caller re-walls ``v``
+        at the poles (this returns the lifted increment unwalled).
+        """
+        grid = self.grid if grid is None else grid
+        if own_polar_masks:
+            if polar_mask is not None or polar_mask_v is not None:
+                raise ValueError("pass explicit polar masks OR "
+                                 "own_polar_masks=True, not both")
+            polar_mask, polar_mask_v = self._polar_mask, self._polar_mask_v
+        du = interp_cell_to_uface(du_cell)
+        dv = interp_cell_to_vface_halo(dv_cell)
+        if polar_mask is not None:
+            du_int = fourier_filter_3d(du[:, :-1, :], grid, polar_mask)
+            du_closure = pad_lon_cgrid(du_int, halo=1)[:, -1:, :]
+            du = jnp.concatenate([du_int, du_closure], axis=1)
+            dv = fourier_filter_3d(dv, grid, polar_mask_v)
+        return du, dv
+
+    def wall_v(self, v, pole_v_bc_masks=None):
+        """Re-impose the pole wall on face ``v`` (the same rule
+        :meth:`_apply_physics_increment` applies after its increment)."""
+        if pole_v_bc_masks is not None:
+            _south_m, _north_m = pole_v_bc_masks
+            _off = self.config.pole_v_bc_offset
+            _n = v.shape[0]
+            v = jnp.where(
+                _south_m, v.at[_off].set(jnp.zeros_like(v[_off])), v)
+            return jnp.where(
+                _north_m,
+                v.at[_n - 1 - _off].set(jnp.zeros_like(v[_n - 1 - _off])), v)
+        return _zero_v_at_pole(
+            v, south=self.config.pole_v_bc[0], north=self.config.pole_v_bc[1],
+            offset=self.config.pole_v_bc_offset)
+
     def _apply_physics_increment(
         self, state, phys_tend, dt, *, grid, sigma_coord,
         polar_mask=None, polar_mask_v=None, pole_v_bc_masks=None,
@@ -1339,18 +1447,15 @@ class CGridLatLonPrimitiveEquationModel(IntegrationMixin):
         # PhysicsTendencies.dv_dt is Optional (state.py); du_dt is not
         dv_phys = dt * (phys_tend.dv_dt.data if phys_tend.dv_dt is not None
                         else jnp.zeros_like(du_phys))
-        du = interp_cell_to_uface(du_phys)
-        dv = interp_cell_to_vface_halo(dv_phys)
+        du, dv = self.lift_wind_increment(
+            du_phys, dv_phys, grid=grid, polar_mask=polar_mask,
+            polar_mask_v=polar_mask_v)
         tt = phys_tend.tracer_tendencies
         dq_dt = ({k: f.data for k, f in tt.items() if k in state.tracers}
                  if (tt is not None and state.tracers) else {})
         if polar_mask is not None:
             dT = fourier_filter_3d(dT, grid, polar_mask)
             dps = fourier_filter(dps, grid, polar_mask)
-            du_int = fourier_filter_3d(du[:, :-1, :], grid, polar_mask)
-            du_closure = pad_lon_cgrid(du_int, halo=1)[:, -1:, :]
-            du = jnp.concatenate([du_int, du_closure], axis=1)
-            dv = fourier_filter_3d(dv, grid, polar_mask_v)
             # tracer increments are NOT filtered: a physics increment has
             # no advective CFL (the filter protects transport at the
             # lifted equatorial dt), and filtering the water increment
@@ -1370,21 +1475,7 @@ class CGridLatLonPrimitiveEquationModel(IntegrationMixin):
             tracers_new, p_s_new = apply_physics_water_mass(
                 state.tracers, dq_dt, state.p_s, sigma_coord, dt)
         p_s_new = p_s_new + dps
-        if pole_v_bc_masks is not None:
-            _south_m, _north_m = pole_v_bc_masks
-            _off = self.config.pole_v_bc_offset
-            _n = v_new.shape[0]
-            v_new = jnp.where(
-                _south_m, v_new.at[_off].set(jnp.zeros_like(v_new[_off])), v_new)
-            v_new = jnp.where(
-                _north_m,
-                v_new.at[_n - 1 - _off].set(jnp.zeros_like(v_new[_n - 1 - _off])),
-                v_new)
-        else:
-            v_new = _zero_v_at_pole(
-                v_new, south=self.config.pole_v_bc[0],
-                north=self.config.pole_v_bc[1],
-                offset=self.config.pole_v_bc_offset)
+        v_new = self.wall_v(v_new, pole_v_bc_masks)
         return state._replace(u=u_new, v=v_new, T=T_new, p_s=p_s_new,
                               tracers=tracers_new)
 
@@ -1423,6 +1514,7 @@ class CGridLatLonPrimitiveEquationModel(IntegrationMixin):
         # Conservation fixer for mass — fp64 budget accumulator
         # (iter-12 mirrors compute_mass; see docstring there).
         if self.config.fix_mass:
+            _pre_mf = state
             acc = conservation_accumulator()
             # ``grid_total_area`` is a precomputed scalar on the grid;
             # avoids recomputing ``jnp.sum(area)`` every step (one
@@ -1494,6 +1586,18 @@ class CGridLatLonPrimitiveEquationModel(IntegrationMixin):
                 state = state._replace(tracers=new_tracers)
 
             state = state._replace(p_s=p_s_post)
+            if self.config.energy_fixer:
+                # The mass fixer sits outside the energy window (after
+                # physics): return the energy its p_s shift changed as a
+                # uniform heating [K, +warming] (F15 V8, vote B).  Same
+                # cell-centre energy and global reduction as the fixer.
+                def _cc(s):
+                    return (s.T, _face_to_cell_u(s.u), _face_to_cell_v(s.v),
+                            s.p_s, s.phis)
+                _dT_mf = gridded_energy_fixer_dT(
+                    _cc(_pre_mf), _cc(state), grid, sigma_coord)
+                state = state._replace(
+                    T=state.T + _dT_mf.astype(state.T.dtype))
 
         # #1354/#1515: shared tracer positivity stage — this lane previously had
         # NO tracer floor, so negatives from non-monotone transport persisted.
@@ -1601,6 +1705,15 @@ class CGridLatLonPrimitiveEquationModel(IntegrationMixin):
             state_new, self._phys_state = self._step_cgrid(
                 state, dt, target_mass, physics_fn, phys_state)
             return state_new
+
+        if isinstance(state, LatLonFaceWindState):
+            # Native face winds in, native face winds out: no cell<->face
+            # projection.  The energy fixer's window is the cell-centre view
+            # of these faces (the same window a raw C-grid input gets).
+            cgrid_out, self._phys_state = self._step_cgrid(
+                facewind_to_cgrid(state), dt, target_mass, physics_fn,
+                phys_state)
+            return cgrid_to_facewind(cgrid_out)
 
         # HydrostaticState input: use cached face-staggered winds from
         # the previous step to avoid lossy cell→face re-projection.

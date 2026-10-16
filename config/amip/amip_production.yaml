@@ -79,6 +79,13 @@ mpas_vert_advection_scheme: sb       # conservative Simmons-Burridge flux form
                                      # 6.7e-16 conservative.  USER-APPROVED
                                      # 2026-09-23; the CODE default stays
                                      # 'upwind' and this deck selects it.
+mpas_vert4_flux_form_tracers: []     # vapour takes the log form below instead
+mpas_vert4_log_form_tracers: [q_v]   # vertical del4 filter on ln(q_v + 1e-7), water-weighted
+                                     # mass-conserving flux.  The flux form [q_v] removed 8-10 %/day
+                                     # of UTLS water offline; one 60-day pair vs it (2026-10-14,
+                                     # PLAUSIBLE): Feb ClimateEval median RMSE ratio 0.97, 200 hPa
+                                     # T RMSE -26..-32 %.  USER-APPROVED 2026-10-15; the CODE
+                                     # default moved to this too (same day).
 mpas_div_damp4_scale: 1.0            # CAM6: fv_div24del2flag=4 selects ldiv4,
                                      # 4th-order DIVERGENCE damping at every
                                      # level (cd_core.F90 tau4 = 0.01/dt times
@@ -104,7 +111,10 @@ energy_fixer: true                   # CAM6 check_energy_fix analogue (review
                                      # 2026-10-10 F15, by vote): the energy each
                                      # dynamics step loses (sponge/del4/div4 KE,
                                      # numerics) returns as a uniform heating
-                                     # before physics.  Named, not inherited
+                                     # before physics, and the energy the dry-
+                                     # mass fixer moves (outside that window)
+                                     # returns too (2026-10-14 F15 V8: 0.065
+                                     # W/m2 at res6).  Named, not inherited
                                      # (the code default is also true).
 
 # ---- physics cadence ---------------------------------------------------------
@@ -376,6 +386,11 @@ solar_spectral_band_order: rrtmg_sw   # explicit: SSI_frac is in RRTMG-SW band o
 ozone_forcing: external
 ghg_forcing: external
 aerosol_forcing: external
+aerosol_reference_aod: 0.03  # 550 nm background AOD of the built-in reference
+                             # aerosol field, read only when no aerosol file is
+                             # given (the production launchers give one). Written
+                             # out so it rests on no default (user decision
+                             # 2026-10-15); equals the run_amip default.
 # A date outside a multi-year forcing file's years raises (explicit: the
 # end-record hold is an opt-in for deliberate experiments only; F37).
 forcing_hold_outside_file_years: false

@@ -164,8 +164,10 @@ class PhysicsPipeline:
         physics_parameterization=None,
         column_mesh=None,
         co2_ppmv=None,
+        surface_bulk_scheme="constant",
     ):
         self.adapter = adapter
+        self.surface_bulk_scheme = surface_bulk_scheme
         # The run's fixed CO2 [ppmv] (radiation's, when no GHG file drives it);
         # the land canopy reads the same value (land_co2_ppmv).
         self.co2_ppmv = co2_ppmv
@@ -1951,6 +1953,18 @@ class PhysicsPipeline:
                 "prescribed as a pair (sfc_taux_override AND "
                 "sfc_tauy_override) — only one component was given."
             )
+        if self.surface_bulk_scheme == "none":
+            # ExperimentConfig.surface_bulk_scheme="none": no surface exchange.
+            # validate_strict rejects it next to any scheme that owns surface
+            # fluxes; a prescribed flux here would be a second, contradicting
+            # surface choice, so refuse it rather than pick one.
+            if _prescribed_sfc_flux or turb_owns_surface:
+                raise ValueError(
+                    "surface_bulk_scheme='none' but this step was given "
+                    "prescribed surface fluxes or a scheme that owns surface "
+                    "exchange; 'none' means no surface fluxes at all.")
+            shflx = jnp.zeros_like(shflx)
+            lhflx = jnp.zeros_like(lhflx)
         if _flux_override and not turb_owns_surface:
             # Bulk path only.  With a turbulence scheme the config fold below
             # makes the prescribed flux the kernel's lower BC, and the
@@ -2515,6 +2529,47 @@ class PhysicsPipeline:
         _f_day = daylight_fraction(lat, day_of_year, orbit=_orbit)
         return jnp.clip(_q_day / (s_0 * jnp.maximum(_f_day, 1.0e-6)), 0.0, 1.0)
 
+    def resolved_cloud_config(self, cloud_scheme, convective_cloud):
+        """The ``CloudConfig`` the radiation path builds for *cloud_scheme*
+        (shared ``build_cloud_config``, so the clt diagnostic selects the same
+        cloud fraction, #689)."""
+        from legoesm.atmosphere.physics.clouds.config import build_cloud_config
+        return build_cloud_config(
+            cloud_scheme,
+            convective_cloud=convective_cloud,
+            rh_crit=getattr(self, "_cloud_rh_crit", None),
+            q_c_diagnostic=getattr(self, "_cloud_q_c_diagnostic", None),
+            conv_cloud_coeff=getattr(self, "_cloud_conv_cloud_coeff", None),
+            conv_cloud_max=getattr(self, "_cloud_conv_cloud_max", None),
+            conv_cloud_condensate=getattr(
+                self, "_cloud_conv_cloud_condensate", None),
+            Nc_default=getattr(self, "_cloud_Nc_default", None),
+            cloud_inhomogeneity_factor=getattr(
+                self, "_cloud_inhomogeneity_factor", None),
+            cloud_optics_inhomogeneity=getattr(
+                self, "_cloud_optics_inhomogeneity", None),
+            cloud_fsd=getattr(self, "_cloud_fsd", None),
+            cloud_partial_coverage_optics=getattr(
+                self, "_cloud_partial_coverage_optics", None),
+            cloud_vertical_overlap_optics=getattr(
+                self, "_cloud_vertical_overlap_optics", None),
+            cloud_n_subcolumns=getattr(self, "_cloud_n_subcolumns", None),
+            p_xr=getattr(self, "_cloud_p_xr", None),
+            alpha_xr=getattr(self, "_cloud_alpha_xr", None),
+            diagnostic_condensate_scheme=getattr(
+                self, "_cloud_diagnostic_condensate_scheme", None),
+            adiabatic_lwc_rate=getattr(
+                self, "_cloud_adiabatic_lwc_rate", None),
+            clubb_cf_override_strength=getattr(
+                self, "_clubb_cf_override_strength", None),
+            clubb_cf_override_floor=getattr(
+                self, "_clubb_cf_override_floor", None),
+            saturation_scheme=getattr(
+                self, "_cloud_saturation_scheme", None),
+            cover_condensate_q_ref=getattr(
+                self, "_cloud_cover_condensate_q_ref", None),
+        )
+
     def compute_radiation_core(self, T, p_s, q_v, sst, sic, lat, lon,
                                day_of_year, seconds_of_day,
                                solar_weights, s_0,
@@ -2745,45 +2800,10 @@ class PhysicsPipeline:
             # driven albedo overshoot (raise rh_crit / lower q_c_diagnostic).
             # Built via the shared ``build_cloud_config`` so the clt diagnostic
             # (DiagnosticCollector) selects the SAME cloud fraction (#689).
-            from legoesm.atmosphere.physics.clouds.config import (
-                build_cloud_config,
-            )
-            cloud_config = build_cloud_config(
+            cloud_config = self.resolved_cloud_config(
                 cloud_scheme,
                 convective_cloud=(getattr(self, "_cloud_convective", False)
-                                  and conv_precip is not None),
-                rh_crit=getattr(self, "_cloud_rh_crit", None),
-                q_c_diagnostic=getattr(self, "_cloud_q_c_diagnostic", None),
-                conv_cloud_coeff=getattr(self, "_cloud_conv_cloud_coeff", None),
-                conv_cloud_max=getattr(self, "_cloud_conv_cloud_max", None),
-                conv_cloud_condensate=getattr(
-                    self, "_cloud_conv_cloud_condensate", None),
-                Nc_default=getattr(self, "_cloud_Nc_default", None),
-                cloud_inhomogeneity_factor=getattr(
-                    self, "_cloud_inhomogeneity_factor", None),
-                cloud_optics_inhomogeneity=getattr(
-                    self, "_cloud_optics_inhomogeneity", None),
-                cloud_fsd=getattr(self, "_cloud_fsd", None),
-                cloud_partial_coverage_optics=getattr(
-                    self, "_cloud_partial_coverage_optics", None),
-                cloud_vertical_overlap_optics=getattr(
-                    self, "_cloud_vertical_overlap_optics", None),
-                cloud_n_subcolumns=getattr(self, "_cloud_n_subcolumns", None),
-                p_xr=getattr(self, "_cloud_p_xr", None),
-                alpha_xr=getattr(self, "_cloud_alpha_xr", None),
-                diagnostic_condensate_scheme=getattr(
-                    self, "_cloud_diagnostic_condensate_scheme", None),
-                adiabatic_lwc_rate=getattr(
-                    self, "_cloud_adiabatic_lwc_rate", None),
-                clubb_cf_override_strength=getattr(
-                    self, "_clubb_cf_override_strength", None),
-                clubb_cf_override_floor=getattr(
-                    self, "_clubb_cf_override_floor", None),
-                saturation_scheme=getattr(
-                    self, "_cloud_saturation_scheme", None),
-                cover_condensate_q_ref=getattr(
-                    self, "_cloud_cover_condensate_q_ref", None),
-            )
+                                  and conv_precip is not None))
             # Column convective precip [kg/m²/s] for the convective cloud cover;
             # flattened to the (ncol,) column layout like the other inputs.
             conv_precip_col = (
@@ -3395,7 +3415,7 @@ def _build_none_radiation_fn(config):
             sw_heating_rate=z_full,
         )
 
-    return radiation_fn
+    return radiation_fn, None
 
 
 def _build_gray_radiation_fn(config):
@@ -3483,7 +3503,7 @@ def _build_gray_radiation_fn(config):
             sfc_albedo=albedo_col,
         )
 
-    return radiation_fn
+    return radiation_fn, {"scheme": gray_config, "orbit": orbit}
 
 
 def _build_rrtmgp_radiation_fn(config):
@@ -3648,7 +3668,7 @@ def _build_rrtmgp_radiation_fn(config):
         result = result._replace(toa_insolation=insol)
         return result
 
-    return radiation_fn
+    return radiation_fn, {"scheme": rrtmg_config, "orbit": orbit}
 
 
 # Map radiation scheme names to builder functions.
@@ -5000,7 +5020,7 @@ def build_physics_pipeline(grid, sigma, config, spacing_grid=None):
             f"{sorted(_RADIATION_BUILDERS)}. (Previously this silently defaulted "
             "to rrtmgp, masking typos and running full RRTMGP for 'none'.)"
         )
-    radiation_fn = _RADIATION_BUILDERS[rad_scheme](config)
+    radiation_fn, radiation_config = _RADIATION_BUILDERS[rad_scheme](config)
 
     # Resolve convection via registry
     convection_fn, convection_config = _resolve_convection(config)
@@ -5152,6 +5172,7 @@ def build_physics_pipeline(grid, sigma, config, spacing_grid=None):
         physics_parameterization=physics_parameterization,
         column_mesh=column_mesh,
         co2_ppmv=config.co2_ppmv,
+        surface_bulk_scheme=config.surface_bulk_scheme,
     )
     from legoesm.atmosphere.physics.radiation.solar import earth_orbit
     pipeline.orbit = (earth_orbit()
@@ -5179,6 +5200,8 @@ def build_physics_pipeline(grid, sigma, config, spacing_grid=None):
             "that surface layer IS the unified land-air interface flux law. "
             f"Got turbulence={getattr(config, 'turbulence', 'none')!r}."
         )
+    # The radiation scheme config the builder baked into radiation_fn.
+    pipeline.radiation_config = radiation_config
     pipeline._cloud_scheme = getattr(config, 'cloud_scheme', 'none')
     # CLUBB sub-grid cloud fraction -> radiation (marine-Sc albedo lever).  Route
     # diagnostic CLUBB's PDF cloud fraction (carried out of physics_step_no_rad on

@@ -91,13 +91,14 @@ class Cam6ModeProps(NamedTuple):
     spechygro: tuple
 
 
-def _read_pinned(path: Path):
+def read_pinned_netcdf(path: Path, pins: dict):
+    """Open path with netCDF4 after checking its sha256 against pins[path.name]."""
     import netCDF4
     with open(path, "rb") as f:
-        got = hashlib.sha256(f.read()).hexdigest()
-    want = MAM4_SHA256[path.name]
+        got = hashlib.file_digest(f, "sha256").hexdigest()
+    want = pins[path.name]
     if got != want:
-        raise ValueError(f"CAM6 aerosol property file {path}: sha256 {got} != pinned {want}")
+        raise ValueError(f"CAM6 aerosol input file {path}: sha256 {got} != pinned {want}")
     return netCDF4.Dataset(path)
 
 
@@ -112,13 +113,13 @@ def load_cam6_mode_props(data_dir) -> Cam6ModeProps:
     data_dir = Path(data_dir)
     sig, lo, hi = [], [], []
     for name in MAM4_MODE_FILES:
-        with _read_pinned(data_dir / name) as d:
+        with read_pinned_netcdf(data_dir / name, MAM4_SHA256) as d:
             sig.append(float(d["sigmag"][...]))
             lo.append(float(d["dgnumlo"][...]))
             hi.append(float(d["dgnumhi"][...]))
     dens, hyg = {}, {}
     for spec, name in MAM4_SPECIES_FILES.items():
-        with _read_pinned(data_dir / name) as d:
+        with read_pinned_netcdf(data_dir / name, MAM4_SHA256) as d:
             dens[spec] = float(d["density"][...])
             hyg[spec] = float(d["hygroscopicity"][...])
     sigmag, dgnumlo, dgnumhi = (np.array(x, dtype=np.float64) for x in (sig, lo, hi))

@@ -851,7 +851,12 @@ def test_freeze_thaw_closes_energy_in_both_directions(case):
         assert float(ice1[0, 0]) > float(ice0[0, 0]) + 0.05
     elif case == "evaporate_frozen_top":
         assert float(s0.theta_soil[0, 0] - s1.theta_soil[0, 0]) > 5e-4
-        assert float(s1.T_soil[0, 0]) < TF and float(ice1[0, 0]) > 0.05
+        # No rain or snow: the column's water loss is the delivered vapour
+        # (0.0044 kg/m2 measured; 0 at the sw 200 forcing that delivered none).
+        assert float((_soil_water(cfg, s0) - _soil_water(cfg, s1))[0]) > 1e-3
+        for _, b in pairs:                       # frozen at EVERY step
+            assert float(b.T_soil[0, 0]) < TF
+            assert float(_ice(b.T_soil, b.theta_soil)[0, 0]) > 0.05
     else:
         # The first step's rain soaks in and part of it freezes (measured: top
         # two layers +0.013 / +0.006 ice); the warm rain then thaws the top.

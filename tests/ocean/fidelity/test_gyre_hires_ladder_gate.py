@@ -690,16 +690,16 @@ def test_minimal_exact_subsets_requires_every_requested_field():
         "formed_K", "temperature_content", "salinity_content"]]
 
 
-def test_vertical_core_subset_search_is_exhaustive_and_preregistered_first():
-    rows = GATE.ordered_vertical_core_subsets()
+def test_vertical_solver_subset_search_is_exhaustive_and_preregistered_first():
+    rows = GATE.ordered_vertical_solver_subsets()
     assert rows[:2] == [
         ("formed_K", "temperature_content"),
         ("formed_K", "temperature_content", "salinity_content"),
     ]
-    assert len(rows) == 11
-    assert len(set(rows)) == 11
-    assert ("heat_K", "formed_K", "temperature_content",
-            "salinity_content") in rows
+    assert len(rows) == 31
+    assert len(set(rows)) == 31
+    assert ("formed_K", "tracer_e3w", "tracer_e3t",
+            "temperature_content", "salinity_content") in rows
 
 
 def test_fixed_vertical_probe_exposes_independent_salinity_content():

@@ -2745,18 +2745,19 @@ def minimal_exact_subsets(
     return [list(members) for members in exact if len(members) == size]
 
 
-def ordered_vertical_core_subsets() -> list[tuple[str, ...]]:
-    """All multi-input subsets, with the two preregistered arms first."""
-    core = (
-        "heat_K", "formed_K", "temperature_content", "salinity_content")
+def ordered_vertical_solver_subsets() -> list[tuple[str, ...]]:
+    """All 31 non-empty production-solver input subsets, prereg arms first."""
+    inputs = (
+        "formed_K", "tracer_e3w", "tracer_e3t",
+        "temperature_content", "salinity_content")
     result = [
         ("formed_K", "temperature_content"),
         ("formed_K", "temperature_content", "salinity_content"),
     ]
     result.extend(
         members
-        for size in range(2, len(core) + 1)
-        for members in itertools.combinations(core, size)
+        for size in range(1, len(inputs) + 1)
+        for members in itertools.combinations(inputs, size)
         if members not in result
     )
     return result
@@ -2957,34 +2958,110 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         })
         removed_by = first_residual_removing_substitution(rows)
 
-    # e3w/e3t are independently bit-exact above.  Exhaust the power set of
-    # the four non-exact source-ordered inputs so "minimal" is measured, not
-    # inferred from one promising pair.  The preregistered formed-K + T arm
-    # remains first, followed immediately by the requested salinity addition.
-    subset_names = ordered_vertical_core_subsets()
+    # Exhaust the five arrays consumed by the production tracer dispatcher.
+    # This is the SAME shared kernel the full step calls, not a reconstructed
+    # Thomas solve; the exact minimal candidates are then re-entered through
+    # the full compiled ocean step below.  Keeping this boundary explicit
+    # avoids 31 full-step executions while retaining independent NEMO outputs.
+    from legoesm.ocean.physics.vertical_mixing import (
+        implicit_vertical_diffusion_ocean_tracer_pair_dispatch,
+    )
+
+    @jax.jit
+    def solve_at_consumed_boundary(K, e3w, e3t, content_t, content_s):
+        return implicit_vertical_diffusion_ocean_tracer_pair_dispatch(
+            jnp.zeros_like(content_t), jnp.zeros_like(content_s),
+            content_t, content_s, K, e3t, e3w, card.dt_s,
+            jnp.asarray(wet), evaluation="nemo_literal", implicit_w=None)
+
+    solver_order = (
+        "formed_K", "tracer_e3w", "tracer_e3t",
+        "temperature_content", "salinity_content")
+    solver_rows = []
+    for members in ordered_vertical_solver_subsets():
+        selected = set(members)
+        values = {
+            name: jnp.asarray(
+                nemo_inputs[name] if name in selected else own[name])
+            for name in solver_order
+        }
+        solved_t, solved_s = jax.device_get(solve_at_consumed_boundary(
+            values["formed_K"], values["tracer_e3w"],
+            values["tracer_e3t"], values["temperature_content"],
+            values["salinity_content"],
+        ))
+        label = "+".join(members)
+        solver_rows.append({
+            "variable": label,
+            "members": list(members),
+            "temperature": exact_score(
+                f"GYRE-zco-r4.kt1.solver_subset.{label}.T",
+                nemo_solved["T"], np.asarray(solved_t), wet),
+            "salinity": exact_score(
+                f"GYRE-zco-r4.kt1.solver_subset.{label}.S",
+                nemo_solved["S"], np.asarray(solved_s), wet),
+        })
+
+    minimal_temperature = minimal_exact_subsets(
+        solver_rows, fields=("temperature",))
+    minimal_salinity = minimal_exact_subsets(
+        solver_rows, fields=("salinity",))
+    minimal_joint = minimal_exact_subsets(solver_rows)
+
+    # Validate every exact minimum, the two preregistered arms, and every
+    # one-member removal through the full production-compiled ocean step.
+    full_names = [
+        ("formed_K", "temperature_content"),
+        ("formed_K", "temperature_content", "salinity_content"),
+    ]
+    for winners in (minimal_temperature, minimal_salinity, minimal_joint):
+        for found in winners:
+            winner = tuple(found)
+            for members in (winner, *(tuple(
+                    name for name in winner if name != removed)
+                    for removed in winner)):
+                if len(members) > 1 and members not in full_names:
+                    full_names.append(members)
     subset_rows = []
-    if removed_by is None:
-        for members in subset_names:
-            row = output_rows(
-                "+".join(members),
-                run(fixed({name: nemo_inputs[name] for name in members})),
-            )
-            row["members"] = list(members)
-            subset_rows.append(row)
+    for members in full_names:
+        row = output_rows(
+            "+".join(members),
+            run(fixed({name: nemo_inputs[name] for name in members})),
+        )
+        row["members"] = list(members)
+        subset_rows.append(row)
 
     all_inputs = output_rows(
         "all_recorded_inputs", run(fixed(nemo_inputs)))
     all_inputs["members"] = list(ordered)
-    search_rows = [
-        {**row, "members": [row["variable"]]} for row in rows
-    ] + subset_rows + [all_inputs]
-    minimal_temperature = minimal_exact_subsets(
-        search_rows, fields=("temperature",))
-    minimal_salinity = minimal_exact_subsets(
-        search_rows, fields=("salinity",))
-    minimal_joint = minimal_exact_subsets(search_rows)
+    full_rows = {
+        tuple(row.get("members", (row["variable"],))): row
+        for row in ([{**row, "members": [row["variable"]]} for row in rows]
+                    + subset_rows + [all_inputs])
+    }
+    validated_minima = []
+    for field, winners in (
+        ("temperature", minimal_temperature),
+        ("salinity", minimal_salinity),
+        ("joint", minimal_joint),
+    ):
+        for winner in winners:
+            row = full_rows.get(tuple(winner))
+            exact = row is not None and (
+                row["temperature"]["n_unequal"] == 0
+                if field == "temperature" else
+                row["salinity"]["n_unequal"] == 0
+                if field == "salinity" else
+                row["temperature"]["n_unequal"] == 0
+                and row["salinity"]["n_unequal"] == 0)
+            validated_minima.append({
+                "field": field, "members": winner,
+                "full_step_exact": bool(exact), "full_step_row": row,
+            })
     if removed_by is not None:
         classification = "ONE_VARIABLE_OWNER"
+    elif not all(row["full_step_exact"] for row in validated_minima):
+        classification = "SOLVER_BOUNDARY_NOT_REPRODUCED_IN_FULL_STEP"
     elif minimal_joint and len(minimal_joint[0]) > 1:
         classification = "COUPLED_ROUNDING_ORDER_DEBT"
     elif minimal_joint:
@@ -2994,9 +3071,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
     else:
         classification = "INCOMPLETE_RECORDED_INPUT_SET"
 
-    row_by_members = {
-        tuple(row["members"]): row for row in search_rows
-    }
+    row_by_members = {tuple(row["members"]): row for row in solver_rows}
     member_necessity = []
     if minimal_joint:
         winner = tuple(minimal_joint[0])
@@ -3015,7 +3090,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         for name in ordered
     ]
     report = {
-        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v2",
+        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v3",
         "worktree": worktree_stamp(),
         "oracle_admission": admission,
         "policy": "fp64/x64/cpu/libm certified",
@@ -3025,12 +3100,14 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         "production": production,
         "input_rows": input_rows,
         "one_variable_substitutions": rows,
-        "subset_substitutions": subset_rows,
-        "minimal_exact_subsets": {
+        "solver_subset_substitutions": solver_rows,
+        "full_step_subset_validation": subset_rows,
+        "minimal_exact_solver_subsets": {
             "temperature": minimal_temperature,
             "salinity": minimal_salinity,
             "joint": minimal_joint,
         },
+        "validated_minima": validated_minima,
         "minimal_joint_member_necessity": member_necessity,
         "first_residual_removing_substitution": removed_by,
         "all_recorded_inputs": all_inputs,

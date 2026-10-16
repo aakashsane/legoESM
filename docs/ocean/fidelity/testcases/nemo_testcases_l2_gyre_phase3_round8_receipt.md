@@ -2776,8 +2776,8 @@ required source operands were ablated separately, and neither alone closed
 the record.  The landed statement follows `traadv_cen.F90:137-149,191-216`
 and the live T-cell thickness follows `domain.F90:158`,
 `domqco.F90:159-161`, and `domzgr_substitute.h90:45-51,126`.  The code is
-`vertical.py:43-82` plus
-`ocean_model_latlon_cgrid.py:1437-1484`; the RK3 dispatch evidence remains
+`vertical.py:44-83` plus
+`ocean_model_latlon_cgrid.py:1444-1491`; the RK3 dispatch evidence remains
 `traadv.F90:280-283,355-365`.  The one-cell scored-T plant exits 1.  The
 baseline, final, and plant transcripts hash `3ea7c6d2...`, `7e1f1768...`, and
 `a3cbfa30...`, respectively.  Classification:
@@ -2844,8 +2844,8 @@ bit; the alternative right-associated product differs in `78865` U and
 The source-rounded recurrence alone leaves the baseline transport rows
 unchanged; it is the final one-variable discriminator after the reciprocal
 handoff, closing the remaining fourteen U cells.  The implementation is
-shared in `vertical.py:185-238,482-552` and
-`ocean_model_latlon_cgrid.py:1288-1405,1428-1478`; S-21 in the branch
+shared in `vertical.py:186-239,472-550` and
+`ocean_model_latlon_cgrid.py:1295-1412,1435-1485`; S-21 in the branch
 isomorphism map records the one owner and its NEMO references.  The exact
 probe transcript hashes `7e2bf16f...`; its built-in vector/C2 selector plant
 is rejected.  Classification:
@@ -9558,10 +9558,10 @@ inert on all three cards, and left its disposition — delete or wire — as a
 question.  **The premise is FALSE and is retracted here.**  The grep:
 
 ```
-packages/ocean/legoesm/ocean/state.py:2164       tracer_combine: str = "concentration"
-packages/ocean/legoesm/ocean/experiments/dino.py:1012    tracer_combine: str = "concentration"
-packages/ocean/legoesm/ocean/experiments/dino.py:1764    "tracer_combine": "thickness_weighted",
-packages/ocean/legoesm/ocean/experiments/dino.py:3983        tracer_combine=cfg.tracer_combine,
+packages/ocean/legoesm/ocean/state.py:2179       tracer_combine: str = "concentration"
+packages/ocean/legoesm/ocean/experiments/dino.py:1016    tracer_combine: str = "concentration"
+packages/ocean/legoesm/ocean/experiments/dino.py:1769    "tracer_combine": "thickness_weighted",
+packages/ocean/legoesm/ocean/experiments/dino.py:4000        tracer_combine=cfg.tracer_combine,
 packages/ocean/legoesm/ocean/dynamics/ocean_model_latlon_cgrid.py:12719  _combine = getattr(_cfg_b, "tracer_combine", "concentration")
 packages/ocean/legoesm/ocean/dynamics/ocean_model_latlon_cgrid.py:13105  _combine = getattr(_cfg_b, "tracer_combine", "concentration")
 ```

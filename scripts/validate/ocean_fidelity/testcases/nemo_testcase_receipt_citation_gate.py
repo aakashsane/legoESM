@@ -4501,7 +4501,7 @@ CITATION_MAP = {
     'ocean_model_latlon_cgrid.py:11061-11134': [
         'if metric_source == "nemo_qco_live_face":',
         'ref_v * (1.0 + r3vb[..., None]),', 74],
-    'packages/ocean/legoesm/ocean/physics/vertical_mixing/_shared.py:384-454': [
+    'packages/ocean/legoesm/ocean/physics/vertical_mixing/_shared.py:418-488': [
         ('wumask = u_mask[..., :-1] * u_mask[..., 1:]', 2),
         ('+ (zsh2v[:-1, :, :] + zsh2v[1:, :, :]) * coast_v', 2), 71],
     'nemo_testcase_l2_gyre_round54_tke_operands.py:514-552': [

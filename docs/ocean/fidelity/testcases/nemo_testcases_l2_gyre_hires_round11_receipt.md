@@ -221,6 +221,13 @@ non-positive fitted growth, omitted mesh/argv provenance, and overstated the
 growth interpretation.  The v3 instrument and this receipt disposition every
 finding; final re-review is recorded below.
 
+Both re-reviews now **PASS with no HOLD**.  The exact reviewer independently
+verified the v5 hash, active/inactive counts, all four Kaa selector arms and
+the narrowed classification; its focused suite reports 42 passed.  The
+climate reviewer independently verified every mesh hash, all signed-share
+sums, twelve positive growth fits, strict parsing/provenance and the v3
+evidence hashes; its focused suite reports 10 passed.
+
 ## Compiled-source citations
 
 The executed scalar writer zeros the surface coefficient and forms the

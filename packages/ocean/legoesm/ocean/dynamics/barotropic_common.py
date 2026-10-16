@@ -871,6 +871,17 @@ def coriolis_at_faces(grid, dtype) -> Tuple[jnp.ndarray, jnp.ndarray]:
 # convergence), both on a static collective schedule.
 
 
+# Host-side sink for barotropic_implicit_record_true_residual.  One entry
+# per (solve, local device): under shard_map the callback fires once per
+# device with the same globally reduced value.  Callers clear it before a
+# run and call jax.effects_barrier() before reading it.
+TRUE_RESIDUAL_LOG: list[float] = []
+
+
+def record_true_residual(rel) -> None:
+    TRUE_RESIDUAL_LOG.append(float(rel))
+
+
 class HelmholtzSolveDiagnostics(NamedTuple):
     """Diagnostics returned alongside the implicit Helmholtz solution.
 

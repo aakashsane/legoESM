@@ -26,8 +26,12 @@ and day 280 (2001-10-08 00Z), each to day 365. The OFF arms are the plain
 production default only if the 1-day gate (explicit switch-off vs the plain
 default, and the plain default twice, all on the same tree) is
 byte-identical, and a 1-day switch-ON run differs from switch-OFF in an entry
-both checkpoints carry (else the switch does nothing and the A/B is void);
-bundle.sbatch re-checks all three before launch.
+both checkpoints carry (else the switch does nothing and the A/B is void).
+The ON path must also be byte-reproducible (two 1-day ON runs) and survive a
+restart (ON restarted at day 276 equals ON run continuously to day 277), since
+a long arm that is killed is resubmitted and resumes from its own newest
+readable checkpoint (procedure in bundle.sbatch). The 2-day ON run's day-276 state must equal the 1-day ON run's.
+bundle.sbatch re-checks all six before launch.
 
 Scoring: 45-70N land (sftlf >= 0.5, cos-lat weights), the first 7 days of
 each run discarded. Windows: Nov 1-30 and Dec 11-31 2001, against ERA5 on the

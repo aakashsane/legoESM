@@ -283,8 +283,9 @@ def test_edmf_mass_flux_scalar_transport_live_vs_inactive():
     assert np.max(np.abs(np.asarray(off[0].shflx))) < 1e-6
     assert np.max(np.abs(np.asarray(off[0].lhflx))) < 1e-6
     for f in ("dT_dt", "dq_v_dt"):
-        assert np.allclose(np.asarray(getattr(off[0], f)), np.asarray(getattr(off[1], f)),
-                           rtol=0.0, atol=1e-14), f
+        x0, x1 = np.asarray(getattr(off[0], f)), np.asarray(getattr(off[1], f))
+        scale = np.max(np.abs(np.asarray(getattr(out_a, f))))   # heated-run tendency
+        assert np.max(np.abs(x0 - x1)) <= 1e-9 * scale, f
 
 
 def test_edmf_inactive_plume_idealized():

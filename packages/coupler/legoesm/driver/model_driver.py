@@ -9088,7 +9088,13 @@ class ModelDriver:
         result = load_restart(
             path, self.grid, self.sigma, strict=True,
         )
-        state, q_v, step, day, _, _, q_c, q_r, metadata, carry_aux = result
+        state, q_v, step, day, ck_cfg, _, q_c, q_r, metadata, carry_aux = result
+        ck_grid = getattr(getattr(ck_cfg, "grid", None), "grid_type", None)
+        if self.config.dycore.discretization == "sfno" and ck_grid == "latlon":
+            # A same-shape lat-lon field would load as Gaussian-grid data.
+            raise ValueError(
+                f"restart: {path.name} was written by a lat-lon run; an SFNO "
+                "run on the Gaussian grid cannot start from a lat-lon state")
         self.state = state
         self.q_v = q_v
         if q_c is not None:

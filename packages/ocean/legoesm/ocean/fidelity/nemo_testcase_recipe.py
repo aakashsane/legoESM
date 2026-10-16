@@ -35,7 +35,7 @@ from legoesm.ocean.physics.convection.config import (
     OceanConvectionConfig,
 )
 from legoesm.ocean.physics.shortwave_penetration import ShortwavePenetrationConfig
-from legoesm.ocean.state import LatLonCGridOceanConfig
+from legoesm.ocean.state import ENSVorticityConfig, LatLonCGridOceanConfig
 from legoesm.ocean.vertical import (
     NemoEENBarotropicOperands,
     nemo_fe3mask_from_tmask,
@@ -71,12 +71,12 @@ class NEMOTestcaseCard(NamedTuple):
     # must spell this out so no caller can inherit an implicit iceberg choice.
     icebergs_enabled: bool | None = None
     iceberg_inputs: tuple[str, ...] | None = None
-    # NEMO ln_Jperio as card data; False is the walled N/S boundary every
-    # other card runs.  The card's model config carries it
-    # (``meridionally_periodic``), and the model scopes every entry point to
-    # that value; the step's j-neighbour statements read it there
-    # (lbclnk.f90:2028-2034).
+    # NEMO ln_Jperio; False is walled N/S.  Model config scopes each step's
+    # neighbour statements to this card value (lbclnk.f90:2028-2034).
     j_periodic: bool = False
+    # Exact resolved input for parameterised cards.  Legacy cards leave this
+    # unset; SWG requires it at its public validation boundary.
+    resolved_namelist: object | None = None
 
 
 class GYRESurfaceBoundaryCondition(NamedTuple):
@@ -2417,6 +2417,12 @@ _SMT2_RN_UC0 = 0.4               # linear-law reference velocity   [m/s]
 _SMT3_RN_UD = 0.018              # lateral diffusive velocity       [m/s]
 _SMT3_RN_LD = 200.0e3            # lateral diffusive length         [m]
 
+# --- rung SMT-4 (decision 93): ORCA2 rung 0's namdyn_ldf ----------
+# Decision 93 replaces ORCA2's unavailable file-backed coefficient only with
+# mode 20. ldfdyn.f90:311/:342-346 evaluates 0.5*rn_Uv*MAX(e1,e2).
+_SMT4_RN_UV = 0.1                # lateral viscous velocity         [m/s]
+_SMT4_RN_LV = 10.0e3             # stated reference length          [m]
+
 
 def vortex_smt_bathymetry(glamt_km, gphit_km) -> np.ndarray:
     """The seamount, in the hook's own association (usrdef_zgr:167-170)."""
@@ -2509,21 +2515,23 @@ def build_vortex_smt_zps_card(
     ``"smt1"`` moves ONE module -- namzdf -- to ORCA2 rung 0's values and
     nothing else; ``"smt2"`` is SMT-1 with ONE further module, namdrg, at
     rung 0's linear bottom drag; ``"smt3"`` adds ORCA2 rung 0's namtra_ldf
-    block.  Only the vector deck is carried up the ladder, because ORCA2 is
-    vector-invariant.
+    block; and ``"smt4"`` adds ORCA2 rung 0's namdyn_ldf block with Decision
+    93's mode-20 stand-in. Only the vector deck is carried up the ladder,
+    because ORCA2 is vector-invariant.
     """
     if momentum not in ("flux", "vector"):
         raise ValueError(
             f"unknown VORTEX_SMT momentum deck {momentum!r}; expected 'flux' "
             "(ln_dynadv_up3) or 'vector' (ln_dynadv_vec)")
-    if rung not in ("smt0", "smt1", "smt2", "smt3"):
+    if rung not in ("smt0", "smt1", "smt2", "smt3", "smt4"):
         raise ValueError(
             f"unknown VORTEX_SMT mini-ladder rung {rung!r}; expected 'smt0' "
             "(the shipped namzdf block), 'smt1' (ORCA2 rung 0's background "
             "mixing and enhanced vertical diffusion), 'smt2' (SMT-1 plus "
             "rung 0's linear bottom drag), or 'smt3' (SMT-2 plus rung 0's "
-            "lateral tracer diffusion)")
-    if rung in ("smt1", "smt2", "smt3") and momentum != "vector":
+            "lateral tracer diffusion), or 'smt4' (SMT-3 plus rung 0's "
+            "lateral momentum diffusion)")
+    if rung in ("smt1", "smt2", "smt3", "smt4") and momentum != "vector":
         raise ValueError(
             "the seamount mini-ladder (decision 93) is carried on the VECTOR "
             "deck only; there is no flux-form SMT-1 card")
@@ -2662,7 +2670,7 @@ def build_vortex_smt_zps_card(
             # Stated on the seamount card too, where it was first measured,
             # rather than inherited silently from the shared block above.
             barotropic_slow_forcing_depth_evaluation="nemo_literal"))
-    if rung in ("smt1", "smt2", "smt3"):
+    if rung in ("smt1", "smt2", "smt3", "smt4"):
         # DECISION 93 (user), rung SMT-1.  ONE namelist module moves to ORCA2
         # rung 0's values; every line is cited to that deck
         # (phase3/orca2_rounds/round83/acquisition/
@@ -2742,7 +2750,7 @@ def build_vortex_smt_zps_card(
                 ),
             ),
         )
-    if rung in ("smt2", "smt3"):
+    if rung in ("smt2", "smt3", "smt4"):
         # DECISION 93 (user), rung SMT-2: ORCA2 rung 0's LINEAR BOTTOM DRAG,
         # the second module of the mini-ladder.  The deck writes one line,
         # &namdrg ln_lin = .true. (rung-0 namelist_cfg:270), and takes every
@@ -2791,7 +2799,7 @@ def build_vortex_smt_zps_card(
             zdf_baroclinic_only=True,
             barotropic_drag_substep=True,
         )
-    if rung == "smt3":
+    if rung in ("smt3", "smt4"):
         # DECISION 93 (user), rung SMT-3: ORCA2 rung 0's namtra_ldf block.
         # The deck selects laplacian standard isoneutral diffusion with MSC,
         # coefficient mode 20, rn_Ud=0.018 m/s and rn_Ld=200 km.  On this
@@ -2822,6 +2830,7 @@ def build_vortex_smt_zps_card(
                 slope_metric_evaluation="nemo_reciprocal",
                 slope_face_thickness_evaluation="nemo_qco_live",
                 redi_flux_face_thickness_evaluation="nemo_qco_live",
+                redi_divisor_thickness_evaluation="nemo_qco_live",
                 slope_depth_evaluation="nemo_qco_live_literal",
                 nemo_slope_shapiro=True,
                 kappa_redi_horizontal_evaluation="nemo_metric_literal",
@@ -2833,6 +2842,27 @@ def build_vortex_smt_zps_card(
                 implicit_K33=True,
             ),
         )
+    if rung == "smt4":
+        # DECISION 93: div-rot, level Laplacian momentum diffusion with
+        # nn_ahm_ijk_t=20, rn_Uv=0.1 m/s, rn_Lv=10 km and rn_ahm_b=0.
+        # Mode 20 consumes rn_Uv and the live metric; rn_Lv remains explicit
+        # because it is part of the resolved deck even though this arm does
+        # not consume it (compiled ldfdyn.f90:311/:342-346).
+        model_config = model_config._replace(
+            lateral_viscosity=model_config.lateral_viscosity._replace(
+                A_h=0.5 * _SMT4_RN_UV * res.dx_m,
+                A_h_lat_scaling=False,
+                A_h_floor=0.0,
+                B_h=0.0,
+                C_smag=0.0,
+                C_smag_lap=0.0,
+                C_leith=0.0,
+            ),
+            lateral_viscosity_operator="nemo_div_curl",
+            lateral_viscosity_e3_weighting="nemo_e3",
+            lateral_viscosity_coefficient_source="nemo_ldf_c2d",
+            lateral_side_bc="free_slip",
+        )
     recipe = NEMORecipe(
         model_config=model_config,
         physics_config=model_config.physics,
@@ -2841,7 +2871,9 @@ def build_vortex_smt_zps_card(
         land_mask=wet,
         initial_state=state,
     )
-    if rung == "smt3":
+    if rung == "smt4":
+        case_name = "VORTEX_SMT4_VEC-zps"
+    elif rung == "smt3":
         case_name = "VORTEX_SMT3_VEC-zps"
     elif rung == "smt2":
         case_name = "VORTEX_SMT2_VEC-zps"
@@ -3288,6 +3320,7 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
         # substep count and BBL block are untouched, so the same row again.
         "VORTEX_SMT2_VEC-zps": ("nemo_ab3am4", 48, 0, 0.0, 0, 0.0),
         "VORTEX_SMT3_VEC-zps": ("nemo_ab3am4", 48, 0, 0.0, 0, 0.0),
+        "VORTEX_SMT4_VEC-zps": ("nemo_ab3am4", 48, 0, 0.0, 0, 0.0),
         "VORTEX_VEC-10km-zco": ("nemo_ab3am4", 48, 0, 0.0, 0, 0.0),
     }
     if card.case not in expected:
@@ -3435,13 +3468,14 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
         return
     if card.case.startswith(
             ("VORTEX-", "VORTEX_VEC-", "VORTEX_SMT-", "VORTEX_SMT_VEC-",
-             "VORTEX_SMT1_VEC-", "VORTEX_SMT2_VEC-", "VORTEX_SMT3_VEC-")):
+             "VORTEX_SMT1_VEC-", "VORTEX_SMT2_VEC-", "VORTEX_SMT3_VEC-",
+             "VORTEX_SMT4_VEC-")):
         # Decision 88's seamount cards run the SAME two momentum decks; every
         # switch this branch checks is the same switch, so they are checked
         # by it rather than by a second copy of it.
         vector = card.case.startswith(
             ("VORTEX_VEC-", "VORTEX_SMT_VEC-", "VORTEX_SMT1_VEC-",
-             "VORTEX_SMT2_VEC-", "VORTEX_SMT3_VEC-"))
+             "VORTEX_SMT2_VEC-", "VORTEX_SMT3_VEC-", "VORTEX_SMT4_VEC-"))
         # VORTEX is the first card on this identity with a LIVE rotation
         # operator, so the structural-elimination escape below must not be
         # reachable for it.  Round 1 declared the operator as a gap; round 2
@@ -3543,7 +3577,27 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
         if card.surface_boundary_condition != "none":
             raise ValueError(
                 "VORTEX-zco has no surface forcing (usrdef_sbc writes zeros)")
-        if (cfg.lateral_viscosity.A_h, cfg.lateral_viscosity.B_h, cfg.K_h,
+        if card.case == "VORTEX_SMT4_VEC-zps":
+            lv = cfg.lateral_viscosity
+            resolved_dynldf = (
+                lv.A_h, lv.A_h_lat_scaling, lv.A_h_floor, lv.B_h,
+                lv.C_smag, lv.C_smag_lap, lv.C_leith,
+                cfg.lateral_viscosity_operator,
+                cfg.lateral_viscosity_e3_weighting,
+                cfg.lateral_viscosity_coefficient_source,
+                cfg.lateral_side_bc,
+            )
+            expected_dynldf = (
+                0.5 * _SMT4_RN_UV * 30.0e3, False, 0.0, 0.0,
+                0.0, 0.0, 0.0, "nemo_div_curl", "nemo_e3",
+                "nemo_ldf_c2d", "free_slip",
+            )
+            if resolved_dynldf != expected_dynldf:
+                raise ValueError(
+                    "VORTEX_SMT4_VEC-zps requires ORCA2 rung 0's level "
+                    "Laplacian div-curl momentum diffusion and Decision 93's "
+                    "mode-20 rn_Uv=0.1 m/s stand-in")
+        elif (cfg.lateral_viscosity.A_h, cfg.lateral_viscosity.B_h, cfg.K_h,
                 cfg.bottom_drag.bottom_drag_r) != (0.0, 0.0, 0.0, 0.0):
             raise ValueError(
                 "VORTEX-zco requires ln_traldf_OFF, ln_dynldf_OFF and "
@@ -3552,7 +3606,8 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
         # (namelist_cfg:114), so none of them may carry a drag law -- checked
         # here, outside the rung block, because the older bottom_drag_r test
         # above passes any NEMO scheme whose legacy rate happens to be zero.
-        if card.case not in ("VORTEX_SMT2_VEC-zps", "VORTEX_SMT3_VEC-zps") and (
+        if card.case not in ("VORTEX_SMT2_VEC-zps", "VORTEX_SMT3_VEC-zps",
+                             "VORTEX_SMT4_VEC-zps") and (
                 cfg.bottom_drag.bottom_drag_scheme != "legacy"
                 or cfg.zdf_drag_in_matrix
                 or cfg.barotropic_drag_substep):
@@ -3563,7 +3618,7 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
         # vertical diffusion that rung 0 runs beside it; every other card on
         # this identity keeps the shipped VORTEX namzdf block.
         if card.case in ("VORTEX_SMT1_VEC-zps", "VORTEX_SMT2_VEC-zps",
-                          "VORTEX_SMT3_VEC-zps"):
+                          "VORTEX_SMT3_VEC-zps", "VORTEX_SMT4_VEC-zps"):
             if (cfg.A_v, cfg.K_v) != (_SMT1_RN_AVM0, _SMT1_RN_AVT0):
                 raise ValueError(
                     f"{card.case} requires ORCA2 rung 0's rn_avm0="
@@ -3590,7 +3645,8 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
             # Rung SMT-2 and ONLY rung SMT-2 carries namdrg's linear drag.
             _bd = cfg.bottom_drag
             _want_lin = card.case in ("VORTEX_SMT2_VEC-zps",
-                                      "VORTEX_SMT3_VEC-zps")
+                                      "VORTEX_SMT3_VEC-zps",
+                                      "VORTEX_SMT4_VEC-zps")
             if _want_lin:
                 if _bd.bottom_drag_scheme != "nemo_linear":
                     raise ValueError(
@@ -3618,7 +3674,8 @@ def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
                         "is one composition: the implicit bottom-cell "
                         "diagonal, the baroclinic-only solve and the frozen "
                         "rCdU_bot in the external-mode substeps")
-            if card.case == "VORTEX_SMT3_VEC-zps":
+            if card.case in ("VORTEX_SMT3_VEC-zps",
+                             "VORTEX_SMT4_VEC-zps"):
                 gm = cfg.gm_redi
                 if gm is None:
                     raise ValueError(
@@ -3721,6 +3778,8 @@ def build_nemo_testcase_card(
             "vector", "smt2"),
         "VORTEX_SMT3_VEC-zps": lambda: build_vortex_smt_zps_card(
             "vector", "smt3"),
+        "VORTEX_SMT4_VEC-zps": lambda: build_vortex_smt_zps_card(
+            "vector", "smt4"),
     }
     if case == "ORCA2-zps":
         if deck_root is None:
@@ -3763,6 +3822,681 @@ def with_first_wzv_after_ssh(model_config, form):
     return model_config._replace(nemo_first_wzv_after_ssh=form)
 
 
+# --- SWG (NEMO 5.0.2 tests/SWG): shallow-water engine, round-1 skeleton ---
+# This is a pure configuration of the shared lat-lon C-grid lane.  The card is
+# deliberately not executable until the three source-selected arms in
+# SWG_UNMEASURED exist in that lane; validate_nemo_testcase_card_for_execution
+# therefore refuses it instead of silently substituting the GYRE RK3 program.
+
+
+class SwgResolvedNamelist(NamedTuple):
+    """Resolved shipped SWG choices, including inert SWE-deck selections."""
+
+    # namctl: every compiled nemogcm.f90:199 read.  output.namelist.dyn:1-23
+    # is the probe's resolved echo; all controls retain namelist_ref values.
+    sn_cfctl: tuple[tuple[str, bool | int], ...] = (
+        ("l_runstat", False), ("l_trcstat", False), ("l_obsstat", False),
+        ("l_oceout", False), ("l_layout", False), ("l_prtctl", False),
+        ("l_prttrc", False), ("l_oasout", False), ("procmin", 0),
+        ("procmax", 1_000_000), ("procincr", 1), ("ptimincr", 1),
+    )
+    ln_timing: bool = False
+    ln_diacfl: bool = False
+    nn_isplt: int = 1
+    nn_jsplt: int = 1
+    nn_ictls: int = 0
+    nn_npfchk: int = 0
+    nn_ictle: int = 0
+    nn_jctls: int = 0
+    nn_jctle: int = 0
+    # namcfg: every compiled nemogcm.f90:201 read.  With ln_read_cfg=False,
+    # cn_domcfg is inert: usr_def_nam is selected (nemogcm.f90:292-296),
+    # ln_closea is forced false (:402), and the remaining file consumers are
+    # guarded in mppini.f90:204-205, domhgr.f90:101-117,
+    # domzgr.f90:111-117, and dommsk.f90:286-303.  ln_write_cfg=False makes
+    # cn_domcfg_out inert at its functional consumer (domain.f90:253).
+    ln_read_cfg: bool = False
+    cn_domcfg: str = "domain_cfg"
+    ln_closea: bool = False
+    ln_write_cfg: bool = False
+    cn_domcfg_out: str = "domain_cfg_out"
+    # namrun: every compiled domain.f90:282-286 read.  Values are the shipped
+    # EXPREF deck over namelist_ref; acquisition-only 10-step overrides are not
+    # card values.  nn_stocklist is inert because both functional consumers
+    # are guarded by ln_rst_list=False (restart.f90:103-110,197-211).
+    cn_ocerst_indir: str = "."
+    cn_ocerst_outdir: str = "."
+    nn_stocklist: tuple[int, ...] = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    ln_rst_list: bool = False
+    nn_no: int = 0
+    cn_exp: str = "SWG"
+    cn_ocerst_in: str = "restart"
+    cn_ocerst_out: str = "restart"
+    nn_it000: int = 1
+    nn_itend: int = 172800
+    nn_date0: int = 10101
+    nn_time0: int = 0
+    nn_leapy: int = 30
+    nn_write: int = 480
+    nn_istate: int = 1
+    ln_rstart: bool = False
+    # Compiled domain.f90:282-286 reads these namrun defaults even though the
+    # shipped cfg does not override them.
+    ln_1st_euler: bool = False
+    nn_rstctl: int = 0
+    nn_stock: int = 0
+    ln_mskland: bool = False
+    ln_clobber: bool = True
+    nn_chunksz: int = 0
+    ln_cfmeta: bool = False
+    ln_xios_read: bool = False
+    nn_wxios: int = 0
+    # key_top is absent, so this read is inert: the compiled init/step call
+    # lists contain no TOP caller, and the only remaining executable occurrence
+    # merely resets it false in root control output (domain.f90:371).
+    ln_top: bool = True
+    # namdom: every compiled domain.f90:287 read.
+    rn_Dt_s: float = 3600.0
+    rn_atfp: float = 0.1
+    ln_c1d: bool = False
+    ln_meshmask: bool = False
+    ln_shuman: bool = False
+    # namtile: every compiled domain.f90:288 read.  The lengths are inert
+    # because ln_tile=False skips their functional uses in
+    # domtile.f90:101-119 as well as domain.f90:446-472.
+    ln_tile: bool = False
+    nn_ltile_i: int = 99999
+    nn_ltile_j: int = 10
+    # namnc4: every compiled domain.f90:289 read; the chunk counts are carried
+    # into snc4set but their only functional consumer is guarded by
+    # snc4set%luse=False (iom_nf90.f90:684-705).
+    nn_nchunks_i: int = 4
+    nn_nchunks_j: int = 4
+    nn_nchunks_k: int = 31
+    ln_nc4zip: bool = False
+    # namusr_def; compiled usrdef_nam.f90:138-167
+    nn_SWG: int = 4
+    jpkglo: int = 2
+    rn_theta_deg: float = 0.0
+    nn_gc: int = 2
+    rn_domsiz_m: float = 2_000_000.0
+    rn_dx_m: float = 100_000.0
+    rn_tau_pa: float = 0.20
+    rn_modified_grav_m_s2: float = 0.02
+    rn_rfr_s: float = 1.0e-7
+    rn_beta_m_s: float = 2.0e-11
+    rn_f0_s: float = 0.7e-4
+    nn_dynldf_lap_typ: int = 1
+    ln_dynldf_lap_PM: bool = False
+    # These three values are inert: the compiled-tree census finds no consumers,
+    # only their declarations and namelist read remain
+    # (usrdef_nam.f90:56-58,143).
+    rn_abp: float = 1.0e-2
+    nn_cnp: int = 1
+    rn_fsp_s: float = 0.0
+    ln_Iperio: bool = False
+    ln_Jperio: bool = False
+    # built keys, tests/SWG_OMIP_L1/cpp_SWG_OMIP_L1.fcm
+    key_xios: bool = False
+    key_qco: bool = True
+    key_vco_3d: bool = True
+    key_RK3: bool = True
+    # namsbc: every variable read by compiled sbcmod.f90:157-163.  Values not
+    # overridden by the shipped deck are resolved from namelist_ref and the
+    # operator probe's ocean.output:472-494.
+    nn_fsbc: int = 1
+    ln_usr_sbc: bool = True
+    ln_flx: bool = False
+    ln_blk: bool = False
+    ln_abl: bool = False
+    ln_cpl: bool = False
+    ln_mixcpl: bool = False
+    nn_components: int = 0
+    nn_ice: int = 0
+    ln_ice_embd: bool = False
+    ln_traqsr: bool = False
+    ln_dm2dc: bool = False
+    ln_rnf: bool = False
+    nn_fwb: int = 0
+    ln_ssr: bool = False
+    ln_apr_dyn: bool = False
+    ln_wave: bool = False
+    nn_lsm: int = 0
+    # namlbc: compiled dommsk.f90:149.
+    rn_shlat: float = 0.0
+    ln_vorlat: bool = False
+    # nambdy: every compiled dommsk.f90:150-155 read.  ln_bdy=False makes the
+    # remaining controls inert: nb_bdy can only force an already-false ln_bdy
+    # false (bdyini.f90:164), while the reread/open in mppini.f90:200-205 and the
+    # mask consumer in dommsk.f90:192-203 both require ln_bdy, bdy_init's
+    # functional branch requires it (bdyini.f90:164-189), and the compiled SWE
+    # free-surface boundary consumers require it (sshwzv.f90:152-156,221-225,
+    # 311-315).
+    ln_bdy: bool = False
+    nb_bdy: int = 0
+    ln_coords_file: bool = True
+    cn_coords_file: str = "coordinates.bdy.nc"
+    ln_mask_file: bool = False
+    cn_mask_file: str = ""
+    cn_dyn2d: str = "none"
+    nn_dyn2d_dta: int = 0
+    cn_dyn3d: str = "none"
+    nn_dyn3d_dta: int = 0
+    cn_tra: str = "none"
+    nn_tra_dta: int = 0
+    ln_tra_dmp: bool = False
+    ln_dyn3d_dmp: bool = False
+    rn_time_dmp_days: float = 1.0
+    rn_time_dmp_out_days: float = 1.0
+    cn_ice: str = "none"
+    nn_ice_dta: int = 0
+    ln_vol: bool = False
+    nn_volctl: int = 1
+    nn_rimwidth: int = 10
+    # namdrg is inert in SWE, but its shipped selection remains stated.  The
+    # complete compiled initialization and step call lists contain neither
+    # zdf_phy_init nor zdf_phy (nemogcm.f90:332-352; stprk3.f90:122-321).
+    ln_drg_OFF: bool = True
+    # namdyn_adv / namdyn_vor
+    ln_dynadv_OFF: bool = False
+    ln_dynadv_vec: bool = True
+    nn_dynkeg: int = 0
+    ln_dynadv_cen2: bool = False
+    ln_dynadv_up3: bool = False
+    ln_dynvor_ene: bool = False
+    ln_dynvor_ens: bool = True
+    ln_dynvor_enT: bool = False
+    ln_dynvor_een: bool = False
+    ln_dynvor_mix: bool = False
+    nn_e3f_typ: int = 1
+    ln_dynvor_msk: bool = True
+    # nam_vvl: every variable read by compiled domqco.f90:303-306.
+    ln_vvl_zstar: bool = True
+    ln_vvl_ztilde: bool = False
+    ln_vvl_layer: bool = False
+    ln_vvl_ztilde_as_zstar: bool = False
+    ln_vvl_zstar_at_eqtor: bool = False
+    rn_ahe3: float = 0.0
+    rn_rst_e3t_days: float = 30.0
+    rn_lf_cutoff_days: float = 5.0
+    rn_zdef_max: float = 0.9
+    ln_vvl_dbg: bool = False
+    nn_vvl_interp: int = 2
+    # These three namdyn_spg deck values are inert: the SWE engine never calls
+    # dyn_spg_init and its stepper never calls dyn_spg.  They remain stated so
+    # a call-graph change cannot become a hidden choice; the complete compiled
+    # call lists are nemogcm.f90:332-352 and stprk3.f90:122-321.
+    ln_dynspg_exp: bool = True
+    nn_bt_flt: int = 3
+    rn_bt_alpha: float = 0.07
+    # namdyn_ldf: every variable read by compiled ldfdyn.f90:177-180.
+    ln_dynldf_OFF: bool = False
+    nn_dynldf_typ: int = 0
+    ln_dynldf_lap: bool = True
+    ln_dynldf_blp: bool = False
+    ln_dynldf_lev: bool = True
+    ln_dynldf_hor: bool = False
+    ln_dynldf_iso: bool = False
+    nn_ahm_ijk_t: int = 0
+    rn_Uv_m_s: float = 2.0
+    rn_Lv_m: float = 500.0
+    rn_ahm_b_m2_s: float = 0.0
+    rn_csmc: float = 3.5
+    rn_minfac: float = 1.0
+    rn_maxfac: float = 1.0
+    # These nine namzdf/namzdf_tke deck values are inert: the SWE engine never
+    # calls zdf_phy_init and its stepper never calls zdf_phy (same call lists).
+    ln_zdftke: bool = True
+    ln_zdfevd: bool = True
+    nn_evdm: int = 1
+    rn_evd_m2_s: float = 100.0
+    rn_avm0_m2_s: float = 1.2e-4
+    rn_avt0_m2_s: float = 1.2e-5
+    nn_avb: int = 0
+    nn_havtb: int = 0
+    nn_etau: int = 0
+
+
+SWG_NAMELIST = SwgResolvedNamelist()
+# Maddison et al. double-gyre protocol selected by the user on 2026-10-12.
+# It is a second resolved namelist for the same card, not a second card.
+SWG_MADDISON_NAMELIST = SWG_NAMELIST._replace(
+    nn_SWG=16,
+    nn_itend=1_866_240,
+    nn_write=1_728,
+    nn_stock=1_866_240,
+    rn_Dt_s=50.0,
+    ln_meshmask=True,
+    rn_domsiz_m=4_000_000.0,
+    rn_tau_pa=0.10,
+    rn_modified_grav_m_s2=9.80665,
+    rn_Lv_m=10.0,
+)
+# Frozen transcription of the compiled SWE readers, expressed in card field
+# names.  This is intentionally independent of ``SwgResolvedNamelist._fields``
+# so the inventory test detects a removed field instead of deriving its own
+# expectation from the object under test.
+SWG_COMPILED_NAMELIST_READS: dict[str, tuple[str, ...]] = {
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/nemogcm.f90:199
+    "namctl": (
+        "sn_cfctl", "ln_timing", "ln_diacfl", "nn_isplt", "nn_jsplt",
+        "nn_ictls", "nn_npfchk", "nn_ictle", "nn_jctls", "nn_jctle",
+    ),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/nemogcm.f90:201
+    "namcfg": (
+        "ln_read_cfg", "cn_domcfg", "ln_closea", "ln_write_cfg",
+        "cn_domcfg_out",
+    ),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/domain.f90:282-286
+    "namrun": (
+        "cn_ocerst_indir", "cn_ocerst_outdir", "nn_stocklist", "ln_rst_list",
+        "nn_no", "cn_exp", "cn_ocerst_in", "cn_ocerst_out", "ln_rstart",
+        "nn_rstctl", "nn_it000", "nn_itend", "nn_date0", "nn_time0",
+        "nn_leapy", "nn_istate", "nn_stock", "nn_write", "ln_mskland",
+        "ln_clobber", "nn_chunksz", "ln_1st_euler", "ln_cfmeta",
+        "ln_xios_read", "nn_wxios", "ln_top",
+    ),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/domain.f90:287
+    "namdom": ("rn_Dt_s", "rn_atfp", "ln_c1d", "ln_meshmask", "ln_shuman"),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/domain.f90:288
+    "namtile": ("ln_tile", "nn_ltile_i", "nn_ltile_j"),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/domain.f90:289
+    "namnc4": ("nn_nchunks_i", "nn_nchunks_j", "nn_nchunks_k", "ln_nc4zip"),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/dommsk.f90:149
+    "namlbc": ("rn_shlat", "ln_vorlat"),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/dommsk.f90:150-155
+    "nambdy": (
+        "ln_bdy", "nb_bdy", "ln_coords_file", "cn_coords_file",
+        "ln_mask_file", "cn_mask_file", "cn_dyn2d", "nn_dyn2d_dta",
+        "cn_dyn3d", "nn_dyn3d_dta", "cn_tra", "nn_tra_dta", "ln_tra_dmp",
+        "ln_dyn3d_dmp", "rn_time_dmp_days", "rn_time_dmp_out_days", "cn_ice",
+        "nn_ice_dta", "ln_vol", "nn_volctl", "nn_rimwidth",
+    ),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/domqco.f90:303-306
+    "nam_vvl": (
+        "ln_vvl_zstar", "ln_vvl_ztilde", "ln_vvl_layer",
+        "ln_vvl_ztilde_as_zstar", "ln_vvl_zstar_at_eqtor", "rn_ahe3",
+        "rn_rst_e3t_days", "rn_lf_cutoff_days", "rn_zdef_max", "ln_vvl_dbg",
+        "nn_vvl_interp",
+    ),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/sbcmod.f90:157-163
+    "namsbc": (
+        "nn_fsbc", "ln_usr_sbc", "ln_flx", "ln_blk", "ln_abl", "ln_cpl",
+        "ln_mixcpl", "nn_components", "nn_ice", "ln_ice_embd", "ln_traqsr",
+        "ln_dm2dc", "ln_rnf", "nn_fwb", "ln_ssr", "ln_apr_dyn", "ln_wave",
+        "nn_lsm",
+    ),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/dynadv.f90:162
+    "namdyn_adv": (
+        "ln_dynadv_OFF", "ln_dynadv_vec", "nn_dynkeg", "ln_dynadv_cen2",
+        "ln_dynadv_up3",
+    ),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/dynvor.f90:813-814
+    "namdyn_vor": (
+        "ln_dynvor_ens", "ln_dynvor_ene", "ln_dynvor_enT", "ln_dynvor_een",
+        "nn_e3f_typ", "ln_dynvor_mix", "ln_dynvor_msk",
+    ),
+    # tests/SWG_OMIP_L1/BLD/ppsrc/nemo/ldfdyn.f90:177-180
+    "namdyn_ldf": (
+        "ln_dynldf_OFF", "nn_dynldf_typ", "ln_dynldf_lap", "ln_dynldf_blp",
+        "ln_dynldf_lev", "ln_dynldf_hor", "ln_dynldf_iso", "nn_ahm_ijk_t",
+        "rn_Uv_m_s", "rn_Lv_m", "rn_ahm_b_m2_s", "rn_csmc", "rn_minfac",
+        "rn_maxfac",
+    ),
+}
+SWG_DEVIATIONS: tuple[tuple[str, bool, bool, str], ...] = (
+    ("key_xios", True, False, "conda-scalarmath reference toolchain"),
+)
+SWG_UNMEASURED: tuple[str, ...] = ()
+
+
+_SWG_PARAMETERISED_FIELDS = frozenset({
+    "nn_SWG", "nn_itend", "nn_write", "nn_stock", "rn_Dt_s",
+    "ln_meshmask", "rn_domsiz_m", "rn_dx_m", "rn_tau_pa",
+    "rn_modified_grav_m_s2", "rn_rfr_s", "rn_beta_m_s", "rn_f0_s",
+    "rn_Uv_m_s", "rn_Lv_m",
+})
+_SWG_WIND_COSINE_SCALE_M = 2_000_000.0
+
+
+def validate_swg_namelist(namelist: SwgResolvedNamelist) -> None:
+    """Reject any resolved SWE selection outside the transcribed SWG program."""
+    unsupported = {
+        name: (getattr(SWG_NAMELIST, name), getattr(namelist, name))
+        for name in SwgResolvedNamelist._fields
+        if name not in _SWG_PARAMETERISED_FIELDS
+        and getattr(namelist, name) != getattr(SWG_NAMELIST, name)
+    }
+    if unsupported:
+        raise ValueError(f"unsupported SWG namelist values: {unsupported}")
+    positive_ints = ("nn_SWG", "nn_itend", "nn_write")
+    if any(type(getattr(namelist, name)) is not int
+           or getattr(namelist, name) <= 0 for name in positive_ints):
+        raise ValueError("SWG nn_SWG, nn_itend, and nn_write must be positive integers")
+    if type(namelist.nn_stock) is not int or namelist.nn_stock < 0:
+        raise ValueError("SWG nn_stock must be a non-negative integer")
+    if type(namelist.ln_meshmask) is not bool:
+        raise ValueError("SWG ln_meshmask must be a boolean")
+    positive_floats = (
+        "rn_Dt_s", "rn_domsiz_m", "rn_dx_m", "rn_modified_grav_m_s2",
+        "rn_Uv_m_s", "rn_Lv_m",
+    )
+    real_fields = positive_floats + (
+        "rn_tau_pa", "rn_rfr_s", "rn_beta_m_s", "rn_f0_s")
+    if any(isinstance(getattr(namelist, name), bool)
+           or not isinstance(getattr(namelist, name), (int, float))
+           for name in real_fields):
+        raise ValueError(f"SWG real values required for {real_fields}")
+    if any(not math.isfinite(float(getattr(namelist, name)))
+           or float(getattr(namelist, name)) <= 0.0 for name in positive_floats):
+        raise ValueError(f"SWG positive finite values required for {positive_floats}")
+    finite_nonnegative = ("rn_tau_pa", "rn_rfr_s", "rn_beta_m_s", "rn_f0_s")
+    if any(not math.isfinite(float(getattr(namelist, name)))
+           or float(getattr(namelist, name)) < 0.0 for name in finite_nonnegative):
+        raise ValueError(
+            f"SWG finite non-negative values required for {finite_nonnegative}")
+
+
+def swg_horizontal_coordinates(
+        namelist: SwgResolvedNamelist | None = None,
+) -> dict[str, np.ndarray]:
+    """Transcribe compiled ``usrdef_nam/hgr`` for a resolved SWG namelist."""
+    nl = SWG_NAMELIST if namelist is None else namelist
+    validate_swg_namelist(nl)
+    if nl.rn_theta_deg != 0.0:
+        raise ValueError("SWG round-1 card transcribes rn_theta = 0 only")
+    spacing = nl.rn_dx_m / float(nl.nn_SWG)       # usrdef_nam.f90:154
+    zgl = nl.rn_domsiz_m + 2.0 * nl.nn_gc * spacing
+    n = math.ceil(zgl / spacing)                   # usrdef_nam.f90:159-160
+    # usrdef_hgr.f90:110-116, for theta=0: zlam1=zphi1=50 km and ANINT
+    # is exact because the ratio is the integer two.
+    origin = round((0.5 * zgl - 0.5 * nl.rn_domsiz_m) / spacing) * spacing
+    # mesh_mask/restarts expose NEMO's data domain, which removes nn_hls=2
+    # computational halo rows from each side.  In usrdef_hgr.f90:125-126 the
+    # first written point is therefore local ji=jj=3: zim05=zjm05=1.5 and
+    # zim1=zjm1=2.0 (ocean.output:150-166 reports jpi=88, data domain 84).
+    centre = (np.arange(n, dtype=np.float64) + 1.5) * spacing - origin
+    face = (np.arange(n, dtype=np.float64) + 2.0) * spacing - origin
+    glamt = np.broadcast_to(centre[None, :], (n, n)).copy()
+    glamu = np.broadcast_to(face[None, :], (n, n)).copy()
+    gphit = np.broadcast_to(centre[:, None], (n, n)).copy()
+    gphiv = np.broadcast_to(face[:, None], (n, n)).copy()
+    ff_t = nl.rn_f0_s + nl.rn_beta_m_s * np.abs(gphit)
+    ff_f = nl.rn_f0_s + nl.rn_beta_m_s * np.abs(gphiv)
+    return {
+        "ni": n, "nj": n, "spacing_m": spacing,
+        "glamt": glamt, "glamu": glamu,
+        "glamv": glamt.copy(), "glamf": glamu.copy(),
+        "gphit": gphit, "gphiu": gphit.copy(),
+        "gphiv": gphiv, "gphif": gphiv.copy(),
+        "ff_t": ff_t, "ff_f": ff_f,
+    }
+
+
+def swg_wet_mask(
+        source: dict[str, np.ndarray] | None = None, *,
+        namelist: SwgResolvedNamelist | None = None,
+) -> np.ndarray:
+    """Transcribe SWG_DG ``usrdef_zgr.F90:195-206`` basin limits."""
+    nl = SWG_NAMELIST if namelist is None else namelist
+    validate_swg_namelist(nl)
+    src = source or swg_horizontal_coordinates(nl)
+    lower_m = 10_000.0
+    upper_m = nl.rn_domsiz_m + lower_m
+    wet = ((src["gphiv"] > lower_m) & (src["gphiv"] < upper_m)
+           & (src["glamu"] > lower_m) & (src["glamu"] < upper_m))
+    neighbours = (np.roll(wet, 1, 0).astype(int) + np.roll(wet, -1, 0)
+                  + np.roll(wet, 1, 1) + np.roll(wet, -1, 1))
+    return (wet & (neighbours > 1)).astype(np.float64)
+
+
+def swg_surface_wind(
+        namelist: SwgResolvedNamelist | None = None,
+        source: dict[str, np.ndarray] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return compiled ``usrdef_sbc.F90:84-91`` U/V stresses."""
+    nl = SWG_NAMELIST if namelist is None else namelist
+    validate_swg_namelist(nl)
+    src = source or swg_horizontal_coordinates(nl)
+    theta_rad = np.deg2rad(np.float64(nl.rn_theta_deg))
+    cosine = np.cos(
+        np.float64(np.pi) * src["gphit"]
+        / np.float64(_SWG_WIND_COSINE_SCALE_M))
+    tau_u = (-np.float64(nl.rn_tau_pa) * np.cos(theta_rad) * cosine)
+    tau_v = (np.float64(nl.rn_tau_pa) * np.sin(theta_rad) * cosine)
+    return tau_u, tau_v
+
+
+def _swg_coriolis_arrays(
+        nl: SwgResolvedNamelist, src: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return model-layout U/V arrays from NEMO's native T/F statements."""
+    n, spacing = src["ni"], src["spacing_m"]
+    south_y = float(src["gphiv"][0, 0]) - spacing
+    f_v = np.concatenate([
+        np.full((1, n), nl.rn_f0_s + nl.rn_beta_m_s * abs(south_y)),
+        src["ff_f"],
+    ], axis=0)
+    f_u = np.concatenate([src["ff_t"], src["ff_t"][:, -1:]], axis=1)
+    return f_u, f_v
+
+
+def build_swg_card(
+        namelist: SwgResolvedNamelist | None = None,
+) -> NEMOTestcaseCard:
+    """One SWG card parameterised by its resolved namelist."""
+    from legoesm.ocean.dynamics.latlon_cgrid_operators import compute_face_masks
+
+    nl = SWG_NAMELIST if namelist is None else namelist
+    validate_swg_namelist(nl)
+    src = swg_horizontal_coordinates(nl)
+    wet_np = swg_wet_mask(src, namelist=nl)
+    wet = jnp.asarray(wet_np, dtype=jnp.float64)
+    n, spacing = src["ni"], src["spacing_m"]
+    grid = create_beta_plane_cgrid_geometry(
+        n, n, dx_m=spacing, dy_m=spacing, f0=0.0, beta=0.0,
+        x_origin_m=float(src["glamt"][0, 0]) - 0.5 * spacing,
+        y_origin_m=float(src["gphit"][0, 0]) - 0.5 * spacing,
+        radius=float(NEMO_CONSTANTS_CONFIG.R_earth),
+        cartesian_pseudo_lat=True, dtype=jnp.float64,
+    )
+    # Native NEMO V/F rows map to model v rows 1..n.  The extra south face is
+    # a model-layout record, evaluated from the same |y| statement.
+    f_u, f_v = _swg_coriolis_arrays(nl, src)
+    grid = grid._replace(
+        f_T=jnp.asarray(src["ff_t"]), f_u=jnp.asarray(f_u),
+        f_v=jnp.asarray(f_v), ff_f=jnp.asarray(src["ff_f"]),
+    )
+
+    native = (n, n, 1)
+    thickness = np.full(native, 500.0)
+    layer_thickness = thickness[..., 0]
+    tmask = wet_np[..., None]
+    # The shared builder uses the model's west/south redundant-face layout.
+    # Its native NEMO U/V records are columns/rows 1..n respectively.
+    u_faces, v_faces = compute_face_masks(wet, grid)
+    u_wet = np.asarray(u_faces[:, 1:])
+    v_wet = np.asarray(v_faces[1:, :])
+    umask = u_wet[..., None]
+    vmask = v_wet[..., None]
+    fe3mask = np.asarray(nemo_fe3mask_from_tmask(jnp.asarray(tmask)))
+    # domain.f90:211-218 first builds 500*vmask(i,j)*vmask(i+1,j), applies
+    # the closed-box F-point lbc, and only then adds 500*ssfmask for SWE.
+    # Thus wet interior F points carry 1000 m while their first coastal halo
+    # carries 500 m; that halo is consumed by the next RK stage's ENS stencil.
+    hf_base = v_wet * np.roll(v_wet, -1, axis=1)
+    wet_j, wet_i = np.where(wet_np > 0.5)
+    west, east = int(wet_i.min() - 1), int(wet_i.max())
+    south, north = int(wet_j.min() - 1), int(wet_j.max())
+    hf_base[:, west] = hf_base[:, west + 1]
+    hf_base[:, east] = hf_base[:, east - 1]
+    hf_base[south, :] = hf_base[south + 1, :]
+    hf_base[north, :] = hf_base[north - 1, :]
+    metric = np.full((n, n), spacing)
+    area = metric * metric
+    operands = NemoEENBarotropicOperands(
+        ff_f=src["ff_f"], e3u_0=thickness, e3v_0=thickness,
+        e3f_0=thickness, umask=umask, vmask=vmask,
+        fmask=fe3mask, fe3mask=fe3mask,
+        hu_0=layer_thickness * u_wet, hv_0=layer_thickness * v_wet,
+        hf_0=layer_thickness * hf_base + layer_thickness * fe3mask[..., 0],
+        e1t=metric, e2t=metric, e1u=metric, e2u=metric,
+        e1v=metric, e2v=metric, e1f=metric, e2f=metric,
+    )
+    z_ref = create_z_star_from_thicknesses(
+        jnp.asarray(thickness[0, 0]),
+        t_depth_ref_m=np.cumsum(thickness[0, 0]) - 0.5 * thickness[0, 0],
+        nemo_gdept_0_m=0.5 * thickness,
+        nemo_gdepw_0_m=np.zeros(native),
+        nemo_e3t_0_m=thickness, nemo_e3w_0_m=thickness,
+        nemo_hu_0_m=layer_thickness * u_wet,
+        nemo_hv_0_m=layer_thickness * v_wet,
+        nemo_e1e2t_m=area, nemo_e1e2u_m=area, nemo_e1e2v_m=area,
+        nemo_e2u_m=metric, nemo_e1v_m=metric,
+        nemo_een_barotropic_m=operands, allow_single_level=True,
+    )
+    z_coord = create_full_step_coordinate(
+        z_ref, jnp.where(wet > 0.0, 0, -1))
+    state = rest_state_latlon_cgrid_ocean(
+        grid, z_coord, T_water_init_C=0.0, T_deep=0.0, S_uniform=0.0,
+        H_max=float(thickness[0, 0, 0]), land_mask_override=wet,
+        H_bathy_override=layer_thickness * wet,
+        nemo_prognostic_barotropic_velocity=True,
+    )
+    base = _model_config(
+        barotropic_time_filter="nemo_ab3am4", n_barotropic_substeps=1,
+        bbl_adv_option=0, bbl_gamma_s=0.0,
+        bbl_diffusive_option=0, bbl_aht_m2_s=0.0,
+        whole_step_identity="gyre_vector_ene_c2",
+        tke_langmuir_evaluation="nemo_literal",
+    )
+    cc = NEMO_CONSTANTS_CONFIG._replace(g=nl.rn_modified_grav_m_s2)
+    physics = base.physics._replace(
+        constants=cc,
+        vertical_mixing=base.physics.vertical_mixing._replace(scheme="none"),
+        convection=base.physics.convection._replace(scheme="none"),
+    )
+    constant_ahm = 0.5 * nl.rn_Uv_m_s * nl.rn_Lv_m
+    config = base._replace(
+        constants=cc, physics=physics, tracer_advection="none", K_h=0.0,
+        implicit_vertical_mixing=False, A_v=0.0, K_v=0.0, gm_redi=None,
+        outer_integrator="swe_rk3", zdf_drag_in_matrix=False,
+        barotropic_drag_substep=False,
+        vorticity_scheme=ENSVorticityConfig(
+            scheme="ens_total", ln_dynvor_msk=nl.ln_dynvor_msk),
+        coriolis_scheme="explicit_ab2",
+        een_e3f_scheme="nemo_avg4", een_metric_weighting="nemo",
+        een_q_boundary="nemo_live",
+        lateral_viscosity_operator="nemo_div_curl",
+        lateral_viscosity_e3_weighting="nemo_e3",
+        lateral_viscosity_coefficient_source="nemo_constant",
+        lateral_viscosity=base.lateral_viscosity._replace(A_h=constant_ahm),
+        # stprk3.f90:325-328 applies rn_rfr to the whole-step before velocity.
+        bottom_drag=base.bottom_drag._replace(bottom_drag_r=nl.rn_rfr_s),
+        meridionally_periodic=False,
+    )
+    recipe = NEMORecipe(config, config.physics, grid, z_coord, wet, state)
+    card = NEMOTestcaseCard(
+        "SWG-zco", recipe, nl.rn_Dt_s, nl.nn_itend, 1, 0, 0, 0.0, 0.0,
+        surface_boundary_condition="swg_analytic_wind",
+        surface_input_operator="swe_stage3",
+        unmeasured_features=SWG_UNMEASURED,
+        resolved_namelist=nl,
+    )
+    _validate_swg_card(card, nl)
+    return card
+
+
+def _validate_swg_card(
+        card: NEMOTestcaseCard,
+        namelist: SwgResolvedNamelist | None = None,
+) -> None:
+    nl = card.resolved_namelist if namelist is None else namelist
+    if not isinstance(nl, SwgResolvedNamelist):
+        raise ValueError("SWG-zco must retain its resolved namelist")
+    if card.resolved_namelist != nl:
+        raise ValueError("SWG-zco resolved namelist provenance drifted")
+    validate_swg_namelist(nl)
+    if card.unmeasured_features != SWG_UNMEASURED:
+        raise ValueError("SWG-zco must declare exactly SWG_UNMEASURED")
+    if card.dt_s <= 0.0 or card.n_steps <= 0 or card.dummy_bottom_records != 1:
+        raise ValueError("SWG-zco run length or vertical record count drifted")
+    if (card.dt_s, card.n_steps) != (nl.rn_Dt_s, nl.nn_itend):
+        raise ValueError("SWG-zco does not carry its resolved namelist clock")
+    if card.j_periodic or card.recipe.model_config.meridionally_periodic:
+        raise ValueError("SWG-zco is closed in both horizontal directions")
+    if (card.recipe.model_config.constants.g != nl.rn_modified_grav_m_s2
+            or card.recipe.model_config.physics.constants.g
+            != nl.rn_modified_grav_m_s2):
+        raise ValueError("SWG-zco must carry rn_modified_grav as model g")
+    if (card.recipe.model_config.constants.g
+            != card.recipe.model_config.physics.constants.g):
+        raise ValueError("SWG-zco dynamics and physics gravity constants differ")
+    if card.recipe.model_config.outer_integrator != "swe_rk3":
+        raise ValueError("SWG-zco must select the SWE RK3 stage dispatcher")
+    vor = card.recipe.model_config.vorticity_scheme
+    if (not isinstance(vor, ENSVorticityConfig)
+            or vor.scheme != "ens_total"
+            or vor.ln_dynvor_msk is not nl.ln_dynvor_msk
+            or card.recipe.model_config.coriolis_scheme != "explicit_ab2"
+            or card.recipe.model_config.een_e3f_scheme != "nemo_avg4"
+            or card.recipe.model_config.een_metric_weighting != "nemo"
+            or card.recipe.model_config.een_q_boundary != "nemo_live"):
+        raise ValueError("SWG-zco must select compiled vor_ens total vorticity")
+    if (card.recipe.model_config.lateral_viscosity_operator != "nemo_div_curl"
+            or card.recipe.model_config.lateral_viscosity_e3_weighting != "nemo_e3"
+            or card.recipe.model_config.lateral_viscosity_coefficient_source
+            != "nemo_constant"):
+        raise ValueError("SWG-zco must select the compiled constant LDF branch")
+    if card.recipe.model_config.lateral_viscosity.A_h != (
+            0.5 * nl.rn_Uv_m_s * nl.rn_Lv_m):
+        raise ValueError("SWG-zco must state 0.5*rn_Uv*rn_Lv")
+    if card.recipe.model_config.bottom_drag.bottom_drag_r != nl.rn_rfr_s:
+        raise ValueError("SWG-zco must state the compiled rn_rfr layer drag")
+    wet = np.asarray(card.recipe.land_mask)
+    if wet.ndim != 2 or not np.any(wet) or np.all(wet):
+        raise ValueError("SWG-zco must carry a nonempty closed two-dimensional basin")
+    src = swg_horizontal_coordinates(nl)
+    expected = swg_wet_mask(src, namelist=nl)
+    if wet.shape != expected.shape or not np.array_equal(wet, expected):
+        raise ValueError("SWG-zco wet mask differs from its resolved rn_domsiz")
+    grid = card.recipe.grid
+    spacing = src["spacing_m"]
+    f_u, f_v = _swg_coriolis_arrays(nl, src)
+    if (not np.array_equal(np.asarray(grid.f_T), src["ff_t"])
+            or not np.array_equal(np.asarray(grid.ff_f), src["ff_f"])
+            or not np.array_equal(np.asarray(grid.f_u), f_u)
+            or not np.array_equal(np.asarray(grid.f_v), f_v)
+            or (grid.n_lat, grid.n_lon) != (src["nj"], src["ni"])
+            or any(not np.all(np.asarray(getattr(grid, name)) == spacing)
+                   for name in ("dx_T", "dy_T", "dx_u", "dy_u",
+                                "dx_v", "dy_v"))
+            or not np.all(np.asarray(grid.area_T) == spacing * spacing)
+            or not np.all(np.asarray(grid.area_q) == spacing * spacing)):
+        raise ValueError("SWG-zco grid differs from resolved dx/beta/f0 geometry")
+    if int(card.recipe.z_coord.n_levels) != 1:
+        raise ValueError("SWG-zco must carry one executed 500 m layer")
+
+
+
+# Keep the legacy validator statements at their citation-pinned source lines.
+# The SWG round-1 extension is appended below those statements and wraps the
+# existing dispatcher without changing any prior case branch.
+_validate_pre_swg_testcase_card = validate_nemo_testcase_card
+
+
+def validate_nemo_testcase_card(card: NEMOTestcaseCard) -> None:
+    if card.case == "SWG-zco":
+        # The SWG branch returns before the legacy validator, so the
+        # certification-policy precondition every card shares is restated here.
+        if card.transcendentals != "libm":
+            raise ValueError(
+                f"{card.case} requires scalar-libm certification "
+                f"transcendentals, got {card.transcendentals!r}")
+        _validate_swg_card(card)
+        return
+    _validate_pre_swg_testcase_card(card)
+
 __all__ = (
     "NEMOTestcaseCard",
     "GYRESurfaceBoundaryCondition",
@@ -3775,11 +4509,20 @@ __all__ = (
     "build_vortex_zco_card",
     "build_vortex_smt_zps_card",
     "build_tsunami_zco_card",
+    "build_swg_card",
     "tsunami_horizontal_coordinates",
     "tsunami_initial_ssh",
     "TSUNAMI_NAMELIST",
     "TSUNAMI_DEVIATIONS",
     "TSUNAMI_UNMEASURED",
+    "swg_horizontal_coordinates",
+    "swg_surface_wind",
+    "swg_wet_mask",
+    "SWG_NAMELIST",
+    "SWG_MADDISON_NAMELIST",
+    "validate_swg_namelist",
+    "SWG_DEVIATIONS",
+    "SWG_UNMEASURED",
     "vortex_smt_bathymetry",
     "vortex_smt_partial_cell_geometry",
     "validate_vortex_resolution",

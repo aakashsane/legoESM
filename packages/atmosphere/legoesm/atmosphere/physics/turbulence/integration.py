@@ -1287,6 +1287,216 @@ def _make_mpas_turbulence(
     return physics_fn
 
 
+def make_surface_bulk_physics(C_H: float, C_E: float,
+                              latent: bool = True) -> Callable:
+    """Constant-coefficient surface exchange for the MPAS-style column lanes
+    when NO turbulence scheme runs: the same law as the lat-lon/cube pipeline
+    (:func:`~legoesm.atmosphere.physics.turbulence.surface_layer.constant_bulk_surface_fluxes`
+    + :func:`~legoesm.atmosphere.physics.turbulence.surface_layer.bottom_layer_surface_kick`),
+    applied to the lowest layer.  Heat and moisture only, no surface stress
+    (the pipeline's bulk path applies none either).
+
+    Signature ``(state, mesh, sigma_coord, forcing, phys_state) ->
+    HydrostaticTendencies``; the surface temperature is the lane's
+    ``forcing["T_sfc"]`` (any shape that reshapes to ``p_s``), else a
+    prescribed ``phys_state.surface_T_sfc_override`` (the single-column
+    model's prescribed skin, as the turbulence schemes read it).
+    Edge winds are reconstructed to cells (Perot); a state carrying cell
+    winds (``state.v`` present: the FV3-duo column view, a cell-centred
+    lat-lon state) hands them over directly.  A dry deck
+    (``latent=False``, or no ``q_v`` tracer) exchanges sensible heat only.
+    """
+    from legoesm.atmosphere.physics.turbulence.surface_layer import (
+        bottom_layer_surface_kick, constant_bulk_surface_fluxes)
+
+    def physics_fn(state, mesh, sigma_coord, forcing=None, phys_state=None):
+        _valid = None      # per-column mask: a prescribed skin exists
+        if forcing is not None and forcing.get("T_sfc") is not None:
+            T_sfc_in = forcing["T_sfc"]
+        elif getattr(phys_state, "surface_T_sfc_override", None) is not None:
+            from legoesm.atmosphere.physics.physics_state import (
+                SFC_T_OVERRIDE_VALID_MIN)
+            T_sfc_in = phys_state.surface_T_sfc_override
+            _valid = T_sfc_in > SFC_T_OVERRIDE_VALID_MIN
+        else:
+            raise ValueError(
+                "surface bulk exchange needs a surface temperature (the "
+                "lane's forcing['T_sfc'] or a prescribed "
+                "phys_state.surface_T_sfc_override); none was given. Pass "
+                "surface_bulk_coeffs=None for no surface exchange.")
+        T = state.T.data
+        p_s = state.p_s.data
+        if state.v is not None:
+            u_low, v_low = state.u.data[..., -1], state.v.data[..., -1]
+        else:
+            from legoesm.grids.voronoi import reconstruct_cell_velocity
+            u_cell, v_cell = reconstruct_cell_velocity(state.u.data, mesh)
+            u_low, v_low = u_cell[:, -1], v_cell[:, -1]
+        # A dry deck carries no vapour: sensible heat only.
+        _moist = (latent and state.tracers is not None
+                  and "q_v" in state.tracers)
+        T_sfc = jnp.asarray(T_sfc_in).reshape(p_s.shape)
+        if _valid is not None:
+            # No prescribed skin in a column (the sentinel): no exchange there.
+            _valid = _valid.reshape(p_s.shape)
+            T_sfc = jnp.where(_valid, T_sfc, T[..., -1])
+        if _moist:
+            _qv_raw = state.tracers["q_v"]
+            _qv = _qv_raw.data if hasattr(_qv_raw, "data") else _qv_raw
+            q_low = _qv[..., -1]
+        else:
+            q_low = jnp.zeros_like(T[..., -1])
+        shflx, lhflx = constant_bulk_surface_fluxes(
+            T[..., -1], q_low, u_low, v_low,
+            sigma_coord.pressure_at_full(p_s)[..., -1], p_s, T_sfc, C_H, C_E)
+        if not _moist:
+            lhflx = jnp.zeros_like(lhflx)
+        if _valid is not None:
+            shflx = jnp.where(_valid, shflx, 0.0)
+            lhflx = jnp.where(_valid, lhflx, 0.0)
+        dT_low, dq_low, evap = bottom_layer_surface_kick(
+            shflx, lhflx, T_sfc, sigma_coord.layer_thickness_dp(p_s)[..., -1])
+        dT = jnp.zeros_like(T).at[..., -1].set(dT_low.astype(T.dtype))
+        tracer_tends = None
+        if _moist:
+            dq = jnp.zeros_like(_qv).at[..., -1].set(dq_low.astype(_qv.dtype))
+            tracer_tends = {"q_v": (
+                _qv_raw.replace(data=dq, name="dq_v_dt_sfc_bulk")
+                if hasattr(_qv_raw, "replace") else dq)}
+        zero_ps = jnp.zeros_like(p_s)
+        return HydrostaticTendencies(
+            du_dt=state.u.replace(data=jnp.zeros_like(state.u.data),
+                                  name="du_dt_sfc_bulk"),
+            dv_dt=(None if state.v is None else state.v.replace(
+                data=jnp.zeros_like(state.v.data), name="dv_dt_sfc_bulk")),
+            dT_dt=state.T.replace(data=dT, name="dT_dt_sfc_bulk"),
+            dp_s_dt=state.p_s.replace(data=zero_ps, name="dp_s_dt_sfc_bulk"),
+            dphis_dt=state.phis.replace(data=zero_ps,
+                                        name="dphis_dt_sfc_bulk"),
+            tracer_tendencies=tracer_tends,
+            shflx_sfc=state.p_s.replace(data=shflx, name="shflx_sfc_bulk",
+                                        units="W/m^2"),
+            lhflx_sfc=state.p_s.replace(data=lhflx, name="lhflx_sfc_bulk",
+                                        units="W/m^2"),
+            evap_sfc=state.p_s.replace(data=evap, name="evap_sfc_bulk",
+                                       units="kg/m^2/s"),
+        )
+
+    physics_fn._wants_forcing = True
+    physics_fn._wants_phys_state_ro = True
+    return physics_fn
+
+
+def make_column_surface_bulk_fn(sigma_coord, C_H: float, C_E: float):
+    """Raw-array surface hook for the tiled cube step:
+    ``fn(T, p_s, q_v | None, u_low, v_low, T_sfc) -> (dT, dq_v | None)``,
+    the same law as :func:`make_surface_bulk_physics` (lowest layer, no
+    stress).  ``q_v=None`` (a dry lane): sensible heat only.
+    """
+    from legoesm.atmosphere.physics.turbulence.surface_layer import (
+        bottom_layer_surface_kick, constant_bulk_surface_fluxes)
+
+    def fn(T, p_s, q_v, u_low, v_low, T_sfc):
+        q_low = (jnp.zeros_like(T[..., -1]) if q_v is None else q_v[..., -1])
+        shflx, lhflx = constant_bulk_surface_fluxes(
+            T[..., -1], q_low, u_low, v_low,
+            sigma_coord.pressure_at_full(p_s)[..., -1], p_s, T_sfc, C_H, C_E)
+        if q_v is None:
+            lhflx = jnp.zeros_like(lhflx)
+        dT_low, dq_low, _ = bottom_layer_surface_kick(
+            shflx, lhflx, T_sfc, sigma_coord.layer_thickness_dp(p_s)[..., -1])
+        dT = jnp.zeros_like(T).at[..., -1].set(dT_low.astype(T.dtype))
+        if q_v is None:
+            return dT, None
+        return dT, jnp.zeros_like(q_v).at[..., -1].set(dq_low.astype(q_v.dtype))
+
+    return fn
+
+
+def make_spectral_surface_bulk_physics(C_H: float, C_E: float,
+                                       latent: bool = True) -> Callable:
+    """:func:`make_surface_bulk_physics` for the spectral PE lane.
+
+    Signature ``(state, grid, sigma_coord, grid_fields=None, forcing=None)
+    -> SpectralHydrostaticState``; ``forcing["T_sfc"]`` is the lane's
+    per-step (flattened) blended surface temperature.  No ``q_v`` tracer (or
+    ``latent=False``): sensible heat only.
+    """
+    from legoesm.atmosphere.physics.turbulence.surface_layer import (
+        bottom_layer_surface_kick, constant_bulk_surface_fluxes)
+
+    def physics_fn(state, grid, sigma_coord, grid_fields=None, forcing=None,
+                   phys_state=None):
+        _valid = None      # per-column mask: a prescribed skin exists
+        if forcing is not None and forcing.get("T_sfc") is not None:
+            T_sfc_in = forcing["T_sfc"]
+        elif getattr(phys_state, "surface_T_sfc_override", None) is not None:
+            from legoesm.atmosphere.physics.physics_state import (
+                SFC_T_OVERRIDE_VALID_MIN)
+            T_sfc_in = phys_state.surface_T_sfc_override
+            _valid = T_sfc_in > SFC_T_OVERRIDE_VALID_MIN
+        else:
+            raise ValueError(
+                "surface bulk exchange needs a surface temperature (the "
+                "lane's forcing['T_sfc'] or a prescribed "
+                "phys_state.surface_T_sfc_override); none was given. Pass "
+                "surface_bulk_coeffs=None for no surface exchange.")
+        fields = grid_fields
+        if fields is None:
+            fields = spectral_pe_to_grid(state, grid, sigma_coord)
+        T, p_s = fields["T"], fields["p_s"]
+        _moist = (latent and state.tracers is not None
+                  and "q_v" in state.tracers)
+        if _moist:
+            _qv_raw = state.tracers["q_v"]
+            _qv = _qv_raw.data if hasattr(_qv_raw, "data") else _qv_raw
+            q_low = _qv.reshape(T.shape)[..., -1]
+        else:
+            q_low = jnp.zeros_like(T[..., -1])
+        T_sfc = jnp.asarray(T_sfc_in).reshape(p_s.shape)
+        if _valid is not None:
+            # No prescribed skin in a column (the sentinel): no exchange there.
+            _valid = _valid.reshape(p_s.shape)
+            T_sfc = jnp.where(_valid, T_sfc, T[..., -1])
+        shflx, lhflx = constant_bulk_surface_fluxes(
+            T[..., -1], q_low, fields["u"][..., -1], fields["v"][..., -1],
+            sigma_coord.pressure_at_full(p_s)[..., -1], p_s, T_sfc, C_H, C_E)
+        if not _moist:
+            lhflx = jnp.zeros_like(lhflx)
+        if _valid is not None:
+            shflx = jnp.where(_valid, shflx, 0.0)
+            lhflx = jnp.where(_valid, lhflx, 0.0)
+        dT_low, dq_low, _ = bottom_layer_surface_kick(
+            shflx, lhflx, T_sfc, sigma_coord.layer_thickness_dp(p_s)[..., -1])
+        dT = jnp.zeros_like(T).at[..., -1].set(dT_low.astype(T.dtype))
+        tracers_tend = None
+        if state.tracers is not None:
+            tracers_tend = {}
+            for name, template in state.tracers.items():
+                _d = template.data if hasattr(template, "data") else template
+                arr = jnp.zeros_like(_d)
+                if name == "q_v" and _moist:
+                    arr = arr.reshape(T.shape).at[..., -1].set(
+                        dq_low.astype(_d.dtype)).reshape(_d.shape)
+                tracers_tend[name] = (template.replace(data=arr)
+                                      if hasattr(template, "replace") else arr)
+        zero_3d = jnp.zeros_like(state.vor_hat.data)
+        return SpectralHydrostaticState(
+            vor_hat=state.vor_hat.replace(data=zero_3d),
+            div_hat=state.div_hat.replace(data=zero_3d),
+            T_hat=state.T_hat.replace(data=sh_analysis_3d(grid, dT)),
+            lnps_hat=state.lnps_hat.replace(
+                data=jnp.zeros_like(state.lnps_hat.data)),
+            phis_hat=state.phis_hat.replace(
+                data=jnp.zeros_like(state.phis_hat.data)),
+            tracers=tracers_tend,
+        )
+
+    physics_fn._wants_forcing = True
+    physics_fn._wants_phys_state_ro = True
+    return physics_fn
+
+
 # ===========================================================================
 # Non-hydrostatic Compressible Euler
 # ===========================================================================

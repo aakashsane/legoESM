@@ -12684,6 +12684,16 @@ class ModelDriver:
                 f"({CHECKPOINT_INTERVAL} steps) must both be multiples of the "
                 "cadence so every checkpoint is a resumable window boundary")
         DT_PHYS = DT * PHYS_UPDATE_STEPS
+        # No turbulence scheme: the lane applies the same constant-coefficient
+        # surface exchange as the lat-lon/cube pipeline (which skips it when a
+        # turbulence scheme or the learned parameterization owns the surface).
+        # A dry FV3-duo deck ignores humidity in its dycore: sensible heat only.
+        _sfc_bulk_coeffs = (
+            (float(cfg.C_H), float(cfg.C_E),
+             bool(getattr(getattr(self.model, "config", None), "moist", True)))
+            if (cfg.turbulence == "none" and cfg.surface_bulk_scheme == "constant"
+                and cfg.physics_parameterization == "none")
+            else None)
         if cfg.cld_macmic_num_steps > 1:
             logger.info(
                 f"  CAM macmic sub-cycle: turbulence + microphysics run "
@@ -12705,7 +12715,8 @@ class ModelDriver:
                                 budget_ledger=_budget_ledger_on,
                                 physics_cadence=_phys_cadence_write,
                                 physics_cadence_steps=PHYS_UPDATE_STEPS,
-                                cld_macmic_num_steps=cfg.cld_macmic_num_steps)
+                                cld_macmic_num_steps=cfg.cld_macmic_num_steps,
+                                surface_bulk_coeffs=_sfc_bulk_coeffs)
 
         physics_fn = _build_physics(phys_cfg)
         if _hold_phys:
@@ -12984,7 +12995,15 @@ class ModelDriver:
                         f"nu4={_qv_smooth_nu4:g} m^4/s, dt={DT:g}s, "
                         f"g_max={_g_max:.3e} 1/m^2)."
                     )
-        _sst_forcing = (cfg.radiation != "none" and self.get_sst_sic is not None)
+        # The bulk surface exchange reads forcing["T_sfc"] too, radiation or not.
+        if _sfc_bulk_coeffs is not None and self.get_sst_sic is None:
+            raise ValueError(
+                "turbulence='none' with surface_bulk_scheme='constant' applies "
+                "the bulk surface exchange, which needs a prescribed SST/SIC "
+                "source; this run has none. Set surface_bulk_scheme='none' to "
+                "run without surface fluxes.")
+        _sst_forcing = ((cfg.radiation != "none" or _sfc_bulk_coeffs is not None)
+                        and self.get_sst_sic is not None)
         _sic_day = None            # (nCells,) ice fraction of the last forcing day
         _ice_skin_on = bool(getattr(cfg, "ice_skin_prognostic", False))
         if _ice_skin_on and not _sst_forcing:
@@ -15821,6 +15840,14 @@ class ModelDriver:
         S_0 = float(cfg.S_0)
         T_ice = cfg.T_ice
 
+        # No turbulence scheme: the same constant-coefficient surface exchange
+        # as the lat-lon/cube pipeline (sensible heat only on the dry path).
+        _sp_bulk = (
+            (float(cfg.C_H), float(cfg.C_E))
+            if (cfg.turbulence == "none" and cfg.surface_bulk_scheme == "constant"
+                and cfg.physics_parameterization == "none")
+            else None)
+
         # Precompute spectral transform constants
         _im_over_a = 1j * self.grid.ms.astype(jnp.float64) / a
         _one_over_a = 1.0 / a
@@ -15890,6 +15917,18 @@ class ModelDriver:
             if self._hs_newtonian_relax is not None:
                 dT_dt_rad = dT_dt_rad + self._hs_newtonian_relax(
                     T_g, p_s_g, self._grid_lat)
+
+            if _sp_bulk is not None:
+                from legoesm.atmosphere.physics.turbulence.surface_layer import (
+                    bottom_layer_surface_kick, constant_bulk_surface_fluxes)
+                _zero_low = jnp.zeros_like(T_g[..., -1])
+                _shflx, _ = constant_bulk_surface_fluxes(
+                    T_g[..., -1], _zero_low, u_g[..., -1], v_g[..., -1],
+                    p_full[..., -1], p_s_g, T_sfc, *_sp_bulk)
+                _dT_low, _, _ = bottom_layer_surface_kick(
+                    _shflx, _zero_low, T_sfc,
+                    self.sigma.layer_thickness_dp(p_s_g)[..., -1])
+                dT_dt_rad = dT_dt_rad.at[..., -1].add(_dT_low)
 
             # Rayleigh friction
             du_dt = -k_f * u_g
@@ -16021,6 +16060,8 @@ class ModelDriver:
             )
             _combined_fn = make_physics(
                 phys_cfg, model_type="spectral_pe", dt=DT,
+                surface_bulk_coeffs=(None if _sp_bulk is None
+                                     else (*_sp_bulk, True)),
             )
 
             def _amip_physics_fn(state, grid, sigma_coord, forcing_data=None):
@@ -16644,6 +16685,68 @@ class ModelDriver:
             return held_suarez_forcing_latlon
         return None                         # dynamics-only (dry)
 
+    def _with_segment_bulk_surface(self, physics_fn, day_of):
+        """Wrap a STATELESS lane physics with the constant-coefficient surface
+        exchange the lat-lon/cube pipeline applies when no turbulence scheme
+        runs.  The surface temperature is the SST/sea-ice blend sampled at
+        each segment start (``day_of(step_done)``), handed in per segment so
+        it follows the forcing without recompiling.
+
+        Returns ``(physics_fn, segment_forcing)``; unchanged
+        ``(physics_fn, None)`` when the run selects no bulk exchange.
+        """
+        cfg = self.config
+        if not (cfg.turbulence == "none" and cfg.surface_bulk_scheme == "constant"
+                and cfg.physics_parameterization == "none"):
+            return physics_fn, None
+        if self.get_sst_sic is None:
+            raise ValueError(
+                "turbulence='none' with surface_bulk_scheme='constant' applies "
+                "the bulk surface exchange, which needs a prescribed SST/SIC "
+                "source; this run has none. Set surface_bulk_scheme='none' to "
+                "run without surface fluxes.")
+        from legoesm.atmosphere.physics.turbulence.integration import (
+            make_surface_bulk_physics)
+        from legoesm.forcing.surface_utils import blend_surface_temperature
+        bulk = make_surface_bulk_physics(float(cfg.C_H), float(cfg.C_E))
+        n_lat, n_lon = int(self.grid.n_lat), int(self.grid.n_lon)
+
+        def _flat(x):
+            x = jnp.asarray(x)
+            if x.ndim == 1 and x.shape[0] == n_lat:
+                x = jnp.broadcast_to(x[:, None], (n_lat, n_lon))
+            if x.size != n_lat * n_lon:
+                raise ValueError(
+                    f"SST/SIC forcing has {x.size} values, the lat-lon grid "
+                    f"{n_lat * n_lon} columns.")
+            return x.reshape(-1)
+
+        def segment_forcing(done):
+            sst, sic = self.get_sst_sic(day_of(done))
+            return {"T_sfc": blend_surface_temperature(
+                _flat(sst), _flat(sic), float(cfg.T_ice))}
+
+        def physics(hs, grid, sigma_coord, forcing):
+            t = bulk(hs, grid, sigma_coord, forcing=forcing)
+            if physics_fn is not None:
+                b = physics_fn(hs, grid, sigma_coord)
+                t = t._replace(
+                    du_dt=t.du_dt.replace(data=t.du_dt.data + b.du_dt.data),
+                    dv_dt=t.dv_dt.replace(data=t.dv_dt.data + b.dv_dt.data),
+                    dT_dt=t.dT_dt.replace(data=t.dT_dt.data + b.dT_dt.data),
+                    dp_s_dt=t.dp_s_dt.replace(
+                        data=t.dp_s_dt.data + b.dp_s_dt.data),
+                    dphis_dt=t.dphis_dt.replace(
+                        data=t.dphis_dt.data + b.dphis_dt.data))
+                if b.tracer_tendencies is not None:
+                    raise NotImplementedError(
+                        "the lane physics returned tracer tendencies; summing "
+                        "them with the surface exchange is not wired.")
+            return t, forcing
+
+        physics._requires_phys_state = True
+        return physics, segment_forcing
+
     def _reject_unconsumed_flux_override(self, lane: str) -> None:
         """Refuse a coupler flux handback (``get_sfc_flux_override``, set by
         ``couple_surface_fluxes``) on a run loop that never reads it: the
@@ -16799,11 +16902,15 @@ class ModelDriver:
             if self._segment_callback is not None:
                 self._segment_callback(self, day, DT * seg_n)
 
+        physics_fn, segment_forcing = self._with_segment_bulk_surface(
+            physics_fn,
+            lambda done: START_DAY + (start_step + done) * DT / 86400.0)
+
         t0 = time.time()
         hs_final, status = run_atm_latlon_spmd(
             self.model, mesh, self.state, DT, n_run,
             segment_steps=seg_len, physics_fn=physics_fn,
-            on_segment=_on_segment,
+            on_segment=_on_segment, segment_forcing=segment_forcing,
             # M2b opt-in (--latlon-spmd-compiled-segments): one compiled
             # lax.scan per segment; default False = per-step path.
             compiled_segments=cfg.latlon_spmd_compiled_segments)
@@ -17278,9 +17385,38 @@ class ModelDriver:
             n_run, seg_len, kt, dc.n_devices,
             "kessler" if column_physics_fn is not None else "dynamics-only")
 
+        # No turbulence scheme: the pipeline's constant-coefficient surface
+        # exchange, against the SST/sea-ice blend re-sampled every segment.
+        _tile_sfc_fn = None
+        _seg_T_sfc = None
+        if (cfg.turbulence == "none" and cfg.surface_bulk_scheme == "constant"
+                and cfg.physics_parameterization == "none"):
+            if self.get_sst_sic is None:
+                raise ValueError(
+                    "turbulence='none' with surface_bulk_scheme='constant' "
+                    "applies the bulk surface exchange, which needs a "
+                    "prescribed SST/SIC source; this run has none. Set "
+                    "surface_bulk_scheme='none' to run without surface "
+                    "fluxes.")
+            from legoesm.atmosphere.physics.turbulence.integration import (
+                make_column_surface_bulk_fn)
+            from legoesm.forcing.surface_utils import (
+                blend_surface_temperature)
+            _tile_sfc_fn = make_column_surface_bulk_fn(
+                self.sigma, float(cfg.C_H), float(cfg.C_E))
+            _n_cube = int(self.grid.n)
+
+            def _seg_T_sfc(done):
+                _sst, _sic = self.get_sst_sic(
+                    START_DAY + (start_step + done) * DT / 86400.0)
+                return blend_surface_temperature(
+                    jnp.asarray(_sst).reshape(6, _n_cube, _n_cube),
+                    jnp.asarray(_sic).reshape(6, _n_cube, _n_cube),
+                    float(cfg.T_ice))
+
         enter, tiled_step, tiled_exit = make_tiled_cc_loop(
             self.model, mesh, kt=kt, dt=float(DT),
-            column_physics_fn=column_physics_fn)
+            column_physics_fn=column_physics_fn, surface_fn=_tile_sfc_fn)
         # M3b increment 1: each segment is ONE compiled lax.scan of the
         # blocked step — one host dispatch per SEGMENT instead of per step,
         # carry persistently tile-sharded, donated between segments.  At
@@ -17318,7 +17454,8 @@ class ModelDriver:
                 for nm in ("q_v", "q_c", "q_r")
             })
         template = self.state
-        blocked = enter(self.state)
+        blocked = (enter(self.state) if _seg_T_sfc is None
+                   else enter(self.state, T_sfc=_seg_T_sfc(0)))
 
         # #921: prime every NCCL clique the blocked step uses (the halo
         # collective-permutes + the in-stage mass-fixer psum) in a fixed,
@@ -17334,6 +17471,9 @@ class ModelDriver:
         step_done = 0
         while step_done < n_run:
             seg_n = min(seg_len, n_run - step_done)
+            if _seg_T_sfc is not None and step_done > 0:
+                blocked = {**blocked, "T_sfc": jax.device_put(
+                    _seg_T_sfc(step_done), blocked["T_sfc"].sharding)}
             blocked = _scanned(seg_n)(blocked)
             step_done += seg_n
             # Per-SEGMENT gather: coupler callback + host blowup guard

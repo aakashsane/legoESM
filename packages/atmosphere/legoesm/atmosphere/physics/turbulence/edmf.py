@@ -164,9 +164,9 @@ def _mass_flux_tendency(phi, phi_u, M, dz_layer, rho, z_full, z_half):
     There is no mass-flux transport through the model top (``F_top = 0``); the
     lowest interface carries the plume's own bottom MF flux ``F_sfc = flux[-1] =
     M·(φ_u − φ)`` — set by the surface updraft initialization (``parcel_dT`` /
-    ``w_u``), NOT the physical ``shflx`` / ``lhflx`` (those drive the ED solve).
-    Retaining it keeps the surface-driven plume transport; hard-zeroing it broke
-    ``test_mass_flux_active`` (iter-50) and is NOT done here.
+    ``w_u``).  It is PART of the surface flux, not added to it: the caller
+    subtracts it from the ED lower boundary condition so ED + MF at the
+    surface equals the physical ``shflx`` / ``lhflx`` (SST07 Eq. 5).
     """
     flux = M * (phi_u - phi)                       # cell-centred updraft flux, (ncol, nlev)
     ncol = flux.shape[0]
@@ -468,13 +468,22 @@ def edmf_turbulence(
     sflx_q = surface_moisture_flux(config.surface, lhflx, T_sfc)
     # Heat BC carries the latent enthalpy correction (water at L(T) vs L_v).
     sflx_T = (shflx + latent_enthalpy_correction(lhflx, sflx_q)) / constants.c_pd
+    # Total surface flux = ED + MF (SST07 Eq. 5): the plume's own bottom flux
+    # M·(φ_u − φ) already enters the lowest layer through the MF tendency, so
+    # the ED lower BC carries only the remainder.  The θ share is converted
+    # with the lowest layer's Exner factor, the one the MF tendency applies
+    # there, so the surface part of the MF heating cancels exactly.
+    sflx_T_ed = sflx_T - (M[:, -1] * (theta_u[:, -1] - theta[:, -1])
+                          * exner_inv[:, -1])
+    sflx_q_ed = sflx_q - M[:, -1] * (q_u[:, -1] - q_v[:, -1])
 
     u_new = implicit_vertical_diffusion(u, Km_half, rho, dz_layer, dz_half, dt, sflx_u)
     v_new = implicit_vertical_diffusion(v, Km_half, rho, dz_layer, dz_half, dt, sflx_v)
     T_new = implicit_vertical_diffusion_theta(
-        T, Kh_half, rho, dz_layer, dz_half, p_full, dt, sflx_T,
+        T, Kh_half, rho, dz_layer, dz_half, p_full, dt, sflx_T_ed,
     )
-    q_new = implicit_vertical_diffusion(q_v, Kh_half, rho, dz_layer, dz_half, dt, sflx_q)
+    q_new = implicit_vertical_diffusion(q_v, Kh_half, rho, dz_layer, dz_half, dt,
+                                        sflx_q_ed)
 
     # Combined: ED + MF
     du_dt = (u_new - u) / dt

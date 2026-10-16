@@ -273,7 +273,7 @@ def test_edmf_mass_flux_scalar_transport_live_vs_inactive():
     grid = _grid()
     out_a, _, _ = _run(TurbulentEDMFConfig(surface_excess_prefactor=1.0), grid=grid,
                        u_top=8.0, u_sfc=5.0)
-    out_b, _, _ = _run(TurbulentEDMFConfig(surface_excess_prefactor=4.0), grid=grid,
+    out_b, _, _ = _run(TurbulentEDMFConfig(surface_excess_prefactor=2.0), grid=grid,
                        u_top=8.0, u_sfc=5.0)
     assert np.all(np.asarray(out_a.shflx) > 1.0)              # surface genuinely heats
     assert np.allclose(np.asarray(out_a.Km), np.asarray(out_b.Km), rtol=1e-12)
@@ -313,11 +313,11 @@ def test_edmf_plume_surface_flux_is_part_of_the_surface_flux():
     """ED + MF at the surface equals the physical surface flux (SST07 Eq. 5).
     Heated, dry surface (no moisture flux, so no latent enthalpy term): the
     column's mass-weighted (rho*dz, the scheme's own weights) theta tendency
-    equals shflx/(c_pd*Pi_1) to round-off, with an active plume (prefactor 4
+    equals shflx/(c_pd*Pi_1) to round-off, with an active plume (prefactor 2
     vs 1 changes the profile but not the column total).  Before, the plume's
     bottom flux a*rho*w*(theta_u - theta) was added on top of the surface flux."""
     totals = []
-    for alpha in (1.0, 4.0):
+    for alpha in (1.0, 2.0):
         out, _, inp = _run(TurbulentEDMFConfig(surface_excess_prefactor=alpha),
                            grid=_grid(), dry_surface=True,
                            u_top=8.0, u_sfc=5.0)

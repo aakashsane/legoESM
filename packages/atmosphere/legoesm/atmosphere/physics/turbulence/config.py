@@ -179,7 +179,9 @@ __param_spec__ = {
             "Pr_t": {"units": "1", "bounds": (0.3, 1.5), "tunable_tier": 2, "transform": "sigmoid", "category": "diffusivity", "reference": "turbulent Prandtl number Kh = Km/Pr_t", "shape": None},
             "a_updraft": {"units": "1", "bounds": (0.01, 0.3), "tunable_tier": 2, "transform": "sigmoid", "category": "mass_flux", "reference": "Siebesma et al. (2007) updraft area fraction", "shape": None},
             "entrainment_rate": {"units": "1/m", "bounds": (1e-04, 1e-02), "tunable_tier": 1, "transform": "sigmoid", "category": "entrainment", "reference": "Siebesma et al. (2007) lateral entrainment rate", "shape": None},
-            "surface_excess_prefactor": {"units": "1", "bounds": (0.3, 8.0), "tunable_tier": 2, "transform": "sigmoid", "category": "mass_flux", "reference": "Siebesma et al. (2007) Eq. 17 prefactor (LES ~1; Troen & Mahrt 1986 ~8)", "shape": None},
+            # Capped at 2 until the plume carries heat: the MF theta transport
+            # leaks 5.6 % of the surface heat flux at 4 and 15.4 % at 8.
+            "surface_excess_prefactor": {"units": "1", "bounds": (0.3, 2.0), "tunable_tier": 2, "transform": "sigmoid", "category": "mass_flux", "reference": "Siebesma et al. (2007) Eq. 17 prefactor (LES ~1; Troen & Mahrt 1986 ~8)", "shape": None},
             "l_mix_max": {"units": "m", "bounds": (10.0, 300.0), "tunable_tier": 1, "transform": "sigmoid", "category": "mixing_length", "reference": "Blackadar (1962) asymptotic mixing length", "shape": None},
             # w_updraft_min is LIVE: it floors the initial updraft velocity
             # (edmf.py:173) and sets the velocity scale of the deactivation

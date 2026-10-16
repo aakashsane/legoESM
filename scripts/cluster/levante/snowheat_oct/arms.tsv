@@ -19,6 +19,12 @@ sh2_gate_on2	275	276	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main
 # sh2_gate_on_rs with SRC=<ROOT>/sh2_gate_on after sh2_gate_on finished; see bundle.sbatch)
 sh2_gate_on_2d	275	277	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD	 --land-snow-insulation
 sh2_gate_on_rs	276	277	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD	 --land-snow-insulation
+# OFF restart round-trip: tells a snow-layer restart defect from a model one
+sh2_gate_off_2d	275	277	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD	 --no-land-snow-insulation
+sh2_gate_off_rs	276	277	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD	 --no-land-snow-insulation
+# ON restart from sh2_gate_on's day 276 with T_snow -2 K on snow columns
+# (perturb_snow.py): must differ from sh2_gate_on_rs, so the saved layer is read
+sh2_gate_on_pert	276	277	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD	 --land-snow-insulation
 sh2_gate_base	275	276	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD
 # base twice: proves the gate can say IDENTICAL at all (run-to-run determinism)
 sh2_gate_base2	275	276	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD

@@ -13,10 +13,14 @@
 # absolute repo and commit (arm.tsv columns 3-4; extra flags last); bundle refuses
 # a repo that moved since setup.  Same as campaign_amip_bias_0929/bundle.sbatch otherwise.
 # ORDER (the OFF arms are the plain production default only if step 2 passes):
-#   1. sbatch --nodes=6 --job-name=sh2_gate --export=ALL,ARMS="sh2_gate_off sh2_gate_on sh2_gate_on2 sh2_gate_on_2d sh2_gate_base sh2_gate_base2" bundle.sbatch
-#      then, once sh2_gate_on has written day 276:
-#      SRC=${ROOT:-/work/bd1083/b309178/diffESM/legoesm_pg/amip_runs}/sh2_gate_on EXPECT_COMMIT=<same> setup_arms.sh sh2_gate_on_rs
-#      sbatch --nodes=1 --job-name=sh2_gate_rs --export=ALL,ARMS="sh2_gate_on_rs" bundle.sbatch
+#   1. sbatch --nodes=7 --job-name=sh2_gate --export=ALL,ARMS="sh2_gate_off sh2_gate_on sh2_gate_on2 sh2_gate_on_2d sh2_gate_off_2d sh2_gate_base sh2_gate_base2" bundle.sbatch
+#      then, once sh2_gate_on and sh2_gate_off have written day 276
+#      (R=${ROOT:-/work/bd1083/b309178/diffESM/legoesm_pg/amip_runs}):
+#      SRC=$R/sh2_gate_on  EXPECT_COMMIT=<same> setup_arms.sh sh2_gate_on_rs
+#      SRC=$R/sh2_gate_off EXPECT_COMMIT=<same> setup_arms.sh sh2_gate_off_rs
+#      mkdir $R/sh2_gate_on_pert_src && python perturb_snow.py $R/sh2_gate_on/checkpoint_day_0276.npz $R/sh2_gate_on_pert_src/checkpoint_day_0276.npz --delta-K -2
+#      SRC=$R/sh2_gate_on_pert_src EXPECT_COMMIT=<same> setup_arms.sh sh2_gate_on_pert
+#      sbatch --nodes=3 --job-name=sh2_gate_rs --export=ALL,ARMS="sh2_gate_on_rs sh2_gate_off_rs sh2_gate_on_pert" bundle.sbatch
 #   2. python compare_gate.py $ROOT/sh2_gate_base/checkpoint_day_0276.npz $ROOT/sh2_gate_base2/checkpoint_day_0276.npz
 #      (base vs base: the run must be reproducible for the gate to mean anything), then
 #      python compare_gate.py $ROOT/sh2_gate_off/checkpoint_day_0276.npz $ROOT/sh2_gate_base/checkpoint_day_0276.npz
@@ -26,9 +30,15 @@
 #      python compare_gate.py $ROOT/sh2_gate_on/checkpoint_day_0276.npz $ROOT/sh2_gate_on2/checkpoint_day_0276.npz
 #      python compare_gate.py $ROOT/sh2_gate_on/checkpoint_day_0276.npz $ROOT/sh2_gate_on_2d/checkpoint_day_0276.npz
 #      python compare_gate.py $ROOT/sh2_gate_on_rs/checkpoint_day_0277.npz $ROOT/sh2_gate_on_2d/checkpoint_day_0277.npz
+#      python compare_gate.py $ROOT/sh2_gate_off/checkpoint_day_0276.npz $ROOT/sh2_gate_off_2d/checkpoint_day_0276.npz
+#      python compare_gate.py $ROOT/sh2_gate_off_rs/checkpoint_day_0277.npz $ROOT/sh2_gate_off_2d/checkpoint_day_0277.npz
 #      -> all IDENTICAL (ON reproducible; run length does not change the day-276
-#      state; ON state survives a restart).
-#      Step 3 re-runs all six comparisons itself and refuses to launch unless they pass.
+#      state; ON and OFF states survive a restart); and
+#      python perturb_snow.py --verify $ROOT/sh2_gate_on_pert/checkpoint_day_0277.npz $ROOT/sh2_gate_on_rs/checkpoint_day_0277.npz
+#      -> PASS: snow temperature finite, changed, and colder on average over snow
+#      columns (the restart reads the saved layer).
+#      Step 3 re-runs all nine comparisons itself and refuses to launch unless they pass.
+#      ON round-trip fails but OFF passes: snow-layer restart defect; both fail: model.
 #   3. sbatch --nodes=4 --job-name=snowheat2 --export=ALL,ARMS="sh2_on_a sh2_off_a sh2_on_b sh2_off_b" bundle.sbatch
 #      90 days should fit one job.  If an arm is killed instead (under MPI the
 #      model's wall-clock exit is inactive, and checkpoints are written in
@@ -85,7 +95,10 @@ if (( n_gate == 0 )); then
      "$(_gc sh2_gate_on)" == "$(_gc sh2_gate_off)" && \
      "$(_gc sh2_gate_on2)" == "$(_gc sh2_gate_off)" && \
      "$(_gc sh2_gate_on_2d)" == "$(_gc sh2_gate_off)" && \
-     "$(_gc sh2_gate_on_rs)" == "$(_gc sh2_gate_off)" ]] \
+     "$(_gc sh2_gate_on_rs)" == "$(_gc sh2_gate_off)" && \
+     "$(_gc sh2_gate_off_2d)" == "$(_gc sh2_gate_off)" && \
+     "$(_gc sh2_gate_off_rs)" == "$(_gc sh2_gate_off)" && \
+     "$(_gc sh2_gate_on_pert)" == "$(_gc sh2_gate_off)" ]] \
     || { echo "REFUSING: base gate arms ran a different commit" >&2; exit 64; }
   GATE="$(dirname "${CHAIN}")/snowheat_oct/compare_gate.py"
   g="checkpoint_day_0276.npz"
@@ -95,6 +108,9 @@ if (( n_gate == 0 )); then
     && "${PY}" "${GATE}" "${ROOT}/sh2_gate_on/${g}" "${ROOT}/sh2_gate_on2/${g}" \
     && "${PY}" "${GATE}" "${ROOT}/sh2_gate_on/${g}" "${ROOT}/sh2_gate_on_2d/${g}" \
     && "${PY}" "${GATE}" "${ROOT}/sh2_gate_on_rs/checkpoint_day_0277.npz" "${ROOT}/sh2_gate_on_2d/checkpoint_day_0277.npz" \
+    && "${PY}" "${GATE}" "${ROOT}/sh2_gate_off/${g}" "${ROOT}/sh2_gate_off_2d/${g}" \
+    && "${PY}" "${GATE}" "${ROOT}/sh2_gate_off_rs/checkpoint_day_0277.npz" "${ROOT}/sh2_gate_off_2d/checkpoint_day_0277.npz" \
+    && "${PY}" "$(dirname "${GATE}")/perturb_snow.py" --verify "${ROOT}/sh2_gate_on_pert/checkpoint_day_0277.npz" "${ROOT}/sh2_gate_on_rs/checkpoint_day_0277.npz" \
     || { echo "REFUSING: the 1-day gate has not passed" >&2; exit 64; }
 fi
 export ROOT PY AMIP_SURFDATA ERA5_IC AMIP_N_GPUS=4

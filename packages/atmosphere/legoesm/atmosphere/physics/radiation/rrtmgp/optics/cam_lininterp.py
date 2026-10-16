@@ -75,7 +75,9 @@ def lininterp_init(yin, yout, extrap_method: int, cyclicmin=None, cyclicmax=None
         raise ValueError("LININTERP: cyclic min value must be < max value")
     icount = int(np.sum(yin[:-1] > yin[1:]))
     if icount == nin - 1:
-        raise ValueError("LININTERP: decreasing input grid (CAM supports it; not ported)")
+        raise ValueError("LININTERP: decreasing input grid is refused (user decision 2026-10-16). "
+                         "Reverse the coordinate and the data along that axis so the coordinate "
+                         "increases, then call again.")
     if icount > 0:
         raise ValueError("LININTERP: Non-monotonic input coordinate array found")
     if extrap_method not in (1, 2):

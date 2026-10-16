@@ -152,6 +152,11 @@ materiality positive and negative cases, a missing required archive field, a
 non-finite provider, a refusing-provider joint plant, explicit GPU selection,
 full-state-window refusal without per-step mode, thickness-weighted tracer
 means, and equality of the observed and ordinary fake-model trajectories.
+The receipt citation gate reports PASS: one citation, zero failures, zero
+unmapped citations, and all 9/9 self-tests firing.  Its committed-receipt
+artifact is `receipt_citation_gate.json`, SHA-256
+`b93fd3ae2ffc64822e186817167b79e9467a1aacdb4c7a69932eebb7fe953ba1`;
+the citation-gate unit suite passes 17/17.
 
 ## Compiled-source citations
 

@@ -130,6 +130,12 @@ def test_loader_refuses_wrong_checksum_and_band_order(tmp_path):
     bad.to_netcdf(q)
     with pytest.raises(ValueError, match="band sequence"):
         mio.load_mitchell_ice_optics(q, expected_sha256=hashlib.sha256(open(q, "rb").read()).hexdigest())
+    nanv = ds["lw_abs"].values.copy()
+    nanv[2, 5] = np.inf
+    r = tmp_path / "nan.nc"
+    ds.assign(lw_abs=(ds.lw_abs.dims, nanv)).to_netcdf(r)
+    with pytest.raises(ValueError, match="non-finite"):
+        mio.load_mitchell_ice_optics(r, expected_sha256=hashlib.sha256(open(r, "rb").read()).hexdigest())
 
 
 def test_gradient_finite_and_matches_fd(table):

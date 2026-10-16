@@ -5342,21 +5342,75 @@ def test_forcing_hold_outside_file_years_round_trips_and_defaults_off():
 
 def test_mpas_vert4_flux_form_tracers_flag_flows_to_dycore_config():
     """--mpas-vert4-flux-form-tracers reaches DycoreConfig as a tuple; absent
-    means the default (q_v, owner decision 2026-10); the bare flag means none."""
+    means the default (none since 2026-10-15: q_v takes the log form); the bare
+    flag means none."""
     parser = build_arg_parser()
     cfg_default = build_config_from_args(_postprocess_args(
         parser.parse_args(["--dataset", "analytical"]), parser))
-    assert cfg_default.dycore.mpas_vert4_flux_form_tracers == ("q_v",)
+    assert cfg_default.dycore.mpas_vert4_flux_form_tracers == ()
     cfg_none = build_config_from_args(_postprocess_args(parser.parse_args([
         "--dataset", "analytical", "--mpas-vert4-flux-form-tracers"]), parser))
     assert cfg_none.dycore.mpas_vert4_flux_form_tracers == ()
+    # The pre-2026-10-15 spelling (flux flag alone) now overlaps the log default:
+    # a hard error that names the flag to add (user decision by vote 2026-10-15).
+    old = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--mpas-vert4-flux-form-tracers", "q_v"]), parser))
+    with pytest.raises(ValueError, match=r"--mpas-vert4-log-form-tracers with no names"):
+        old.validate_strict()
     cfg_set = build_config_from_args(_postprocess_args(parser.parse_args([
         "--dataset", "analytical", "--mpas-vert4-flux-form-tracers", "q_v",
-    ]), parser))
+        "--mpas-vert4-log-form-tracers"]), parser))
     assert cfg_set.dycore.mpas_vert4_flux_form_tracers == ("q_v",)
+    cfg_set.validate_strict()
     # a typo'd tracer name is refused at validation (the dycore would skip it)
     for typo in (("qv",), ("trc_q_v",), "q_v", ""):
         bad = cfg_set._replace(dycore=cfg_set.dycore._replace(
             mpas_vert4_flux_form_tracers=typo))
         with pytest.raises(ValueError, match="mpas_vert4_flux_form_tracers"):
             bad.validate_strict()
+
+
+def test_mpas_vert4_log_form_tracers_flag_flows_to_dycore_config():
+    """--mpas-vert4-log-form-tracers reaches DycoreConfig as a tuple; absent
+    means q_v (code default since 2026-10-15, user decision); typos and an
+    overlap with the flux-form list are refused at validation."""
+    parser = build_arg_parser()
+    cfg_default = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert cfg_default.dycore.mpas_vert4_log_form_tracers == ("q_v",)
+    assert cfg_default.dycore.mpas_vert4_flux_form_tracers == ()
+    cfg_default.validate_strict()
+    from legoesm.driver.config import DycoreConfig
+    assert DycoreConfig().mpas_vert4_log_form_tracers == ("q_v",)
+    assert DycoreConfig().mpas_vert4_flux_form_tracers == ()
+    cfg_set = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--mpas-vert4-flux-form-tracers",
+        "--mpas-vert4-log-form-tracers", "q_v"]), parser))
+    assert cfg_set.dycore.mpas_vert4_log_form_tracers == ("q_v",)
+    assert cfg_set.dycore.mpas_vert4_flux_form_tracers == ()
+    cfg_set.validate_strict()
+    for typo in (("qv",), "q_v", ""):
+        bad = cfg_set._replace(dycore=cfg_set.dycore._replace(
+            mpas_vert4_log_form_tracers=typo))
+        with pytest.raises(ValueError, match="mpas_vert4_log_form_tracers"):
+            bad.validate_strict()
+    both = cfg_set._replace(dycore=cfg_set.dycore._replace(
+        mpas_vert4_flux_form_tracers=("q_v",)))
+    with pytest.raises(ValueError, match="each tracer takes one filter form"):
+        both.validate_strict()
+
+
+def test_production_deck_selects_log_form_vapour_filter():
+    """Production deck -> loader -> DycoreConfig: vapour takes the log form of
+    the MPAS vertical del4 filter and no tracer takes the flux form (user
+    approved 2026-10-15).  Red if the deck row is dropped or reverted."""
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    parser = build_arg_parser()
+    keys = load_yaml_config(
+        str(_repo_root() / "config" / "amip" / "amip_production.yaml"), parser)
+    parser.set_defaults(**keys)
+    # No _postprocess_args: it needs forcing paths the deck lacks and does not
+    # touch the vert4 keys (same as the div-damp4 deck test).
+    cfg = build_config_from_args(parser.parse_args([]))
+    assert cfg.dycore.mpas_vert4_log_form_tracers == ("q_v",)
+    assert cfg.dycore.mpas_vert4_flux_form_tracers == ()

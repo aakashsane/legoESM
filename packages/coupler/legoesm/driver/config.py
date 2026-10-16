@@ -400,10 +400,19 @@ class DycoreConfig(NamedTuple):
     # The projected form subtracts the column-mean tendency as a uniform
     # mixing-ratio offset, which drains stratospheric water vapour (measured
     # -0.4 ppmv/day at 45-70N, -3 ppmv/day in the tropics on e12_year).
-    # Default ("q_v",) since 2026-10 (owner decision after the 60-day A/B:
-    # 45-70N 70-150 hPa vapour 0.64 -> 4.05 ppmv, 100-200 hPa T -2.3 K).
-    # Empty = every tracer projected (the pre-2026-10 form, for bit-comparison).
-    mpas_vert4_flux_form_tracers: tuple = ("q_v",)
+    # Was ("q_v",) from 2026-10 (60-day A/B vs projected: 45-70N 70-150 hPa
+    # vapour 0.64 -> 4.05 ppmv); empty since 2026-10-15, when q_v moved to the
+    # log form below (a tracer may not be in both lists).  Empty with an empty
+    # log list = every tracer projected (the pre-2026-10 form).
+    mpas_vert4_flux_form_tracers: tuple = ()
+    # Tracer names whose vertical del4 filter acts on ln(q + 1e-7) with a
+    # water-weighted, mass-conserving flux (``vertical_del4_tracer_tendency_log``):
+    # the flux form's fourth difference of q removes 4.5-8.8 %/day of
+    # upper-tropospheric water from ERA5 profiles; the log form does not drift
+    # an exponential-in-level profile.  Must not overlap the flux-form list.
+    # Default ("q_v",) since 2026-10-15 (user decision after the 30/60-day pair
+    # against the flux form); amip_production.yaml also pins it explicitly.
+    mpas_vert4_log_form_tracers: tuple = ("q_v",)
 
 
 class EvaluationConfig(NamedTuple):
@@ -3794,6 +3803,24 @@ class ExperimentConfig(NamedTuple):
             errors.append(
                 f"dycore.mpas_vert4_flux_form_tracers: unknown tracer names {_bad} "
                 "(expected per-mass water/number tracers such as q_v)")
+        _v4l = getattr(d, "mpas_vert4_log_form_tracers", ())
+        if isinstance(_v4l, str):
+            errors.append(
+                "dycore.mpas_vert4_log_form_tracers must be a list of tracer "
+                f"names, got the string {_v4l!r}")
+        elif _bad := [n for n in (_v4l or ()) if n not in BORROW_ELIGIBLE_TRACERS]:
+            errors.append(
+                f"dycore.mpas_vert4_log_form_tracers: unknown tracer names {_bad} "
+                "(expected per-mass water/number tracers such as q_v)")
+        elif not isinstance(_v4f, str) and (
+                _both := sorted(set(_v4f or ()) & set(_v4l or ()))):
+            errors.append(
+                f"dycore: tracers {_both} are in both mpas_vert4_flux_form_tracers "
+                "and mpas_vert4_log_form_tracers; each tracer takes one filter form. "
+                f"The log-form list defaults to {DycoreConfig._field_defaults['mpas_vert4_log_form_tracers']}: "
+                f"to give {_both} the flux form, also set the log-form list without "
+                "them (CLI: --mpas-vert4-log-form-tracers with no names; YAML: "
+                "mpas_vert4_log_form_tracers: [])")
         if d.mpas_vert_advection_scheme not in _vert_adv_options:
             errors.append(
                 f"dycore.mpas_vert_advection_scheme must be one of "

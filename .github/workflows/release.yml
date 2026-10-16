@@ -2,8 +2,9 @@ name: release
 
 # Publishes all nine workspace distributions (legoesm + the eight legoesm-*
 # members) to PyPI when a version tag is pushed. Uses PyPI trusted publishing:
-# each of the nine projects must list this repository, this workflow file and
-# the `pypi` environment as a trusted publisher.
+# each project lists this repository, this workflow file and its own
+# environment as a trusted publisher: `pypi` for legoesm, `pypi-legoesm-<member>`
+# for each member (PyPI refuses one pending publisher config for two projects).
 on:
   push:
     tags: ["v*"]
@@ -51,7 +52,11 @@ jobs:
   publish-members:
     needs: build
     runs-on: ubuntu-latest
-    environment: pypi
+    strategy:
+      fail-fast: false
+      matrix:
+        member: [core, atmosphere, ocean, land, ice, coupler, ml, tools]
+    environment: pypi-legoesm-${{ matrix.member }}
     permissions:
       id-token: write
     steps:
@@ -59,7 +64,7 @@ jobs:
         with:
           name: dist
           path: dist/
-      - run: rm dist/legoesm-[0-9]* && ls dist && test "$(ls dist | wc -l)" = 16
+      - run: find dist -type f ! -name 'legoesm[-_]${{ matrix.member }}-[0-9]*' -delete && ls dist && test "$(ls dist | wc -l)" = 2
       # Pinned by commit (v1.14.2): this step holds the publishing token.
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:

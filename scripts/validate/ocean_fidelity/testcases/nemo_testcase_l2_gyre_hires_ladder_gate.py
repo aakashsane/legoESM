@@ -2826,8 +2826,10 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
             tracer_process_trace=(), vertical_solve_trace=True),
     )
+    arm_model = LatLonCGridOceanModel(
+        card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
 
-    def run(override=None):
+    def run_trace(override=None):
         return jax.device_get(model.step(
             state,
             card.dt_s,
@@ -2836,7 +2838,16 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
             _vertical_K_test_override=override,
         ))
 
-    free = run()
+    def run_arm(override=None):
+        return jax.device_get(arm_model.step(
+            state,
+            card.dt_s,
+            freshwater=freshwater,
+            surface_forcing=surface,
+            _vertical_K_test_override=override,
+        ))
+
+    free = run_trace()
     trace = free.vertical_solve
     own = {
         "heat_K": np.asarray(trace.heat_K, dtype=np.float64),
@@ -2885,29 +2896,30 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         )
 
     def output_rows(name: str, result) -> dict:
+        state_after = getattr(result, "state_after", result)
         return {
             "variable": name,
             "temperature": exact_score(
                 f"GYRE-zco-r4.kt1.{name}.solved_T",
                 nemo_solved["T"],
-                np.asarray(result.state_after.T.data, dtype=np.float64),
+                np.asarray(state_after.T.data, dtype=np.float64),
                 wet,
             ),
             "salinity": exact_score(
                 f"GYRE-zco-r4.kt1.{name}.solved_S",
                 nemo_solved["S"],
-                np.asarray(result.state_after.S.data, dtype=np.float64),
+                np.asarray(state_after.S.data, dtype=np.float64),
                 wet,
             ),
         }
 
     production = output_rows("production", free)
-    passive_result = run(fixed({}))
+    passive_result = run_arm(fixed({}))
     passive = {
         field: exact_score(
             f"control.step1_vertical_seam_disabled.{field}",
             np.asarray(getattr(free.state_after, field).data),
-            np.asarray(getattr(passive_result.state_after, field).data),
+            np.asarray(getattr(passive_result, field).data),
             wet,
         )
         for field in ("T", "S")
@@ -2929,7 +2941,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
     }
     for name in ordered:
         replacement = nemo_inputs[name]
-        result = run(fixed({name: replacement}))
+        result = run_arm(fixed({name: replacement}))
         row = output_rows(name, result)
         rows.append(row)
 
@@ -2937,12 +2949,12 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         active = candidate_masks[name]
         index = tuple(int(value) for value in np.argwhere(active)[0])
         planted_value[index] *= plant_scale
-        planted = run(fixed({name: planted_value}))
+        planted = run_arm(fixed({name: planted_value}))
         plant_field = "S" if name == "salinity_content" else "T"
         plant_row = exact_score(
             f"control.step1_vertical.{name}.active_scale_plant",
-            np.asarray(getattr(result.state_after, plant_field).data),
-            np.asarray(getattr(planted.state_after, plant_field).data),
+            np.asarray(getattr(result, plant_field).data),
+            np.asarray(getattr(planted, plant_field).data),
             wet,
         )
         if plant_row["n_unequal"] == 0:
@@ -3002,66 +3014,49 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
                 nemo_solved["S"], np.asarray(solved_s), wet),
         })
 
-    minimal_temperature = minimal_exact_subsets(
+    solver_minimal_temperature = minimal_exact_subsets(
         solver_rows, fields=("temperature",))
-    minimal_salinity = minimal_exact_subsets(
+    solver_minimal_salinity = minimal_exact_subsets(
         solver_rows, fields=("salinity",))
-    minimal_joint = minimal_exact_subsets(solver_rows)
+    solver_minimal_joint = minimal_exact_subsets(solver_rows)
 
-    # Validate every exact minimum, the two preregistered arms, and every
-    # one-member removal through the full production-compiled ocean step.
+    # Substitution effects are not assumed monotone: cancelling pairs are a
+    # campaign-known failure mode.  Exhaust all 63 non-empty subsets through
+    # the unobserved production-compiled step.  Singletons were run above;
+    # solver-only subsets retain preregistered order, then heat-K-containing
+    # subsets cover the upstream coefficient before formation.
     full_names = [
-        ("formed_K", "temperature_content"),
-        ("formed_K", "temperature_content", "salinity_content"),
+        members for members in ordered_vertical_solver_subsets()
+        if len(members) > 1
     ]
-    for winners in (minimal_temperature, minimal_salinity, minimal_joint):
-        for found in winners:
-            winner = tuple(found)
-            for members in (winner, *(tuple(
-                    name for name in winner if name != removed)
-                    for removed in winner)):
-                if len(members) > 1 and members not in full_names:
-                    full_names.append(members)
+    full_names.extend(
+        ("heat_K", *members)
+        for members in ((), *ordered_vertical_solver_subsets())
+        if len(members) > 0
+    )
     subset_rows = []
     for members in full_names:
         row = output_rows(
             "+".join(members),
-            run(fixed({name: nemo_inputs[name] for name in members})),
+            run_arm(fixed({name: nemo_inputs[name] for name in members})),
         )
         row["members"] = list(members)
         subset_rows.append(row)
 
-    all_inputs = output_rows(
-        "all_recorded_inputs", run(fixed(nemo_inputs)))
-    all_inputs["members"] = list(ordered)
-    full_rows = {
-        tuple(row.get("members", (row["variable"],))): row
-        for row in ([{**row, "members": [row["variable"]]} for row in rows]
-                    + subset_rows + [all_inputs])
-    }
-    validated_minima = []
-    for field, winners in (
-        ("temperature", minimal_temperature),
-        ("salinity", minimal_salinity),
-        ("joint", minimal_joint),
-    ):
-        for winner in winners:
-            row = full_rows.get(tuple(winner))
-            exact = row is not None and (
-                row["temperature"]["n_unequal"] == 0
-                if field == "temperature" else
-                row["salinity"]["n_unequal"] == 0
-                if field == "salinity" else
-                row["temperature"]["n_unequal"] == 0
-                and row["salinity"]["n_unequal"] == 0)
-            validated_minima.append({
-                "field": field, "members": winner,
-                "full_step_exact": bool(exact), "full_step_row": row,
-            })
+    full_search_rows = [
+        {**row, "members": [row["variable"]]} for row in rows
+    ] + subset_rows
+    full_rows = {tuple(row["members"]): row for row in full_search_rows}
+    all_members = tuple(ordered)
+    all_inputs = dict(full_rows[all_members])
+    all_inputs["variable"] = "all_recorded_inputs"
+    minimal_temperature = minimal_exact_subsets(
+        full_search_rows, fields=("temperature",))
+    minimal_salinity = minimal_exact_subsets(
+        full_search_rows, fields=("salinity",))
+    minimal_joint = minimal_exact_subsets(full_search_rows)
     if removed_by is not None:
         classification = "ONE_VARIABLE_OWNER"
-    elif not all(row["full_step_exact"] for row in validated_minima):
-        classification = "SOLVER_BOUNDARY_NOT_REPRODUCED_IN_FULL_STEP"
     elif minimal_joint and len(minimal_joint[0]) > 1:
         classification = "COUPLED_ROUNDING_ORDER_DEBT"
     elif minimal_joint:
@@ -3071,7 +3066,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
     else:
         classification = "INCOMPLETE_RECORDED_INPUT_SET"
 
-    row_by_members = {tuple(row["members"]): row for row in solver_rows}
+    row_by_members = full_rows
     member_necessity = []
     if minimal_joint:
         winner = tuple(minimal_joint[0])
@@ -3090,7 +3085,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         for name in ordered
     ]
     report = {
-        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v3",
+        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v4",
         "worktree": worktree_stamp(),
         "oracle_admission": admission,
         "policy": "fp64/x64/cpu/libm certified",
@@ -3101,13 +3096,17 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         "input_rows": input_rows,
         "one_variable_substitutions": rows,
         "solver_subset_substitutions": solver_rows,
-        "full_step_subset_validation": subset_rows,
+        "full_step_subset_substitutions": full_search_rows,
         "minimal_exact_solver_subsets": {
+            "temperature": solver_minimal_temperature,
+            "salinity": solver_minimal_salinity,
+            "joint": solver_minimal_joint,
+        },
+        "minimal_exact_full_step_subsets": {
             "temperature": minimal_temperature,
             "salinity": minimal_salinity,
             "joint": minimal_joint,
         },
-        "validated_minima": validated_minima,
         "minimal_joint_member_necessity": member_necessity,
         "first_residual_removing_substitution": removed_by,
         "all_recorded_inputs": all_inputs,

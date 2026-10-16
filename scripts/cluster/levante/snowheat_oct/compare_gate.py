@@ -1,9 +1,9 @@
 """Bit-identity gate: every array of two checkpoints must match exactly.
 
 Usage: compare_gate.py <ckpt_a.npz> <ckpt_b.npz>   (exit 0 = identical)
-Used before the snow-node A/B: the switch-OFF branch run and the base-commit
-run, both one day from the same restart, must write identical checkpoints for
-the base-commit controls to be shared.
+Used before the snow-node A/B: the explicit switch-OFF run and the plain
+production-default run (same tree, one day from the same restart) must write
+identical checkpoints for the OFF arms to stand as the production default.
 """
 from __future__ import annotations
 

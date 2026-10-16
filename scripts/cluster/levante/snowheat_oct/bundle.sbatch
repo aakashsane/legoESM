@@ -10,9 +10,9 @@
 #SBATCH --time=12:00:00
 #SBATCH --output=/work/bd1083/b309178/diffESM/legoesm_pg/amip_runs/slurm_logs/%x-%j.out
 # Several 4-GPU AMIP runs in ONE allocation, one per node, each with its OWN
-# absolute repo (arm.tsv column 3; extra flags last) so arms (branch) and controls (base commit)
-# share a job.  Same as campaign_amip_bias_0929/bundle.sbatch otherwise.
-# ORDER (the OFF arms are the shared 468cef302 control only if step 2 passes):
+# absolute repo and commit (arm.tsv columns 3-4; extra flags last); bundle refuses
+# a repo that moved since setup.  Same as campaign_amip_bias_0929/bundle.sbatch otherwise.
+# ORDER (the OFF arms are the plain production default only if step 2 passes):
 #   1. sbatch --nodes=3 --job-name=sh2_gate --export=ALL,ARMS="sh2_gate_off sh2_gate_base sh2_gate_base2" bundle.sbatch
 #   2. python compare_gate.py $ROOT/sh2_gate_base/checkpoint_day_0276.npz $ROOT/sh2_gate_base2/checkpoint_day_0276.npz
 #      (base vs base: the run must be reproducible for the gate to mean anything), then
@@ -22,9 +22,9 @@
 #   3. sbatch --nodes=4 --job-name=snowheat2 --export=ALL,ARMS="sh2_on_a sh2_off_a sh2_on_b sh2_off_b" bundle.sbatch
 # Chain: ONE script for every arm (base arms too), the frozen run tree's
 # amip_mpas_gpu_chain.sbatch, which pins a bundled arm's step to its own node
-# (AMIP_STEP_NODE; the 468cef302 chain lacks it and would stack the arms).
+# (AMIP_STEP_NODE).
 set -uo pipefail
-: "${CHAIN:=/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat2_run/scripts/cluster/levante/amip_mpas_gpu_chain.sbatch}"
+: "${CHAIN:=/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main/scripts/cluster/levante/amip_mpas_gpu_chain.sbatch}"
 [[ -f "${CHAIN}" ]] && grep -q AMIP_STEP_NODE "${CHAIN}" || { echo "REFUSING: ${CHAIN} cannot pin arms to nodes" >&2; exit 64; }
 : "${ROOT:=/work/bd1083/b309178/diffESM/legoesm_pg/amip_runs}"
 : "${PY:=/work/bd1083/b309178/diffESM/legoesm_pg/legoESM/.venv/bin/python}"
@@ -47,7 +47,7 @@ for a in "${arms[@]}"; do
 done
 # Long arms only after the 1-day gate, re-checked HERE from the checkpoints
 # (not from a note): base vs base2 (the run is reproducible) and switch-off vs
-# base (the OFF arms are plain 468cef302) must both be byte-identical.
+# base (the OFF arms are the plain production default) must both be byte-identical.
 # Residual, accepted: a tree moved between this check and the model import
 # (seconds) is caught only afterwards, by the commit each run log prints.
 n_gate=$(printf '%s\n' "${arms[@]}" | grep -c '^sh2_gate_')
@@ -55,15 +55,15 @@ n_gate=$(printf '%s\n' "${arms[@]}" | grep -c '^sh2_gate_')
   || { echo "REFUSING: gate and long arms in one submission" >&2; exit 64; }
 if (( n_gate == 0 )); then
   # The gate must have run the SAME code: the switch-off gate arm's recorded
-  # commit equals every long arm's, and the base gate arms ran 468cef302.
+  # commit equals every long arm's, and so does each base gate arm's.
   _gc() { IFS=$'\t' read -r _ _ _ c _ < "${ROOT}/$1/arm.tsv"; echo "${c}"; }
   for a in "${arms[@]}"; do
     [[ "$(_gc "${a}")" == "$(_gc sh2_gate_off)" ]] \
       || { echo "REFUSING: ${a} commit differs from the gate's" >&2; exit 64; }
   done
-  [[ "$(_gc sh2_gate_base)" == 468cef3020035652b7e170a83963c25ba110a1d3 && \
-     "$(_gc sh2_gate_base2)" == 468cef3020035652b7e170a83963c25ba110a1d3 ]] \
-    || { echo "REFUSING: base gate arms did not run 468cef302" >&2; exit 64; }
+  [[ "$(_gc sh2_gate_base)" == "$(_gc sh2_gate_off)" && \
+     "$(_gc sh2_gate_base2)" == "$(_gc sh2_gate_off)" ]] \
+    || { echo "REFUSING: base gate arms ran a different commit" >&2; exit 64; }
   GATE="$(dirname "${CHAIN}")/snowheat_oct/compare_gate.py"
   g="checkpoint_day_0276.npz"
   "${PY}" "${GATE}" "${ROOT}/sh2_gate_base/${g}" "${ROOT}/sh2_gate_base2/${g}" \

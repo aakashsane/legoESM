@@ -54,6 +54,46 @@ def test_zero_state_executes_jit_and_preserves_record_layout(
         assert np.array_equal(np.asarray(value), np.zeros((84, 84)))
 
 
+def test_swe_face_masks_follow_the_config_not_the_caller_scope(
+        card_and_model, monkeypatch):
+    import legoesm.ocean.dynamics.swe_rk3 as swe
+    from legoesm.grids.halo_latlon import (
+        get_meridionally_periodic, meridional_periodicity)
+
+    card, _ = card_and_model
+    assert card.recipe.model_config.meridionally_periodic is False
+    seen = []
+    original = swe.compute_face_masks_3d
+
+    def recording(*args, **kwargs):
+        seen.append(get_meridionally_periodic())
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(swe, "compute_face_masks_3d", recording)
+    forcing = OceanSurfaceForcing(
+        tau_i_native=jnp.zeros((84, 84), dtype=jnp.float64),
+        tau_j_native=jnp.zeros((84, 84), dtype=jnp.float64))
+    with meridional_periodicity(True):
+        swe.swe_rk3_stage(
+            _entry(), _entry(), card.dt_s, 1, card.recipe.grid,
+            card.recipe.z_coord, card.recipe.land_mask,
+            card.recipe.model_config)
+        swe.swe_rk3_step(
+            card.recipe.initial_state, card.dt_s, forcing, card.recipe.grid,
+            card.recipe.z_coord, card.recipe.model_config)
+        stress = (forcing.tau_i_native, forcing.tau_j_native)
+        swe._entry_from_state(
+            card.recipe.initial_state, stress, stress, card.recipe.grid,
+            card.recipe.z_coord, card.recipe.model_config)
+        fresh = LatLonCGridOceanModel(
+            card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+        n_eager = len(seen)
+        fresh.replay_swe_rk3_stage(_entry(), card.dt_s, 1)
+        fresh.step(card.recipe.initial_state, card.dt_s,
+                   surface_forcing=forcing)
+    assert len(seen) > n_eager > 0 and not any(seen)
+
+
 def test_stage1_one_ulp_consumed_input_reaches_production_output(card_and_model):
     card, model = card_and_model
     entry = _entry()

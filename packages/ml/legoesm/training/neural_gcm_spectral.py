@@ -964,7 +964,8 @@ def make_turbulence_only_spectral_physics(dt,
         microphysics=MicrophysicsConfig(scheme="none"),
         gravity_wave_drag=GravityWaveDragConfig(scheme="none"),
     )
-    raw_fn = make_physics(cfg, model_type="spectral_pe", dt=dt)
+    raw_fn = make_physics(cfg, model_type="spectral_pe", dt=dt,
+                          surface_bulk_coeffs=None)   # turbulence owns it
 
     from legoesm.atmosphere.physics.physics_state import (
         NO_SFC_T_OVERRIDE,
@@ -1090,8 +1091,9 @@ def make_physics_params_spectral_physics(params, grid, dt, *,
     _kwargs = {}
     if _albedo is not None and radiation == "rrtmgp":
         _kwargs["sfc_albedo_override"] = _albedo
+    # this lane runs its own surface flux (C_H / C_E above)
     raw_fn = make_physics(physics_config, model_type="spectral_pe", dt=dt,
-                          **_kwargs)
+                          surface_bulk_coeffs=None, **_kwargs)
 
     def physics_fn(state, grid_, sigma_coord):
         result = raw_fn(state, grid_, sigma_coord)

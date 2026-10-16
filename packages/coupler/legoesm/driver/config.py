@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from legoesm import constants
+from legoesm.atmosphere.physics.turbulence.surface_layer import (
+    C_E_BULK_DEFAULT, C_H_BULK_DEFAULT)
 from legoesm.land import snow_column as _snow_column
 
 # Snow emissivity: ONE default and ONE legal range, both owned by the snow
@@ -1426,8 +1428,8 @@ class ExperimentConfig(NamedTuple):
     start_year: int = 1979
 
     # Surface parameters
-    C_H: float = 0.0044
-    C_E: float = 0.0044
+    C_H: float = C_H_BULK_DEFAULT
+    C_E: float = C_E_BULK_DEFAULT
     # T_ice is the seawater freezing point used as the SST floor /
     # SIC ramp threshold — NOT the ice surface temperature.  Legacy
     # name kept for AMIP config compatibility.

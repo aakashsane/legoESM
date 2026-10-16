@@ -1778,6 +1778,7 @@ def make_aimip_classical_spectral_physics(
                 "(split_rad=True)")
         combined_raw = make_physics(
             physics_config, model_type="spectral_pe", dt=dt,
+            surface_bulk_coeffs=None,   # this lane runs its own surface flux
             sfc_albedo_override=_sfc_albedo_override,
             sfc_emissivity_override=_sfc_emissivity_override,
             cld_macmic_num_steps=cld_macmic_num_steps,
@@ -1862,8 +1863,10 @@ def make_aimip_classical_spectral_physics(
     # CAM macro/micro sub-cycle: turbulence and microphysics run in sequence
     # inside the non-radiative factory (radiation is split out and is a
     # "once" module, so the split does not change the sub-cycle's meaning).
+    # This lane runs its own surface flux: no bulk exchange here.
     non_rad_raw = make_physics(non_rad_cfg, model_type="spectral_pe", dt=dt,
-                               cld_macmic_num_steps=cld_macmic_num_steps)
+                               cld_macmic_num_steps=cld_macmic_num_steps,
+                               surface_bulk_coeffs=None)
     rad_only_raw = make_radiation_physics(
         rad_cfg, "spectral_pe",
         sfc_albedo_override=_sfc_albedo_override,

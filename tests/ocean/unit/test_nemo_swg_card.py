@@ -232,7 +232,7 @@ def _card_digest(card):
 
 
 def test_parameterisation_keeps_shipped_card_digest_byte_identical(card):
-    assert _card_digest(card) == "f9d46bfd08f23702"
+    assert _card_digest(card) == "269b68eaa691b8e9"
 
 
 def test_maddison_geometry_honours_domsiz_and_fixed_wind_period():

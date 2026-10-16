@@ -137,7 +137,7 @@ def restore_boundary_taps(originals) -> None:
 def measure() -> dict:
     """Run the registered one-step T-only reverse row with boundary taps."""
     gate = _load_gradient_gate()
-    context = gate.build_context()
+    context = gate.build_context(gate.GYRE_CARD)
     events = []
 
     def recorder(label, shape, bad_count, first_bad, bad_mask):

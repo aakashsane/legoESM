@@ -632,10 +632,18 @@ _CERTIFIED_CARD_DIGESTS_ORCA2 = {           # ORCA2 fold-in, 2026-09-30
 # change.  Re-pin the complete resolved objects here: the round-4 production
 # change is confined to ``_nemo_cen2_tracer_rhs`` and leaves card construction
 # untouched, so these values are identical before and after that change.
-_CERTIFIED_CARD_DIGESTS = {                 # gradient-gate tip d678430f3
+_CERTIFIED_CARD_DIGESTS_GRADGATE = {        # gradient-gate tip d678430f3
     "GYRE-zco": "99b2dfce324b0f77",
     "LOCK_EXCHANGE-zco": "70746f41480350ec",
     "OVERFLOW-zps": "2c562be8a7d2e793",
+}
+# Merging main (#2009, #1910 config fields) into the GYRE high-resolution
+# lane left every certified card at main's re-pinned digest: the lane's
+# additions do not touch these three resolved configurations.
+_CERTIFIED_CARD_DIGESTS = {                 # re-pinned 2026-10-16 (#2009, #1910 config fields)
+    "GYRE-zco": "56c5171d43504b54",
+    "LOCK_EXCHANGE-zco": "1d457b3a02df1407",
+    "OVERFLOW-zps": "f92bdb57cecb7129",
 }
 
 

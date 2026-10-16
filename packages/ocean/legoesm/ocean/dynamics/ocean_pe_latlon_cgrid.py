@@ -163,7 +163,7 @@ VALID_MOMENTUM_ADVECTION = frozenset(
 # handled in step().  Keep in sync if a tracer scheme is added.
 VALID_TRACER_ADVECTION = frozenset(
     {"upwind", "centered", "tvd", "superbee", "ppm", "ppm_fct", "fct2",
-     "dst3", "dst3_multidim", "weno5", "weno7", "som"}
+     "dst3", "dst3_multidim", "weno5", "weno7", "som", "none"}
 )
 # WENO vector-invariant momentum-advection literals (Silvestri et al. 2024).
 # vorticity-flux Z and divergence-flux D use this order; vertical C is capped
@@ -205,8 +205,12 @@ VALID_WENO_SMOOTHNESS = frozenset({"split", "standard"})
 # pair and the velocity pair disagree wherever a thickness, a face length or
 # a mask flips a near-zero pair sum, so an unqualified name would be a hidden
 # choice of reference.  A caller that passes one fails validation.
+#   "none"              NEMO ln_dynadv_OFF (n_dynadv = np_LIN_dyn,
+#                       dynadv.f90:185): dyn_adv's SELECT has no case for it,
+#                       so no momentum advection is added.  Pairs only with
+#                       ``vertical_momentum_scheme="none"``.
 VALID_MOMENTUM_FLUX_SCHEME = frozenset(
-    {"upwind", "centered", "nemo_up3", "oceananigans_up3"})
+    {"upwind", "centered", "nemo_up3", "oceananigans_up3", "none"})
 # T-point (same-direction) UP3 upwind selector per reference arm; see above.
 UP3_REFERENCE_SELECTOR = {
     "nemo_up3": "velocity",
@@ -231,10 +235,13 @@ UP3_REFERENCE_SELECTOR = {
 #     -0.9992, ratio 0.998).  See nemo_advective_vertical_momentum_advection.
 #   "nemo_up3" — the live flux-form ln_dynadv_up3 vertical flux from
 #     dynadv_up3.F90:239-365; UP3 correction on full velocity.
+#   "none" — NEMO ln_dynadv_OFF (dynadv.f90:185): no vertical momentum
+#     advection; pairs only with ``momentum_flux_scheme="none"``.
 # The WENO momentum paths (momentum_advection in {weno5,weno7}) own their own
 # vertical reconstruction and ignore this field.
 VALID_VERTICAL_MOMENTUM_SCHEME = frozenset(
-    {"upwind_perturbation", "centered_full", "nemo_advective", "nemo_up3"}
+    {"upwind_perturbation", "centered_full", "nemo_advective", "nemo_up3",
+     "none"}
 )
 # Lateral (harmonic) momentum-viscosity operator form (config.lateral_viscosity_operator):
 # the default VECTOR Laplacian grad(div)−k×grad(curl), or Veros's component-wise
@@ -251,11 +258,11 @@ VALID_LATERAL_VISCOSITY_OPERATOR = frozenset(
 VALID_LATERAL_VISCOSITY_E3_WEIGHTING = frozenset({"off", "nemo_e3"})
 # WHERE the "nemo_div_curl" coefficient comes from, mirroring NEMO's
 # namdyn_ldf nn_ahm_ijk_t: "nemo_ldf_c2d" (default, bit-identical) is the
-# nn_ahm_ijk_t=20 metric formula; "nemo_ahm_3d_file" is nn_ahm_ijk_t=-30,
-# the whole 3-D field READ from eddy_viscosity_3D.nc and carried on the
-# vertical coordinate by the card (ldfdyn.f90:348-353).
+# nn_ahm_ijk_t=20 metric formula; "nemo_constant" is nn_ahm_ijk_t=0 direct;
+# "nemo_ahm_3d_file" is nn_ahm_ijk_t=-30, the whole 3-D field READ from
+# eddy_viscosity_3D.nc and carried by the card (ldfdyn.f90:311-322,348-353).
 VALID_LATERAL_VISCOSITY_COEFFICIENT_SOURCE = frozenset(
-    {"nemo_ldf_c2d", "nemo_ahm_3d_file", "nemo_smag_blp"})
+    {"nemo_ldf_c2d", "nemo_constant", "nemo_ahm_3d_file", "nemo_smag_blp"})
 # Lateral side BC (config.lateral_side_bc): free-slip (default; viscous flux zeroed
 # at walls) or MITgcm no_slip_sides (adds the -(2/Δ)·A_h·u_tangential wall side-drag).
 VALID_LATERAL_SIDE_BC = frozenset({"free_slip", "no_slip"})
@@ -2041,7 +2048,7 @@ def _bc_ke_and_pressure_gradients(
             # separately round the U pair and V pair before adding them
             # (compiled GYRE dynkeg.f90:121-125).
             # u(i-1,j)=u[:, :-1], u(i,j)=u[:, 1:]; v(i,j-1)=v[:-1], v(i,j)=v[1:].
-            KE = _nemo_c2_kinetic_energy(u, v)
+            KE = nemo_c2_kinetic_energy(u, v)
             # Keep the statement-level implementation in the named helper so
             # its stored NEMO-derived regression vector can exercise it
             # directly.  These lines intentionally retain the established
@@ -2603,6 +2610,7 @@ def _bc_pv_flux(
     h_vtx_override=None,
     f_vtx_override=None,
     metric_reciprocals=None,
+    ln_dynvor_msk=None,
 ):
     """Stage 7b: vector-invariant potential-vorticity (vorticity) flux
     (Sadourny EC / Arakawa-Lamb-81 triad, or WENO-Z when momentum_advection is
@@ -2618,11 +2626,19 @@ def _bc_pv_flux(
     # Fail-early on an unknown vorticity scheme (static config value) so a typo
     # raises even on the WENO path where the al81/ene branch is not reached.
     if vorticity_scheme not in (
-            "al81", "ene", "ene_total", "een_total", "een_planetary"):
+            "al81", "ene", "ene_total", "ens_total", "een_total", "een_planetary"):
         raise ValueError(
             f"unknown vorticity_scheme {vorticity_scheme!r}; expected "
-            f"'al81', 'ene', 'ene_total', 'een_total', or 'een_planetary'"
+            f"'al81', 'ene', 'ene_total', 'ens_total', 'een_total', or 'een_planetary'"
         )
+    if vorticity_scheme == "ens_total" and type(ln_dynvor_msk) is not bool:
+        raise ValueError(
+            "ens_total requires explicit boolean ln_dynvor_msk; "
+            f"got {ln_dynvor_msk!r}")
+    if vorticity_scheme != "ens_total" and ln_dynvor_msk is not None:
+        raise ValueError(
+            "ln_dynvor_msk is implemented only for ens_total; "
+            f"got vorticity_scheme={vorticity_scheme!r}")
     # Fail-early on an unknown EEN vertex-thickness (e3f) scheme (static
     # config value) — see the h_vtx construction below for the two rules.
     if een_e3f_scheme not in ("min", "nemo_avg", "nemo_avg4"):
@@ -2668,7 +2684,7 @@ def _bc_pv_flux(
         # no relative vorticity is dropped silently here.
         zeta = jnp.zeros_like(curl_vertex_cgrid(u, v, grid))
     elif (een_metric_weighting == "nemo"
-            and vorticity_scheme in ("ene", "ene_total")):
+            and vorticity_scheme in ("ene", "ene_total", "ens_total")):
         from legoesm.ocean.dynamics.latlon_cgrid_operators import (
             nemo_vor_ene_vorticity_cgrid,
         )
@@ -2920,14 +2936,14 @@ def _bc_pv_flux(
                 q_boundary=een_q_boundary,
                 metric_widths=_mw,
             )
-        else:  # "ene"
+        else:  # "ene", "ene_total", or "ens_total"
             # NEMO vor_ene Sadourny 2-point.  f_vtx=None → relative-only
             # (rvo trend); the planetary Coriolis stays in its own path
             # (matsuno_split / explicit_ab2), matching the NEMO utrd_rvo /
             # utrd_pvo diagnostic split.
             from legoesm.ocean.dynamics.latlon_cgrid_operators import (
                 nemo_een_ene_vertex_coriolis,
-                pv_flux_ene,
+                pv_flux_ene, pv_flux_ens,
             )
             # "ene_total" = NEMO np_CRV (dynvor.F90 vor_ene, kvor=total):
             # q = (f + zeta)/e3f at the F-point with VERTEX f (ff_f) — the
@@ -2938,14 +2954,16 @@ def _bc_pv_flux(
             _f_vtx = (
                 (nemo_een_ene_vertex_coriolis(grid) if f_vtx_override is None
                  else f_vtx_override)
-                if vorticity_scheme == "ene_total" else None)
-            diag_vortcor_u, diag_vortcor_v = pv_flux_ene(
+                if vorticity_scheme in ("ene_total", "ens_total") else None)
+            diag_vortcor_u, diag_vortcor_v = (pv_flux_ens if vorticity_scheme == "ens_total" else pv_flux_ene)(
                 zeta, h_vtx, h_v, v, h_u, u,
                 u_mask_3d, v_mask_3d, vtx_mask_va,
                 f_vtx=_f_vtx,
                 q_boundary=een_q_boundary,
                 metric_widths=_mw,
                 metric_reciprocals=metric_reciprocals,
+                **({"ln_dynvor_msk": ln_dynvor_msk}
+                   if vorticity_scheme == "ens_total" else {}),
             )
 
     # Capture PV-flux advection contribution as the `vortcor` diagnostic
@@ -3161,6 +3179,9 @@ def _bc_vertical_momentum_advection(
     # explicit tendency is never built.
     diag_vertadv_u = jnp.zeros_like(du_dt)
     diag_vertadv_v = jnp.zeros_like(dv_dt)
+    if getattr(config, "vertical_momentum_scheme",
+               "upwind_perturbation") == "none":
+        return du_dt, dv_dt, diag_vertadv_u, diag_vertadv_v
     # Compute the explicit flux-form vertadv tendency when it is either
     # (a) part of the slow forcing (flag off), or (b) needed for the
     # momentum budget as the start-of-step estimate (flag on AND
@@ -3619,13 +3640,13 @@ def _bc_horizontal_viscosity(
                     "lateral_viscosity_operator='nemo_div_curl' needs a lat-lon grid "
                     "with a scalar dlon (got dlon<=0; tripolar unsupported)."
                 )
-            _half_UM = config.lateral_viscosity.A_h / (grid.radius * grid.dlon)
-            _ahmt, _ahmf = nemo_lateral_viscosity_coefficients(grid, _half_UM)
-        # 3-D staircase vertex mask: a 2-D surface vertex mask broadcast over
-        # levels leaves zeta LIVE at submerged staircase side walls, where it
-        # is computed against the dry cells' zero velocities — an accidental
-        # NO-SLIP on every slope/sill face (ahmf·zeta stress) that NEMO's 3-D
-        # fmask zeroes.  Build per level from is_active; plain z-star coords
+            _half_UM = (
+                config.lateral_viscosity.A_h if _ahm_source == "nemo_constant"
+                else config.lateral_viscosity.A_h / (grid.radius * grid.dlon))
+            _ahmt, _ahmf = nemo_lateral_viscosity_coefficients(
+                grid, _half_UM, constant=_ahm_source == "nemo_constant")
+        # A 2-D surface vertex mask would leave zeta live at submerged walls.
+        # Build per level from is_active; plain z-star coords
         # (no is_active) keep the 2-D mask bit-identically.
         # THIS MASK IS NOT NEMO's fmask.  It is the four-T-cell product, 0 or
         # 1.  NEMO's fmask carries the lateral momentum boundary condition in
@@ -4949,6 +4970,8 @@ def _bc_horizontal_momentum_advection_flux_form(
     advection contribution fills the same diagnostic slot the PV flux would
     (so the orchestrator + momentum-diagnostics closure are unchanged).
     """
+    if config.momentum_flux_scheme == "none":
+        return du_dt, dv_dt, jnp.zeros_like(du_dt), jnp.zeros_like(dv_dt)
     if is_tripolar(grid):
         raise ValueError(
             "momentum_advection='flux_form' is not yet implemented on tripolar "
@@ -5435,6 +5458,9 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
     # --- Stage 7b: horizontal momentum advection. Flux-form (-div(transport(x)u),
     # Veros/MOM6 style) or the default vector-invariant PV flux. Both fill the
     # same diagnostic slot. ---
+    _vorticity_selection = getattr(config, "vorticity_scheme", "al81")
+    _vorticity_scheme = getattr(
+        _vorticity_selection, "scheme", _vorticity_selection)
     if _mom_adv == "flux_form":
         # NEMO dynadv_up3 consumes ONE face thickness -- e3u(Kmm) =
         # e3u_0*(1+r3u(Kmm)) (domzgr_substitute.h90:127; domqco.F90:219-220)
@@ -5464,7 +5490,7 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
         # same diagnostic slot.
         _flux_hadv_u = diag_vortcor_u
         _flux_hadv_v = diag_vortcor_v
-        if getattr(config, "vorticity_scheme", "al81") == "een_planetary":
+        if _vorticity_scheme == "een_planetary":
             # NEMO runs dyn_vor and dyn_adv as two separate subroutines even in
             # flux form: the energy-and-enstrophy triad supplies the ROTATION
             # (dynvor.F90:711-814 under ln_dynvor_een), and dynadv_up3 supplies
@@ -5543,7 +5569,7 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
             vertex_mask=vertex_mask,
             enstrophy_metric=config.vortcor_enstrophy_metric,
             reconstruct_zeta=config.vortcor_reconstruct_zeta,
-            vorticity_scheme=getattr(config, "vorticity_scheme", "al81"),
+            vorticity_scheme=_vorticity_scheme,
             een_q_boundary=getattr(config, "een_q_boundary", "neumann_fill"),
             een_e3f_scheme=config.een_e3f_scheme,
             een_metric_weighting=getattr(
@@ -5552,6 +5578,8 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
             h_vtx_override=_h_vtx_override,
             f_vtx_override=_f_vtx_override,
             metric_reciprocals=ene_metric_reciprocals,
+            ln_dynvor_msk=getattr(
+                _vorticity_selection, "ln_dynvor_msk", None),
         )
 
     # --- Stage 7b': PLANETARY Coriolis as an explicit tendency (Veros-faithful).
@@ -5572,8 +5600,8 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
     # the config string ⇒ default ("matsuno_split") is bit-identical: this block
     # is not traced at all.
     if (getattr(config, "coriolis_scheme", "matsuno_split") == "explicit_ab2"
-            and getattr(config, "vorticity_scheme", "al81")
-            not in ("ene_total", "een_total", "een_planetary")):
+            and _vorticity_scheme
+            not in ("ene_total", "ens_total", "een_total", "een_planetary")):
         # (ene_total / een_total carry the planetary term INSIDE the vorticity
         # flux — NEMO np_CRV (ENE) / ln_dynvor_een (EEN) — so the separate
         # face-f add would double-count f.)
@@ -6279,7 +6307,7 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
     return tendencies, diagnostics
 
 
-def _nemo_c2_kinetic_energy(u, v):
+def nemo_c2_kinetic_energy(u, v):
     """NEMO ``nkeg_C2`` kinetic energy with compiled source association.
 
     The GYRE build evaluates four products, two pair sums, then the final

@@ -64,8 +64,34 @@ _GYRE_GATE_PATH = (
 )
 
 
-def _measure_gyre_one_step_in_subprocess(output: Path) -> dict:
-    """Compile the large certified-card row outside the legacy matrix process."""
+def _skip_without_admitted_swg_stage_record() -> None:
+    """The SWG row starts from an external admitted NEMO stage record.
+
+    Its child reads the record through the ladder's own admission check, so
+    the same check decides here: a MISSING record is external evidence this
+    machine does not have (skip with the reason); any other refusal, such as
+    a hash mismatch on a present record, still fails the row.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "swg_ladder_for_gradient_matrix",
+        _REPO / "scripts/validate/ocean_fidelity/testcases/"
+        "nemo_testcase_l1_swg_ladder.py")
+    ladder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ladder)
+    try:
+        ladder._pinned_stage_hashes(ladder.DEFAULT_STAGE_ROOT)  # noqa: SLF001
+    except RuntimeError as error:
+        if not str(error).startswith("missing content-pinned record"):
+            raise
+        pytest.skip(f"external SWG stage evidence absent: {error}")
+
+
+def _measure_certified_card_in_subprocess(
+        output: Path, card: str, steps: int,
+        schedule: str | None = None) -> dict:
+    """Compile a certified-card row outside the legacy matrix process."""
     commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=_REPO, text=True).strip()
     env = dict(os.environ)
@@ -76,8 +102,9 @@ def _measure_gyre_one_step_in_subprocess(output: Path) -> dict:
             sys.executable,
             str(_GYRE_GATE_PATH),
             "agreement",
-            "--steps", "1",
-            "--schedule", "uniform",
+            "--card", card,
+            "--steps", str(steps),
+            *(() if schedule is None else ("--schedule", schedule)),
             "--expect-commit", commit,
             "--output", str(output),
         ],
@@ -88,11 +115,11 @@ def _measure_gyre_one_step_in_subprocess(output: Path) -> dict:
         timeout=3600,
     )
     assert result.returncode == 0, (
-        "isolated gyre_nemo_card_1step child failed:\n"
+        f"isolated {card} {steps}-step child failed:\n"
         f"--- stdout ---\n{result.stdout[-4000:]}\n"
         f"--- stderr ---\n{result.stderr[-4000:]}"
     )
-    assert output.is_file(), "isolated GYRE child wrote no strict JSON receipt"
+    assert output.is_file(), f"isolated {card} child wrote no strict JSON receipt"
     row = json.loads(output.read_text(encoding="utf-8"))
     assert row["provenance"] == {
         "commit": commit,
@@ -223,7 +250,7 @@ def _variants():
 @pytest.mark.parametrize("name", [
     "base_upwind", "adv_superbee", "adv_ppm_fct", "outer_ab2", "kpp",
     "conv_enhanced", "flux_feedback", "gm_eke_geometric", "rigid_lid_ab2",
-    "gyre_nemo_card_1step", "gyre_nemo_card_6step",
+    "gyre_nemo_card_1step", "gyre_nemo_card_6step", "swg_nemo_card_1step",
 ])
 def test_step_gradient_health(name, tmp_path):
     if name == "gyre_nemo_card_6step":
@@ -232,8 +259,9 @@ def test_step_gradient_health(name, tmp_path):
             "the isolated forward transform produced no JSON within the "
             "registered 65-minute attempt; tracked in round 7 OPEN")
     if name == "gyre_nemo_card_1step":
-        row = _measure_gyre_one_step_in_subprocess(
-            tmp_path / "gyre_nemo_card_1step.json")
+        row = _measure_certified_card_in_subprocess(
+            tmp_path / "gyre_nemo_card_1step.json", "GYRE-zco", 1,
+            schedule="uniform")
         assert row["status"] == "CONFIRMED", (
             "gyre_nemo_card_1step gradient agreement failed after the "
             "active-cell CEN2 e3t(Kmm) denominator treatment "
@@ -246,6 +274,21 @@ def test_step_gradient_health(name, tmp_path):
         assert row["backend"] == "cpu"
         assert "transcendentals='libm'" in row["precision_policy"]
         assert row["production_entry"] == "LatLonCGridOceanModel._step_jitted"
+        return
+    if name == "swg_nemo_card_1step":
+        _skip_without_admitted_swg_stage_record()
+        row = _measure_certified_card_in_subprocess(
+            tmp_path / "swg_nemo_card_1step.json", "SWG", 1)
+        assert row["status"] == "CONFIRMED", (
+            "SWG one-step reverse/forward/FD row failed from the admitted "
+            f"kt=2 stage-1 boundary: measured={row}"
+        )
+        assert row["case"] == "SWG-zco"
+        assert row["steps"] == 1
+        assert row["backend"] == "cpu"
+        assert "transcendentals='libm'" in row["precision_policy"]
+        assert row["production_entry"] == "LatLonCGridOceanModel._step_jitted"
+        assert row["initial_boundary"] == "admitted kt=2 stage-1 entry"
         return
     config, opts = _variants()[name]
     model, state = _build(

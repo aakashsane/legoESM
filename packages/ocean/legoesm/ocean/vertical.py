@@ -25,6 +25,7 @@ import numpy as np
 from legoesm.core.precision import get_policy
 from legoesm.core.source_rounding import nemo_source_round
 from legoesm.timestepping.tridiagonal import thomas_solve
+from legoesm.grids.halo_latlon import lat_faces_from_north, lat_north
 
 # Shchepetkin (2015) adaptive-implicit vertical-advection Courant
 # thresholds (NEMO ``ln_zad_Aimp`` PARAMETERs).  Below ``CU_MIN`` the
@@ -287,7 +288,7 @@ def nemo_fe3mask_from_tmask(tmask, *, grid=None):
     """
     active = jnp.asarray(tmask)
     east = jnp.roll(active, -1, axis=1)
-    north = jnp.concatenate([active[1:], jnp.zeros_like(active[:1])], axis=0)
+    north = lat_north(active)
     northeast = jnp.roll(north, -1, axis=1)
     fe3mask = active * east * north * northeast
     return nemo_t_fold_f_owned(fe3mask, grid)
@@ -326,7 +327,7 @@ def nemo_dynvor_e3f_0vor(e3t_0, tmask, *, grid, dtype, nn_e3f_typ=0,
         return jnp.roll(value, -1, axis=1)
 
     def north(value):
-        return jnp.concatenate([value[1:], jnp.zeros_like(value[:1])], axis=0)
+        return lat_north(value)
 
     masked = b(e3t0 * tmask)
     masked_n = north(masked)
@@ -436,7 +437,7 @@ def nemo_e3f_0vor_from_tmask(e3t_0, tmask, dry_vertex_fill, *,
 
     def north(value):
         # Closed north wall; an ORCA T fold is applied below instead.
-        return jnp.concatenate([value[1:], jnp.zeros_like(value[:1])], axis=0)
+        return lat_north(value)
 
     masked = b(e3t0 * active)
     masked_n = north(masked)
@@ -454,8 +455,8 @@ def nemo_e3f_0vor_from_tmask(e3t_0, tmask, dry_vertex_fill, *,
 
 
 def nemo_qco_live_vorticity_e3f_cgrid(
-    eta, z_coord, dtype, nn_e3f_typ=0, *, grid=None, e3t_0=None, tmask=None,
-    reference_e3f=None,
+    eta, z_coord, dtype, nn_e3f_typ=0, *, grid=None, e3t_0=None, tmask=None, reference_e3f=None,
+    r3f_override=None, return_ratio=False, apply_fe3mask=True, source_associated=False,
 ):
     """Build literal NEMO ``e3f_vor(Kmm)`` from the card's own mesh.
 
@@ -463,11 +464,6 @@ def nemo_qco_live_vorticity_e3f_cgrid(
     thicknesses (``dynvor.F90:918-950``); ``dom_qco_r3c_RK3`` builds live
     ``r3f`` (``domqco.F90:233-246``); and
     ``domzgr_substitute.h90:130`` applies it through ``fe3mask``.
-
-    ``e3t_0`` and ``tmask`` default to the coordinate's bridge fields, but
-    callers may provide the same operands from their own state.  Horizontal
-    areas and F-depth are always rebuilt from that mesh; bridge-carried ENE
-    operands are an oracle check, not a production dependency.
 
     ``reference_e3f`` selects WHICH frozen F thickness the live ``r3f``
     stretch multiplies, because NEMO's two consumers do not share one.  The
@@ -478,13 +474,7 @@ def nemo_qco_live_vorticity_e3f_cgrid(
     ``domzgr_substitute.h90:100``, read from the domain file at
     ``domzgr.F90:173`` -- at ``dynldf_lev.f90:123``::
 
-        zwf(ji-1,jj-1) = ahmf(ji-1,jj-1,jk) * (e3f_3d(ji-1,jj-1,jk)          &
-           &   *(1._wp+r3f(ji-1,jj-1)*fe3mask(ji-1,jj-1,jk))) * r1_e1e2f(...)
-
-    Passing the card's carried ``e3f_0`` here therefore gives ``dyn_ldf`` its
-    own consumer-local reference while ``r3f`` and ``fe3mask``, which NEMO
-    genuinely shares between the two operators, stay the same arrays.  The
-    array is expected on the native A2D F layout, like the carried mesh.
+        zwf = ahmf * (e3f_3d * (1 + r3f * fe3mask)) * r1_e1e2f
     """
     if nn_e3f_typ not in (0, 1):
         raise ValueError("nn_e3f_typ must be 0 or 1")
@@ -509,7 +499,7 @@ def nemo_qco_live_vorticity_e3f_cgrid(
 
     def north(value):
         # The certified GYRE use is a closed beta-plane box.
-        return jnp.concatenate([value[1:], jnp.zeros_like(value[:1])], axis=0)
+        return lat_north(value)
 
     raw = getattr(z_coord, "nemo_een_barotropic", None)
     mesh_e3f = None if raw is None else getattr(raw, "e3f_0", None)
@@ -517,6 +507,7 @@ def nemo_qco_live_vorticity_e3f_cgrid(
         e3t0, tmask, grid=grid, dtype=dtype, nn_e3f_typ=nn_e3f_typ,
         substitute_e3f=mesh_e3f)
 
+    b = nemo_source_round if source_associated else b
     area_eta = b(jnp.asarray(geom_grid.area_T, dtype=dtype) * eta)
     area_eta_n = north(area_eta)
     quad = b(b(area_eta + east(area_eta))
@@ -529,6 +520,13 @@ def nemo_qco_live_vorticity_e3f_cgrid(
     # on cards that carry its raw mesh.
     r1_area_f = _nemo_qco_r1_area_f(raw, geom_grid, dtype)
     r3f = b(b(b(quarter * quad) * r1_hf0) * r1_area_f)
+    if r3f_override is not None:
+        supplied = jnp.asarray(r3f_override, dtype=dtype)
+        if supplied.shape != r3f.shape:
+            raise ValueError(
+                "r3f_override must use NEMO's native A2D F layout with "
+                f"shape {r3f.shape}; got {supplied.shape}")
+        r3f = supplied
     # dom_qco_zgr applies the F-point lateral boundary condition to r3f
     # (domqco.F90:124-135) before domzgr_substitute.h90:130 consumes it.
     # On ORCA's T fold this is the same F-origin permutation as e3f_0vor.
@@ -546,12 +544,15 @@ def nemo_qco_live_vorticity_e3f_cgrid(
         raise ValueError(
             "reference_e3f must be the native A2D F-point thickness with "
             f"shape {e3f0vor.shape}; got {reference.shape}")
-    e3f_native = b(reference * b(one + r3f[..., None] * fe3mask))
+    e3f_native = b(reference * b(one + r3f[..., None] * (fe3mask if apply_fe3mask else jnp.ones_like(fe3mask))))
 
     # NEMO native F(i,j) maps to legoESM vertex [j+1,i+1].  The added
     # south/west rows are inert walls for this closed-box identity.
-    with_south = jnp.concatenate([e3f_native[:1], e3f_native], axis=0)
-    return jnp.concatenate([with_south[:, -1:], with_south], axis=1)
+    with_south = lat_faces_from_north(e3f_native, south=e3f_native[:1])
+    e3f_cgrid = jnp.concatenate([with_south[:, -1:], with_south], axis=1)
+    if return_ratio:
+        return e3f_cgrid, r3f
+    return e3f_cgrid
 
 
 def _nemo_qco_hf0(raw, e3f0vor, fe3mask, dtype):
@@ -832,10 +833,10 @@ def nemo_qco_live_face_geometry_cgrid(
     one = jnp.asarray(1.0, dtype=geom.e3u.dtype)
     result = (
         jnp.concatenate([geom.e3u[:, -1:, :], geom.e3u], axis=1),
-        jnp.concatenate([jnp.zeros_like(geom.e3v[:1]), geom.e3v], axis=0),
+        lat_faces_from_north(geom.e3v),
         jnp.concatenate([one + geom.r3u[:, -1:], one + geom.r3u], axis=1),
-        jnp.concatenate(
-            [jnp.ones_like(geom.r3v[:1]), one + geom.r3v], axis=0),
+        lat_faces_from_north(
+            one + geom.r3v, south=jnp.ones_like(geom.r3v[:1])),
     )
     if not include_reciprocals:
         return result
@@ -845,7 +846,7 @@ def nemo_qco_live_face_geometry_cgrid(
     # source-identical on ORCA2's non-uniform, partial-cell mesh.
     return result + (
         jnp.concatenate([geom.r1_hu[:, -1:], geom.r1_hu], axis=1),
-        jnp.concatenate([jnp.zeros_like(geom.r1_hv[:1]), geom.r1_hv], axis=0),
+        lat_faces_from_north(geom.r1_hv),
     )
 
 
@@ -1075,6 +1076,7 @@ def create_z_star_from_thicknesses(
     dz_ref_m, t_depth_ref_m=None, *, nemo_gdept_0_m=None,
     nemo_gdepw_0_m=None, nemo_e3t_0_m=None, nemo_e3w_0_m=None,
     nemo_e3w_source="mesh_reference",
+    allow_single_level: bool = False,
     nemo_hu_0_m=None, nemo_hv_0_m=None, nemo_e1e2t_m=None,
     nemo_e1e2u_m=None, nemo_e1e2v_m=None,
     nemo_e2u_m=None, nemo_e1v_m=None,
@@ -1118,10 +1120,13 @@ def create_z_star_from_thicknesses(
     # Check ndim on the ORIGINAL array BEFORE any ravel -- a 2-D array would
     # otherwise be silently flattened and accepted as 1-D (codex HIGH).
     dz_np = np.asarray(dz_ref_m, dtype=np.float64)
-    if dz_np.ndim != 1 or dz_np.size < 2:
+    # NEMO's TSUNAMI runs ONE wet level (jpk = 2); only a card that states
+    # it may build a one-level column, every other caller keeps the guard.
+    min_levels = 1 if allow_single_level else 2
+    if dz_np.ndim != 1 or dz_np.size < min_levels:
         raise ValueError(
-            f"dz_ref_m must be a 1-D array of >= 2 thicknesses, got shape "
-            f"{dz_np.shape}")
+            f"dz_ref_m must be a 1-D array of >= {min_levels} thicknesses, "
+            f"got shape {dz_np.shape}")
     if not np.all(dz_np > 0.0):
         raise ValueError("dz_ref_m thicknesses must all be > 0")
     n_levels = int(dz_np.size)

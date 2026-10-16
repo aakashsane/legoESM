@@ -2777,7 +2777,9 @@ def ordered_vertical_solver_subsets() -> list[tuple[str, ...]]:
     return result
 
 
-def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
+def run_step1_vertical_owner(
+    oracle_root: Path, output: Path, *, content_only: bool = False,
+) -> dict:
     """Walk the remaining entry-kt=2 T/S boundary one ZDF input at a time."""
     import jax
     import jax.numpy as jnp
@@ -3113,6 +3115,32 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
             "content_isolation"]["first_material_term"],
         "classification": content_classification,
     }
+    if content_only:
+        report = {
+            "format": "nemo-testcase-l2-gyre-r4-step1-content-walk-v1",
+            "worktree": worktree_stamp(),
+            "oracle_admission": admission,
+            "policy": "fp64/x64/cpu/libm certified",
+            "step": 1,
+            "boundary": "stage-3 tra_zdf content RHS/output; entry kt=2",
+            "native_dtypes": native_dtypes,
+            "production": production,
+            "temperature_content_source_walk": content_walk,
+            "controls": {"passive_seam": passive},
+            "compiled_nemo_sources": {
+                "rhs": (
+                    "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                    "trazdf.f90:527-544"),
+                "solve": (
+                    "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                    "trazdf.f90:504-559"),
+            },
+            "verdict": content_classification,
+        }
+        output.write_text(
+            json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        return report
 
     rows = []
     plants = []
@@ -3599,6 +3627,7 @@ def main(argv=None) -> int:
     parser.add_argument("--step2-tracer-owner-only", action="store_true")
     parser.add_argument("--step2-vertical-owner-only", action="store_true")
     parser.add_argument("--step1-vertical-owner-only", action="store_true")
+    parser.add_argument("--step1-content-walk-only", action="store_true")
     parser.add_argument("--stage3-kmm-stretch-only", action="store_true")
     parser.add_argument(
         "--trajectory-only", action="store_true",
@@ -3638,6 +3667,7 @@ def main(argv=None) -> int:
                       args.step2_tracer_owner_only,
                       args.step2_vertical_owner_only,
                       args.step1_vertical_owner_only,
+                      args.step1_content_walk_only,
                       args.stage3_kmm_stretch_only))
         if narrow > 1:
             raise ValueError("choose only one narrow discriminator")
@@ -3679,6 +3709,13 @@ def main(argv=None) -> int:
             step2_admission = admit_oracle("r4_step2", "scalar")
             report = run_step1_vertical_owner(
                 Path(step2_admission["root"]), args.output)
+        elif args.step1_content_walk_only:
+            if (args.deck, args.math_flavour) != ("r4", "scalar"):
+                raise ValueError("step-1 content walk requires r4/scalar")
+            step2_admission = admit_oracle("r4_step2", "scalar")
+            report = run_step1_vertical_owner(
+                Path(step2_admission["root"]), args.output,
+                content_only=True)
         elif args.stage3_kmm_stretch_only:
             if (args.deck, args.math_flavour) != ("r4", "scalar"):
                 raise ValueError(

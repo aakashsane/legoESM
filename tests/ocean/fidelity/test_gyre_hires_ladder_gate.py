@@ -743,3 +743,6 @@ def test_process_trace_exposes_write_only_content_terms():
     assert '"term": "completed_content_boundary"' in gate_source
     assert "planted_content[wet] = np.nextafter" in gate_source
     assert "planted_term" not in gate_source
+    assert 'parser.add_argument("--step1-content-walk-only"' in gate_source
+    assert "if content_only:" in gate_source
+    assert "step1-content-walk-v1" in gate_source

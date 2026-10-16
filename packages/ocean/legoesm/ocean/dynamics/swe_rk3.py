@@ -6,11 +6,14 @@ testcase-specific model.  The three stages transcribe the compiled SWG
 """
 from __future__ import annotations
 
+import functools
+import inspect
 from typing import NamedTuple
 
 import jax.numpy as jnp
 
 from legoesm.core.source_rounding import nemo_source_round
+from legoesm.grids.halo_latlon import meridional_periodicity
 from legoesm.grids.latlon import ensure_geometry
 from legoesm.grids.operators_latlon_cgrid import compute_vertex_mask
 from legoesm.ocean.dynamics.latlon_cgrid_operators import (
@@ -71,6 +74,18 @@ def _native_north(field):
     return jnp.concatenate([field[1:], jnp.zeros_like(field[:1])], axis=0)
 
 
+def _config_periodicity(fn):
+    """Trace ``fn`` inside the y-wrap its ``config`` selects, not the caller's."""
+    signature = inspect.signature(fn)
+
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        config = signature.bind(*args, **kwargs).arguments["config"]
+        with meridional_periodicity(config.meridionally_periodic):
+            return fn(*args, **kwargs)
+    return wrapped
+
+
 def _validate_program(config, z_coord, stage):
     vor = config.vorticity_scheme
     if config.outer_integrator != "swe_rk3":
@@ -118,6 +133,7 @@ def _validate_program(config, z_coord, stage):
             "SWE RK3 requires a computed NEMO viscosity coefficient source")
 
 
+@_config_periodicity
 def swe_rk3_stage(entry, before_entry, dt, stage, grid, z_coord, land_mask,
                   config):
     """Execute one NEMO SWE RK3 stage from native-A2D stage/before entries.
@@ -341,6 +357,7 @@ def _entry_from_state(state, stress_before, stress_now, grid, z_coord, config):
         u, v, stress_before[0], stress_before[1], stress_now[0], stress_now[1])
 
 
+@_config_periodicity
 def swe_rk3_step(state, dt, surface_forcing, grid, z_coord, config,
                  stage_runner=None):
     """Advance the shared ocean state with the three-stage SWE RK3 program.

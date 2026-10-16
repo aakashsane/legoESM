@@ -129,6 +129,29 @@ def test_swe_step_refuses_grid_overrides(card_and_model, override):
                    surface_forcing=forcing, **kwargs)
 
 
+def test_swe_step_refuses_time_argument(card_and_model):
+    card, model = card_and_model
+    forcing = OceanSurfaceForcing(
+        tau_i_native=jnp.zeros((84, 84), dtype=jnp.float64),
+        tau_j_native=jnp.zeros((84, 84), dtype=jnp.float64))
+    with pytest.raises(ValueError, match="surface stress input"):
+        model.step(card.recipe.initial_state, card.dt_s,
+                   surface_forcing=forcing, t_seconds=0.0)
+    with pytest.raises(ValueError, match="surface stress input"):
+        model._step_jitted(card.recipe.initial_state, card.dt_s, None,
+                           forcing, None, t_seconds=0.0)
+
+
+def test_swe_jitted_step_refuses_grid_override(card_and_model):
+    card, model = card_and_model
+    forcing = OceanSurfaceForcing(
+        tau_i_native=jnp.zeros((84, 84), dtype=jnp.float64),
+        tau_j_native=jnp.zeros((84, 84), dtype=jnp.float64))
+    with pytest.raises(ValueError, match="does not accept grid overrides"):
+        model._step_jitted(card.recipe.initial_state, card.dt_s, None,
+                           forcing, None, grid=card.recipe.grid)
+
+
 def test_normal_step_uses_the_jitted_three_stage_production_program(card_and_model):
     card, model = card_and_model
     src = swg_horizontal_coordinates()

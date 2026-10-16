@@ -2633,6 +2633,10 @@ def _bc_pv_flux(
         raise ValueError(
             "ens_total requires explicit boolean ln_dynvor_msk; "
             f"got {ln_dynvor_msk!r}")
+    if vorticity_scheme != "ens_total" and ln_dynvor_msk is not None:
+        raise ValueError(
+            "ln_dynvor_msk is implemented only for ens_total; "
+            f"got vorticity_scheme={vorticity_scheme!r}")
     # Fail-early on an unknown EEN vertex-thickness (e3f) scheme (static
     # config value) — see the h_vtx construction below for the two rules.
     if een_e3f_scheme not in ("min", "nemo_avg", "nemo_avg4"):

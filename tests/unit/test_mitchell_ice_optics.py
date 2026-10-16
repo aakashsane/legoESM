@@ -195,3 +195,14 @@ def test_off_cells_never_read_the_table(table):
     t32 = mio.MitchellIceOptics(*(jnp.asarray(a, dtype=jnp.float32) for a in tab))
     small = jnp.float32(np.finfo(np.float32).tiny)  # smallest normal fp32
     assert float(mio.mitchell_sw_optics(t32, small, jnp.float32(50.0))[0][0]) > 0.0
+
+
+def test_off_cell_gradient_is_finite_with_nan_diameter(table):
+    import jax.numpy as jnp
+    tab, _ = table
+
+    def f(p, d):
+        return (sum(jnp.sum(x) for x in mio.mitchell_sw_optics(tab, p, d))
+                + jnp.sum(mio.mitchell_lw_abs_od(tab, p, d)))
+    gp, gd = jax.grad(f, argnums=(0, 1))(0.0, jnp.nan)
+    assert gp == 0.0 and gd == 0.0

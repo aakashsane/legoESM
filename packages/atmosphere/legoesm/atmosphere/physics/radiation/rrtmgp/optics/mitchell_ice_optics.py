@@ -149,6 +149,10 @@ def mitchell_sw_optics(table: MitchellIceOptics, path, d_eff):
     path = jnp.asarray(path)
     d_eff = jnp.asarray(d_eff)
     on = _on(path, d_eff)
+    # Double where: off cells read a finite in-table diameter and a zero path, so
+    # neither the forward nor the reverse pass sees their (possibly NaN) inputs.
+    d_eff = jnp.where(on, d_eff, table.d_eff[0])
+    path = jnp.where(on, path, 0.0)
     ext, ssa, asm = (jax.vmap(lambda row: _lininterp_bndry(table.d_eff, row, d_eff))(t)
                      for t in (table.sw_ext, table.sw_ssa, table.sw_asm))
     # where() on the product, not on path: an off cell never touches the table
@@ -164,5 +168,9 @@ def mitchell_lw_abs_od(table: MitchellIceOptics, path, d_eff):
     path = jnp.asarray(path)
     d_eff = jnp.asarray(d_eff)
     on = _on(path, d_eff)
+    # Double where: off cells read a finite in-table diameter and a zero path, so
+    # neither the forward nor the reverse pass sees their (possibly NaN) inputs.
+    d_eff = jnp.where(on, d_eff, table.d_eff[0])
+    path = jnp.where(on, path, 0.0)
     absor = jax.vmap(lambda row: _lininterp_bndry(table.d_eff, row, d_eff))(table.lw_abs)
     return jnp.where(on, jnp.minimum(path * absor, _LW_ABS_OD_MAX), 0.0)

@@ -135,12 +135,11 @@ def _lininterp_bndry(x, f, y):
 
 def _on(path, d_eff):
     """Cells CAM6 gives optics: path >= 1e-80 and D != 0 (cloud_rad_props.F90:491,
-    :641).  1e-80 is not representable in fp32; there the smallest normal
-    number is the threshold, so a zero path still gets zero optics AND zero
-    gradient (codex/GLM P1a review)."""
+    :641).  1e-80 underflows to 0 in fp32, where every positive path
+    (subnormals included) exceeds it, so the predicate there is path > 0: a
+    zero path still gets zero optics AND zero gradient (codex/GLM P1a review)."""
     thr = jnp.asarray(_PATH_MIN, dtype=path.dtype)
-    thr = jnp.where(thr > 0, thr, jnp.finfo(path.dtype).tiny)
-    return (path >= thr) & (d_eff != 0.0)
+    return jnp.where(thr > 0, path >= thr, path > 0) & (d_eff != 0.0)
 
 
 def mitchell_sw_optics(table: MitchellIceOptics, path, d_eff):
@@ -154,10 +153,10 @@ def mitchell_sw_optics(table: MitchellIceOptics, path, d_eff):
                      for t in (table.sw_ext, table.sw_ssa, table.sw_asm))
     # where() on the product, not on path: an off cell never touches the table
     # (the Fortran skips it), so a non-finite entry cannot leak (GLM P1a review).
-    tau = jnp.where(on, path * ext, 0.0)
+    tau = path * ext
     tau_w = tau * ssa
     tau_w_g = tau_w * asm
-    return tau, tau_w, tau_w_g, tau_w_g * asm
+    return tuple(jnp.where(on, x, 0.0) for x in (tau, tau_w, tau_w_g, tau_w_g * asm))
 
 
 def mitchell_lw_abs_od(table: MitchellIceOptics, path, d_eff):

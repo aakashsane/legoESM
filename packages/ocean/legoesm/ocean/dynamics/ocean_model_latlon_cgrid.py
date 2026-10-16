@@ -1036,7 +1036,7 @@ def _ssp_rk3_tracer_pair_step(
 class _NEMOVerticalSolveTestInput(NamedTuple):
     """Fixed-shape private input for production-compiled solve probes.
 
-    ``replace`` is a dynamic six-element boolean array.  Disabled, identity,
+    ``replace`` is a dynamic seven-element boolean array.  Disabled, identity,
     directed, and planted probes therefore share one JIT input structure and
     one traced graph; only leaf values differ.  No model configuration can
     construct or select this diagnostic input.
@@ -1048,6 +1048,7 @@ class _NEMOVerticalSolveTestInput(NamedTuple):
     tracer_e3w: object
     tracer_e3t: object
     temperature_content: object
+    salinity_content: object
     replace: object
 
 
@@ -12076,7 +12077,8 @@ class LatLonCGridOceanModel:
         # Private causal seam: two arrays replace the post-closure heat and
         # viscosity profiles; later arrays optionally replace formed tracer
         # K, the tracer e3w(Kmm) divisor, the tracer e3t(Kaa) matrix weight,
-        # and the already-formed temperature content, in that order.
+        # and the already-formed temperature and salinity contents, in that
+        # order.
         _formed_effective_K_override = None
         _tracer_e3w_test_override = None
         _tracer_e3t_test_override = None
@@ -12088,9 +12090,9 @@ class LatLonCGridOceanModel:
             _fixed_solve_test_input = effective_K_test_override
             _fixed_solve_replace = jnp.asarray(
                 effective_K_test_override.replace, dtype=bool)
-            if _fixed_solve_replace.shape != (6,):
+            if _fixed_solve_replace.shape != (7,):
                 raise ValueError(
-                    "fixed vertical-solve test input requires six selectors")
+                    "fixed vertical-solve test input requires seven selectors")
             K_v_cell = jnp.where(
                 _fixed_solve_replace[0],
                 effective_K_test_override.heat_K, K_v_cell)
@@ -12753,6 +12755,10 @@ class LatLonCGridOceanModel:
                             _fixed_solve_replace[5],
                             _fixed_solve_test_input.temperature_content,
                             _content_t)
+                        _content_s = jnp.where(
+                            _fixed_solve_replace[6],
+                            _fixed_solve_test_input.salinity_content,
+                            _content_s)
                     elif _tracer_content_t_test_override is not None:
                         _content_t = _tracer_content_t_test_override
                     _tracer_wet = _literal_t_wet
@@ -12779,6 +12785,7 @@ class LatLonCGridOceanModel:
                             e3w_now=_tracer_e3w,
                             wet=_tracer_wet,
                             content_T=_content_t,
+                            content_S=_content_s,
                             lower=_trace_lower,
                             diagonal=_trace_diagonal,
                             upper=_trace_upper,
@@ -15941,6 +15948,7 @@ class _NEMOWSTracerSolveTrace(NamedTuple):
     e3w_now: object
     wet: object
     content_T: object
+    content_S: object
     lower: object
     diagonal: object
     upper: object

@@ -2543,7 +2543,7 @@ def run_step2_vertical_owner(oracle_root: Path, output: Path) -> dict:
         name: np.asarray(getattr(free.vertical_solve, name), dtype=np.float64)
         for name in (
             "heat_K", "viscosity_K", "effective_K", "e3w_now",
-            "e3t_after", "content_T", "solved_T",
+            "e3t_after", "content_T", "content_S", "solved_T",
         )
     }
 
@@ -2551,7 +2551,7 @@ def run_step2_vertical_owner(oracle_root: Path, output: Path) -> dict:
         *, heat: np.ndarray | None = None,
         viscosity: np.ndarray | None = None,
     ) -> _NEMOVerticalSolveTestInput:
-        selectors = np.zeros(6, dtype=np.bool_)
+        selectors = np.zeros(7, dtype=np.bool_)
         selectors[0] = heat is not None
         selectors[1] = viscosity is not None
         return _NEMOVerticalSolveTestInput(
@@ -2562,6 +2562,7 @@ def run_step2_vertical_owner(oracle_root: Path, output: Path) -> dict:
             tracer_e3w=jnp.asarray(own["e3w_now"]),
             tracer_e3t=jnp.asarray(own["e3t_after"]),
             temperature_content=jnp.asarray(own["content_T"]),
+            salinity_content=jnp.asarray(own["content_S"]),
             replace=jnp.asarray(selectors),
         )
 
@@ -2728,6 +2729,21 @@ def first_residual_removing_substitution(rows: list[dict]) -> str | None:
     return None
 
 
+def minimal_exact_subsets(
+    rows: list[dict], fields: tuple[str, ...] = ("temperature", "salinity"),
+) -> list[list[str]]:
+    """Return every smallest substitution set exact in all requested fields."""
+    exact = []
+    for row in rows:
+        members = tuple(row.get("members", (row["variable"],)))
+        if all(row[field]["n_unequal"] == 0 for field in fields):
+            exact.append(members)
+    if not exact:
+        return []
+    size = min(len(members) for members in exact)
+    return [list(members) for members in exact if len(members) == size]
+
+
 def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
     """Walk the remaining entry-kt=2 T/S boundary one ZDF input at a time."""
     import jax
@@ -2778,6 +2794,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         "tracer_e3w": native("e3w_Kmm")[:, :, 1:30],
         "tracer_e3t": native("e3t_Kaa", 30),
         "temperature_content": native("rhs_T", 30),
+        "salinity_content": native("rhs_S", 30),
     }
     nemo_solved = {
         "T": native("sol_T_pre_clamp", 30),
@@ -2808,6 +2825,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         "tracer_e3w": np.asarray(trace.e3w_now, dtype=np.float64),
         "tracer_e3t": np.asarray(trace.e3t_after, dtype=np.float64),
         "temperature_content": np.asarray(trace.content_T, dtype=np.float64),
+        "salinity_content": np.asarray(trace.content_S, dtype=np.float64),
         "viscosity_K": np.asarray(trace.viscosity_K, dtype=np.float64),
     }
     native_dtypes = {
@@ -2823,7 +2841,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
 
     ordered = (
         "heat_K", "formed_K", "tracer_e3w", "tracer_e3t",
-        "temperature_content",
+        "temperature_content", "salinity_content",
     )
 
     def fixed(replacements: dict[str, np.ndarray]) -> _NEMOVerticalSolveTestInput:
@@ -2842,6 +2860,8 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
                 "tracer_e3t", own["tracer_e3t"])),
             temperature_content=jnp.asarray(replacements.get(
                 "temperature_content", own["temperature_content"])),
+            salinity_content=jnp.asarray(replacements.get(
+                "salinity_content", own["salinity_content"])),
             replace=jnp.asarray(selectors),
         )
 
@@ -2886,6 +2906,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         "tracer_e3w": interface_wet,
         "tracer_e3t": wet,
         "temperature_content": wet,
+        "salinity_content": wet,
     }
     for name in ordered:
         replacement = nemo_inputs[name]
@@ -2898,35 +2919,77 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         index = tuple(int(value) for value in np.argwhere(active)[0])
         planted_value[index] *= plant_scale
         planted = run(fixed({name: planted_value}))
+        plant_field = "S" if name == "salinity_content" else "T"
         plant_row = exact_score(
             f"control.step1_vertical.{name}.active_scale_plant",
-            np.asarray(result.state_after.T.data),
-            np.asarray(planted.state_after.T.data),
+            np.asarray(getattr(result.state_after, plant_field).data),
+            np.asarray(getattr(planted.state_after, plant_field).data),
             wet,
         )
         if plant_row["n_unequal"] == 0:
             raise RuntimeError(
-                f"step-1 vertical {name} plant did not reach temperature")
+                f"step-1 vertical {name} plant did not reach {plant_field}")
         plants.append({
             "variable": name,
             "index": list(index),
             "scale": float(plant_scale),
-            "temperature": plant_row,
+            "output_field": plant_field,
+            "score": plant_row,
             "status": "FIRED",
         })
         removed_by = first_residual_removing_substitution(rows)
-        if removed_by is not None:
-            break
 
-    all_inputs = None
-    classification = "ONE_VARIABLE_OWNER" if removed_by is not None else None
+    subset_names = (
+        ("formed_K", "temperature_content"),
+        ("formed_K", "temperature_content", "salinity_content"),
+        ("formed_K", "salinity_content"),
+        ("temperature_content", "salinity_content"),
+    )
+    subset_rows = []
     if removed_by is None:
-        all_inputs = output_rows("all_recorded_inputs", run(fixed(nemo_inputs)))
-        classification = (
-            "OPERATOR_COMPOSITION"
-            if all_inputs["temperature"]["n_unequal"] > 0
-            else "COUPLED_INPUT_COMPOSITION"
-        )
+        for members in subset_names:
+            row = output_rows(
+                "+".join(members),
+                run(fixed({name: nemo_inputs[name] for name in members})),
+            )
+            row["members"] = list(members)
+            subset_rows.append(row)
+
+    all_inputs = output_rows(
+        "all_recorded_inputs", run(fixed(nemo_inputs)))
+    all_inputs["members"] = list(ordered)
+    search_rows = [
+        {**row, "members": [row["variable"]]} for row in rows
+    ] + subset_rows + [all_inputs]
+    minimal_temperature = minimal_exact_subsets(
+        search_rows, fields=("temperature",))
+    minimal_salinity = minimal_exact_subsets(
+        search_rows, fields=("salinity",))
+    minimal_joint = minimal_exact_subsets(search_rows)
+    if removed_by is not None:
+        classification = "ONE_VARIABLE_OWNER"
+    elif minimal_joint and len(minimal_joint[0]) > 1:
+        classification = "COUPLED_ROUNDING_ORDER_DEBT"
+    elif minimal_joint:
+        classification = "ONE_VARIABLE_OWNER"
+    elif all_inputs["temperature"]["n_unequal"] > 0:
+        classification = "OPERATOR_COMPOSITION"
+    else:
+        classification = "INCOMPLETE_RECORDED_INPUT_SET"
+
+    row_by_members = {
+        tuple(row["members"]): row for row in search_rows
+    }
+    member_necessity = []
+    if minimal_joint:
+        winner = tuple(minimal_joint[0])
+        for member in winner:
+            without = tuple(name for name in winner if name != member)
+            member_necessity.append({
+                "member": member,
+                "with": row_by_members[winner],
+                "without": row_by_members.get(without),
+            })
 
     input_rows = [
         exact_score(
@@ -2935,7 +2998,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         for name in ordered
     ]
     report = {
-        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v1",
+        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v2",
         "worktree": worktree_stamp(),
         "oracle_admission": admission,
         "policy": "fp64/x64/cpu/libm certified",
@@ -2945,6 +3008,13 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         "production": production,
         "input_rows": input_rows,
         "one_variable_substitutions": rows,
+        "subset_substitutions": subset_rows,
+        "minimal_exact_subsets": {
+            "temperature": minimal_temperature,
+            "salinity": minimal_salinity,
+            "joint": minimal_joint,
+        },
+        "minimal_joint_member_necessity": member_necessity,
         "first_residual_removing_substitution": removed_by,
         "all_recorded_inputs": all_inputs,
         "controls": {"passive_seam": passive, "active_plants": plants},

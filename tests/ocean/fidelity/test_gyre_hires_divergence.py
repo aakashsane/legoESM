@@ -43,6 +43,54 @@ def test_divergence_curve_preserves_daily_order():
         reference, candidate, np.ones((2, 2), dtype=bool))
     assert np.array_equal(curve["normalized_rms_difference"][:1], [0.0])
     assert curve["normalized_rms_difference"][1] > 0.0
+    assert curve["absolute_rms_difference"][1] > 0.0
+
+
+def test_wet_span_regions_and_signed_excess_localize_western_seed():
+    mask = np.ones((2, 10), dtype=bool)
+    bins = DIVERGENCE.wet_span_bins(mask)
+    assert np.array_equal(bins[0], np.repeat(np.arange(5), 2))
+    reference = np.zeros((4, 2, 10))
+    twin = reference.copy()
+    candidate = reference.copy()
+    candidate[:, :, :2] = 3.0
+    rows = DIVERGENCE.regional_excess(
+        reference, candidate, twin, mask, start_day=1, stop_day=4)
+    assert rows[0]["region"] == "western_boundary"
+    assert rows[0]["signed_excess_sse"] == 144.0
+    assert all(row["signed_excess_sse"] == 0.0 for row in rows[1:])
+
+
+def test_first_factor_excess_names_earliest_field_and_tie():
+    def curve(values):
+        return {"normalized_rms_difference": np.asarray(values, dtype=float)}
+
+    twin = {"ssh": curve([1, 1, 1]), "sst": curve([1, 1, 1])}
+    candidate = {"ssh": curve([1, 5, 6]), "sst": curve([1, 5, 3])}
+    result = DIVERGENCE.first_factor_excess(
+        candidate, twin, factor=4.0, start_day=1, stop_day=3)
+    assert result["day"] == 2
+    assert result["fields"] == ["ssh", "sst"]
+
+
+def test_growth_law_controls_separate_exponential_and_algebraic():
+    days = np.arange(30.0, 181.0)
+    exponential = DIVERGENCE.fit_growth_laws(days, np.exp(0.02 * days))
+    algebraic = DIVERGENCE.fit_growth_laws(days, days ** 2.5)
+    assert exponential["classification"] == "exponential"
+    assert algebraic["classification"] == "algebraic"
+
+
+def test_time_tile_assembly_places_prefix_dimensions():
+    left = np.ones((3, 2, 2))
+    right = np.full((3, 2, 2), 2.0)
+    assembled = DIVERGENCE._assemble_time_tiles(
+        [(np.array([1, 1]), left), (np.array([3, 1]), right)],
+        shape=(2, 4),
+    )
+    assert assembled.shape == (3, 2, 4)
+    assert np.all(assembled[:, :, :2] == 1.0)
+    assert np.all(assembled[:, :, 2:] == 2.0)
 
 
 def test_yearly_eddy_fraction_uses_full_series_and_all_years():

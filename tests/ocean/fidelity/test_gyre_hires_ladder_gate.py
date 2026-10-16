@@ -665,3 +665,38 @@ def test_first_residual_removing_substitution_uses_zero_word_bar():
     rows[1]["temperature"]["n_unequal"] = 1
     rows[2]["temperature"]["n_unequal"] = 2
     assert GATE.first_residual_removing_substitution(rows) is None
+
+
+def test_minimal_exact_subsets_requires_every_requested_field():
+    def row(members, t_words, s_words):
+        return {
+            "variable": "+".join(members),
+            "members": list(members),
+            "temperature": {"n_unequal": t_words},
+            "salinity": {"n_unequal": s_words},
+        }
+
+    rows = [
+        row(("formed_K",), 3, 4),
+        row(("temperature_content",), 2, 4),
+        row(("formed_K", "temperature_content"), 0, 4),
+        row(("formed_K", "temperature_content", "salinity_content"), 0, 0),
+        row(("formed_K", "temperature_content", "salinity_content", "e3t"), 0, 0),
+    ]
+    assert GATE.minimal_exact_subsets(
+        rows, fields=("temperature",)) == [
+            ["formed_K", "temperature_content"]]
+    assert GATE.minimal_exact_subsets(rows) == [[
+        "formed_K", "temperature_content", "salinity_content"]]
+
+
+def test_fixed_vertical_probe_exposes_independent_salinity_content():
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        _NEMOVerticalSolveTestInput,
+        _NEMOWSTracerSolveTrace,
+    )
+
+    assert _NEMOVerticalSolveTestInput._fields[-2:] == (
+        "salinity_content", "replace")
+    assert _NEMOWSTracerSolveTrace._fields[6:8] == (
+        "content_T", "content_S")

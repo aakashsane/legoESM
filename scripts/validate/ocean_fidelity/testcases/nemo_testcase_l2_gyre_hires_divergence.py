@@ -3,7 +3,10 @@
 
 The divergence definition is the operator's round-8 definition: RMS of the
 difference divided by the RMS spatial anomaly of the certified vector-math
-NEMO field, plus pattern correlation, on daily-mean SSH and native surface U.
+NEMO field, plus pattern correlation, on daily-mean SSH, SST, native surface
+U/V, and depth-mean U/V.  Round 11 also attributes the day-30..180 excess
+over the scalar/vector NEMO twin to wet-span longitude bands and compares
+exponential with algebraic growth in log-error space.
 The eddy fraction is the climate scorer's 31-day nearest-boundary high-pass
 EKE divided by surface KE, evaluated from the full five-year series.
 """
@@ -13,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 
 import numpy as np
@@ -71,9 +75,12 @@ def normalized_rms_and_correlation(
         * np.sum(right_anomaly * right_anomaly, dtype=np.float64)
     )
     require(denominator > 0.0, "pattern-correlation denominator is zero")
+    absolute_rms = float(np.sqrt(np.mean(
+        (left - right) ** 2, dtype=np.float64)))
     return {
-        "normalized_rms_difference": float(np.sqrt(np.mean(
-            (left - right) ** 2, dtype=np.float64)) / reference_rms),
+        "absolute_rms_difference": absolute_rms,
+        "reference_spatial_anomaly_rms": reference_rms,
+        "normalized_rms_difference": absolute_rms / reference_rms,
         "pattern_correlation": float(np.sum(
             left_anomaly * right_anomaly, dtype=np.float64) / denominator),
     }
@@ -92,6 +99,10 @@ def divergence_curve(
         for left, right in zip(reference, candidate, strict=True)
     ]
     return {
+        "absolute_rms_difference": np.asarray([
+            row["absolute_rms_difference"] for row in rows]),
+        "reference_spatial_anomaly_rms": np.asarray([
+            row["reference_spatial_anomaly_rms"] for row in rows]),
         "normalized_rms_difference": np.asarray([
             row["normalized_rms_difference"] for row in rows]),
         "pattern_correlation": np.asarray([
@@ -134,12 +145,12 @@ def yearly_eddy_statistics(
 
 
 def nemo_surface_masks(root: Path) -> dict[str, np.ndarray]:
-    """Stitch NEMO surface T/U masks from their own DOMAIN metadata."""
+    """Stitch NEMO surface T/U/V masks from their own DOMAIN metadata."""
     import netCDF4
 
     paths = sorted(root.glob("mesh_mask_????.nc"))
     require(len(paths) == 8, "NEMO reference requires eight mesh-mask tiles")
-    tiles = {"wet": [], "u": []}
+    tiles = {"wet": [], "u": [], "v": []}
     for path in paths:
         with netCDF4.Dataset(path) as dataset:
             require(np.array_equal(dataset.DOMAIN_size_global, [122, 82]),
@@ -147,6 +158,7 @@ def nemo_surface_masks(root: Path) -> dict[str, np.ndarray]:
             first = np.asarray(dataset.DOMAIN_position_first)
             tiles["wet"].append((first, np.asarray(dataset["tmask"][0, 0])))
             tiles["u"].append((first, np.asarray(dataset["umask"][0, 0])))
+            tiles["v"].append((first, np.asarray(dataset["vmask"][0, 0])))
     return {
         name: assemble_domain_tiles(value) > 0.5
         for name, value in tiles.items()
@@ -162,6 +174,7 @@ def load_surface_series(
     """Stream one provider once; retain only fields used by this instrument."""
     require(0 < curve_days <= total_days, "invalid divergence window")
     ssh = np.empty((curve_days, *GLOBAL_SHAPE), dtype=np.float64)
+    sst = np.empty_like(ssh)
     u = np.empty((total_days, *GLOBAL_SHAPE), dtype=np.float64)
     v = np.empty_like(u)
     count = 0
@@ -170,10 +183,248 @@ def load_surface_series(
                 f"{provider.name}: daily sequence differs")
         if count <= curve_days:
             ssh[count - 1] = frame.ssh
+            sst[count - 1] = frame.sst
         u[count - 1] = frame.u
         v[count - 1] = frame.v
     require(count == total_days, f"{provider.name}: expected {total_days} days")
-    return {"ssh": ssh, "u": u, "v": v, "provenance": provider.provenance}
+    return {
+        "ssh": ssh, "sst": sst, "u": u, "v": v,
+        "provenance": provider.provenance,
+    }
+
+
+def wet_span_bins(mask: np.ndarray, n_bins: int = 5) -> np.ndarray:
+    """Assign active cells to equal fractional-distance bins within each row."""
+    mask = np.asarray(mask, dtype=bool)
+    require(mask.ndim == 2 and n_bins > 1, "invalid wet-span bin request")
+    result = np.full(mask.shape, -1, dtype=np.int8)
+    for j in range(mask.shape[0]):
+        active = np.flatnonzero(mask[j])
+        if active.size:
+            labels = np.minimum(
+                (np.arange(active.size, dtype=np.int64) * n_bins)
+                // active.size,
+                n_bins - 1,
+            )
+            result[j, active] = labels.astype(np.int8)
+    return result
+
+
+def regional_excess(
+    reference: np.ndarray,
+    candidate: np.ndarray,
+    twin: np.ndarray,
+    mask: np.ndarray,
+    *,
+    start_day: int = 30,
+    stop_day: int = 180,
+) -> list[dict]:
+    """Signed candidate-minus-twin SSE in five per-row wet-span bands."""
+    reference = np.asarray(reference, dtype=np.float64)
+    candidate = np.asarray(candidate, dtype=np.float64)
+    twin = np.asarray(twin, dtype=np.float64)
+    mask = np.asarray(mask, dtype=bool)
+    require(reference.shape == candidate.shape == twin.shape,
+            "regional series shapes differ")
+    require(reference.ndim == 3 and reference.shape[1:] == mask.shape,
+            "regional mask shape differs")
+    require(1 <= start_day <= stop_day <= reference.shape[0],
+            "invalid regional day window")
+    require(np.all(np.isfinite(reference[:, mask]))
+            and np.all(np.isfinite(candidate[:, mask]))
+            and np.all(np.isfinite(twin[:, mask])),
+            "non-finite active regional series")
+    window = slice(start_day - 1, stop_day)
+    candidate_error = (candidate[window] - reference[window]) ** 2
+    twin_error = (twin[window] - reference[window]) ** 2
+    bins = wet_span_bins(mask)
+    names = ("western_boundary", "western_interior", "central_interior",
+             "eastern_interior", "eastern_boundary")
+    result = []
+    for index, name in enumerate(names):
+        active = bins == index
+        require(np.any(active), f"empty regional bin {name}")
+        candidate_sse = float(np.sum(
+            candidate_error[:, active], dtype=np.float64))
+        twin_sse = float(np.sum(twin_error[:, active], dtype=np.float64))
+        result.append({
+            "region": name,
+            "active_cells": int(np.count_nonzero(active)),
+            "candidate_sse": candidate_sse,
+            "twin_sse": twin_sse,
+            "signed_excess_sse": candidate_sse - twin_sse,
+        })
+    return result
+
+
+def first_factor_excess(
+    candidate: dict[str, dict[str, np.ndarray]],
+    twin: dict[str, dict[str, np.ndarray]],
+    *, factor: float = 4.0,
+    start_day: int = 30,
+    stop_day: int = 180,
+) -> dict:
+    """Name the earliest field/day whose normalised error clears a factor."""
+    require(set(candidate) == set(twin), "curve field inventories differ")
+    hits = []
+    for field in sorted(candidate):
+        left = candidate[field]["normalized_rms_difference"]
+        floor = twin[field]["normalized_rms_difference"]
+        require(left.shape == floor.shape, f"{field}: curve shapes differ")
+        days = np.arange(start_day, stop_day + 1)
+        selected = left[start_day - 1:stop_day] > factor * floor[
+            start_day - 1:stop_day]
+        if np.any(selected):
+            day = int(days[np.flatnonzero(selected)[0]])
+            hits.append((day, field, float(left[day - 1]), float(floor[day - 1])))
+    require(bool(hits), "candidate never clears registered twin factor")
+    first_day = min(row[0] for row in hits)
+    first = [row for row in hits if row[0] == first_day]
+    return {
+        "factor": factor,
+        "day": first_day,
+        "fields": [row[1] for row in first],
+        "rows": [
+            {"field": field, "candidate": value, "twin": floor,
+             "ratio": value / floor if floor > 0.0 else float("inf")}
+            for _, field, value, floor in first
+        ],
+    }
+
+
+def fit_growth_laws(days: np.ndarray, error: np.ndarray) -> dict:
+    """Compare exponential and algebraic fits using log-space RMS residual."""
+    days = np.asarray(days, dtype=np.float64)
+    error = np.asarray(error, dtype=np.float64)
+    require(days.ndim == error.ndim == 1 and days.shape == error.shape,
+            "growth arrays differ")
+    require(days.size >= 3 and np.all(days > 0.0)
+            and np.all(np.isfinite(error)) and np.all(error > 0.0),
+            "growth fit requires finite positive samples")
+    target = np.log(error)
+
+    def fit(x):
+        design = np.column_stack((np.ones_like(x), x))
+        coefficient, *_ = np.linalg.lstsq(design, target, rcond=None)
+        residual = target - design @ coefficient
+        return coefficient, float(np.sqrt(np.mean(residual * residual)))
+
+    exponential, exp_rms = fit(days)
+    algebraic, alg_rms = fit(np.log(days))
+    return {
+        "classification": "exponential" if exp_rms < alg_rms else "algebraic",
+        "exponential": {
+            "log_intercept": float(exponential[0]),
+            "per_day_rate": float(exponential[1]),
+            "log_rms_residual": exp_rms,
+        },
+        "algebraic": {
+            "log_intercept": float(algebraic[0]),
+            "power": float(algebraic[1]),
+            "log_rms_residual": alg_rms,
+        },
+    }
+
+
+def _assemble_time_tiles(
+    tiles: list[tuple[np.ndarray, np.ndarray]], shape=GLOBAL_SHAPE,
+) -> np.ndarray:
+    """Assemble time-by-y-by-x tiles using NEMO's DOMAIN positions."""
+    require(bool(tiles), "no time tiles")
+    days = np.asarray(tiles[0][1]).shape[0]
+    assembled = np.empty((days, *shape), dtype=np.float64)
+    filled = np.zeros(shape, dtype=bool)
+    for first, raw in tiles:
+        first = np.asarray(first, dtype=np.int64)
+        values = np.asarray(raw, dtype=np.float64)
+        require(first.shape == (2,) and values.ndim == 3
+                and values.shape[0] == days, "invalid time tile")
+        i0, j0 = int(first[0] - 1), int(first[1] - 1)
+        target = np.s_[j0:j0 + values.shape[1], i0:i0 + values.shape[2]]
+        require(assembled[:, target[0], target[1]].shape == values.shape,
+                "time tile exceeds global shape")
+        require(not np.any(filled[target]), "overlapping time tiles")
+        require(np.all(np.isfinite(values)), "non-finite time tile")
+        assembled[:, target[0], target[1]] = values
+        filled[target] = True
+    require(np.all(filled), "time assembly missed cells")
+    return assembled
+
+
+def load_nemo_depth_mean(root: Path, days: int) -> dict[str, np.ndarray]:
+    """Read z-coordinate thickness-weighted daily U/V column means."""
+    import netCDF4
+
+    require(days > 0, "depth-mean window must be positive")
+    meshes = sorted(root.glob("mesh_mask_????.nc"))
+    paths = {
+        "u": sorted(root.glob("*grid_U_????.nc")),
+        "v": sorted(root.glob("*grid_V_????.nc")),
+    }
+    require(len(meshes) == 8 and all(len(value) == 8 for value in paths.values()),
+            "depth-mean reader requires eight NEMO mesh/U/V tiles")
+    result = {}
+    with ExitStack() as stack:
+        mesh_sets = [stack.enter_context(netCDF4.Dataset(path)) for path in meshes]
+        for field, variable, metric, mask_name in (
+            ("depth_mean_u", "vozocrtx", "e3u_0", "umask"),
+            ("depth_mean_v", "vomecrty", "e3v_0", "vmask"),
+        ):
+            dsets = [
+                stack.enter_context(netCDF4.Dataset(path))
+                for path in paths["u" if field.endswith("u") else "v"]
+            ]
+            tiles = []
+            for mesh, dataset in zip(mesh_sets, dsets, strict=True):
+                mesh.set_auto_mask(False)
+                dataset.set_auto_mask(False)
+                require(np.array_equal(mesh.DOMAIN_position_first,
+                                       dataset.DOMAIN_position_first),
+                        f"{field}: mesh/output tile positions differ")
+                weights = (np.asarray(mesh[metric][0], dtype=np.float64)
+                           * np.asarray(mesh[mask_name][0], dtype=np.float64))
+                column = np.sum(weights, axis=0, dtype=np.float64)
+                require(np.all(column[column > 0.0] > 0.0),
+                        f"{field}: invalid column thickness")
+                velocity = np.asarray(dataset[variable][:days], dtype=np.float64)
+                require(velocity.shape[0] == days,
+                        f"{field}: too few daily records")
+                numerator = np.sum(
+                    velocity * weights[None, ...], axis=1, dtype=np.float64)
+                mean = np.divide(
+                    numerator, column[None, ...],
+                    out=np.zeros_like(numerator), where=column[None, ...] > 0.0,
+                )
+                tiles.append((dataset.DOMAIN_position_first, mean))
+            result[field] = _assemble_time_tiles(tiles)
+    return result
+
+
+def load_legoesm_depth_mean(provider: DailyProvider, days: int) -> dict[str, np.ndarray]:
+    """Load the registered external-mode daily means stored by the driver."""
+    registration = provider.provenance.get("registration", {})
+    root = Path(registration.get("run_directory", ""))
+    require(root.is_absolute() and days > 0,
+            "missing registered legoESM depth-mean root")
+    result = {
+        "depth_mean_u": np.empty((days, *GLOBAL_SHAPE), dtype=np.float64),
+        "depth_mean_v": np.empty((days, *GLOBAL_SHAPE), dtype=np.float64),
+    }
+    names = {
+        "depth_mean_u": "barotropic_u_m_s_daily_mean",
+        "depth_mean_v": "barotropic_v_m_s_daily_mean",
+    }
+    for day in range(1, days + 1):
+        path = root / f"day{day:04d}.npz"
+        with np.load(path, allow_pickle=False) as data:
+            require(int(data["day"]) == day, f"{path.name}: day differs")
+            for field, name in names.items():
+                require(name in data, f"{path.name}: missing {name}")
+                value = np.asarray(data[name], dtype=np.float64)
+                require(value.shape == GLOBAL_SHAPE and np.all(np.isfinite(value)),
+                        f"{path.name}: invalid {name}")
+                result[field][day - 1] = value
+    return result
 
 
 def _checkpoint_rows(curves: dict[str, dict[str, dict]]) -> list[dict]:
@@ -191,6 +442,8 @@ def _checkpoint_rows(curves: dict[str, dict[str, dict]]) -> list[dict]:
 
 
 def _validate_twin(curve: dict[str, dict[str, np.ndarray]]) -> dict:
+    require("ssh" in curve and ("surface_u" in curve or "u" in curve),
+            "NEMO twin curve is missing registered fields")
     measured = {
         day: f"{curve['ssh']['normalized_rms_difference'][day - 1]:.2e}"
         for day in OPERATOR_TWIN_SSH_BENCHMARK
@@ -250,31 +503,55 @@ def main(argv=None) -> int:
                 "NEMO and legoESM T masks differ")
         require(np.array_equal(masks["u"], card_geom["u_mask"]),
                 "NEMO and legoESM U masks differ")
+        require(np.array_equal(masks["v"], card_geom["v_mask"]),
+                "NEMO and legoESM V masks differ")
 
         vector = load_surface_series(vector_provider)
         vector_years = yearly_eddy_statistics(
             vector["u"], vector["v"], masks["wet"])
-        vector_curve = {"ssh": vector["ssh"], "u": vector["u"][:CURVE_DAYS]}
-        del vector["v"]
+        vector_curve = {
+            "ssh": vector["ssh"],
+            "sst": vector["sst"],
+            "surface_u": np.array(vector["u"][:CURVE_DAYS], copy=True),
+            "surface_v": np.array(vector["v"][:CURVE_DAYS], copy=True),
+            **load_nemo_depth_mean(args.vector_nemo_root, CURVE_DAYS),
+        }
 
         curves: dict[str, dict[str, dict]] = {}
         yearly = {"nemo_vector": vector_years}
         provenance = {"nemo_vector": vector["provenance"]}
+        raw_curves: dict[str, dict[str, np.ndarray]] = {}
+        del vector
         providers = (
-            ("nemo_scalar", scalar_provider),
-            ("legoesm_baseline", baseline_provider),
-            ("legoesm_candidate", candidate_provider),
+            ("nemo_scalar", scalar_provider, args.scalar_nemo_root),
+            ("legoesm_baseline", baseline_provider, None),
+            ("legoesm_candidate", candidate_provider, None),
         )
-        for label, provider in providers:
+        field_masks = {
+            "ssh": masks["wet"], "sst": masks["wet"],
+            "surface_u": masks["u"], "surface_v": masks["v"],
+            "depth_mean_u": masks["u"], "depth_mean_v": masks["v"],
+        }
+        for label, provider, nemo_root in providers:
             series = load_surface_series(provider)
             yearly[label] = yearly_eddy_statistics(
                 series["u"], series["v"], masks["wet"])
+            fields = {
+                "ssh": series["ssh"],
+                "sst": series["sst"],
+                "surface_u": np.array(series["u"][:CURVE_DAYS], copy=True),
+                "surface_v": np.array(series["v"][:CURVE_DAYS], copy=True),
+                **(load_nemo_depth_mean(nemo_root, CURVE_DAYS)
+                   if nemo_root is not None else
+                   load_legoesm_depth_mean(provider, CURVE_DAYS)),
+            }
             curves[label] = {
-                field: divergence_curve(vector_curve[field], series[field][
-                    :CURVE_DAYS] if field == "u" else series[field], mask)
-                for field, mask in (("ssh", masks["wet"]), ("u", masks["u"]))
+                field: divergence_curve(vector_curve[field], fields[field], mask)
+                for field, mask in field_masks.items()
             }
             provenance[label] = series["provenance"]
+            if label in ("nemo_scalar", "legoesm_candidate"):
+                raw_curves[label] = fields
             del series
 
         twin_validation = _validate_twin(curves["nemo_scalar"])
@@ -289,6 +566,39 @@ def main(argv=None) -> int:
                 and plant_control["normalized_rms_difference"] > 0.0,
                 "divergence exact/one-ULP controls did not separate")
 
+        first_excess = first_factor_excess(
+            curves["legoesm_candidate"], curves["nemo_scalar"])
+        regional = {
+            field: regional_excess(
+                vector_curve[field], raw_curves["legoesm_candidate"][field],
+                raw_curves["nemo_scalar"][field], mask,
+            )
+            for field, mask in field_masks.items()
+        }
+        leading_field = first_excess["fields"][0]
+        leading_region = max(
+            regional[leading_field], key=lambda row: row["signed_excess_sse"])
+        region_names = (
+            "western_boundary", "western_interior", "central_interior",
+            "eastern_interior", "eastern_boundary",
+        )
+        leading_bin = region_names.index(leading_region["region"])
+        leading_mask = wet_span_bins(field_masks[leading_field]) == leading_bin
+        leading_curve = divergence_curve(
+            vector_curve[leading_field],
+            raw_curves["legoesm_candidate"][leading_field], leading_mask)
+        fit_days = np.arange(30, 181, dtype=np.float64)
+        basin_growth = fit_growth_laws(
+            fit_days, curves["legoesm_candidate"][leading_field][
+                "absolute_rms_difference"][29:180])
+        region_growth = fit_growth_laws(
+            fit_days, leading_curve["absolute_rms_difference"][29:180])
+        growth_classification = (
+            basin_growth["classification"]
+            if basin_growth["classification"] == region_growth["classification"]
+            else "mixed"
+        )
+
         arrays_path = args.output / "gyre_hires_divergence_arrays.npz"
         np.savez_compressed(arrays_path, **{
             f"{comparison}.{field}.{metric}": value
@@ -297,15 +607,31 @@ def main(argv=None) -> int:
             for metric, value in metrics.items()
         })
         report = {
-            "schema": "gyre-r4-smag-divergence-envelope-v1",
+            "schema": "gyre-r4-smag-divergence-envelope-v2",
             "definition": {
                 "divergence": (
                     "RMS(candidate-reference) / RMS(reference spatial anomaly)"
                 ),
                 "correlation": "same-day spatial anomaly pattern correlation",
                 "reference": "certified vector-math NEMO daily mean",
-                "fields": ["SSH on T mask", "native surface U on U mask"],
+                "fields": [
+                    "SSH on T mask", "SST on T mask",
+                    "native surface U on U mask", "native surface V on V mask",
+                    "depth-mean U on U mask", "depth-mean V on V mask",
+                ],
+                "depth_mean": (
+                    "NEMO daily 3-D velocity weighted by z-coordinate e3u_0/"
+                    "e3v_0 and masks; legoESM stored external-mode daily mean"
+                ),
                 "curve_days": [1, CURVE_DAYS],
+                "regional_window_days": [30, 180],
+                "regional_bins": (
+                    "five equal fractional-distance bins within each wet row"
+                ),
+                "bottom_velocity": (
+                    "UNMEASURED: the registered legoESM run stores surface and "
+                    "external-mode velocities, not bottom velocity"
+                ),
                 "eddy_fraction": (
                     "31-day nearest-boundary high-pass native U/V EKE / KE"
                 ),
@@ -315,6 +641,7 @@ def main(argv=None) -> int:
             "mask_identity": {
                 "T": "NEMO mesh mask equals legoESM card mask",
                 "U": "NEMO mesh mask equals legoESM card mask",
+                "V": "NEMO mesh mask equals legoESM card mask",
             },
             "instrument_validation": {
                 "nemo_twin_benchmark": twin_validation,
@@ -326,6 +653,15 @@ def main(argv=None) -> int:
                 },
             },
             "checkpoints": _checkpoint_rows(curves),
+            "first_four_times_twin": first_excess,
+            "regional_signed_sse_excess": regional,
+            "leading_region": {"field": leading_field, **leading_region},
+            "growth_days_30_180": {
+                "classification": growth_classification,
+                "basin": basin_growth,
+                "leading_region": region_growth,
+                "metric": "absolute RMS error; fit residual in log-error space",
+            },
             "yearly_statistics": yearly,
             "artifacts": {arrays_path.name: sha256(arrays_path)},
         }

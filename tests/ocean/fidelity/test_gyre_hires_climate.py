@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -106,6 +107,60 @@ def test_weighted_sst_is_divided_by_same_file_thickness():
     )
     with pytest.raises(Exception, match="thickness"):
         CLIMATE.decode_weighted_surface_temperature(weighted, np.zeros_like(thickness))
+
+
+def test_alternative_nemo_manifest_is_explicit_labelled_and_noncertified(
+    tmp_path, monkeypatch,
+):
+    root = tmp_path / "scalar"
+    root.mkdir()
+    payloads = {
+        "nemo": b"scalar-math binary",
+        "namelist_cfg": b"exact deck",
+        "namelist_ref": b"exact reference deck",
+    }
+    digests = {
+        name: hashlib.sha256(payload).hexdigest()
+        for name, payload in payloads.items()
+    }
+    for name, payload in payloads.items():
+        (root / name).write_bytes(payload)
+    (root / "resolved_namelist_lines.txt").write_text("", encoding="utf-8")
+    manifest = root / "manifest.sha256"
+    manifest.write_text(
+        "".join(f"{digests[name]}  {name}\n" for name in payloads),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(CLIMATE, "NEMO_MANIFEST", {
+        "nemo": "0" * 64,
+        "namelist_cfg": digests["namelist_cfg"],
+        "namelist_ref": digests["namelist_ref"],
+    })
+
+    admitted = CLIMATE._require_nemo_deck(
+        root, alternative_manifest=manifest, alternative_label="scalar_math")
+    assert admitted["reference"] == {
+        "label": "scalar_math",
+        "certified": False,
+        "classification": "labelled non-certified NEMO reference",
+        "manifest_path": str(manifest.resolve()),
+    }
+    assert admitted["resolved_namelist_sha256"] is None
+    with pytest.raises(Exception, match="explicit label"):
+        CLIMATE._require_nemo_deck(root, alternative_manifest=manifest)
+    with pytest.raises(Exception, match="not r4_smag"):
+        CLIMATE._require_nemo_deck(root)
+
+
+def test_alternative_nemo_manifest_cannot_name_another_root(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    elsewhere = tmp_path / "elsewhere.sha256"
+    elsewhere.write_text("", encoding="utf-8")
+    with pytest.raises(Exception, match="ROOT/manifest"):
+        CLIMATE._require_nemo_deck(
+            root, alternative_manifest=elsewhere,
+            alternative_label="scalar_math")
 
 
 def test_diagnose_applies_native_velocity_highpass_and_registered_statistics(monkeypatch):

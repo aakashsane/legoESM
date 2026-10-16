@@ -130,38 +130,91 @@ def _read_manifest(path: Path) -> dict[str, str]:
     return result
 
 
-def _require_nemo_deck(root: Path) -> dict:
+def _require_nemo_deck(
+    root: Path,
+    *,
+    alternative_manifest: Path | None = None,
+    alternative_label: str | None = None,
+) -> dict:
+    """Admit the certified vector build or an explicitly named alternative.
+
+    The no-argument path is deliberately unchanged: it requires the original
+    three-file manifest and the resolved deck receipt.  An alternative is
+    report-only, must name its own manifest on the command line, and must use
+    byte-identical certified ``namelist_cfg`` and ``namelist_ref`` files.
+    """
     manifest_path = root / "manifest.sha256"
     resolved = root / "resolved_namelist_lines.txt"
-    require(manifest_path.is_file() and resolved.is_file(), "missing NEMO deck receipts")
-    require(_read_manifest(manifest_path) == NEMO_MANIFEST, "NEMO manifest is not r4_smag")
-    for name, digest in NEMO_MANIFEST.items():
+    if alternative_manifest is None:
+        require(alternative_label is None,
+                "alternative NEMO label requires an alternative manifest")
+        require(manifest_path.is_file() and resolved.is_file(),
+                "missing NEMO deck receipts")
+        manifest = _read_manifest(manifest_path)
+        require(manifest == NEMO_MANIFEST, "NEMO manifest is not r4_smag")
+        reference = {"label": "certified_vector", "certified": True}
+    else:
+        require(bool(alternative_label),
+                "alternative NEMO manifest requires an explicit label")
+        require(re.fullmatch(r"[A-Za-z0-9_.-]+", alternative_label) is not None,
+                "invalid alternative NEMO label")
+        supplied = alternative_manifest.resolve()
+        require(supplied == manifest_path.resolve(),
+                "alternative NEMO manifest must be ROOT/manifest.sha256")
+        require(supplied.is_file(), "missing alternative NEMO manifest")
+        manifest = _read_manifest(supplied)
+        require(set(manifest) == set(NEMO_MANIFEST),
+                "alternative NEMO manifest inventory differs")
+        for name in ("namelist_cfg", "namelist_ref"):
+            require(manifest[name] == NEMO_MANIFEST[name],
+                    f"alternative NEMO deck differs at {name}")
+        reference = {
+            "label": alternative_label,
+            "certified": False,
+            "classification": "labelled non-certified NEMO reference",
+            "manifest_path": str(supplied),
+        }
+    for name, digest in manifest.items():
         require((root / name).is_file() and sha256(root / name) == digest,
                 f"NEMO deck digest mismatch: {name}")
-    text = resolved.read_text(encoding="utf-8")
-    for name, pattern in (
-        ("nn_GYRE=4", r"\bnn_GYRE\s*=\s*4\b"),
-        ("rn_Dt=3600", r"\brn_Dt\s*=\s*3600\."),
-        ("ln_dynldf_lap=false", r"\bln_dynldf_lap\s*=\s*\.false\."),
-        ("ln_dynldf_blp=true", r"\bln_dynldf_blp\s*=\s*\.true\."),
-        ("nn_ahm_ijk_t=32", r"\bnn_ahm_ijk_t\s*=\s*32\b"),
-        ("rn_csmc=3.5", r"\brn_csmc\s*=\s*3\.5\b"),
-    ):
-        require(re.search(pattern, text) is not None,
-                f"resolved r4_smag deck missing {name}")
+    if alternative_manifest is None:
+        text = resolved.read_text(encoding="utf-8")
+        for name, pattern in (
+            ("nn_GYRE=4", r"\bnn_GYRE\s*=\s*4\b"),
+            ("rn_Dt=3600", r"\brn_Dt\s*=\s*3600\."),
+            ("ln_dynldf_lap=false", r"\bln_dynldf_lap\s*=\s*\.false\."),
+            ("ln_dynldf_blp=true", r"\bln_dynldf_blp\s*=\s*\.true\."),
+            ("nn_ahm_ijk_t=32", r"\bnn_ahm_ijk_t\s*=\s*32\b"),
+            ("rn_csmc=3.5", r"\brn_csmc\s*=\s*3\.5\b"),
+        ):
+            require(re.search(pattern, text) is not None,
+                    f"resolved r4_smag deck missing {name}")
     return {
         "manifest_sha256": sha256(manifest_path),
-        "resolved_namelist_sha256": sha256(resolved),
-        "registered_files": NEMO_MANIFEST,
+        "resolved_namelist_sha256": (
+            sha256(resolved) if alternative_manifest is None else None),
+        "registered_files": manifest,
+        "reference": reference,
     }
 
 
-def nemo_ioipsl_provider(root: Path, days: int, *, start_day: int) -> DailyProvider:
+def nemo_ioipsl_provider(
+    root: Path,
+    days: int,
+    *,
+    start_day: int,
+    alternative_manifest: Path | None = None,
+    alternative_label: str | None = None,
+) -> DailyProvider:
     """Read daily IOIPSL means; SST is mean(T*e3t)/mean(e3t)."""
     import netCDF4
 
     require(start_day > 0 and days > 0, "NEMO window must be positive")
-    deck = _require_nemo_deck(root)
+    deck = _require_nemo_deck(
+        root,
+        alternative_manifest=alternative_manifest,
+        alternative_label=alternative_label,
+    )
     paths = {kind: sorted(root.glob(f"*grid_{kind}_*.nc")) for kind in "TUV"}
     require({kind: len(value) for kind, value in paths.items()} == {"T": 8, "U": 8, "V": 8},
             "NEMO r4_smag requires eight tiles for each T/U/V field")
@@ -683,6 +736,14 @@ def write_outputs(
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nemo-root", type=Path, required=True)
+    parser.add_argument(
+        "--alternative-nemo-manifest", type=Path,
+        help="ROOT/manifest.sha256 for a labelled non-certified NEMO build",
+    )
+    parser.add_argument(
+        "--alternative-nemo-label",
+        help="provenance label paired with --alternative-nemo-manifest",
+    )
     parser.add_argument("--legoesm-run-label", required=True)
     parser.add_argument("--run-registry", type=Path, default=RUN_REGISTRY)
     parser.add_argument("--start-day", type=int, default=1461)
@@ -694,7 +755,13 @@ def main(argv=None) -> int:
         context_start = max(1, args.start_day - FILTER_LEAD_DAYS)
         context_days = args.start_day + args.days - context_start
         providers = (
-            nemo_ioipsl_provider(args.nemo_root, context_days, start_day=context_start),
+            nemo_ioipsl_provider(
+                args.nemo_root,
+                context_days,
+                start_day=context_start,
+                alternative_manifest=args.alternative_nemo_manifest,
+                alternative_label=args.alternative_nemo_label,
+            ),
             legoesm_npz_provider(
                 args.legoesm_run_label, context_days, start_day=context_start,
                 registry_path=args.run_registry,

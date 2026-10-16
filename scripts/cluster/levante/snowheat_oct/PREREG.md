@@ -30,8 +30,13 @@ both checkpoints carry (else the switch does nothing and the A/B is void).
 The ON path must also be byte-reproducible (two 1-day ON runs) and survive a
 restart (ON restarted at day 276 equals ON run continuously to day 277), since
 a long arm that is killed is resubmitted and resumes from its own newest
-readable checkpoint (procedure in bundle.sbatch). The 2-day ON run's day-276 state must equal the 1-day ON run's.
-bundle.sbatch re-checks all six before launch.
+readable checkpoint (procedure in bundle.sbatch). The 2-day ON run's day-276 state must equal the 1-day ON run's. The same
+2-day/restart pair runs with the switch OFF (an ON-only failure is the snow
+layer, a failure of both is the model), and an ON restart with the saved
+snow-layer temperature lowered 2 K on snow columns must end day 277 with a
+finite snow temperature that is colder on average over snow columns than the
+unperturbed restart's (the restart reads the layer). bundle.sbatch
+re-checks all nine before launch.
 
 Scoring: 45-70N land (sftlf >= 0.5, cos-lat weights), the first 7 days of
 each run discarded. Windows: Nov 1-30 and Dec 11-31 2001, against ERA5 on the

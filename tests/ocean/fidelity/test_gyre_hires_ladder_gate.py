@@ -653,3 +653,15 @@ def test_stage3_tracer_reader_accepts_selected_resolution(tmp_path):
     bad.write_bytes(path.read_bytes()[:-8])
     with pytest.raises(ValueError, match="payload"):
         GATE.read_tracer_stage3_hires(bad, dims=dims)
+
+
+def test_first_residual_removing_substitution_uses_zero_word_bar():
+    rows = [
+        {"variable": "avt", "temperature": {"n_unequal": 4}},
+        {"variable": "content", "temperature": {"n_unequal": 0}},
+        {"variable": "later", "temperature": {"n_unequal": 0}},
+    ]
+    assert GATE.first_residual_removing_substitution(rows) == "content"
+    rows[1]["temperature"]["n_unequal"] = 1
+    rows[2]["temperature"]["n_unequal"] = 2
+    assert GATE.first_residual_removing_substitution(rows) is None

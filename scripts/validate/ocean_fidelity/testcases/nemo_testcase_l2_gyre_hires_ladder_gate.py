@@ -2720,6 +2720,256 @@ def run_step2_vertical_owner(oracle_root: Path, output: Path) -> dict:
     return report
 
 
+def first_residual_removing_substitution(rows: list[dict]) -> str | None:
+    """Return the first one-variable arm that reaches the zero-word bar."""
+    for row in rows:
+        if row["temperature"]["n_unequal"] == 0:
+            return str(row["variable"])
+    return None
+
+
+def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
+    """Walk the remaining entry-kt=2 T/S boundary one ZDF input at a time."""
+    import jax
+    import jax.numpy as jnp
+    from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        LatLonCGridOceanModel,
+        _NEMOVerticalSolveTestInput,
+        _NEMOWSRK3TestHooks,
+    )
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        GYRE_R4_NAMELIST,
+        build_nemo_testcase_card,
+        gyre_surface_forcings,
+    )
+    from legoesm.ocean.fidelity.provenance import worktree_stamp
+    from nemo_testcase_l2_gyre_round35_trazdf_matrix import read_trazdf_matrix
+
+    if jax.default_backend() != "cpu":
+        raise RuntimeError("step-1 vertical owner discriminator requires CPU")
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    admission = admit_oracle("r4_step2", "scalar", oracle_root)
+    namelist = GYRE_R4_NAMELIST._replace(
+        nn_itend=10, nn_stock=10, nn_write=10)
+    card = build_nemo_testcase_card("GYRE-zco", namelist=namelist)
+    state = card.recipe.initial_state
+    freshwater, surface = gyre_surface_forcings(card, state, 1)
+    record = read_trazdf_matrix(
+        oracle_root / "oracle_trazdf_matrix_kt00000001.bin",
+        expect_kt=1,
+        expected_domain=NEMO_DIMS,
+    )
+
+    def native(name: str, stop: int | None = None) -> np.ndarray:
+        value = np.asarray(record["arrays"][name], dtype=np.float64)
+        value = value[2:-2, 2:-2]
+        if stop is not None:
+            value = value[..., :stop]
+        return value.transpose(1, 0, 2)
+
+    masks = expected_masks(card)
+    wet, interface_wet = masks["T"], masks["T"][:, :, 1:]
+    nemo_inputs = {
+        "heat_K": native("avt")[:, :, 1:30],
+        "formed_K": (
+            native("avt")[:, :, 1:30]
+            + native("ah_wslp2")[:, :, 1:30]),
+        "tracer_e3w": native("e3w_Kmm")[:, :, 1:30],
+        "tracer_e3t": native("e3t_Kaa", 30),
+        "temperature_content": native("rhs_T", 30),
+    }
+    nemo_solved = {
+        "T": native("sol_T_pre_clamp", 30),
+        "S": native("sol_S_pre_clamp", 30),
+    }
+    model = LatLonCGridOceanModel(
+        card.recipe.grid,
+        card.recipe.z_coord,
+        card.recipe.model_config,
+        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+            tracer_process_trace=(), vertical_solve_trace=True),
+    )
+
+    def run(override=None):
+        return jax.device_get(model.step(
+            state,
+            card.dt_s,
+            freshwater=freshwater,
+            surface_forcing=surface,
+            _vertical_K_test_override=override,
+        ))
+
+    free = run()
+    trace = free.vertical_solve
+    own = {
+        "heat_K": np.asarray(trace.heat_K, dtype=np.float64),
+        "formed_K": np.asarray(trace.effective_K, dtype=np.float64),
+        "tracer_e3w": np.asarray(trace.e3w_now, dtype=np.float64),
+        "tracer_e3t": np.asarray(trace.e3t_after, dtype=np.float64),
+        "temperature_content": np.asarray(trace.content_T, dtype=np.float64),
+        "viscosity_K": np.asarray(trace.viscosity_K, dtype=np.float64),
+    }
+    native_dtypes = {
+        "state_T": str(state.T.data.dtype),
+        **{name: str(np.asarray(value).dtype) for name, value in own.items()},
+    }
+    fp64_ok = jax.config.x64_enabled and all(
+        value == "float64" for value in native_dtypes.values())
+    if not fp64_ok:
+        raise RuntimeError(
+            "step-1 vertical discriminator requires native fp64: "
+            f"x64={jax.config.x64_enabled}, dtypes={native_dtypes}")
+
+    ordered = (
+        "heat_K", "formed_K", "tracer_e3w", "tracer_e3t",
+        "temperature_content",
+    )
+
+    def fixed(replacements: dict[str, np.ndarray]) -> _NEMOVerticalSolveTestInput:
+        selectors = np.asarray(
+            [name in replacements for name in ordered], dtype=np.bool_)
+        # Selector slot 1 is the momentum viscosity, which this tracer walk
+        # does not replace; insert it after the heat selector.
+        selectors = np.insert(selectors, 1, False)
+        return _NEMOVerticalSolveTestInput(
+            heat_K=jnp.asarray(replacements.get("heat_K", own["heat_K"])),
+            viscosity_K=jnp.asarray(own["viscosity_K"]),
+            formed_K=jnp.asarray(replacements.get("formed_K", own["formed_K"])),
+            tracer_e3w=jnp.asarray(replacements.get(
+                "tracer_e3w", own["tracer_e3w"])),
+            tracer_e3t=jnp.asarray(replacements.get(
+                "tracer_e3t", own["tracer_e3t"])),
+            temperature_content=jnp.asarray(replacements.get(
+                "temperature_content", own["temperature_content"])),
+            replace=jnp.asarray(selectors),
+        )
+
+    def output_rows(name: str, result) -> dict:
+        return {
+            "variable": name,
+            "temperature": exact_score(
+                f"GYRE-zco-r4.kt1.{name}.solved_T",
+                nemo_solved["T"],
+                np.asarray(result.state_after.T.data, dtype=np.float64),
+                wet,
+            ),
+            "salinity": exact_score(
+                f"GYRE-zco-r4.kt1.{name}.solved_S",
+                nemo_solved["S"],
+                np.asarray(result.state_after.S.data, dtype=np.float64),
+                wet,
+            ),
+        }
+
+    production = output_rows("production", free)
+    passive_result = run(fixed({}))
+    passive = {
+        field: exact_score(
+            f"control.step1_vertical_seam_disabled.{field}",
+            np.asarray(getattr(free.state_after, field).data),
+            np.asarray(getattr(passive_result.state_after, field).data),
+            wet,
+        )
+        for field in ("T", "S")
+    }
+    if not all(row["n_unequal"] == 0 for row in passive.values()):
+        raise RuntimeError("step-1 vertical seam changes the disabled path")
+
+    rows = []
+    plants = []
+    removed_by = None
+    plant_scale = np.float64(1.0 + 2.0 ** -40)
+    candidate_masks = {
+        "heat_K": interface_wet,
+        "formed_K": interface_wet,
+        "tracer_e3w": interface_wet,
+        "tracer_e3t": wet,
+        "temperature_content": wet,
+    }
+    for name in ordered:
+        replacement = nemo_inputs[name]
+        result = run(fixed({name: replacement}))
+        row = output_rows(name, result)
+        rows.append(row)
+
+        planted_value = np.array(replacement, copy=True)
+        active = candidate_masks[name]
+        index = tuple(int(value) for value in np.argwhere(active)[0])
+        planted_value[index] *= plant_scale
+        planted = run(fixed({name: planted_value}))
+        plant_row = exact_score(
+            f"control.step1_vertical.{name}.active_scale_plant",
+            np.asarray(result.state_after.T.data),
+            np.asarray(planted.state_after.T.data),
+            wet,
+        )
+        if plant_row["n_unequal"] == 0:
+            raise RuntimeError(
+                f"step-1 vertical {name} plant did not reach temperature")
+        plants.append({
+            "variable": name,
+            "index": list(index),
+            "scale": float(plant_scale),
+            "temperature": plant_row,
+            "status": "FIRED",
+        })
+        removed_by = first_residual_removing_substitution(rows)
+        if removed_by is not None:
+            break
+
+    all_inputs = None
+    classification = "ONE_VARIABLE_OWNER" if removed_by is not None else None
+    if removed_by is None:
+        all_inputs = output_rows("all_recorded_inputs", run(fixed(nemo_inputs)))
+        classification = (
+            "OPERATOR_COMPOSITION"
+            if all_inputs["temperature"]["n_unequal"] > 0
+            else "COUPLED_INPUT_COMPOSITION"
+        )
+
+    input_rows = [
+        exact_score(
+            f"GYRE-zco-r4.kt1.input.{name}",
+            nemo_inputs[name], own[name], candidate_masks[name])
+        for name in ordered
+    ]
+    report = {
+        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v1",
+        "worktree": worktree_stamp(),
+        "oracle_admission": admission,
+        "policy": "fp64/x64/cpu/libm certified",
+        "step": 1,
+        "boundary": "stage-3 tra_zdf input/output; entry kt=2",
+        "native_dtypes": native_dtypes,
+        "production": production,
+        "input_rows": input_rows,
+        "one_variable_substitutions": rows,
+        "first_residual_removing_substitution": removed_by,
+        "all_recorded_inputs": all_inputs,
+        "controls": {"passive_seam": passive, "active_plants": plants},
+        "classification": classification,
+        "owner": removed_by if removed_by is not None else classification,
+        "compiled_nemo_sources": {
+            "matrix": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "trazdf.f90:431-481"),
+            "rhs": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "trazdf.f90:527-544"),
+            "solve": (
+                "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
+                "trazdf.f90:505-559"),
+        },
+        "verdict": (
+            "CONFIRMED_OWNER" if removed_by is not None
+            else "CONFIRMED_COMPOSITION"),
+    }
+    output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2))
+    return report
+
+
 def _kmm_stretch_scores(card, tracer, qsr, eta_b, eta_a, prefix: str):
     """Compare the stage-3 stretch compositions on NEMO state inputs."""
     import jax.numpy as jnp
@@ -2931,6 +3181,7 @@ def main(argv=None) -> int:
     parser.add_argument("--stage3-geometry-only", action="store_true")
     parser.add_argument("--step2-tracer-owner-only", action="store_true")
     parser.add_argument("--step2-vertical-owner-only", action="store_true")
+    parser.add_argument("--step1-vertical-owner-only", action="store_true")
     parser.add_argument("--stage3-kmm-stretch-only", action="store_true")
     parser.add_argument(
         "--trajectory-only", action="store_true",
@@ -2969,6 +3220,7 @@ def main(argv=None) -> int:
                       args.stage3_geometry_only,
                       args.step2_tracer_owner_only,
                       args.step2_vertical_owner_only,
+                      args.step1_vertical_owner_only,
                       args.stage3_kmm_stretch_only))
         if narrow > 1:
             raise ValueError("choose only one narrow discriminator")
@@ -3002,6 +3254,13 @@ def main(argv=None) -> int:
                     "step-2 vertical discriminator requires r4/scalar")
             step2_admission = admit_oracle("r4_step2", "scalar")
             report = run_step2_vertical_owner(
+                Path(step2_admission["root"]), args.output)
+        elif args.step1_vertical_owner_only:
+            if (args.deck, args.math_flavour) != ("r4", "scalar"):
+                raise ValueError(
+                    "step-1 vertical discriminator requires r4/scalar")
+            step2_admission = admit_oracle("r4_step2", "scalar")
+            report = run_step1_vertical_owner(
                 Path(step2_admission["root"]), args.output)
         elif args.stage3_kmm_stretch_only:
             if (args.deck, args.math_flavour) != ("r4", "scalar"):

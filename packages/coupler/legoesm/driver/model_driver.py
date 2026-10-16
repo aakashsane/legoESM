@@ -1280,6 +1280,10 @@ _ICE_SEED_RHO_FLOOR = 0.1        # [kg/m^3]
 # layer (last valid magnitude, valid mask, value-from-latest-solve mask).
 _LAND_STRESS_CKPT_KEYS = ("land_taumag", "land_taumag_valid", "land_taumag_fresh")
 _LAND_ML_CACHE_FIELDS = ("canopy_x",)
+# Prognostic fields a checkpoint written WITHOUT them may lack: the restore
+# initialises them from the restored state instead of refusing.  ``T_snow``
+# (the opt-in snow thermal node) -> ``init_snow_temperature`` (user 2026-10-03).
+_LAND_ML_INIT_ON_RESTORE = ("T_snow",)
 # Restart-exactness payload of the column loop (R-ex), beyond the land
 # cadence window below (which carries the land boundary outputs the loop
 # holds between land steps).  The held RADIATION slots are NOT persisted
@@ -2163,6 +2167,9 @@ class ModelDriver:
                 "state to restart from. Restart with land_snow_scheme: bulk, or "
                 "start the land from a land IC (the pack is then seeded from "
                 "its snow water).")
+        _init_missing = {f for f in _LAND_ML_INIT_ON_RESTORE
+                         if f in expected and f not in got}
+        expected = expected - _init_missing
         if got != expected:
             raise ValueError(
                 "land_ml checkpoint field set does not match the current "
@@ -2204,6 +2211,12 @@ class ModelDriver:
                 "min(top soil T, freezing), density %.0f kg/m3) -- a seeded, not "
                 "spun-up, pack", _land_cfg.snow_column.n_layers,
                 _land_cfg.snow_column.seed_density)
+        if "T_snow" in _init_missing:
+            from legoesm.land.multilayer_land import init_snow_temperature
+            self._land_ml_state = init_snow_temperature(self._land_ml_state)
+            logger.info("  land_ml restore: checkpoint has no snow-node "
+                        "temperature; initialised from the restored soil "
+                        "(top soil, capped at freezing under snow)")
 
     def _validate_microphysics_tracer_state(
         self,
@@ -4195,6 +4208,12 @@ class ModelDriver:
                         cfg.surface_scheme.rh_cap_smoothing_width,
                         cfg.surface_scheme.zeta_cap_smoothing_width,
                         cfg.surface_scheme.most_n_iters)
+        # One-layer snow thermal node, same placement and reason.
+        _sn = bool(self.config.land_snow_insulation)
+        cfg = cfg._replace(thermal=cfg.thermal._replace(snow_insulation=_sn))
+        logger.info("  land snow thermal node: %s",
+                    "ON (bulk density %.0f kg/m3)"
+                    % cfg.thermal.snow_bulk_density_kg_m3 if _sn else "off")
         if _ft and getattr(self.config, "land_calibrated_physics", False):
             logger.warning("  land soil freeze/thaw ON with the calibrated land "
                            "tables, which were fitted with it OFF")
@@ -14217,8 +14236,9 @@ class ModelDriver:
                 _ph0 = self.sigma.pressure_at_half(
                     jnp.asarray(self.state.p_s.data).reshape(-1))
                 _p_low0 = 0.5 * (_ph0[..., -1] + _ph0[..., -2])
+                from legoesm.land.multilayer_land import land_skin_temperature
                 _T_land0 = jnp.asarray(
-                    self._land_ml_state.T_soil[:, 0]).reshape(-1)
+                    land_skin_temperature(self._land_ml_state)).reshape(-1)
                 _qsat0 = _satmr0(_T_land0, _p_low0)
                 _land_qsfc_cells = (
                     _q_air0 + _land_beta_cells * (_qsat0 - _q_air0))
@@ -18181,8 +18201,9 @@ class ModelDriver:
                 # seam, undoing part of the spin-up.  T_soil[:, 0] is (ncol,);
                 # reshape to the gridded T_land layout (row-major, the inverse
                 # of the flatten the land init used).
+                from legoesm.land.multilayer_land import land_skin_temperature
                 T_land = jnp.asarray(
-                    self._land_ml_state.T_soil[:, 0]
+                    land_skin_temperature(self._land_ml_state)
                 ).reshape(self.state.T.data[..., -1].shape).astype(_sd)
             else:
                 T_land = self.state.T.data[..., -1].astype(_sd)

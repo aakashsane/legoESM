@@ -1171,6 +1171,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="Two-leaf canopy: fixed-point iterations of the "
                              "above-canopy Monin-Obukhov solve. Default: the "
                              "land CanopyConfig value.")
+    parser.add_argument("--land-snow-insulation", dest="land_snow_insulation",
+                        action=argparse.BooleanOptionalAction,
+                        default=_EXPERIMENT_DEFAULTS.land_snow_insulation,
+                        help="One-layer snow thermal node in the multilayer "
+                             "land: snow temperature, ice heat capacity and "
+                             "Jordan (1991) insulation over the soil, solved "
+                             "with the soil (CLM5-style). Default off. "
+                             "Requires --use-multilayer-land.")
     parser.add_argument("--land-snow-tau-days", dest="land_snow_tau_days",
                         type=float, default=_EXPERIMENT_DEFAULTS.land_snow_tau_days,
                         help="Snow-albedo age e-folding time [days]. Default: "
@@ -2816,6 +2824,7 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         land_canopy_stress_b0=args.land_canopy_stress_b0,
         land_canopy_interception=args.land_canopy_interception,
         land_canopy_snow_masking=args.land_canopy_snow_masking,
+        land_snow_insulation=args.land_snow_insulation,
         cloud_diagnostic_condensate_scheme=args.cloud_diagnostic_condensate_scheme,
         cloud_adiabatic_lwc_rate=args.cloud_adiabatic_lwc_rate,
         convective_cloud=args.convective_cloud,

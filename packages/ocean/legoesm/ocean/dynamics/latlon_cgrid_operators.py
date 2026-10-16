@@ -31,6 +31,8 @@ import numpy as np
 from legoesm import constants
 from legoesm.core.source_rounding import nemo_source_round
 from legoesm.grids.latlon import LatLonGrid  # noqa: F401 — kept for type compat
+from legoesm.grids.halo_latlon import (
+    get_meridionally_periodic, lat_faces_from_north, meridional_periodicity)
 from legoesm.grids.operators_latlon_cgrid import (
     pad_ns_zero,
     pad_ns_zero_multi,
@@ -1394,7 +1396,7 @@ def vector_bilaplacian_cgrid(
 
 
 def nemo_lateral_viscosity_coefficients(
-    grid: LatLonGrid, half_UM: float,
+    grid: LatLonGrid, half_UM: float, *, constant: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     r"""NEMO ``ldf_c2d`` viscosity coefficients ``ahmt``/``ahmf`` (nn_ahm_ijk_t=20).
 
@@ -1437,6 +1439,8 @@ def nemo_lateral_viscosity_coefficients(
     ahmt : (n_lat,)      viscosity at T-points [m²/s].
     ahmf : (n_lat+1,)    viscosity at F-points [m²/s].
     """
+    if constant:
+        return nemo_lateral_viscosity_constant_coefficients(grid, half_UM)
     if not (hasattr(grid, "dx_u") and hasattr(grid, "dy_u")
             and hasattr(grid, "dx_v") and hasattr(grid, "dy_v")):
         raise ValueError(
@@ -1453,6 +1457,30 @@ def nemo_lateral_viscosity_coefficients(
     ahmt = half_UM * jnp.maximum(e1t, e2t)
     ahmf = half_UM * jnp.maximum(e1f, e2f)
     return ahmt, ahmf
+
+
+def nemo_lateral_viscosity_constant_coefficients(
+    grid: LatLonGrid, ahm: float,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    r"""NEMO constant ``ahmt``/``ahmf`` fields (``nn_ahm_ijk_t=0``).
+
+    NEMO 5.0.2 ``ldf_dyn_init`` forms ``zah0 = 1/2*rn_Uv*rn_Lv`` and assigns
+    that value directly at every T and F point (``ldfdyn.f90:311-322``).
+    The returned one-dimensional fields use the same T/F latitude layouts as
+    :func:`nemo_lateral_viscosity_coefficients` and broadcast through the
+    shared div-curl operator.
+    """
+    if not (hasattr(grid, "dx_u") and hasattr(grid, "dx_v")):
+        raise ValueError(
+            "nemo_lateral_viscosity_constant_coefficients requires a "
+            "LatLonCGridGeometry with dx_u/dx_v metric fields "
+            "(call ensure_geometry first)."
+        )
+    coefficient = jnp.asarray(ahm, dtype=jnp.asarray(grid.dx_u).dtype)
+    return (
+        jnp.full_like(jnp.asarray(grid.dx_u)[:, 0], coefficient),
+        jnp.full_like(jnp.asarray(grid.dx_v)[:, 0], coefficient),
+    )
 
 
 def nemo_ldf_lap_viscosity_cgrid(
@@ -4011,6 +4039,7 @@ def _nemo_hpg_sco_literal_cgrid_impl(
     *,
     return_components: bool = False,
     _source_round: bool = True,
+    _j_periodic: bool = False,
 ) -> tuple[jnp.ndarray, ...]:
     """Literal NEMO ``hpg_sco`` recurrence on native east/north faces.
 
@@ -4124,10 +4153,12 @@ def _nemo_hpg_sco_literal_cgrid_impl(
 
     native_u = jnp.stack(u_levels, axis=-1)
     native_v = jnp.stack(v_levels, axis=-1)
-    result = (
-        jnp.concatenate([native_u[:, -1:, :], native_u], axis=1),
-        jnp.concatenate([jnp.zeros_like(native_v[:1]), native_v], axis=0),
-    )
+    # The y-wrap is a jit static (the cache must not serve a walled trace).
+    with meridional_periodicity(_j_periodic):
+        result = (
+            jnp.concatenate([native_u[:, -1:, :], native_u], axis=1),
+            lat_faces_from_north(native_v),
+        )
     if not return_components:
         return result
 
@@ -4136,8 +4167,8 @@ def _nemo_hpg_sco_literal_cgrid_impl(
         return jnp.concatenate([native[:, -1:, :], native], axis=1)
 
     def _v_redundant(levels):
-        native = jnp.stack(levels, axis=-1)
-        return jnp.concatenate([jnp.zeros_like(native[:1]), native], axis=0)
+        with meridional_periodicity(_j_periodic):
+            return lat_faces_from_north(jnp.stack(levels, axis=-1))
 
     return result + (
         _u_redundant(u_zhpi_levels), _v_redundant(v_zhpj_levels),
@@ -4147,7 +4178,7 @@ def _nemo_hpg_sco_literal_cgrid_impl(
 
 _nemo_hpg_sco_literal_cgrid_compiled = jax.jit(
     _nemo_hpg_sco_literal_cgrid_impl,
-    static_argnames=("return_components", "_source_round"))
+    static_argnames=("return_components", "_source_round", "_j_periodic"))
 
 
 def nemo_hpg_sco_literal_cgrid(
@@ -4164,11 +4195,13 @@ def nemo_hpg_sco_literal_cgrid(
     if isinstance(rhd, jax.core.Tracer):
         return _nemo_hpg_sco_literal_cgrid_impl(
             rhd, e3w, gdept_z0, grid, g,
-            return_components=return_components, _source_round=_source_round)
+            return_components=return_components, _source_round=_source_round,
+            _j_periodic=get_meridionally_periodic())
     with jax.disable_jit(False):
         return _nemo_hpg_sco_literal_cgrid_compiled(
             rhd, e3w, gdept_z0, grid, g,
-            return_components=return_components, _source_round=_source_round)
+            return_components=return_components, _source_round=_source_round,
+            _j_periodic=get_meridionally_periodic())
 
 
 def partial_cell_pgf_correction_x(
@@ -4555,6 +4588,8 @@ def pv_flux_ene(
     return_operands: bool = False,
     metric_widths: tuple | None = None,
     metric_reciprocals: tuple | None = None,
+    total_vorticity_override: jnp.ndarray | None = None,
+    direct_thickness_division: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray] | tuple[
     jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
 ]:
@@ -4603,6 +4638,11 @@ def pv_flux_ene(
         planetary Coriolis and the relative-vorticity flux.  When ``None``,
         the relative-only form ``q = ζ/h`` (NEMO ``np_RVO``), for isolating
         the ``rvo`` trend.
+    total_vorticity_override : array or None
+        Internal shared-operand seam for a caller that has already evaluated
+        NEMO's source-associated total-vorticity statements.  ENS uses it for
+        the ``(zwz-ff_f)*fmask+ff_f`` statement; ordinary ENE callers leave it
+        unset and retain their historical arithmetic.
     Other parameters : identical to :func:`pv_flux_al81_partial_cell`.
 
     Returns
@@ -4615,13 +4655,21 @@ def pv_flux_ene(
     # f is added BEFORE the /h division (matching NEMO: zwz = ff_f + ζ,
     # then zwz /= e3f) so the planetary term also gets the F-point
     # thickness weighting — the two are one operator, not two.
-    total_vort = zeta if f_vtx is None else (zeta + f_vtx[..., jnp.newaxis])
+    total_vort = (
+        total_vorticity_override
+        if total_vorticity_override is not None
+        else zeta if f_vtx is None else (zeta + f_vtx[..., jnp.newaxis]))
+    # NEMO ENS divides directly by its live F thickness
+    # (compiled dynvor.f90:659-660).  ENE's historical floor remains the
+    # default for every existing caller; only the explicit ENS seam bypasses
+    # it, so no oracle-absent stabiliser enters that arm.
+    denominator = h_vtx if direct_thickness_division else jnp.maximum(h_vtx, eps_h)
     if metric_widths is None:
-        q = total_vort / jnp.maximum(h_vtx, eps_h)
+        q = total_vort / denominator
     else:
         q = nemo_source_round(
             nemo_source_round(total_vort)
-            / jnp.maximum(h_vtx, eps_h))
+            / denominator)
     # Neumann-fill only the RELATIVE part's discontinuity at the coast; the
     # planetary f is smooth everywhere, so fill the whole q (idempotent at
     # interior wet vertices).
@@ -4730,6 +4778,117 @@ def pv_flux_ene(
         # production callers retain the historical two-array return.
         return diag_vortcor_u, diag_vortcor_v, (q, F_u, F_v)
     return diag_vortcor_u, diag_vortcor_v
+
+
+def pv_flux_ens(
+    zeta: jnp.ndarray,
+    h_vtx: jnp.ndarray,
+    h_v: jnp.ndarray,
+    v: jnp.ndarray,
+    h_u: jnp.ndarray,
+    u: jnp.ndarray,
+    u_mask_3d: jnp.ndarray,
+    v_mask_3d: jnp.ndarray,
+    vtx_mask: jnp.ndarray,
+    *,
+    ln_dynvor_msk: bool,
+    f_vtx: jnp.ndarray | None = None,
+    eps_h: float = 1.0e-10,
+    q_boundary: str = "nemo_live",
+    metric_widths: tuple | None = None,
+    metric_reciprocals: tuple | None = None,
+) -> tuple[jnp.ndarray, jnp.ndarray]:
+    """NEMO ``vor_ens`` total-vorticity Sadourny enstrophy stencil.
+
+    This is the compiled ``np_CRV`` arm used by the shipped SWG deck.  It
+    differs from :func:`pv_flux_ene` only after the shared potential-vorticity
+    and transport operands have been built: ENS multiplies the mean of the two
+    adjacent potential-vorticity values by the mean of all four transverse
+    transports (``dynvor.f90:639-675``), whereas ENE pairs each potential-
+    vorticity value with the two transports on its own side.
+
+    ``ln_dynvor_msk`` masks the relative vorticity before ``ff_f`` is added;
+    requiring the boolean switch prevents callers from silently substituting
+    a mask.  The shared ENE operand builder is
+    deliberately reused so NEMO's metric, QCO, coast, and source-rounding
+    statements have one implementation.
+
+    Sign convention: positive total vorticity rotates meridional transport
+    into positive zonal acceleration and zonal transport into negative
+    meridional acceleration, matching ``du/dt=+qFv`` and ``dv/dt=-qFu``.
+    """
+    if f_vtx is None:
+        raise ValueError("pv_flux_ens requires total vorticity at NEMO F points")
+    if type(ln_dynvor_msk) is not bool:
+        raise ValueError(
+            "pv_flux_ens requires explicit boolean ln_dynvor_msk; "
+            f"got {ln_dynvor_msk!r}")
+    mask = jnp.asarray(vtx_mask if ln_dynvor_msk else jnp.ones_like(vtx_mask))
+    if mask.ndim == zeta.ndim - 1:
+        mask = mask[..., jnp.newaxis]
+    if mask.shape != zeta.shape:
+        raise ValueError(
+            "relative_vorticity_mask must match zeta (with an optional "
+            f"broadcast level), got {mask.shape} and {zeta.shape}"
+        )
+
+    f_3d = jnp.asarray(f_vtx)[..., jnp.newaxis]
+    # dynvor.f90:641-646 writes CRV as ``f + zeta`` first, then recovers and
+    # masks only its relative part as ``(zwz-f)*fmask + f``.  Keeping both
+    # source statements matters when ``f`` and ``zeta`` differ greatly.
+    total_vort = nemo_source_round(f_3d + zeta)
+    total_vort = nemo_source_round(
+        nemo_source_round(nemo_source_round(total_vort - f_3d) * mask)
+        + f_3d)
+    _, _, (q, F_u, F_v) = pv_flux_ene(
+        zeta, h_vtx, h_v, v, h_u, u, u_mask_3d, v_mask_3d,
+        vtx_mask, eps_h=eps_h, q_boundary=q_boundary,
+        return_operands=True, metric_widths=metric_widths,
+        metric_reciprocals=metric_reciprocals,
+        total_vorticity_override=total_vort,
+        direct_thickness_division=True,
+    )
+
+    q_s = q[:-1]
+    q_n = q[1:]
+    fv_s = F_v[:-1]
+    fv_n = F_v[1:]
+    fv_sw_native = jnp.roll(fv_s, 1, axis=1)
+    fv_nw_native = jnp.roll(fv_n, 1, axis=1)
+    fv_se = jnp.concatenate([fv_s, fv_s[:, :1]], axis=1)
+    fv_ne = jnp.concatenate([fv_n, fv_n[:, :1]], axis=1)
+    fv_sw = jnp.concatenate(
+        [fv_sw_native, fv_sw_native[:, :1]], axis=1)
+    fv_nw = jnp.concatenate(
+        [fv_nw_native, fv_nw_native[:, :1]], axis=1)
+
+    from legoesm.grids.halo_latlon import pad_with_pole_bc_lat_multi
+    (fu_pad,) = pad_with_pole_bc_lat_multi((F_u,), halo=1)
+    fu_s = fu_pad[:-1]
+    fu_n = fu_pad[1:]
+    fu_sw, fu_se_v = fu_s[:, :-1], fu_s[:, 1:]
+    fu_nw, fu_ne_v = fu_n[:, :-1], fu_n[:, 1:]
+    q_w, q_e = q[:, :-1], q[:, 1:]
+
+    sr = nemo_source_round
+    sum_v = sr(sr(fv_sw + fv_se) + sr(fv_nw + fv_ne))
+    sum_u = sr(sr(fu_sw + fu_nw) + sr(fu_se_v + fu_ne_v))
+    if metric_reciprocals is None:
+        if metric_widths is None:
+            r1_e1u = jnp.ones(u.shape[:2], dtype=u.dtype)
+            r1_e2v = jnp.ones(v.shape[:2], dtype=v.dtype)
+        else:
+            e1u, _, _, e2v = metric_widths
+            r1_e1u = sr(1.0 / jnp.asarray(e1u))
+            r1_e2v = sr(1.0 / jnp.asarray(e2v))
+    else:
+        r1_e1u, r1_e2v = metric_reciprocals
+
+    zuav = sr(sr(0.125 * jnp.asarray(r1_e1u)[..., None]) * sum_v)
+    zvau = -sr(sr(0.125 * jnp.asarray(r1_e2v)[..., None]) * sum_u)
+    du = sr(zuav * sr(q_s + q_n))
+    dv = sr(zvau * sr(q_w + q_e))
+    return du, dv
 
 
 def pv_flux_al81_partial_cell(

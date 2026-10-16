@@ -1900,7 +1900,8 @@ def _step_multilayer_land_impl(
     surface_out = surface_out._replace(
         held=_held_mask, n_held=_n_held, fallback=_fb_mask,
         n_fallback=_n_fb, fallback_rejected=_fb_rej_mask,
-        n_fallback_rejected=_n_fb_rej)
+        n_fallback_rejected=_n_fb_rej,
+        soil_unconverged=~richards_out.converged)
     if layered:
         surface_out = surface_out._replace(
             snow_T_top_excess=snow_T_top_excess,
@@ -1990,7 +1991,7 @@ def _hold_unsolved_columns(state, new_state, response, surface_out, forcing,
     The canopy warm-start cache (``canopy_x``) is NaN by design where a column
     has never converged ("cold start"), so NaN there is not a failure; Inf is.
 
-    On the MPAS lane with ``mpas_land_beta_soil`` (production) the atmosphere
+    On the MPAS lane with ``land_beta_soil`` (production) the atmosphere
     receives the land's own sensible and latent fluxes (``shflx_land`` /
     ``lhflx_land``), so what this returns is what it exchanges with; without
     that switch it recomputes its fluxes from the returned skin state.  This

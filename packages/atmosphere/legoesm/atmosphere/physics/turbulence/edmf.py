@@ -34,9 +34,11 @@ DEPARTURES from SST07 (physics / structural simplifications):
     NOT SST07's ``z/z*``-dependent Holtslag K-profile (Eq. 18-20);
   * **CONSTANT entrainment** ``ε = 1e-3 /m`` — SST07 Eq. 16 is ``ε ≈ c_ε[1/z + 1/(z*−z)]``
     (height-dependent, singular at both the surface and the PBL top);
-  * **tuned surface initialization**: ``w_u(0) = max(w_min, 2.5·u*)`` (a FRICTION-velocity
-    proxy, NOT the buoyancy convective scale ``w*``) and a FIXED ``parcel_dT = 0.5 K`` θ-excess;
-    SST07 Eq. 17 sets the surface scalar excess from the surface flux divided by ``σ_w``;
+  * **tuned surface velocity**: ``w_u(0) = max(w_min, 2.5·u*)`` (a FRICTION-velocity
+    proxy, NOT the buoyancy convective scale ``w*``).  The surface SCALAR excess follows
+    SST07 Eq. 17, ``φ_u(z1) = φ(z1) + α·(w'φ')_s/σ_w(z1)`` with ``σ_w`` from SST07 Eq. 7
+    (Holtslag & Moeng 1991), ``z*`` = the diagnosed PBL height, ``σ_w`` floored at
+    ``w_min``, and no excess when the surface heat flux is <= 0;
   * a **single bulk steady plume** (``n_updrafts`` unused; no detrainment term)
     — faithful to SST07's dry-CBL single-plume scope, but a MAJOR departure from
     Tan (2018) (prognostic plume velocity/area/thermo, updrafts+downdrafts, and prognostic
@@ -115,8 +117,10 @@ __physics_contract__ = {
         "adds -(1/rho) d/dz(M*(phi_u - phi)) with density-weighted M = a_u*rho*w_u, "
         "so a warm/moist updraft transports heat "
         "and moisture upward. The column budget is OPEN: the surface flux "
-        "(shflx > 0 upward, lhflx > 0 upward/moistening) is injected as the "
-        "bottom boundary condition and the top is zero-flux; z increases upward."
+        "(shflx > 0 upward, lhflx > 0 upward/moistening) enters at the bottom "
+        "as ED + MF -- the ED lower boundary condition carries the surface "
+        "flux minus the plume's bottom MF flux -- and the top is zero-flux; "
+        "z increases upward."
     ),
     "conserves": ["none"],
     "differentiable": True,
@@ -137,6 +141,11 @@ __physics_contract__ = {
 # proxy, NOT the buoyancy convective velocity scale w*; SST07 Eq. 17 derives the
 # surface updraft properties from the surface buoyancy flux).
 _EDMF_WSTAR_COEFF = 2.5
+
+# --- updraft surface excess velocity scale (SST07 Eq. 7 = Holtslag & Moeng 1991) ---
+# sigma_w = 1.3 * (u*^3 + 0.6 * w*^3 * z/z*)^(1/3) * (1 - z/z*)^(1/2)
+_SIGMA_W_COEFF = 1.3
+_SIGMA_W_WSTAR3_COEFF = 0.6
 
 
 def _mass_flux_tendency(phi, phi_u, M, dz_layer, rho, z_full, z_half):
@@ -163,8 +172,8 @@ def _mass_flux_tendency(phi, phi_u, M, dz_layer, rho, z_full, z_half):
 
     There is no mass-flux transport through the model top (``F_top = 0``); the
     lowest interface carries the plume's own bottom MF flux ``F_sfc = flux[-1] =
-    M·(φ_u − φ)`` — set by the surface updraft initialization (``parcel_dT`` /
-    ``w_u``).  It is PART of the surface flux, not added to it: the caller
+    M·(φ_u − φ)`` — set by the surface updraft initialization (SST07 Eq. 17
+    excess / ``w_u``).  It is PART of the surface flux, not added to it: the caller
     subtracts it from the ED lower boundary condition so ED + MF at the
     surface equals the physical ``shflx`` / ``lhflx`` (SST07 Eq. 5).
     """
@@ -321,15 +330,39 @@ def edmf_turbulence(
     # the carry dtype to the input field dtype so the scan body cannot
     # promote on x64 mode: ``jnp.full`` defaults to ``float64`` when
     # ``jax_enable_x64`` is True, which would poison ``carry[0]`` to
-    # float64 while ``theta_u_init`` (= ``theta + 0.5``) stays at the
+    # float64 while ``theta_u_init`` stays at the
     # state precision and the scan rejects the carry-output mismatch.
     _dtype = T.dtype
     w_u_init = jnp.maximum(
         jnp.full(ncol, config.w_updraft_min, dtype=_dtype),
         (_EDMF_WSTAR_COEFF * ustar).astype(_dtype),
     )
-    theta_u_init = (theta[:, -1] + config.parcel_dT).astype(_dtype)
-    q_u_init = q_v[:, -1].astype(_dtype)  # same moisture
+    # Surface fluxes as the ED boundary sees them (T-unit heat incl. the
+    # latent enthalpy correction; moisture in kg/m^2/s), positive upward.
+    sflx_q = surface_moisture_flux(config.surface, lhflx, T_sfc)
+    sflx_T = (shflx + latent_enthalpy_correction(lhflx, sflx_q)) / constants.c_pd
+
+    # SST07 Eq. 17: phi_u(z1) = phi(z1) + alpha * (w'phi')_s / sigma_w(z1),
+    # sigma_w from SST07 Eq. 7 with z* = the diagnosed PBL height and
+    # w*^3 = (g/theta) * (w'theta')_s * z*.  No excess when the surface heat
+    # flux is <= 0, so an unforced column launches a neutral plume.
+    h_pbl = diagnose_pbl_height(T, q_v, u, v, p_full, z_full)
+    rho_1 = rho[:, -1]
+    z_1 = z_full[:, -1] - z_half[:, -1]
+    z_star = jnp.clip(h_pbl - z_half[:, -1], 1.0, None)  # coeff-ok: z* floor [m]
+    z_rel = jnp.clip(z_1 / z_star, 0.0, 1.0)
+    wtheta_s = sflx_T / (rho_1 * jnp.clip(exner_inv[:, -1], 1.0e-8, None))
+    wq_s = sflx_q / rho_1
+    heating = wtheta_s > 0.0
+    wstar3 = (constants.g / jnp.clip(theta[:, -1], 1.0, None)
+              * jnp.where(heating, wtheta_s, 0.0) * z_star)
+    sigma_w = (_SIGMA_W_COEFF
+               * jnp.cbrt(ustar ** 3 + _SIGMA_W_WSTAR3_COEFF * wstar3 * z_rel)
+               * jnp.sqrt(jnp.clip(1.0 - z_rel, 1.0e-6, 1.0)))
+    sigma_w = jnp.maximum(sigma_w, config.w_updraft_min)
+    excess_scale = jnp.where(heating, config.surface_excess_prefactor / sigma_w, 0.0)
+    theta_u_init = (theta[:, -1] + excess_scale * wtheta_s).astype(_dtype)
+    q_u_init = (q_v[:, -1] + excess_scale * wq_s).astype(_dtype)
 
     # Scan from surface upward (reverse level index)
     # Levels are top-down, so we scan from nlev-1 to 0
@@ -432,7 +465,7 @@ def edmf_turbulence(
 
     # Mass flux: M = a_updraft * rho * w_u.
     # The MF surface flux is the plume's OWN bottom flux M·(φ_u − φ), set by the
-    # surface updraft initialization (parcel_dT / w_u).  It is not a direct
+    # surface updraft initialization (SST07 Eq. 17 excess / w_u).  It is not a direct
     # function of the shflx / lhflx OUTPUTS (those drive the ED implicit solve),
     # though the surface ``w_u(0) = max(w_min, 2.5·u*)`` (with a floored u*)
     # shares the same MOST surface forcing when the 2.5·u* branch is active.  M is
@@ -465,9 +498,6 @@ def edmf_turbulence(
     # ===== ED tendencies via implicit diffusion =====
     sflx_u = tau_x
     sflx_v = tau_y
-    sflx_q = surface_moisture_flux(config.surface, lhflx, T_sfc)
-    # Heat BC carries the latent enthalpy correction (water at L(T) vs L_v).
-    sflx_T = (shflx + latent_enthalpy_correction(lhflx, sflx_q)) / constants.c_pd
     # Total surface flux = ED + MF (SST07 Eq. 5): the plume's own bottom flux
     # M·(φ_u − φ) already enters the lowest layer through the MF tendency, so
     # the ED lower BC carries only the remainder.  The θ share is converted
@@ -475,6 +505,7 @@ def edmf_turbulence(
     # there, so the surface part of the MF heating cancels exactly.
     sflx_T_ed = sflx_T - (M[:, -1] * (theta_u[:, -1] - theta[:, -1])
                           * exner_inv[:, -1])
+    # evap_sfc stays the TOTAL sflx_q; only the ED boundary takes the remainder.
     sflx_q_ed = sflx_q - M[:, -1] * (q_u[:, -1] - q_v[:, -1])
 
     u_new = implicit_vertical_diffusion(u, Km_half, rho, dz_layer, dz_half, dt, sflx_u)
@@ -503,8 +534,6 @@ def edmf_turbulence(
         tke_diffused + dt * (shear_prod + buoyancy + jnp.maximum(mf_buoyancy, 0.0))
     ) / (1.0 + dt * diss_coeff)
     tke_new = jnp.maximum(tke_new, config.tke_min)
-
-    h_pbl = diagnose_pbl_height(T, q_v, u, v, p_full, z_full)
 
     output = TurbulenceOutput(
         du_dt=du_dt,

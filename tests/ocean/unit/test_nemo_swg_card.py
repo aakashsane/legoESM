@@ -10,10 +10,12 @@ import pytest
 from legoesm.core.precision import PrecisionPolicy, get_policy, set_policy
 from legoesm.ocean.fidelity import nemo_testcase_recipe as recipe
 from legoesm.ocean.fidelity.nemo_testcase_recipe import (
-    SWG_COMPILED_NAMELIST_READS, SWG_DEVIATIONS, SWG_NAMELIST, SWG_UNMEASURED,
+    SWG_COMPILED_NAMELIST_READS, SWG_DEVIATIONS, SWG_MADDISON_NAMELIST,
+    SWG_NAMELIST, SWG_UNMEASURED,
     SwgResolvedNamelist, build_swg_card, swg_horizontal_coordinates,
-    swg_wet_mask, validate_nemo_testcase_card,
+    swg_surface_wind, swg_wet_mask, validate_nemo_testcase_card,
     validate_nemo_testcase_card_for_execution,
+    validate_swg_namelist,
 )
 
 
@@ -22,7 +24,16 @@ _INVENTORY_PATH = (
     "testcases/nemo_testcase_l1_swg_namelist_inventory.py")
 _INV_SPEC = importlib.util.spec_from_file_location("swg_namelist_inventory", _INVENTORY_PATH)
 inventory = importlib.util.module_from_spec(_INV_SPEC); _INV_SPEC.loader.exec_module(inventory)
-_COMPILED_READS = inventory.EXPECTED_CARD_READS
+# The card's 13 frozen groups, re-spelled from the DERIVED compiled-read
+# inventory (committed JSON), so a hand edit on either side is visible here.
+_COMMITTED_READS = inventory.load_reference_inventory()
+_CARD_BY_LOWER = {name.lower(): name for name in SwgResolvedNamelist._fields}
+_COMPILED_READS = {
+    group: tuple(
+        _CARD_BY_LOWER.get(inventory.CARD_ALIASES.get(field, field).lower(), field)
+        for field in _COMMITTED_READS["groups"][group]["fields"])
+    for group in SWG_COMPILED_NAMELIST_READS
+}
 
 _ALL_CARD_FIELDS = (
     "sn_cfctl", "ln_timing", "ln_diacfl", "nn_isplt", "nn_jsplt", "nn_ictls",
@@ -138,6 +149,28 @@ def test_swg_card_requires_libm_certification_transcendentals(card):
         validate_nemo_testcase_card(bad)
 
 
+@pytest.mark.parametrize("namelist", (
+    pytest.param(SWG_NAMELIST, id="shipped"),
+    pytest.param(SWG_MADDISON_NAMELIST, id="fine-double-gyre"),
+    pytest.param(
+        SWG_NAMELIST._replace(nn_SWG=2, nn_itend=4, nn_write=2, nn_stock=2),
+        id="other-accepted"),
+))
+def test_every_parameterised_swg_deck_keeps_libm_and_selector_validation(
+        namelist):
+    from legoesm.ocean.eos import nemo_r3t_stretch
+
+    card = build_swg_card(namelist)
+    validate_nemo_testcase_card(card)
+    with pytest.raises(ValueError, match="scalar-libm certification"):
+        validate_nemo_testcase_card(card._replace(transcendentals="native"))
+    eta = np.zeros(card.recipe.land_mask.shape, dtype=np.float64)
+    depth = np.ones_like(eta)
+    with pytest.raises(ValueError, match="unknown r3t evaluation"):
+        nemo_r3t_stretch(
+            card.recipe.z_coord, eta, depth, evaluation="unsupported")
+
+
 def test_ens_vorticity_config_has_no_mask_default():
     from legoesm.ocean.state import ENSVorticityConfig
 
@@ -162,6 +195,109 @@ def test_wet_mask_prediction_and_plant():
     assert (wet.sum(), jj.min(), jj.max(), ii.min(), ii.max()) == (6400, 1, 80, 1, 80)
     planted = wet.copy(); planted[1, 1] = 0.0
     assert planted.sum() == 6399
+
+
+def _card_digest(card):
+    """Apply the repository's certified-card digest contract to SWG."""
+    import hashlib
+
+    handle = hashlib.sha256()
+    handle.update(repr(card.recipe.model_config).encode())
+    state = card.recipe.initial_state
+    for name in ("T", "S", "u", "v", "eta", "uu_b", "vv_b", "land_mask",
+                 "u_mask", "v_mask"):
+        field = getattr(state, name, None)
+        handle.update(b"none" if field is None else np.asarray(
+            field.data, dtype=np.float64).tobytes())
+    grid = card.recipe.grid
+    for name in ("f_T", "f_u", "f_v", "ff_f", "dx_T", "dy_T"):
+        value = getattr(grid, name, None)
+        handle.update(b"none" if value is None else np.asarray(
+            value, dtype=np.float64).tobytes())
+    z_coord = card.recipe.z_coord
+    for name in ("dz_ref", "z_half_ref", "h_partial", "is_active",
+                 "bottom_level", "nemo_e3t_0"):
+        value = getattr(z_coord, name, None)
+        handle.update(b"none" if value is None else np.asarray(
+            value, dtype=np.float64).tobytes())
+    handle.update(np.asarray(card.recipe.land_mask, dtype=np.float64).tobytes())
+    handle.update(repr((
+        card.dt_s, card.n_steps, card.dummy_bottom_records,
+        card.bbl_adv_option, card.bbl_gamma_s, card.bbl_diffusive_option,
+        card.bbl_aht_m2_s, card.surface_boundary_condition,
+        card.surface_input_operator, card.transcendentals, card.precision_policy,
+        card.unmeasured_features, card.icebergs_enabled, card.iceberg_inputs,
+    )).encode())
+    return handle.hexdigest()[:16]
+
+
+def test_parameterisation_keeps_shipped_card_digest_byte_identical(card):
+    assert _card_digest(card) == "269b68eaa691b8e9"
+
+
+def test_maddison_geometry_honours_domsiz_and_fixed_wind_period():
+    src = swg_horizontal_coordinates(SWG_MADDISON_NAMELIST)
+    wet = swg_wet_mask(src, namelist=SWG_MADDISON_NAMELIST)
+    jj, ii = np.where(wet > 0.5)
+    assert (src["ni"], src["nj"], src["spacing_m"]) == (644, 644, 6250.0)
+    assert (wet.sum(), jj.min(), jj.max(), ii.min(), ii.max()) == (
+        409600, 2, 641, 2, 641)
+    synthetic = {"gphit": np.array([[0.0, 1_000_000.0, 2_000_000.0,
+                                      3_000_000.0, 4_000_000.0]])}
+    tau_u, tau_v = swg_surface_wind(SWG_MADDISON_NAMELIST, synthetic)
+    assert np.allclose(tau_u[0], [-0.1, 0.0, 0.1, 0.0, -0.1], atol=1.0e-16)
+    assert np.array_equal(tau_v, np.zeros_like(tau_v))
+
+
+def test_maddison_namelist_values_reach_one_parameterised_card():
+    tiny = SWG_MADDISON_NAMELIST._replace(
+        nn_SWG=1, nn_itend=2, nn_write=1, nn_stock=1, rn_Dt_s=200.0,
+        rn_dx_m=200_000.0, rn_Uv_m_s=3.0, rn_Lv_m=8.0,
+        rn_rfr_s=2.0e-7, rn_beta_m_s=3.0e-11, rn_f0_s=8.0e-5)
+    card = build_swg_card(tiny)
+    cfg = card.recipe.model_config
+    assert (card.dt_s, card.n_steps) == (200.0, 2)
+    assert card.recipe.land_mask.shape == (24, 24)
+    assert int(np.count_nonzero(card.recipe.land_mask)) == 400
+    assert cfg.constants.g == cfg.physics.constants.g == 9.80665
+    assert np.all(np.asarray(card.recipe.grid.dx_T) == 200_000.0)
+    assert cfg.lateral_viscosity.A_h == 12.0
+    assert cfg.bottom_drag.bottom_drag_r == 2.0e-7
+    assert np.asarray(card.recipe.grid.f_T)[0, 0] == (
+        tiny.rn_f0_s + tiny.rn_beta_m_s
+        * abs(swg_horizontal_coordinates(tiny)["gphit"][0, 0]))
+
+
+def test_public_validator_refuses_derived_swg_drift():
+    card = build_swg_card(SWG_MADDISON_NAMELIST._replace(nn_SWG=1))
+    cfg = card.recipe.model_config
+    bad_cfg = cfg._replace(
+        lateral_viscosity=cfg.lateral_viscosity._replace(A_h=11.0))
+    with pytest.raises(ValueError, match=r"rn_Uv\*rn_Lv"):
+        validate_nemo_testcase_card(
+            card._replace(recipe=card.recipe._replace(model_config=bad_cfg)))
+    wet = np.asarray(card.recipe.land_mask).copy()
+    wet[2, 2] = 0.0
+    with pytest.raises(ValueError, match="wet mask"):
+        validate_nemo_testcase_card(
+            card._replace(recipe=card.recipe._replace(land_mask=wet)))
+    f_u = np.asarray(card.recipe.grid.f_u).copy()
+    f_u[0, 0] = np.nextafter(f_u[0, 0], np.inf)
+    with pytest.raises(ValueError, match="dx/beta/f0"):
+        validate_nemo_testcase_card(card._replace(
+            recipe=card.recipe._replace(grid=card.recipe.grid._replace(f_u=f_u))))
+
+
+def test_swg_namelist_dispatch_refuses_unsupported_values():
+    with pytest.raises(ValueError, match="unsupported SWG namelist values"):
+        validate_swg_namelist(SWG_NAMELIST._replace(rn_theta_deg=1.0))
+    with pytest.raises(ValueError, match="positive finite"):
+        validate_swg_namelist(SWG_NAMELIST._replace(rn_Dt_s=0.0))
+    with pytest.raises(ValueError, match="ln_meshmask must be a boolean"):
+        validate_swg_namelist(SWG_NAMELIST._replace(ln_meshmask="invalid"))
+    for bad in (True, "0.2"):
+        with pytest.raises(ValueError, match="real values required"):
+            validate_swg_namelist(SWG_NAMELIST._replace(rn_tau_pa=bad))
 
 
 def test_resolved_inventory_is_the_frozen_compiled_and_card_inventory():
@@ -192,12 +328,17 @@ def test_inventory_parser_directly_reads_multiline_fortran(tmp_path):
         "first", "second", "third")
 
 
-@pytest.mark.skipif(
-    not inventory.DEFAULT_SOURCE_ROOT.is_dir(), reason="compiled SWG source not mounted")
-def test_source_enumerator_matches_all_131_compiled_reads():
-    parsed = inventory.compiled_card_inventory(inventory.DEFAULT_SOURCE_ROOT)
-    inventory.validate_inventory(parsed)
-    assert parsed == SWG_COMPILED_NAMELIST_READS
+def test_every_derived_read_outside_the_frozen_groups_is_namusr_def_or_pinned():
+    """The 13 frozen groups are not the whole executable: the derivation adds
+    namusr_def (all card fields) and NEMO-only groups the deck guard pins."""
+    extra = set(_COMMITTED_READS["groups"]) - set(SWG_COMPILED_NAMELIST_READS)
+    assert "namusr_def" in extra
+    namusr_def = {
+        _CARD_BY_LOWER.get(inventory.CARD_ALIASES.get(field, field).lower())
+        for field in _COMMITTED_READS["groups"]["namusr_def"]["fields"]}
+    assert None not in namusr_def
+    assert _COMMITTED_READS["group_count"] == 27
+    assert _COMMITTED_READS["field_count"] == 336
 
 
 def test_engine_read_defaults_match_the_resolved_oracle_echo():

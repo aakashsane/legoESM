@@ -1,12 +1,14 @@
 """SWG restart/stage reader and fail-closed ladder tests."""
 from __future__ import annotations
 
-import importlib.util
 import hashlib
+import importlib.util
 from pathlib import Path
 
+import jax
 import numpy as np
 import pytest
+from legoesm.core.precision import get_policy, set_policy
 
 _P = (Path(__file__).resolve().parents[3] / "scripts/validate/ocean_fidelity/"
       "testcases/nemo_testcase_l1_swg_ladder.py")
@@ -14,6 +16,101 @@ _S = importlib.util.spec_from_file_location("swg_ladder", _P)
 lad = importlib.util.module_from_spec(_S); _S.loader.exec_module(lad)
 ROOT = lad.DEFAULT_ROOT
 MONTH_ROOT = lad.DEFAULT_MONTH_ROOT
+_LAST_RESTORED = [None, None]
+
+
+@pytest.fixture(autouse=True)
+def _restore_process_precision():
+    previous_policy = get_policy()
+    previous_x64 = bool(jax.config.jax_enable_x64)
+    try:
+        yield
+    finally:
+        set_policy(previous_policy)
+        jax.config.update("jax_enable_x64", previous_x64)
+        _LAST_RESTORED[:] = [previous_policy, previous_x64]
+
+
+def test_maddison_deck_selects_admitted_card_clocks_and_roots():
+    stage = lad._deck_namelist("maddison")
+    month = lad._deck_namelist("maddison", month=True)
+    assert (stage.nn_SWG, stage.rn_Dt_s, stage.nn_itend,
+            stage.nn_stock, stage.nn_write) == (16, 50.0, 10, 1, 1)
+    assert (month.nn_SWG, month.rn_Dt_s, month.nn_itend,
+            month.nn_stock, month.nn_write) == (4, 200.0, 12960, 432, 432)
+    assert lad.DG_MONTH_RECORD_KTS == tuple(range(1, 12530, 432))
+    assert lad.DG_MONTH_RESTART_KTS == tuple(range(432, 12961, 432))
+    with pytest.raises(Exception, match="unknown SWG deck"):
+        lad._deck_namelist("typo")
+
+
+def test_exact_row_gate_distinguishes_signed_zero_bits():
+    reference = np.array([0.0, 1.0], dtype=np.float64)
+    candidate = np.array([-0.0, 1.0], dtype=np.float64)
+    row = lad._row("signed-zero-plant", reference, candidate,
+                   np.ones(2, dtype=bool))
+    assert not row["bit_identical"]
+    assert row["n_unequal"] == 1
+    assert row["first_unequal_cell"] == [0]
+    assert row["max_abs"] == 0.0
+    assert row["status"] == "DEBT"
+
+
+def test_localized_comparison_separates_interior_wall_and_storage_debts():
+    wet = np.zeros((5, 5), dtype=bool)
+    wet[1:4, 1:4] = True
+    reference = np.zeros((5, 5), dtype=np.float64)
+    candidate = reference.copy()
+    candidate[2, 2] = 1.0
+    candidate[1, 1] = 2.0
+    candidate[0, 0] = 3.0
+    out = lad._localized_comparison(reference, candidate, wet)
+    assert out["wet_interior"]["bit_unequal"] == 1
+    assert out["wet_wall_adjacent"]["bit_unequal"] == 1
+    assert out["dry_or_storage_halo"]["bit_unequal"] == 1
+    signed = reference.copy()
+    signed[0, 1] = -0.0
+    zero = lad._localized_comparison(reference, signed, wet)
+    assert zero["dry_or_storage_halo"]["signed_zero_only"] == 1
+
+
+@pytest.mark.skipif(not lad.DG_STAGE_ROOT.is_dir(),
+                    reason="admitted SWG_DG stage records not mounted")
+def test_maddison_localization_runs_production_steps_and_keeps_bar_unchanged():
+    out = lad.localize_maddison_debts(
+        lad.DG_STAGE_ROOT, lad.DG_MONTH_ROOT, include_month=False,
+        allow_dirty=True)
+    assert out["bar_unchanged"] == "IEEE-word identity for every field"
+    assert len(out["stage"]["from_rest_boundaries"]) == 2
+    assert set(out["stage"]["forcing_representation"]) == {"utau", "vtau"}
+
+
+@pytest.mark.skipif(not lad.DG_STAGE_ROOT.is_dir(),
+                    reason="admitted SWG_DG stage records not mounted")
+def test_maddison_admission_and_restart_reader_use_run_resolution():
+    pins = lad._pinned_stage_hashes(lad.DG_STAGE_ROOT)
+    assert len(pins) == 30
+    records = lad.read_restarts(
+        lad.DG_STAGE_ROOT, kts=tuple(range(1, 11)),
+        namelist=lad._deck_namelist("maddison"))
+    assert set(records[1]) == set(lad.RESTART_FIELDS)
+    assert all(value.shape == (644, 644) for value in records[1].values())
+    from legoesm.core.precision import PrecisionPolicy, set_policy
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import build_swg_card
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    state = lad._state_from_restart(
+        build_swg_card(lad._deck_namelist("maddison")).recipe.initial_state,
+        records[1])
+    rebuilt = lad._restart_candidate(state)
+    assert all(np.array_equal(rebuilt[name], records[1][name])
+               for name in lad.RESTART_FIELDS)
+
+
+@pytest.mark.skipif(not lad.DG_STAGE_ROOT.is_dir(),
+                    reason="admitted SWG_DG stage records not mounted")
+def test_maddison_admission_test_restores_precision_policy():
+    assert (get_policy(), bool(jax.config.jax_enable_x64)) == tuple(
+        _LAST_RESTORED)
 
 
 @pytest.mark.skipif(not ROOT.is_dir(), reason="SWG probe not mounted")
@@ -104,7 +201,7 @@ def test_recorded_stage3_wind_and_whole_step_inputs_are_discriminating():
     entries = lad.read_stage_entries(lad.DEFAULT_STAGE_ROOT)
     from legoesm.ocean.fidelity.nemo_testcase_recipe import build_swg_card
 
-    audit = lad._stage3_input_audit(entries, lad._card_masks(build_swg_card()))
+    audit = lad._stage3_input_audit(entries, lad.card_masks(build_swg_card()))
     assert all(row["bit_identical"]
                for row in audit["wind_before_vs_now"].values())
     assert all(not row["bit_identical"] and row["n_unequal"] > 0
@@ -131,7 +228,7 @@ def test_recorded_nonzero_stage_entry_one_ulp_plant_leaves_bar():
 def test_rows_use_card_t_u_v_masks_and_distinguish_wet_from_dry():
     from legoesm.ocean.fidelity.nemo_testcase_recipe import build_swg_card
 
-    masks = lad._card_masks(build_swg_card())
+    masks = lad.card_masks(build_swg_card())
     assert {name: mask.shape for name, mask in masks.items()} == {
         "T": (84, 84), "U": (84, 84), "V": (84, 84), "F": (84, 84)}
     assert all(mask.any() and not mask.all() for mask in masks.values())
@@ -149,7 +246,7 @@ def test_rows_use_card_t_u_v_masks_and_distinguish_wet_from_dry():
 def test_before_stress_uses_native_stagger_and_wrong_stagger_plant_fails(field, kind):
     from legoesm.ocean.fidelity.nemo_testcase_recipe import build_swg_card
 
-    masks = lad._card_masks(build_swg_card())
+    masks = lad.card_masks(build_swg_card())
     selected = lad._field_mask(field, masks)
     assert np.array_equal(selected, masks[kind])
     # The reviewer's reproduced defect selected T; 80 cells distinguish it

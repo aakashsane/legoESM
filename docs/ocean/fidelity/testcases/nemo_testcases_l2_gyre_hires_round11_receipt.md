@@ -185,6 +185,16 @@ scalar-libm CPU certification, zero-word exact-rung bar, float32 NEMO daily
 storage, thickness-weighted NEMO daily temperature, registered long-run
 manifests, and explicit physical-GPU selection.
 
+The explicit clean-tree shipped trajectory check remains `DEBT`, not a false
+bit-identity claim: entry `kt=1` is exact, entry `kt=2` is within the existing
+`1e-15` statistic bar but T/S/U/V are not word-exact, and all five fields first
+exceed that bar at entry `kt=3`.  Its artifact is
+`shipped_1deg_trajectory.json`, SHA-256
+`2be84fc7c73a9ea1ba91aa5e43fc7536757b9f82d20daf04fd03e5d1273cb476`,
+from clean commit `8ab32d086`.  The 70-row no-worsening ceiling passes both
+tests, and the explicit GYRE digest ratchet passes at
+`99b2dfce324b0f77`.
+
 OPEN, in order:
 
 1. Walk the recorded step-1 temperature-content RHS terms in executed source
@@ -199,8 +209,17 @@ OPEN, in order:
 
 ## Tests and controls
 
-The final verification battery and citation-gate results are recorded in the
-landing commit below.  Controls exercised by the committed instruments are:
+The split verification battery's exact aggregate is:
+
+`FULL_LANE_BATTERY_SPLIT_PASS: 241 unique tests passed, 4 deselected`
+
+Two citation cases initially refused exactly because the review disposition
+was still an uncommitted tracked edit; after that receipt-only commit, the
+complete citation test file passes 17/17.  This is a clean-tree control firing,
+not a product failure.  The final committed receipt citation gate reports
+`PASS`, two citations, zero failures and every self-test firing.
+
+Controls exercised by the committed instruments are:
 disabled full-step seam identity, six active input plants, exhaustive 31- and
 63-subset inventories, active/inactive/selected-identity Kaa discrimination,
 NEMO-twin benchmark replay, per-field exact/one-ULP divergence detection,

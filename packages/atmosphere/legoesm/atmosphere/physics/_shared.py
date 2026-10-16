@@ -384,6 +384,16 @@ def exner_to_pressure(exner):
     return constants.p_ref * exner ** inverse_poisson_exponent
 
 
+def surface_buoyancy_flux(wtheta_s, wq_s, theta):
+    """Kinematic surface buoyancy (virtual potential temperature) flux [K m/s].
+
+    ``(w'theta_v')_s = (w'theta')_s + (R_v/R_d - 1) theta (w'q')_s`` with
+    ``R_v/R_d - 1 = 1/epsilon - 1`` (E3SM ``zvir``); kinematic fluxes
+    positive upward, ``theta`` the lowest-level potential temperature [K].
+    """
+    return wtheta_s + (1.0 / constants.epsilon - 1.0) * theta * wq_s
+
+
 def buoyancy_coefficient(theta, *, gravity=None):
     """Buoyancy coefficient ``g / θ`` [m s⁻² K⁻¹] for buoyancy / N² terms.
 

@@ -2745,6 +2745,20 @@ def minimal_exact_subsets(
     return [list(members) for members in exact if len(members) == size]
 
 
+def content_substitution_is_material(
+    without: dict, with_substitution: dict, changed_words: int,
+) -> bool:
+    """Apply round 12's registered exact-word materiality threshold."""
+    if changed_words <= 0:
+        return False
+    before = (int(without["n_unequal"]), float(without["max_abs"]))
+    after = (
+        int(with_substitution["n_unequal"]),
+        float(with_substitution["max_abs"]),
+    )
+    return after < before
+
+
 def ordered_vertical_solver_subsets() -> list[tuple[str, ...]]:
     """All 31 non-empty production-solver input subsets, prereg arms first."""
     inputs = (
@@ -2926,6 +2940,184 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
     }
     if not all(row["n_unequal"] == 0 for row in passive.values()):
         raise RuntimeError("step-1 vertical seam changes the disabled path")
+
+    # Round 12: walk the two addends consumed by the executed tra_zdf RHS,
+    # in source order.  NEMO records both operands and the completed RHS;
+    # the private production trace publishes the analogous regrouping without
+    # feeding it back into the trajectory.  Keep the actual production
+    # association beside the regrouping: equality is measured, never assumed.
+    own_content_terms = tuple(
+        np.asarray(value, dtype=np.float64)
+        for value in free.content_terms[0]
+    )
+    own_before_content, own_accumulated_content, own_regrouped_content = (
+        own_content_terms)
+    nemo_before_content = (
+        native("e3t_Kbb", 30) * native("T_Kbb_in", 30))
+    nemo_accumulated_content = (
+        (np.float64(record["arrays"]["rDt"])
+         * native("e3t_Kmm", 30))
+        * native("T_Krhs_in", 30))
+    nemo_literal_content = nemo_before_content + nemo_accumulated_content
+    nemo_literal_calibration = exact_score(
+        "control.step1_content.nemo_literal_rhs",
+        nemo_inputs["temperature_content"], nemo_literal_content, wet)
+    if nemo_literal_calibration["n_unequal"] != 0:
+        raise RuntimeError(
+            "NEMO source-ordered content rebuild does not reproduce rhs_T")
+
+    content_input_rows = {
+        "before_content": exact_score(
+            "GYRE-zco-r4.kt1.content.before",
+            nemo_before_content, own_before_content, wet),
+        "accumulated_krhs_content": exact_score(
+            "GYRE-zco-r4.kt1.content.accumulated_krhs",
+            nemo_accumulated_content, own_accumulated_content, wet),
+        "regrouped_against_production": exact_score(
+            "control.step1_content.regrouped_vs_production",
+            own["temperature_content"], own_regrouped_content, wet),
+        "production_against_nemo": exact_score(
+            "GYRE-zco-r4.kt1.content.production",
+            nemo_inputs["temperature_content"],
+            own["temperature_content"], wet),
+    }
+
+    def content_arm(
+        label: str, context: dict[str, np.ndarray], content: np.ndarray,
+    ) -> tuple[dict, object]:
+        result = run_arm(fixed({
+            **context, "temperature_content": content,
+        }))
+        return output_rows(label, result), result
+
+    content_contexts = {
+        "ordinary": {},
+        "content_isolation": {
+            "formed_K": nemo_inputs["formed_K"],
+            # Kaa thickness is active-word exact, but round 11 proved that
+            # selecting this leaf changes the fused full-step graph.  Keep it
+            # selected in every isolation arm so only content changes here.
+            "tracer_e3t": nemo_inputs["tracer_e3t"],
+        },
+    }
+    mixed_contents = {
+        "source_association_baseline": own_regrouped_content,
+        "before_content": (
+            nemo_before_content + own_accumulated_content),
+        "accumulated_krhs_content": (
+            own_before_content + nemo_accumulated_content),
+        "both_content_addends": nemo_literal_content,
+    }
+    content_context_rows = {}
+    content_plants = []
+    for context_name, context in content_contexts.items():
+        production_row, _ = content_arm(
+            f"content.{context_name}.production_association",
+            context, own["temperature_content"])
+        source_row, source_result = content_arm(
+            f"content.{context_name}.source_association_baseline",
+            context, mixed_contents["source_association_baseline"])
+        arms = []
+        for term_name in (
+            "before_content", "accumulated_krhs_content",
+            "both_content_addends",
+        ):
+            row, result = content_arm(
+                f"content.{context_name}.{term_name}",
+                context, mixed_contents[term_name])
+            source_state = getattr(
+                source_result, "state_after", source_result)
+            result_state = getattr(result, "state_after", result)
+            changed = exact_score(
+                f"control.content.{context_name}.{term_name}.changed",
+                np.asarray(source_state.T.data, dtype=np.float64),
+                np.asarray(result_state.T.data, dtype=np.float64), wet)
+            row["changed_vs_source_association_baseline"] = changed
+            row["material"] = content_substitution_is_material(
+                source_row["temperature"], row["temperature"],
+                changed["n_unequal"])
+            arms.append(row)
+        content_context_rows[context_name] = {
+            "production_association": production_row,
+            "source_association_baseline": source_row,
+            "substitutions": arms,
+            "first_material_term": next((
+                row["variable"].rsplit(".", 1)[-1]
+                for row in arms[:2] if row["material"]
+            ), None),
+        }
+
+        for term_name, reference_term, other_term in (
+            ("before_content", nemo_before_content,
+             own_accumulated_content),
+            ("accumulated_krhs_content", nemo_accumulated_content,
+             own_before_content),
+        ):
+            planted_term = np.array(reference_term, copy=True)
+            index = tuple(int(value) for value in np.argwhere(wet)[0])
+            planted_term[index] = np.nextafter(
+                planted_term[index], np.float64(np.inf))
+            planted_content = (
+                planted_term + other_term
+                if term_name == "before_content"
+                else other_term + planted_term)
+            baseline_content = mixed_contents[term_name]
+            _, baseline_result = content_arm(
+                f"control.content.{context_name}.{term_name}.baseline",
+                context, baseline_content)
+            _, planted_result = content_arm(
+                f"control.content.{context_name}.{term_name}.one_ulp",
+                context, planted_content)
+            baseline_state = getattr(
+                baseline_result, "state_after", baseline_result)
+            planted_state = getattr(
+                planted_result, "state_after", planted_result)
+            plant_score = exact_score(
+                f"control.content.{context_name}.{term_name}.one_ulp",
+                np.asarray(baseline_state.T.data, dtype=np.float64),
+                np.asarray(planted_state.T.data, dtype=np.float64), wet)
+            if plant_score["n_unequal"] == 0:
+                raise RuntimeError(
+                    f"content {context_name}/{term_name} plant did not reach T")
+            content_plants.append({
+                "context": context_name,
+                "term": term_name,
+                "index": list(index),
+                "score": plant_score,
+                "status": "FIRED",
+            })
+
+    isolated_substitutions = content_context_rows[
+        "content_isolation"]["substitutions"]
+    exact_single_content_terms = [
+        row["variable"].rsplit(".", 1)[-1]
+        for row in isolated_substitutions[:2]
+        if row["temperature"]["n_unequal"] == 0
+    ]
+    association_moved = (
+        content_input_rows["regrouped_against_production"]["n_unequal"] > 0)
+    if association_moved:
+        content_classification = "COMPOSITION_DEBT"
+    elif len(exact_single_content_terms) == 1:
+        content_classification = "TRANSCRIPTION_CANDIDATE"
+    elif len(exact_single_content_terms) > 1:
+        content_classification = "NON_UNIQUE_CONTENT_OWNER"
+    elif isolated_substitutions[-1]["temperature"]["n_unequal"] == 0:
+        content_classification = "COUPLED_CONTENT_COMPOSITION"
+    else:
+        content_classification = "INCOMPLETE_CONTENT_BOUNDARY"
+    content_walk = {
+        "registered_source_order": [
+            "before_content", "accumulated_krhs_content"],
+        "nemo_literal_calibration": nemo_literal_calibration,
+        "input_rows": content_input_rows,
+        "contexts": content_context_rows,
+        "controls": {"one_ulp_plants": content_plants},
+        "exact_single_content_terms": exact_single_content_terms,
+        "first_material_term": content_context_rows[
+            "content_isolation"]["first_material_term"],
+        "classification": content_classification,
+    }
 
     rows = []
     plants = []
@@ -3149,7 +3341,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
             "variants": variant_rows,
         }
     report = {
-        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v5",
+        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v6",
         "worktree": worktree_stamp(),
         "oracle_admission": admission,
         "policy": "fp64/x64/cpu/libm certified",
@@ -3157,6 +3349,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         "boundary": "stage-3 tra_zdf input/output; entry kt=2",
         "native_dtypes": native_dtypes,
         "production": production,
+        "temperature_content_source_walk": content_walk,
         "input_rows": input_rows,
         "one_variable_substitutions": rows,
         "solver_subset_substitutions": solver_rows,

@@ -2157,6 +2157,7 @@ def _nemo_ws_rk3_tracer_pair_step(
     resume=None,
     stage3_advection_content_override=None,
     return_final_content: bool = False,
+    return_final_content_terms: bool = False,
     return_stage1_trace: bool = False,
     return_fct_activity: bool = False,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -2194,6 +2195,9 @@ def _nemo_ws_rk3_tracer_pair_step(
         raise ValueError("stage_source_terms must contain exactly 3 stages")
     if stage_qco_weights is not None and len(stage_qco_weights) != 3:
         raise ValueError("stage_qco_weights must contain exactly 3 stages")
+    if return_final_content_terms and not return_final_content:
+        raise ValueError(
+            "return_final_content_terms requires return_final_content")
     resume_stage = 0
     if resume is not None:
         resume_stage, a_resume, b_resume = resume
@@ -2435,6 +2439,28 @@ def _nemo_ws_rk3_tracer_pair_step(
                  + dt * h_one_half * stage_source_rates[2][0])
     content_b = (advection_content_b
                  + dt * h_one_half * stage_source_rates[2][1])
+    content_terms = None
+    if return_final_content_terms:
+        # WRITE-only arithmetic audit for the GYRE exact-rung gate.  NEMO's
+        # tra_zdf RHS has two source addends, before content and accumulated
+        # Krhs content.  Keep the analogous regrouping separate from
+        # ``content_*``: selecting it is itself the control that detects a
+        # floating-point association change.  This static private-trace arm
+        # is not present in an ordinary production compilation.
+        before_content_a = h_k_old * tr_a
+        before_content_b = h_k_old * tr_b
+        advection_increment_a = -dt * fd2_a
+        advection_increment_b = -dt * fd2_b
+        source_increment_a = dt * h_one_half * stage_source_rates[2][0]
+        source_increment_b = dt * h_one_half * stage_source_rates[2][1]
+        accumulated_content_a = advection_increment_a + source_increment_a
+        accumulated_content_b = advection_increment_b + source_increment_b
+        content_terms = (
+            (before_content_a, accumulated_content_a,
+             before_content_a + accumulated_content_a),
+            (before_content_b, accumulated_content_b,
+             before_content_b + accumulated_content_b),
+        )
     out_a = jnp.where(
         active_3d > 0.5,
         content_a / jnp.maximum(h_k_new, 1.0e-10), tr_a)
@@ -2442,15 +2468,21 @@ def _nemo_ws_rk3_tracer_pair_step(
         active_3d > 0.5,
         content_b / jnp.maximum(h_k_new, 1.0e-10), tr_b)
     if return_final_content and return_fct_activity:
-        return (
+        result = (
             out_a, out_b, content_a, content_b,
             advection_content_a, advection_content_b, fct_activity,
         )
+        if return_final_content_terms:
+            return (*result, content_terms)
+        return result
     if return_final_content:
-        return (
+        result = (
             out_a, out_b, content_a, content_b,
             advection_content_a, advection_content_b,
         )
+        if return_final_content_terms:
+            return (*result, content_terms)
+        return result
     return out_a, out_b
 
 
@@ -6384,6 +6416,7 @@ class LatLonCGridOceanModel:
         _nemo_ws_advection_content_rhs = None
         _nemo_ws_zdf_eta_kmm = None
         _nemo_ws_process_qco = None
+        _nemo_ws_content_terms = None
         _nemo_ws_process_surface_rate = None
         _nemo_ws_process_qsr_rate = None
         _nemo_ws_qsr_association = None
@@ -9517,6 +9550,7 @@ class LatLonCGridOceanModel:
                         self._nemo_ws_test_hooks
                         .stage3_advection_content_override),
                     return_final_content=True,
+                    return_final_content_terms=_return_tracer_process_trace,
                     return_fct_activity=(
                         _return_tracer_process_trace
                         and self._nemo_ws_test_hooks
@@ -9529,12 +9563,20 @@ class LatLonCGridOceanModel:
                      _nemo_ws_content_T, _nemo_ws_content_S,
                      _nemo_ws_advection_content_T,
                      _nemo_ws_advection_content_S,
-                     _nemo_ws_fct_activity) = _ws_tracer_result
+                     _nemo_ws_fct_activity,
+                     _nemo_ws_content_terms) = _ws_tracer_result
                 else:
-                    (T_corrected, S_corrected,
-                     _nemo_ws_content_T, _nemo_ws_content_S,
-                     _nemo_ws_advection_content_T,
-                     _nemo_ws_advection_content_S) = _ws_tracer_result
+                    if _return_tracer_process_trace:
+                        (T_corrected, S_corrected,
+                         _nemo_ws_content_T, _nemo_ws_content_S,
+                         _nemo_ws_advection_content_T,
+                         _nemo_ws_advection_content_S,
+                         _nemo_ws_content_terms) = _ws_tracer_result
+                    else:
+                        (T_corrected, S_corrected,
+                         _nemo_ws_content_T, _nemo_ws_content_S,
+                         _nemo_ws_advection_content_T,
+                         _nemo_ws_advection_content_S) = _ws_tracer_result
                     _nemo_ws_fct_activity = None
                 _nemo_ws_tracer_content_rhs = (
                     _nemo_ws_content_T, _nemo_ws_content_S)
@@ -10313,7 +10355,8 @@ class LatLonCGridOceanModel:
             if (_nemo_ws_process_qco is None
                     or _nemo_ws_process_boundaries is None
                     or _nemo_ws_process_Taa is None
-                    or _nemo_ws_qsr_association is None):
+                    or _nemo_ws_qsr_association is None
+                    or _nemo_ws_content_terms is None):
                 raise ValueError("WS-RK3 tracer process trace is incomplete")
             if (_return_vertical_solve_trace
                     and _nemo_ws_vertical_solve_trace is None):
@@ -10330,6 +10373,7 @@ class LatLonCGridOceanModel:
                 qsr_association=_nemo_ws_qsr_association,
                 vertical_solve=_nemo_ws_vertical_solve_trace,
                 fct_activity=_nemo_ws_fct_activity, ldf_diagnostics=_nemo_ws_ldf_diagnostics,
+                content_terms=_nemo_ws_content_terms,
             )
         if _return_live_stage_operands:
             if (getattr(_cfg_b, "momentum_time_integrator", "euler")
@@ -15983,6 +16027,7 @@ class _NEMOWSTracerProcessTrace(NamedTuple):
     vertical_solve: object
     fct_activity: object
     ldf_diagnostics: object
+    content_terms: object
 
 
 class _NEMOWSLdfDiagnosticTrace(NamedTuple):

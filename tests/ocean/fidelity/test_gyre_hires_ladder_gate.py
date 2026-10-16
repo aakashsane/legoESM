@@ -690,6 +690,18 @@ def test_minimal_exact_subsets_requires_every_requested_field():
         "formed_K", "temperature_content", "salinity_content"]]
 
 
+def test_content_materiality_requires_changed_words_and_lexicographic_gain():
+    baseline = {"n_unequal": 8, "max_abs": 2.0e-14}
+    assert GATE.content_substitution_is_material(
+        baseline, {"n_unequal": 7, "max_abs": 3.0e-14}, 1)
+    assert GATE.content_substitution_is_material(
+        baseline, {"n_unequal": 8, "max_abs": 1.0e-14}, 1)
+    assert not GATE.content_substitution_is_material(
+        baseline, {"n_unequal": 8, "max_abs": 1.0e-14}, 0)
+    assert not GATE.content_substitution_is_material(
+        baseline, {"n_unequal": 9, "max_abs": 1.0e-14}, 1)
+
+
 def test_vertical_solver_subset_search_is_exhaustive_and_preregistered_first():
     rows = GATE.ordered_vertical_solver_subsets()
     assert rows[:2] == [
@@ -712,3 +724,18 @@ def test_fixed_vertical_probe_exposes_independent_salinity_content():
         "salinity_content", "replace")
     assert _NEMOWSTracerSolveTrace._fields[6:8] == (
         "content_T", "content_S")
+
+
+def test_process_trace_exposes_write_only_content_terms():
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        _NEMOWSTracerProcessTrace,
+    )
+
+    assert _NEMOWSTracerProcessTrace._fields[-1] == "content_terms"
+    source = (
+        ROOT / "packages/ocean/legoesm/ocean/dynamics/"
+        "ocean_model_latlon_cgrid.py"
+    ).read_text(encoding="utf-8")
+    assert "return_final_content_terms=_return_tracer_process_trace" in source
+    assert "if return_final_content_terms:" in source
+    assert "content_a = (advection_content_a" in source

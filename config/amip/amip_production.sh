@@ -55,7 +55,7 @@
 # file is coarser than the MPAS res-6 cells, so the per-grid terrain product
 # (bin_latlon_to_cells) leaves 2193 cells with no source point and refuses to
 # build: every production-resolution run crashed at setup.
-: "${ETOPO:=/work/bd1083/b309178/diffESM/legoesm_ap/data/bathymetry/etopo2022_60s_0p25deg.nc}"
+: "${ETOPO:=/work/bb1596/b309178/diffESM/legoesm_ap/data/bathymetry/etopo2022_60s_0p25deg.nc}"
 # SST/SIC: PCMDI CMIP7 AMIP boundary conditions (the protocol-standard tosbcs/
 # siconcbcs mid-month files, 1870-2022) — the dataset every proven MPAS-lane
 # run uses (Pierre's climeval_bech day-247+ and the replica chains).  The file
@@ -77,7 +77,7 @@
 # volcanic 1979) and 1950-1999 ozone pool files silently freeze/hold forcing
 # past their coverage — only override back to them for deliberate fixed-forcing
 # sensitivity runs.
-: "${FORCING_1979_2014:=/work/bd1083/b309178/diffESM/legoesm_ap/data/forcing/cmip6_1979-2014}"
+: "${FORCING_1979_2014:=/work/bb1596/b309178/diffESM/legoesm_ap/data/forcing/cmip6_1979-2014}"
 : "${OZONE:=${FORCING_1979_2014}/vmro3_input4MIPs_ozone_CMIP_UReading-CCMI-1-0_gn_197901-201412.nc}"
 # MACv2-SP anthropogenic plumes on the Kinne MACv1 pre-industrial background,
 # 1850-2014: fine+coarse for radiation, fine mode for the droplet-number (CCN)
@@ -96,7 +96,7 @@
 # PFT/texture/glacier surface map. Compute nodes have NO internet, so the auto-
 # download in clm_surface_map.download_clm_surfdata() FAILS (SSL) — this file
 # MUST be staged locally and passed via --clm-surfdata-path (staged 2026-07-02).
-: "${CLM_SURFDATA:=/work/bd1083/b309178/diffESM/legoesm_ap/data/clm/surfdata_1.9x2.5_16pfts_CMIP6_simyr2000.nc}"
+: "${CLM_SURFDATA:=/work/bb1596/b309178/diffESM/legoesm_ap/data/clm/surfdata_1.9x2.5_16pfts_CMIP6_simyr2000.nc}"
 # Subgrid-orography stddev (SSO) for the orographic GWD launch (#1514). With
 # gravity_wave_drag=mcfarlane+hines and NO SSO file, McFarlane falls back to
 # the scalar h_topo=500 m on EVERY column — a fictional 500-m mountain over
@@ -111,7 +111,7 @@
 # _seamfix (2026-10-07, #1712): same recipe rebuilt after the regridder seam
 # fix; differs from sso_stdh_2deg_from1deg.nc only in the 358-360E column,
 # where the old file was built with a fake 0-m strip. sha256 of both in #1884.
-: "${AMIP_SSO:=/work/bd1083/b309178/diffESM/legoesm_ap/data/orography/sso_stdh_2deg_from1deg_seamfix.nc}"
+: "${AMIP_SSO:=/work/bb1596/b309178/diffESM/legoesm_ap/data/orography/sso_stdh_2deg_from1deg_seamfix.nc}"
 # Land-sea mask (sftlf, fraction) built from the SAME CLM surfdata by
 # scripts/data/build_sftlf_from_surfdata.py (2026-07-22). Without it f_land is
 # derived from ETOPO elevation>0, and ETOPO's inland-sea BATHYMETRY (Caspian
@@ -121,7 +121,7 @@
 # tiling consistent with the land model's own footprint (Caspian/Aral = land).
 # Opt back to the legacy elevation mask with AMIP_LAND_MASK="" (deliberate
 # reproduction runs only).
-: "${AMIP_LAND_MASK:=/work/bd1083/b309178/diffESM/legoesm_ap/data/clm/sftlf_clm_1.9x2.5.nc}"
+: "${AMIP_LAND_MASK:=/work/bb1596/b309178/diffESM/legoesm_ap/data/clm/sftlf_clm_1.9x2.5.nc}"
 
 # --- The machine-specific PATH flags (everything else is in the YAML) ---------
 # Harmonized surfdata: the CANOPY parameter source (per-PFT canopy height,

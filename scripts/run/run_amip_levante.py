@@ -73,7 +73,7 @@ _O3_FILES = {
 # Aerosol / CCN aerosol / volcanic: the SAME products (and Levante paths) as
 # config/amip/amip_production.sh (FORCING_1979_2014); build them there with
 # scripts/data/adapt_cmip6_aerosol.py and adapt_cesm_forcing.py volcanic.
-_FORCING_DIR = Path("/work/bd1083/b309178/diffESM/legoesm_ap/data/forcing/cmip6_1979-2014")
+_FORCING_DIR = Path("/work/bb1596/b309178/diffESM/legoesm_ap/data/forcing/cmip6_1979-2014")
 _AEROSOL_FILE = _FORCING_DIR / "aeropt_macv2sp_sw_b14_tot_1850-2014_MACv1bg.nc"
 _AEROSOL_CCN_FILE = _FORCING_DIR / "aeropt_macv2sp_sw_b14_fin_1850-2014_MACv1bg.nc"
 _VOLCANIC_FILE = _FORCING_DIR / "bc_aeropt_cmip6_volc_lw_b16_sw_b14_1850-2014_IACETH-v4.nc"

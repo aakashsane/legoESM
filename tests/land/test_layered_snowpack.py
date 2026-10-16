@@ -830,16 +830,17 @@ def test_freeze_thaw_closes_energy_in_both_directions(case):
     top (water leaves a frozen layer), rain onto frozen soil (water arrives and
     freezes).  Exact closure every step, and the process actually happened."""
     cfg = _cfg_ft()
-    T0, theta0 = {"freeze_wet_soil": (275.0, 0.40), "evaporate_frozen_top": (268.0, 0.30),
+    T0, theta0 = {"freeze_wet_soil": (275.0, 0.40), "evaporate_frozen_top": (272.0, 0.30),
                   "rain_on_frozen": (269.0, 0.15)}[case]
     st = init_multilayer_land_state(1, cfg, T_init=T0, theta_init=theta0)
     st = seed_snow_layers(st, cfg)
     f = {"freeze_wet_soil": _forcing(1, T_air=250.0, lw=170.0, sw=0.0, q=0.0005),
-         # sw 200 (was 400): since #1815 (user 2026-10-06) only liquid water
-         # evaporates, so at 400 W/m2 the unmet latent energy thaws the top within
-         # 3 steps (measured 2026-10-16: 273.98 K after 12) and the case no longer
-         # takes water out of a FROZEN layer; at 200 the top stays <= 272.2 K.
-         "evaporate_frozen_top": _forcing(1, T_air=271.0, sw=200.0, lw=230.0, q=0.0002,
+         # Since #1815 (user 2026-10-06) only liquid water evaporates, so a hard-
+         # frozen top delivers no vapour and the old 268 K / 400 W/m2 case thawed
+         # the top instead (273.98 K after 12 steps).  272 K / 250 W/m2 (measured
+         # 2026-10-16): top <= 273.04 K with ice >= 0.158, 1.3e-3 of top-layer
+         # water evaporated (Richards redistribution alone moves ~5e-6).
+         "evaporate_frozen_top": _forcing(1, T_air=271.0, sw=250.0, lw=230.0, q=0.0002,
                                           wind=8.0),
          "rain_on_frozen": _forcing(1, T_air=276.0, rain=1e-3, sw=0.0, lw=300.0,
                                     q=0.005)}[case]
@@ -849,8 +850,8 @@ def test_freeze_thaw_closes_energy_in_both_directions(case):
     if case == "freeze_wet_soil":
         assert float(ice1[0, 0]) > float(ice0[0, 0]) + 0.05
     elif case == "evaporate_frozen_top":
-        assert float(s1.theta_soil[0, 0]) < float(s0.theta_soil[0, 0])
-        assert float(s1.T_soil[0, 0]) < TF
+        assert float(s0.theta_soil[0, 0] - s1.theta_soil[0, 0]) > 5e-4
+        assert float(s1.T_soil[0, 0]) < TF and float(ice1[0, 0]) > 0.05
     else:
         # The first step's rain soaks in and part of it freezes (measured: top
         # two layers +0.013 / +0.006 ice); the warm rain then thaws the top.

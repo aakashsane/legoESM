@@ -107,6 +107,8 @@ def test_sha_mismatch_raises(tmp_path):
 def test_real_files_month_by_month_identity_and_shared_grid():
     hyam, hybm, p0 = clim.read_hybrid_coefficients(_REAL)
     assert p0 == 1.0e5
+    # record m + 12 y is month m of year y: noleap mid-month times 15.5, 45, ... 1079.5
+    edges = np.concatenate([[0.0], np.cumsum(np.tile([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], 3))])
     ref = None
     for var in ("PS",) + clim.PPE_SPECIES_FIELDS + clim.PPE_NUMBER_FIELDS:
         got, lat, lon, lev = clim.read_monthly_climatology(_REAL, var)
@@ -114,6 +116,7 @@ def test_real_files_month_by_month_identity_and_shared_grid():
         import netCDF4
         with netCDF4.Dataset(Path(_REAL) / clim.PPE_TIMESERIES.format(var=var)) as d:
             t = np.asarray(d["time"][:])
+        np.testing.assert_array_equal(t, 0.5 * (edges[:-1] + edges[1:]))
         if ref is None:
             ref = (lat, lon, t)
         np.testing.assert_array_equal(lat, ref[0])

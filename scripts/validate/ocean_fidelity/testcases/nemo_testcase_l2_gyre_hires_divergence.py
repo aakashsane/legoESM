@@ -585,7 +585,9 @@ def main(argv=None) -> int:
             reference = vector_curve[field][0]
             exact = normalized_rms_and_correlation(reference, reference, mask)
             planted = np.array(reference, copy=True)
-            plant_index = tuple(np.argwhere(mask)[0])
+            active_indices = np.argwhere(mask)
+            plant_index = tuple(active_indices[
+                int(np.argmax(np.abs(reference[mask])))])
             planted[plant_index] = np.nextafter(
                 planted[plant_index], np.inf)
             plant = normalized_rms_and_correlation(reference, planted, mask)
@@ -710,7 +712,7 @@ def main(argv=None) -> int:
             "regional_signed_sse_excess": regional,
             "leading_region_by_tied_field": leading_regions,
             "growth_days_30_180_by_tied_field": {
-                **growth,
+                "fields": growth,
                 "metric": "absolute RMS error; fit residual in log-error space",
             },
             "yearly_statistics": yearly,

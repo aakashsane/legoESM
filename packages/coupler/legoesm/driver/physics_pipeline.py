@@ -1865,16 +1865,13 @@ class PhysicsPipeline:
         # bottom-layer T/q kick when no turbulence scheme owns surface
         # exchange.  If turbulence is active, its TurbulenceOutput.shflx /
         # lhflx overrides the bulk values further below.
-        rho_low = self.sigma_coord.pressure_at_full(p_s)[..., -1] / (constants.R_d * T[..., -1])
-        wind_speed = jnp.sqrt(u[..., -1] ** 2 + v[..., -1] ** 2 + 1.0)
+        from legoesm.atmosphere.physics.turbulence.surface_layer import (
+            bottom_layer_surface_kick, constant_bulk_surface_fluxes)
         dp_low = self.sigma_coord.layer_thickness_dp(p_s)[..., -1]
-
-        shflx = rho_low * constants.c_pd * _C_H * wind_speed * (T_sfc - T[..., -1])
-        q_sat_sfc = saturation_specific_humidity(T_sfc, p_s)
-        from legoesm.thermo import charged_latent_heat
-        # The constant-coefficient law: charged (and inverted below) through the
-        # one lookup.
-        lhflx = rho_low * charged_latent_heat("constant", T_sfc) * _C_E * wind_speed * (q_sat_sfc - q_v[..., -1])
+        shflx, lhflx = constant_bulk_surface_fluxes(
+            T[..., -1], q_v[..., -1], u[..., -1], v[..., -1],
+            self.sigma_coord.pressure_at_full(p_s)[..., -1], p_s, T_sfc,
+            _C_H, _C_E)
         evap_sfc = None   # the water flux actually applied to the column (set below)
 
         turb_owns_surface = (
@@ -1984,20 +1981,8 @@ class PhysicsPipeline:
         if not turb_owns_surface:
             # The coupler's water flux when given; else the inverse of the SAME
             # L_v(T_sfc) the bulk law charged (surface_layer.surface_moisture_flux).
-            if sfc_evap_override is not None:
-                evap_rate = sfc_evap_override
-            else:
-                from legoesm.thermo import charged_latent_heat
-                evap_rate = lhflx / charged_latent_heat("constant", T_sfc)
-            evap_sfc = evap_rate
-            # Heat kick carries the latent enthalpy correction (surface_layer
-            # .latent_enthalpy_correction): water credited at L_v by the column
-            # but charged at L(T_sfc) by the surface.
-            from legoesm.atmosphere.physics.turbulence.surface_layer import (
-                latent_enthalpy_correction as _lec)
-            dT_BL = (constants.g * (shflx + _lec(lhflx, evap_rate))
-                     / (constants.c_pd * dp_low))
-            dq_BL = constants.g * evap_rate / dp_low
+            dT_BL, dq_BL, evap_sfc = bottom_layer_surface_kick(
+                shflx, lhflx, T_sfc, dp_low, evap=sfc_evap_override)
             dT_dt = dT_dt.at[..., -1].add(dT_BL)
             dq_v_dt = dq_v_dt.at[..., -1].add(dq_BL)
 

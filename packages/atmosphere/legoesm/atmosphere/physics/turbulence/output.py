@@ -79,7 +79,8 @@ class TurbulenceOutput(NamedTuple):
         shape (ncol, nlev+1): the interface values the scheme itself used in its
         vertical-diffusion solve, with zero at the model-top and surface
         interfaces (CAM6's ``kvh`` convention for non-CLUBB schemes).  ``None``
-        for schemes that compute their diffusivity on full levels only.  Not
+        for schemes that compute their diffusivity on full levels only (tke, edmf,
+        clubb_lite) and, for now, for prognostic CLUBB.  Not
         read by any tendency; it is the input CAM6 droplet activation needs.
     """
     du_dt: jax.Array

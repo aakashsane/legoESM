@@ -5,7 +5,8 @@ Louis, YSU, Holtslag-Boville, MYNN 2.5) export those interior values on all
 ``nlev+1`` interfaces with zero at the model top and the surface (CAM6's non-CLUBB
 ``kvh`` convention).  The interior must be the very array the full-level ``Kh``
 diagnostic is averaged from, i.e. the one the scheme's own diffusion solve used.
-Schemes that compute diffusivity on full levels only (TKE, EDMF) leave it None.
+Schemes that compute diffusivity on full levels only (TKE, EDMF, CLUBB-lite) leave it
+None; prognostic CLUBB is not exported yet either (its interface diffusivity is a separate stage).
 """
 
 from __future__ import annotations
@@ -21,9 +22,10 @@ from legoesm import constants  # noqa: E402
 from legoesm.thermo import saturation_mixing_ratio  # noqa: E402
 from legoesm.atmosphere.physics._shared import half_to_full  # noqa: E402
 from legoesm.atmosphere.physics.turbulence.config import (  # noqa: E402
-    HoltslagBovilleConfig, LouisConfig, MYNN25Config, SmagorinskyConfig,
+    CLUBBLiteConfig, HoltslagBovilleConfig, LouisConfig, MYNN25Config, SmagorinskyConfig,
     TKEConfig, TurbulentEDMFConfig, YSUConfig,
 )
+from legoesm.atmosphere.physics.turbulence.clubb_lite import clubb_lite_turbulence  # noqa: E402
 from legoesm.atmosphere.physics.turbulence.edmf import edmf_turbulence  # noqa: E402
 from legoesm.atmosphere.physics.turbulence.holtslag_boville import (  # noqa: E402
     holtslag_boville_turbulence,
@@ -45,6 +47,7 @@ def _inputs():
     u, v, T, q_v, p_full, p_half, z_full, z_half, rho = _make_column_data(NCOL, NLEV)
     # Fixture only: a slightly unstable dry-adiabatic column (theta = 300 K) so every
     # scheme, including the Richardson-limited Smagorinsky closure, mixes somewhere.
+    # Heights stay those of the helper's column; only the export contract is tested here.
     T = 300.0 * (p_full / constants.p_ref) ** constants.kappa
     rho = p_full / (constants.R_d * T)
     q_v = 0.5 * saturation_mixing_ratio(T, p_full)
@@ -73,6 +76,9 @@ def _run(name):
     if name == "edmf":
         return edmf_turbulence(u, v, T, q_v, tke0, *common, dt=300.0,
                                config=TurbulentEDMFConfig())[0]
+    if name == "clubb_lite":
+        return clubb_lite_turbulence(u, v, T, q_v, tke0, *common, dt=300.0,
+                                     config=CLUBBLiteConfig())[0]
     raise ValueError(name)
 
 
@@ -90,6 +96,6 @@ def test_interface_native_schemes_export_kh_iface(name):
                                   np.asarray(out.Kh))
 
 
-@pytest.mark.parametrize("name", ["tke", "edmf"])
+@pytest.mark.parametrize("name", ["tke", "edmf", "clubb_lite"])
 def test_full_level_schemes_leave_kh_iface_unset(name):
     assert _run(name).Kh_iface is None

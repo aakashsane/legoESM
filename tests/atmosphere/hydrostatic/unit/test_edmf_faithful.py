@@ -49,6 +49,7 @@ from legoesm.atmosphere.physics.turbulence.edmf import (
     _SIGMA_W_COEFF,
     _SIGMA_W_WSTAR3_COEFF,
     _mass_flux_tendency,
+    _updraft_surface_excess,
     edmf_turbulence,
 )
 from legoesm.atmosphere.physics.turbulence.integration import get_turbulence_fn
@@ -333,3 +334,50 @@ def test_edmf_plume_surface_flux_is_part_of_the_surface_flux():
         assert np.allclose(budget, expected, rtol=1e-9, atol=0.0), (budget, expected)
         totals.append(dtheta)
     assert not np.allclose(totals[0], totals[1])   # the plume is active
+
+
+def test_updraft_surface_excess_is_sst07_eq17_with_buoyancy_wstar():
+    """SST07 Eq. 17 + Eq. 7 (Holtslag & Moeng 1991), transcribed independently in NumPy.
+
+    theta_u - theta = alpha (w'theta')_s / sigma_w, q_u - q = alpha (w'q')_s / sigma_w,
+    sigma_w = max(w_min, 1.3 (u*^3 + 0.6 w*^3 z/z*)^(1/3) (1 - z/z*)^(1/2)),
+    w*^3 = (g/theta_v) (w'theta_v')_s z* with the BUOYANCY flux (user decision 2026-10-16).
+    Columns: dry heating, moist heating (moisture raises w*), shallow PBL (sigma_w floor),
+    surface cooling (no excess)."""
+    cfg = TurbulentEDMFConfig(surface_excess_prefactor=1.7)
+    wth = np.array([0.1, 0.1, 0.1, -0.02])
+    wq = np.array([0.0, 5e-5, 5e-5, 5e-5])
+    th = np.full(4, 300.0)
+    thv = th * (1.0 + (1.0 / constants.epsilon - 1.0) * 0.01)
+    ust = np.array([0.3, 0.3, 0.05, 0.3])
+    z1 = np.full(4, 30.0)
+    zs = np.array([1000.0, 1000.0, 30.0, 1000.0])
+    d_th, d_q = (np.asarray(x) for x in _updraft_surface_excess(
+        jnp.asarray(wth), jnp.asarray(wq), jnp.asarray(th), jnp.asarray(thv),
+        jnp.asarray(ust), jnp.asarray(z1), jnp.asarray(zs), cfg))
+    wthv = wth + (constants.R_v / constants.R_d - 1.0) * th * wq
+    wstar3 = constants.g / thv * np.maximum(wthv, 0.0) * zs
+    r = np.minimum(z1 / zs, 1.0)
+    sw = 1.3 * np.cbrt(ust ** 3 + 0.6 * wstar3 * r) * np.sqrt(np.maximum(1.0 - r, 1e-6))
+    sw = np.maximum(sw, cfg.w_updraft_min)
+    on = wth > 0.0
+    np.testing.assert_allclose(d_th, np.where(on, 1.7 * wth / sw, 0.0), rtol=1e-12)
+    np.testing.assert_allclose(d_q, np.where(on, 1.7 * wq / sw, 0.0), rtol=1e-12)
+    assert d_th[1] < d_th[0]                       # moisture flux raises w*, shrinks the excess
+    assert sw[2] == cfg.w_updraft_min              # PBL top at z1: the floor binds
+    assert d_th[3] == 0.0 and d_q[3] == 0.0        # surface cooling: no excess
+
+
+def test_edmf_plume_heat_leak_below_one_percent_of_surface_flux():
+    """The MF part transports theta and converts with each layer's Exner factor, so the
+    column HEAT it receives differs from the surface flux.  Cap (user decision 2026-10-16):
+    under 1 % of the surface flux at the default prefactor; a heat-carrying plume is a
+    follow-up.  Dry heated surface, so no latent enthalpy term."""
+    out, _, inp = _run(TurbulentEDMFConfig(), grid=_grid(), dry_surface=True,
+                       u_top=8.0, u_sfc=5.0)
+    z_half, rho = np.asarray(inp[8]), np.asarray(inp[9])
+    w = rho * np.clip(np.abs(z_half[:, :-1] - z_half[:, 1:]), 1.0, None)   # scheme's weights
+    heat = (w * np.asarray(out.dT_dt)).sum(-1) * constants.c_pd
+    shflx = np.asarray(out.shflx)
+    assert np.all(shflx > 1.0)
+    assert np.all(np.abs(heat - shflx) < 0.01 * shflx), (heat, shflx)

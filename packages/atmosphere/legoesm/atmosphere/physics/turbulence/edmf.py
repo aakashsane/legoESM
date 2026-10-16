@@ -38,7 +38,9 @@ DEPARTURES from SST07 (physics / structural simplifications):
     proxy, NOT the buoyancy convective scale ``w*``).  The surface SCALAR excess follows
     SST07 Eq. 17, ``φ_u(z1) = φ(z1) + α·(w'φ')_s/σ_w(z1)`` with ``σ_w`` from SST07 Eq. 7
     (Holtslag & Moeng 1991), ``z*`` = the diagnosed PBL height, ``σ_w`` floored at
-    ``w_min``, and no excess when the surface heat flux is <= 0;
+    ``w_min``, and no excess when the surface heat flux is <= 0.  DEPARTURE (user decision
+    2026-10-16): ``w*`` uses the surface BUOYANCY flux ``(w'θ_v')_s`` (SST07's dry CBL uses
+    ``(w'θ')_s``);
   * a **single bulk steady plume** (``n_updrafts`` unused; no detrainment term)
     — faithful to SST07's dry-CBL single-plume scope, but a MAJOR departure from
     Tan (2018) (prognostic plume velocity/area/thermo, updrafts+downdrafts, and prognostic
@@ -146,6 +148,34 @@ _EDMF_WSTAR_COEFF = 2.5
 # sigma_w = 1.3 * (u*^3 + 0.6 * w*^3 * z/z*)^(1/3) * (1 - z/z*)^(1/2)
 _SIGMA_W_COEFF = 1.3
 _SIGMA_W_WSTAR3_COEFF = 0.6
+
+
+def _updraft_surface_excess(wtheta_s, wq_s, theta_1, theta_v_1, ustar, z_1, z_star, config):
+    """Updraft start excess ``(dtheta, dq)`` at the lowest level z1 (SST07 Eq. 17).
+
+    ``phi_u(z1) = phi(z1) + alpha (w'phi')_s / sigma_w(z1)`` for theta and q, with
+    sigma_w from SST07 Eq. 7 (Holtslag & Moeng 1991)
+    ``1.3 (u*^3 + 0.6 w*^3 z/z*)^(1/3) (1 - z/z*)^(1/2)``, floored at
+    ``w_updraft_min``.  DEPARTURE (user decision 2026-10-16): SST07 is a dry CBL
+    with ``w*^3 = (g/theta)(w'theta')_s z*``; here w* uses the surface BUOYANCY
+    flux ``(w'theta_v')_s = (w'theta')_s + (1/eps - 1) theta (w'q')_s`` -- the
+    flux the theta and q excesses jointly carry (theta_v excess =
+    ``alpha (w'theta_v')_s / sigma_w`` to first order).  No excess when the
+    surface heat flux ``(w'theta')_s`` is <= 0.  Kinematic fluxes [K m/s],
+    [kg/kg m/s], positive up; heights [m] above the surface.
+    """
+    z_star = jnp.clip(z_star, 1.0, None)  # coeff-ok: z* floor [m]
+    z_rel = jnp.clip(z_1 / z_star, 0.0, 1.0)
+    heating = wtheta_s > 0.0
+    wthetav_s = wtheta_s + (1.0 / constants.epsilon - 1.0) * theta_1 * wq_s
+    wstar3 = (buoyancy_coefficient(jnp.clip(theta_v_1, 1.0, None))
+              * jnp.where(heating, jnp.maximum(wthetav_s, 0.0), 0.0) * z_star)
+    sigma_w = (_SIGMA_W_COEFF
+               * jnp.cbrt(ustar ** 3 + _SIGMA_W_WSTAR3_COEFF * wstar3 * z_rel)
+               * jnp.sqrt(jnp.clip(1.0 - z_rel, 1.0e-6, 1.0)))
+    sigma_w = jnp.maximum(sigma_w, config.w_updraft_min)
+    scale = jnp.where(heating, config.surface_excess_prefactor / sigma_w, 0.0)
+    return scale * wtheta_s, scale * wq_s
 
 
 def _mass_flux_tendency(phi, phi_u, M, dz_layer, rho, z_full, z_half):
@@ -342,27 +372,14 @@ def edmf_turbulence(
     sflx_q = surface_moisture_flux(config.surface, lhflx, T_sfc)
     sflx_T = (shflx + latent_enthalpy_correction(lhflx, sflx_q)) / constants.c_pd
 
-    # SST07 Eq. 17: phi_u(z1) = phi(z1) + alpha * (w'phi')_s / sigma_w(z1),
-    # sigma_w from SST07 Eq. 7 with z* = the diagnosed PBL height and
-    # w*^3 = (g/theta) * (w'theta')_s * z*.  No excess when the surface heat
-    # flux is <= 0, so an unforced column launches a neutral plume.
     h_pbl = diagnose_pbl_height(T, q_v, u, v, p_full, z_full)
     rho_1 = rho[:, -1]
-    z_1 = z_full[:, -1] - z_half[:, -1]
-    z_star = jnp.clip(h_pbl - z_half[:, -1], 1.0, None)  # coeff-ok: z* floor [m]
-    z_rel = jnp.clip(z_1 / z_star, 0.0, 1.0)
-    wtheta_s = sflx_T / (rho_1 * jnp.clip(exner_inv[:, -1], 1.0e-8, None))
-    wq_s = sflx_q / rho_1
-    heating = wtheta_s > 0.0
-    wstar3 = (constants.g / jnp.clip(theta[:, -1], 1.0, None)
-              * jnp.where(heating, wtheta_s, 0.0) * z_star)
-    sigma_w = (_SIGMA_W_COEFF
-               * jnp.cbrt(ustar ** 3 + _SIGMA_W_WSTAR3_COEFF * wstar3 * z_rel)
-               * jnp.sqrt(jnp.clip(1.0 - z_rel, 1.0e-6, 1.0)))
-    sigma_w = jnp.maximum(sigma_w, config.w_updraft_min)
-    excess_scale = jnp.where(heating, config.surface_excess_prefactor / sigma_w, 0.0)
-    theta_u_init = (theta[:, -1] + excess_scale * wtheta_s).astype(_dtype)
-    q_u_init = (q_v[:, -1] + excess_scale * wq_s).astype(_dtype)
+    d_theta_u, d_q_u = _updraft_surface_excess(
+        sflx_T / (rho_1 * jnp.clip(exner_inv[:, -1], 1.0e-8, None)),
+        sflx_q / rho_1, theta[:, -1], theta_v[:, -1], ustar,
+        z_full[:, -1] - z_half[:, -1], h_pbl - z_half[:, -1], config)
+    theta_u_init = (theta[:, -1] + d_theta_u).astype(_dtype)
+    q_u_init = (q_v[:, -1] + d_q_u).astype(_dtype)
 
     # Scan from surface upward (reverse level index)
     # Levels are top-down, so we scan from nlev-1 to 0

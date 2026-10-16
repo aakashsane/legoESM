@@ -116,6 +116,8 @@ def load_mitchell_ice_optics(path, expected_sha256: str = ICEOPTICS_SHA256,
                                    dtype=np.float64)
         sw_ext, sw_ssa, sw_asm, lw_abs = (get(n) for n in ("sw_ext", "sw_ssa", "sw_asm",
                                                               "lw_abs"))
+    if not all(np.all(np.isfinite(a)) for a in (d, sw_ext, sw_ssa, sw_asm, lw_abs)):
+        raise ValueError(f"Mitchell ice optics {path}: non-finite grid or table values")
     arrs = (d, rrtmg_to_rrtmgp_sw(sw_ext), rrtmg_to_rrtmgp_sw(sw_ssa),
             rrtmg_to_rrtmgp_sw(sw_asm), lw_abs)
     return MitchellIceOptics(*(jnp.asarray(a, dtype=dtype) for a in arrs))

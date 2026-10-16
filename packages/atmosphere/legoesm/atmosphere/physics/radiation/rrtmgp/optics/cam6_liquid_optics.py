@@ -92,6 +92,8 @@ def load_cam6_liquid_optics(path, expected_sha256: str = LIQOPTICS_SHA256,
                 raise ValueError(f"CAM6 liquid optics {path}: {name} band limits are not RRTMG's")
         mu = np.asarray(ds["mu"].values, dtype=np.float64)
         lam = np.asarray(ds["lambda"].transpose("mu", "lambda_scale").values, dtype=np.float64)
+        if mu.size < 2 or lam.shape[1] < 2:
+            raise ValueError(f"CAM6 liquid optics {path}: mu/lambda grids need >= 2 points")
         if not np.all(np.diff(mu) > 0):
             raise ValueError(f"CAM6 liquid optics {path}: mu not strictly increasing")
         if not np.all(np.diff(lam, axis=1) < 0):
@@ -102,6 +104,8 @@ def load_cam6_liquid_optics(path, expected_sha256: str = LIQOPTICS_SHA256,
         ssa = get("ssa_sw", "sw_band")
         asm = get("asm_sw", "sw_band")
         absl = get("k_abs_lw", "lw_band") / _KEXT_DENSITY
+    if not all(np.all(np.isfinite(a)) for a in (mu, lam, ext, ssa, asm, absl)):
+        raise ValueError(f"CAM6 liquid optics {path}: non-finite grid or table values")
     arrs = (mu, lam, rrtmg_to_rrtmgp_sw(ext), rrtmg_to_rrtmgp_sw(ssa),
             rrtmg_to_rrtmgp_sw(asm), absl)
     return Cam6LiquidOptics(*(jnp.asarray(a, dtype=dtype) for a in arrs))

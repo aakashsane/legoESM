@@ -150,9 +150,14 @@ def test_loader_refuses_bad_files(tmp_path):
     p, ds = _write_table(tmp_path, np.random.default_rng(2))
     with pytest.raises(ValueError, match="sha256"):
         clo.load_cam6_liquid_optics(p, expected_sha256="0" * 64)
+    nan_ext = ds["k_ext_sw"].values.copy()
+    nan_ext[3, 2, 1] = np.nan
     for mut, msg in ((lambda d: d.assign(wvl_sw_min=d.wvl_sw_min[::-1]), "band limits"),
-                     (lambda d: d.assign({"lambda": d["lambda"][::-1]}), "decreasing")):
-        q = tmp_path / f"bad_{msg[:4]}.nc"
+                     (lambda d: d.assign({"lambda": d["lambda"][::-1]}), "decreasing"),
+                     (lambda d: d.isel(mu=[0]), ">= 2 points"),
+                     (lambda d: d.assign(mu=d.mu[::-1].values), "increasing"),
+                     (lambda d: d.assign(k_ext_sw=(d.k_ext_sw.dims, nan_ext)), "non-finite")):
+        q = tmp_path / f"bad_{abs(hash(msg))}.nc"
         mut(ds).to_netcdf(q)
         with pytest.raises(ValueError, match=msg):
             clo.load_cam6_liquid_optics(q, expected_sha256=hashlib.sha256(open(q, "rb").read()).hexdigest())

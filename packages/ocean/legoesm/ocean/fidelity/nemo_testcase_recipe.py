@@ -4116,6 +4116,8 @@ def validate_swg_namelist(namelist: SwgResolvedNamelist) -> None:
         raise ValueError("SWG nn_SWG, nn_itend, and nn_write must be positive integers")
     if type(namelist.nn_stock) is not int or namelist.nn_stock < 0:
         raise ValueError("SWG nn_stock must be a non-negative integer")
+    if type(namelist.ln_meshmask) is not bool:
+        raise ValueError("SWG ln_meshmask must be a boolean")
     positive_floats = (
         "rn_Dt_s", "rn_domsiz_m", "rn_dx_m", "rn_modified_grav_m_s2",
         "rn_Uv_m_s", "rn_Lv_m",

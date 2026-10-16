@@ -293,6 +293,8 @@ def test_swg_namelist_dispatch_refuses_unsupported_values():
         validate_swg_namelist(SWG_NAMELIST._replace(rn_theta_deg=1.0))
     with pytest.raises(ValueError, match="positive finite"):
         validate_swg_namelist(SWG_NAMELIST._replace(rn_Dt_s=0.0))
+    with pytest.raises(ValueError, match="ln_meshmask must be a boolean"):
+        validate_swg_namelist(SWG_NAMELIST._replace(ln_meshmask="invalid"))
 
 
 def test_resolved_inventory_is_the_frozen_compiled_and_card_inventory():

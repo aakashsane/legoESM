@@ -184,13 +184,14 @@ def test_gradient_bracket_and_fp32_zero_path(table):
 
 def test_off_cells_never_read_the_table(table):
     """CAM skips an off cell entirely: zero path with a NaN diameter gives zero
-    optics in every SW quantity and in LW; a positive fp32 subnormal path is ON
-    (it exceeds CAM's 1e-80)."""
+    optics in every SW quantity and in LW; the smallest positive fp32 path XLA
+    represents is ON (it exceeds CAM's 1e-80; XLA CPU flushes subnormals to zero,
+    so a subnormal path is a zero path here)."""
     import jax.numpy as jnp
     tab, _ = table
     sw = mio.mitchell_sw_optics(tab, np.array([0.0]), np.array([np.nan]))
     assert all(np.all(np.asarray(x) == 0.0) for x in sw)
     assert np.all(np.asarray(mio.mitchell_lw_abs_od(tab, np.array([0.0]), np.array([np.nan]))) == 0.0)
     t32 = mio.MitchellIceOptics(*(jnp.asarray(a, dtype=jnp.float32) for a in tab))
-    sub = jnp.float32(1.0e-40)                      # fp32 subnormal
-    assert float(mio.mitchell_sw_optics(t32, sub, jnp.float32(50.0))[0][0]) > 0.0
+    small = jnp.float32(np.finfo(np.float32).tiny)  # smallest normal fp32
+    assert float(mio.mitchell_sw_optics(t32, small, jnp.float32(50.0))[0][0]) > 0.0

@@ -455,8 +455,8 @@ def nemo_e3f_0vor_from_tmask(e3t_0, tmask, dry_vertex_fill, *,
 
 
 def nemo_qco_live_vorticity_e3f_cgrid(
-    eta, z_coord, dtype, nn_e3f_typ=0, *, grid=None, e3t_0=None, tmask=None,
-    reference_e3f=None,
+    eta, z_coord, dtype, nn_e3f_typ=0, *, grid=None, e3t_0=None, tmask=None, reference_e3f=None,
+    r3f_override=None, return_ratio=False, apply_fe3mask=True, source_associated=False,
 ):
     """Build literal NEMO ``e3f_vor(Kmm)`` from the card's own mesh.
 
@@ -464,11 +464,6 @@ def nemo_qco_live_vorticity_e3f_cgrid(
     thicknesses (``dynvor.F90:918-950``); ``dom_qco_r3c_RK3`` builds live
     ``r3f`` (``domqco.F90:233-246``); and
     ``domzgr_substitute.h90:130`` applies it through ``fe3mask``.
-
-    ``e3t_0`` and ``tmask`` default to the coordinate's bridge fields, but
-    callers may provide the same operands from their own state.  Horizontal
-    areas and F-depth are always rebuilt from that mesh; bridge-carried ENE
-    operands are an oracle check, not a production dependency.
 
     ``reference_e3f`` selects WHICH frozen F thickness the live ``r3f``
     stretch multiplies, because NEMO's two consumers do not share one.  The
@@ -479,13 +474,7 @@ def nemo_qco_live_vorticity_e3f_cgrid(
     ``domzgr_substitute.h90:100``, read from the domain file at
     ``domzgr.F90:173`` -- at ``dynldf_lev.f90:123``::
 
-        zwf(ji-1,jj-1) = ahmf(ji-1,jj-1,jk) * (e3f_3d(ji-1,jj-1,jk)          &
-           &   *(1._wp+r3f(ji-1,jj-1)*fe3mask(ji-1,jj-1,jk))) * r1_e1e2f(...)
-
-    Passing the card's carried ``e3f_0`` here therefore gives ``dyn_ldf`` its
-    own consumer-local reference while ``r3f`` and ``fe3mask``, which NEMO
-    genuinely shares between the two operators, stay the same arrays.  The
-    array is expected on the native A2D F layout, like the carried mesh.
+        zwf = ahmf * (e3f_3d * (1 + r3f * fe3mask)) * r1_e1e2f
     """
     if nn_e3f_typ not in (0, 1):
         raise ValueError("nn_e3f_typ must be 0 or 1")
@@ -518,6 +507,7 @@ def nemo_qco_live_vorticity_e3f_cgrid(
         e3t0, tmask, grid=grid, dtype=dtype, nn_e3f_typ=nn_e3f_typ,
         substitute_e3f=mesh_e3f)
 
+    b = nemo_source_round if source_associated else b
     area_eta = b(jnp.asarray(geom_grid.area_T, dtype=dtype) * eta)
     area_eta_n = north(area_eta)
     quad = b(b(area_eta + east(area_eta))
@@ -530,6 +520,13 @@ def nemo_qco_live_vorticity_e3f_cgrid(
     # on cards that carry its raw mesh.
     r1_area_f = _nemo_qco_r1_area_f(raw, geom_grid, dtype)
     r3f = b(b(b(quarter * quad) * r1_hf0) * r1_area_f)
+    if r3f_override is not None:
+        supplied = jnp.asarray(r3f_override, dtype=dtype)
+        if supplied.shape != r3f.shape:
+            raise ValueError(
+                "r3f_override must use NEMO's native A2D F layout with "
+                f"shape {r3f.shape}; got {supplied.shape}")
+        r3f = supplied
     # dom_qco_zgr applies the F-point lateral boundary condition to r3f
     # (domqco.F90:124-135) before domzgr_substitute.h90:130 consumes it.
     # On ORCA's T fold this is the same F-origin permutation as e3f_0vor.
@@ -547,12 +544,15 @@ def nemo_qco_live_vorticity_e3f_cgrid(
         raise ValueError(
             "reference_e3f must be the native A2D F-point thickness with "
             f"shape {e3f0vor.shape}; got {reference.shape}")
-    e3f_native = b(reference * b(one + r3f[..., None] * fe3mask))
+    e3f_native = b(reference * b(one + r3f[..., None] * (fe3mask if apply_fe3mask else jnp.ones_like(fe3mask))))
 
     # NEMO native F(i,j) maps to legoESM vertex [j+1,i+1].  The added
     # south/west rows are inert walls for this closed-box identity.
     with_south = lat_faces_from_north(e3f_native, south=e3f_native[:1])
-    return jnp.concatenate([with_south[:, -1:], with_south], axis=1)
+    e3f_cgrid = jnp.concatenate([with_south[:, -1:], with_south], axis=1)
+    if return_ratio:
+        return e3f_cgrid, r3f
+    return e3f_cgrid
 
 
 def _nemo_qco_hf0(raw, e3f0vor, fe3mask, dtype):

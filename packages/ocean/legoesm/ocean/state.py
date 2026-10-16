@@ -1950,6 +1950,13 @@ def wet_min_spacing(grid, land_mask, *, clamp_floor_m: float = 0.0) -> float:
             "with a smaller floor, or pin the coefficient explicitly.")
     return d_min
 
+class ENSVorticityConfig(NamedTuple):
+    """Required NEMO ENS production choices; no physical defaults."""
+
+    scheme: str
+    ln_dynvor_msk: bool
+
+
 class LatLonCGridOceanConfig(NamedTuple):
     """Configuration for the lat-lon C-grid FV ocean model.
 
@@ -2205,8 +2212,14 @@ class LatLonCGridOceanConfig(NamedTuple):
     #     which is byte-identical to ENE-planetary on a uniform-metric grid.
     #     ``pv_flux_ene`` CAN fold planetary f into the same ``q=(f+ζ)/h`` operator
     #     (pass ``f_vtx``), but that is not the wired default. NEMO oracle fidelity.
+    #   "ens_total" — NEMO ``vor_ens`` Sadourny-1975 ENSTROPHY-conserving
+    #     form with total vorticity and the optional compiled relative-
+    #     vorticity mask.  The shipped SWG card selects this arm.
     #     Dispatched in ``_bc_pv_flux``; an unknown value raises ValueError there.
-    vorticity_scheme: str = "al81"
+    # ENS cards pass ``ENSVorticityConfig(scheme="ens_total",
+    # ln_dynvor_msk=...)`` so the NEMO mask switch is required and carries no
+    # default.  Plain strings retain every pre-existing card byte-for-byte.
+    vorticity_scheme: str | ENSVorticityConfig = "al81"
     # Boundary-q convention for the AL81/EEN PV flux at land-adjacent vertices:
     # "neumann_fill" (default; smooth fill — WENO-stencil safety) or "nemo_live"
     # (NEMO vor_een ln_dynvor_msk=F: coast shear-vorticity stays LIVE in the
@@ -2518,7 +2531,9 @@ class LatLonCGridOceanConfig(NamedTuple):
     # WHERE the "nemo_div_curl" operator's ahmt/ahmf coefficient comes from,
     # mirroring NEMO's namdyn_ldf nn_ahm_ijk_t.  "nemo_ldf_c2d" (default,
     # bit-identical) is nn_ahm_ijk_t=20: ldf_c2d builds 1/2*rn_Uv*MAX(e1,e2)
-    # from the grid metrics.  "nemo_ahm_3d_file" is nn_ahm_ijk_t=-30: the whole
+    # from the grid metrics. "nemo_constant" is nn_ahm_ijk_t=0: A_h is the
+    # resolved 1/2*rn_Uv*rn_Lv scalar assigned directly at every T/F point.
+    # "nemo_ahm_3d_file" is nn_ahm_ijk_t=-30: the whole
     # 3-D field is READ (ldfdyn.f90:348-353) and supplied by the card on
     # z_coord.nemo_ldf_ahmt / nemo_ldf_ahmf; A_h's MAGNITUDE is then unused by
     # this operator and only its positivity still selects it, exactly as rn_Uv

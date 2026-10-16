@@ -334,6 +334,7 @@ def swe_rk3_stage1(entry, dt, grid, z_coord, land_mask, config):
         entry, entry, dt, 1, grid, z_coord, land_mask, config)
 
 
+@_config_periodicity
 def _entry_from_state(state, stress_before, stress_now, grid, z_coord, config):
     """Build the native-A2D stage boundary consumed by the production kernel."""
     dtype = state.eta.data.dtype

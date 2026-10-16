@@ -81,7 +81,17 @@ def test_swe_face_masks_follow_the_config_not_the_caller_scope(
         swe.swe_rk3_step(
             card.recipe.initial_state, card.dt_s, forcing, card.recipe.grid,
             card.recipe.z_coord, card.recipe.model_config)
-    assert seen and not any(seen)
+        stress = (forcing.tau_i_native, forcing.tau_j_native)
+        swe._entry_from_state(
+            card.recipe.initial_state, stress, stress, card.recipe.grid,
+            card.recipe.z_coord, card.recipe.model_config)
+        fresh = LatLonCGridOceanModel(
+            card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+        n_eager = len(seen)
+        fresh.replay_swe_rk3_stage(_entry(), card.dt_s, 1)
+        fresh.step(card.recipe.initial_state, card.dt_s,
+                   surface_forcing=forcing)
+    assert len(seen) > n_eager > 0 and not any(seen)
 
 
 def test_stage1_one_ulp_consumed_input_reaches_production_output(card_and_model):

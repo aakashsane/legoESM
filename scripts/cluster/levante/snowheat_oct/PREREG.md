@@ -25,7 +25,9 @@ Pairs: ON/OFF from the SAME mv3y_vl checkpoint copy, day 275 (2001-10-03 00Z)
 and day 280 (2001-10-08 00Z), each to day 365. The OFF arms are the plain
 production default only if the 1-day gate (explicit switch-off vs the plain
 default, and the plain default twice, all on the same tree) is
-byte-identical; bundle.sbatch re-checks it before launch.
+byte-identical, and a 1-day switch-ON run differs from switch-OFF in an entry
+both checkpoints carry (else the switch does nothing and the A/B is void);
+bundle.sbatch re-checks all three before launch.
 
 Scoring: 45-70N land (sftlf >= 0.5, cos-lat weights), the first 7 days of
 each run discarded. Windows: Nov 1-30 and Dec 11-31 2001, against ERA5 on the

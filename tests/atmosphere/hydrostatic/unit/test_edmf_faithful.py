@@ -314,7 +314,7 @@ def test_edmf_plume_surface_flux_is_part_of_the_surface_flux():
     assert np.max(np.abs(np.asarray(out.shflx))) < 1e-6
     p_full, z_half, rho = (np.asarray(inp[5]), np.asarray(inp[8]),
                            np.asarray(inp[9]))
-    w = rho * (z_half[:, :-1] - z_half[:, 1:])
+    w = rho * np.clip(np.abs(z_half[:, :-1] - z_half[:, 1:]), 1.0, None)
     dtheta = np.asarray(out.dT_dt) / (p_full / constants.p_ref) ** constants.kappa
     budget = (w * dtheta).sum(-1)
     scale = (w * np.abs(dtheta)).sum(-1)

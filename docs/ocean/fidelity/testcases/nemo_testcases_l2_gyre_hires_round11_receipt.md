@@ -14,8 +14,8 @@ labelled, non-certified twin floor.  The candidate is the registered
 ## Verdict
 
 **The remaining entry-`kt=2` tracer boundary is a measured coupled
-rounding-order/fusion debt, not a transcription owner.  No shared-path change
-is warranted.**  The exhaustive full-step bisection found two equivalent
+input-composition/fusion debt, not a measured single transcription owner.  No
+shared-path change is warranted.**  The exhaustive full-step bisection found two equivalent
 three-member temperature minima: formed diffusivity + Kaa thickness + formed
 temperature content, or pre-formation heat diffusivity + Kaa thickness +
 formed temperature content.  Salinity has the analogous minima, and joint
@@ -23,11 +23,11 @@ T/S exactness additionally needs formed salinity content.  Every proper
 one-member removal fails the zero-word bar.
 
 The day-30..180 excess over the scalar/vector NEMO twin is spatially
-structured and algebraic under the preregistered fit, not exponential.  All
-six stored fields already exceed four times the twin floor at day 30, so the
-daily, float32 NEMO output cannot distinguish a uniquely first field.  SST is
-the registered tie-breaker because the NEMO twin SST difference is still
-zero at day 30; its largest signed excess is at the eastern boundary.  Bottom
+structured, and the preregistered algebraic form has lower log-residual than
+the exponential form for every tied field, basin-wide and in its leading
+region.  All six stored fields already exceed four times the twin floor at day
+30, so the daily, float32 NEMO output cannot distinguish a uniquely first
+field.  The tie is reported without a field-order or ratio tie-break.  Bottom
 velocity is unmeasured because the registered legoESM daily files store only
 surface and external-mode velocities.
 
@@ -69,22 +69,33 @@ For the first joint minimum, removing each member gives:
 | T content | `7.1054e-15` / 67,325 | `0` / 0 |
 | S content | `0` / 0 | `1.4211e-14` / 63,449 |
 
-Kaa thickness is bit-identical to NEMO on all 288,000 active words, and the
-isolated dispatcher does not need it.  Merely selecting that identical leaf
-is nevertheless necessary in the fused full-step minimum.  Formed K and heat
-K are interchangeable here because the recorded step-1 isoneutral addition
-is zero; neither is a single owner.  These facts discriminate a real
-floating-point composition/fusion coupling from a wrong input value or a
-transcribed physical operator.
+Kaa thickness is bit-identical to NEMO on all 288,000 active words.  Its
+12,120 inactive words differ (NEMO retains nonzero geometry where legoESM has
+zero), so the new discriminator separately selects the production array, an
+active-only oracle array, an inactive-only oracle array, and the full oracle
+array.  With formed K plus both recorded contents, **all four selected arms
+are jointly bit-exact**, while the all-false-selector baseline retains 64,779
+T and 61,309 S unequal words.  Thus selection of the identical active leaf,
+not replacement of its values or its inactive words, changes the fused graph.
+The isolated dispatcher does not need Kaa thickness.  Formed K and heat K are
+interchangeable here because the recorded step-1 isoneutral addition is zero;
+neither is a single owner.
 
-**Disposition.**  Classified `COUPLED_ROUNDING_ORDER_DEBT`; stopped without a
-physics change.  Forcing full-step bit identity by rewriting a shared kernel
-would tune compiler composition to this probe rather than correct NEMO
-arithmetic.
+This localizes a genuine multi-input composition/fusion coupling at the
+production boundary, but does **not** prove that the upstream formations of K
+and the two contents are individually faithful expressions.  The independent
+review correctly rejected the stronger rounding-only claim: exactness under a
+joint intervention cannot exclude multiple upstream transcription
+differences.
 
-**Evidence.**  `step1_vertical_minimal_subset_v4.json`, SHA-256
-`a3a3fdefc81c1fd31f6b9af64e246b7ae9fcfc64f47684c7e5eeacc3088d32e8`,
-produced from clean instrument commit `f108006d1`.  The admitted oracle
+**Disposition.**  Classified `COUPLED_INPUT_COMPOSITION_DEBT`; stopped without
+a physics change.  No single substitution owns the residual, and changing a
+shared kernel before tracing the upstream arithmetic would be unjustified.
+
+**Evidence.**  `step1_vertical_minimal_subset_v5.json`, SHA-256
+`e97b07b782454c0589811d994133f5661c18219005b7bb1f7094e800987dce6c`,
+produced from clean instrument commit `a9d5764ba`.  The expected process exit
+is nonzero because this measurement reports DEBT rather than AT-BAR.  The admitted oracle
 manifest is `28e73955382c80179e2e244294ccc28dd4a67762fe826d9da19f887580b6d1f0`.
 
 ## Finding 2 — day-30..180 excess over the twin envelope
@@ -113,16 +124,24 @@ two NEMO trajectories are physically identical.  By day 180 the legoESM/twin
 ratios are `7.16`, `5.64`, `8.20`, `6.10`, `3.35`, and `2.53` in the table's
 field order.
 
-The SST tie-breaker's signed candidate-minus-twin squared-error excess over
-days 30..180 is `19.17`, `31.29`, `12.97`, `24.38`, and `78.17` from western
-boundary through eastern boundary.  The largest contribution is therefore
-the eastern boundary, not a localized western-boundary seed.  The basin SST
-fit favors algebraic growth (log-space RMS residual `0.852`) over exponential
-growth (`1.190`); the eastern-boundary fit agrees (`1.971` versus `2.538`).
-Every other basin field also favors algebraic growth.  Under the registered
-interpretation, the day-30..180 excess behaves as a persistent structured
-difference; the measurement does not support calling that interval
-chaos-dominated.
+The signed candidate-minus-twin SSE attribution preserves the six-way tie:
+
+| tied field | leading wet-span region | signed excess share |
+|---|---|---:|
+| depth-mean U | eastern boundary | `34.97%` |
+| depth-mean V | western interior | `34.64%` |
+| SSH | western interior | `32.48%` |
+| SST | eastern boundary | `47.09%` |
+| surface U | eastern boundary | `33.11%` |
+| surface V | western boundary | `27.53%` |
+
+All five signed shares are recorded for every field; none is clipped.  For
+each of the six fields, both the basin and its own leading-region fit favor
+algebraic growth over exponential growth, with positive fitted rates.  For
+example, basin SST has log-RMS residual `0.852` versus `1.190`, and its eastern
+boundary has `1.971` versus `2.538`.  Within this two-form diagnostic the
+algebraic form fits better and the excess remains spatially structured.  That
+does not establish causal absence of chaotic growth.
 
 Depth-mean U/V are reported separately using NEMO's static z-coordinate
 thickness-weighted daily 3-D velocities and legoESM's stored external-mode
@@ -134,11 +153,13 @@ same run still passes the preregistered year-5 climate bars against both NEMO
 builds, and this round supplies no single shared-path owner.
 
 **Evidence.**
-`divergence_regional_v2/gyre_hires_divergence_report.json`, SHA-256
-`7e08737b206723df56fd9ca5dcf46053e143b188f16be7bdcb2eb101101beb54`,
+`divergence_regional_v3/gyre_hires_divergence_report.json`, SHA-256
+`0fcecf14d530aaa121518f32d2808b9c8137b675dc286d7a1c0af2618607a680`,
 and `gyre_hires_divergence_arrays.npz`, SHA-256
 `d96f9cf31ec96d598d05418ce1835dbedc64b2e49c1f4be171c44913e1eb48b6`,
-produced by instrument commit `d42b00bc1`.
+produced from clean instrument commit `a9d5764ba`.  The report records both
+mesh-mask hash sets, the exact argv/worktree stamp, per-field exact/one-ULP
+controls, and strict JSON without non-finite values.
 
 ## Shared-path disposition and next measurement
 
@@ -147,11 +168,13 @@ non-configurable diagnostic seam exposing salinity content alongside
 temperature content; disabled-seam identity is exact.  No deck value,
 physical operator, forcing, or production configuration changed.
 
-The single next measurement is the entry-`kt=3` SSH boundary already open in
-round 10: score the existing scalar step-2 RK stage records to identify the
-first stage that moves SSH, then acquire step-2 barotropic substeps only if
-the first differing stage lies inside `dyn_spg_ts`.  No acquisition is needed
-before that stage-boundary score.
+The single next measurement is an executed-source arithmetic walk of the
+recorded step-1 temperature content at its maximum residual: substitute its
+recorded elementary RHS terms one at a time, in NEMO source order, to decide
+whether its 78,243 unequal words are a transcription or composition before
+attempting any shared-path change.  No acquisition is needed for that first
+walk because the scalar step-2 record already contains the assembled matrix,
+RHS, and surrounding tracer operands.
 
 ## Inherited pins / OPEN
 
@@ -164,12 +187,14 @@ manifests, and explicit physical-GPU selection.
 
 OPEN, in order:
 
-1. Localize the existing entry-`kt=3` SSH debt by scalar step-2 RK stage.
-2. If it first appears inside the external mode, acquire scalar step-2
+1. Walk the recorded step-1 temperature-content RHS terms in executed source
+   order; the coupled intervention does not prove each formation faithful.
+2. Localize the existing entry-`kt=3` SSH debt by scalar step-2 RK stage.
+3. If it first appears inside the external mode, acquire scalar step-2
    barotropic substeps; the current scalar step-2 record has substeps for
    step 1 only.
-3. Bottom-regional divergence remains unmeasured for this completed run.
-4. GitHub issue #1455 could not be updated from this sandbox because network
+4. Bottom-regional divergence remains unmeasured for this completed run.
+5. GitHub issue #1455 could not be updated from this sandbox because network
    access to `api.github.com` was unavailable.
 
 ## Tests and controls
@@ -177,9 +202,24 @@ OPEN, in order:
 The final verification battery and citation-gate results are recorded in the
 landing commit below.  Controls exercised by the committed instruments are:
 disabled full-step seam identity, six active input plants, exhaustive 31- and
-63-subset inventories, NEMO-twin benchmark replay, exact divergence identity,
-one-ULP divergence detection, five wet-span region placement, and synthetic
-exponential/algebraic growth separation.
+63-subset inventories, active/inactive/selected-identity Kaa discrimination,
+NEMO-twin benchmark replay, per-field exact/one-ULP divergence detection,
+known-answer depth weighting, five wet-span region placement, strict finite
+JSON, and synthetic exponential/algebraic growth separation including a
+decreasing-series refusal.
+
+## Independent-review disposition
+
+The first exact-rung review returned **HOLD** because the original report
+called every multi-input exact subset rounding-only and scored Kaa equality on
+active words while replacing a full array.  The claim is downgraded to coupled
+input composition, and the v5 artifact adds full-array, active-only,
+inactive-only, and selected-identity controls.  The first climate review also
+returned **HOLD** because it invented an unregistered SST tie-break, omitted
+signed shares, controlled only SSH, had a vacuous depth-weight check, allowed
+non-positive fitted growth, omitted mesh/argv provenance, and overstated the
+growth interpretation.  The v3 instrument and this receipt disposition every
+finding; final re-review is recorded below.
 
 ## Compiled-source citations
 

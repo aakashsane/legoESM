@@ -119,16 +119,42 @@ def load_mitchell_ice_optics(path, expected_sha256: str = ICEOPTICS_SHA256,
     return MitchellIceOptics(*(jnp.asarray(a, dtype=dtype) for a in arrs))
 
 
+def _lininterp_bndry(x, f, y):
+    """CAM ``lininterp`` with ``extrap_method_bndry`` (interpolate_data.F90:178-195,
+    :263): y <= x[0] -> f[0], y > x[-1] -> f[-1], else linear on the bracket
+    x[j] < y <= x[j+1].  Written out rather than ``jnp.interp`` because that
+    takes the RIGHT interval at an exact knot: same value, different slope
+    under AD (codex P1a review)."""
+    n = x.shape[0]
+    j = jnp.clip(jnp.searchsorted(x, y, side="left") - 1, 0, n - 2)
+    x0, x1 = x[j], x[j + 1]
+    w = (x1 - y) / (x1 - x0)
+    val = w * f[j] + (1.0 - w) * f[j + 1]
+    return jnp.where(y <= x[0], f[0], jnp.where(y > x[n - 1], f[n - 1], val))
+
+
+def _on(path, d_eff):
+    """Cells CAM6 gives optics: path >= 1e-80 and D != 0 (cloud_rad_props.F90:491,
+    :641).  1e-80 is not representable in fp32; there the smallest normal
+    number is the threshold, so a zero path still gets zero optics AND zero
+    gradient (codex/GLM P1a review)."""
+    thr = jnp.asarray(_PATH_MIN, dtype=path.dtype)
+    thr = jnp.where(thr > 0, thr, jnp.finfo(path.dtype).tiny)
+    return (path >= thr) & (d_eff != 0.0)
+
+
 def mitchell_sw_optics(table: MitchellIceOptics, path, d_eff):
     """SW band optics of ``interpolate_ice_optics_sw`` for in-cloud ``path``
     [kg/m2] and effective diameter ``d_eff`` [micron], both (...).
     Returns (tau, tau_w, tau_w_g, tau_w_f), each (14, ...) in RRTMGP order."""
     path = jnp.asarray(path)
     d_eff = jnp.asarray(d_eff)
-    on = (path >= _PATH_MIN) & (d_eff != 0.0)
-    ext, ssa, asm = (jax.vmap(lambda row: jnp.interp(d_eff, table.d_eff, row))(t)
+    on = _on(path, d_eff)
+    ext, ssa, asm = (jax.vmap(lambda row: _lininterp_bndry(table.d_eff, row, d_eff))(t)
                      for t in (table.sw_ext, table.sw_ssa, table.sw_asm))
-    tau = jnp.where(on, path, 0.0) * ext
+    # where() on the product, not on path: an off cell never touches the table
+    # (the Fortran skips it), so a non-finite entry cannot leak (GLM P1a review).
+    tau = jnp.where(on, path * ext, 0.0)
     tau_w = tau * ssa
     tau_w_g = tau_w * asm
     return tau, tau_w, tau_w_g, tau_w_g * asm
@@ -138,6 +164,6 @@ def mitchell_lw_abs_od(table: MitchellIceOptics, path, d_eff):
     """LW absorption optical depth of ``interpolate_ice_optics_lw``, (16, ...)."""
     path = jnp.asarray(path)
     d_eff = jnp.asarray(d_eff)
-    on = (path >= _PATH_MIN) & (d_eff != 0.0)
-    absor = jax.vmap(lambda row: jnp.interp(d_eff, table.d_eff, row))(table.lw_abs)
-    return jnp.minimum(jnp.where(on, path, 0.0) * absor, _LW_ABS_OD_MAX)
+    on = _on(path, d_eff)
+    absor = jax.vmap(lambda row: _lininterp_bndry(table.d_eff, row, d_eff))(table.lw_abs)
+    return jnp.where(on, jnp.minimum(path * absor, _LW_ABS_OD_MAX), 0.0)

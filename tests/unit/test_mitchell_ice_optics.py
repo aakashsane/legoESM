@@ -161,3 +161,22 @@ def test_real_cam6_table_loads_and_rotates():
         np.testing.assert_array_equal(np.asarray(tab.sw_ext[0]), ds["sw_ext"].values[13])
         np.testing.assert_array_equal(np.asarray(tab.sw_ext[1]), ds["sw_ext"].values[0])
         np.testing.assert_array_equal(np.asarray(tab.lw_abs), ds["lw_abs"].values)
+
+
+def test_gradient_bracket_and_fp32_zero_path(table):
+    """AD follows CAM's bracket x[j] < y <= x[j+1]: at an interior knot the
+    slope is the LEFT interval's; at the first knot (and below) zero.  In fp32 a
+    zero path still has zero optics and zero path gradient."""
+    import jax.numpy as jnp
+    tab, ds = table
+    d = ds["d_eff"].values
+    ext = ds["sw_ext"].values[0]                      # RRTMG band 1 = RRTMGP band 2
+    g = jax.grad(lambda y: mio.mitchell_sw_optics(tab, 1.0, y)[0][1])
+    k = 10
+    left = (ext[k] - ext[k - 1]) / (d[k] - d[k - 1])
+    np.testing.assert_allclose(g(float(d[k])), left, rtol=1e-12)
+    assert g(float(d[0])) == 0.0 and g(float(d[0]) - 0.1) == 0.0
+    t32 = mio.MitchellIceOptics(*(jnp.asarray(a, dtype=jnp.float32) for a in tab))
+    gp = jax.grad(lambda p: jnp.sum(mio.mitchell_sw_optics(t32, p, jnp.float32(50.0))[0])
+                  + jnp.sum(mio.mitchell_lw_abs_od(t32, p, jnp.float32(50.0))))(jnp.float32(0.0))
+    assert gp == 0.0

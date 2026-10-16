@@ -81,6 +81,7 @@ from legoesm.atmosphere.physics._shared import (
     buoyancy_coefficient,
     exner_function,
     mixing_length,
+    surface_buoyancy_flux,
     virtual_temperature,
 )
 from legoesm.atmosphere.physics.turbulence.config import TurbulentEDMFConfig
@@ -167,7 +168,7 @@ def _updraft_surface_excess(wtheta_s, wq_s, theta_1, theta_v_1, ustar, z_1, z_st
     z_star = jnp.clip(z_star, 1.0, None)  # coeff-ok: z* floor [m]
     z_rel = jnp.clip(z_1 / z_star, 0.0, 1.0)
     heating = wtheta_s > 0.0
-    wthetav_s = wtheta_s + (1.0 / constants.epsilon - 1.0) * theta_1 * wq_s
+    wthetav_s = surface_buoyancy_flux(wtheta_s, wq_s, theta_1)
     wstar3 = (buoyancy_coefficient(jnp.clip(theta_v_1, 1.0, None))
               * jnp.where(heating, jnp.maximum(wthetav_s, 0.0), 0.0) * z_star)
     sigma_w = (_SIGMA_W_COEFF

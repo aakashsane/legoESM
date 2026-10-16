@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "legoesm-land"
-version = "1.0.0"
+version = "1.0.1"
 description = "legoESM land component: multilayer soil thermal/hydrology, snow budget, stomatal conductance, carbon cycle, slab + lake surfaces."
 readme = "README.md"
 license = { text = "MIT" }

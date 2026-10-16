@@ -134,6 +134,8 @@ EXCLUDED: frozenset[str] = frozenset(
         "packages/atmosphere/legoesm/atmosphere/physics/radiation/rrtmgp/optics/cloud_optics.py",
         "packages/atmosphere/legoesm/atmosphere/physics/radiation/rrtmgp/optics/constants.py",
         "packages/atmosphere/legoesm/atmosphere/physics/radiation/rrtmgp/optics/data_loader_base.py",
+        # CAM6 Mitchell ice/snow optics table loader + band optics (engine, like cloud_optics.py).
+        "packages/atmosphere/legoesm/atmosphere/physics/radiation/rrtmgp/optics/mitchell_ice_optics.py",
         "packages/atmosphere/legoesm/atmosphere/physics/radiation/rrtmgp/optics/gas_optics.py",
         "packages/atmosphere/legoesm/atmosphere/physics/radiation/rrtmgp/optics/lookup_cloud_optics.py",
         "packages/atmosphere/legoesm/atmosphere/physics/radiation/rrtmgp/optics/lookup_gas_optics_base.py",

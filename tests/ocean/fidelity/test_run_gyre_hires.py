@@ -1,7 +1,9 @@
 import importlib.util
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -59,6 +61,109 @@ def test_resolved_daily_decks_keep_declared_resolution_and_cadence():
     )
     with pytest.raises(ValueError, match="deck must"):
         DRIVER.resolved_daily_namelist("invented", 1)
+
+
+def test_full_state_window_requires_observer_free_per_step_integration():
+    assert DRIVER.parse_day_window("30:180", days=180) == (30, 180)
+    assert DRIVER.parse_day_window(None, days=180) is None
+    for value in ("30", "0:30", "90:30", "30:181"):
+        with pytest.raises(ValueError, match="full-state window"):
+            DRIVER.parse_day_window(value, days=180)
+    with pytest.raises(ValueError, match="require --per-step"):
+        DRIVER.validate_full_state_request(
+            days=180, per_step=False, window=(30, 180))
+    DRIVER.validate_full_state_request(
+        days=180, per_step=True, window=(30, 180))
+
+
+def test_full_state_native_faces_and_thickness_weighted_finalize(monkeypatch):
+    field = lambda value: SimpleNamespace(data=np.asarray(value, dtype=np.float64))
+    state = SimpleNamespace(
+        T=field(np.ones((2, 3, 2))),
+        S=field(2.0 * np.ones((2, 3, 2))),
+        u=field(np.arange(16).reshape(2, 4, 2)),
+        v=field(np.arange(18).reshape(3, 3, 2)),
+        tke=field(3.0 * np.ones((2, 3, 2))),
+    )
+    class Vertical:
+        @staticmethod
+        def compute_layer_thickness(eta, bathymetry, z_coord):
+            del eta, bathymetry, z_coord
+            return 4.0 * np.ones((2, 3, 2))
+
+    card = SimpleNamespace(recipe=SimpleNamespace(z_coord=object()))
+    state.eta = field(np.zeros((2, 3)))
+    state.H_bathy = field(np.ones((2, 3)))
+    original = __import__(
+        "legoesm.ocean.vertical", fromlist=["compute_layer_thickness"])
+    monkeypatch.setattr(
+        original, "compute_layer_thickness", Vertical.compute_layer_thickness)
+    arrays = DRIVER._full_state_arrays(state, card)
+    assert [array.shape for array in arrays] == [
+        (2, 3, 2), (2, 3, 2), (2, 3, 2), (2, 3, 2), (2, 3, 2),
+        (2, 3, 2)]
+    np.testing.assert_array_equal(arrays[2], state.u.data[:, 1:, :])
+    np.testing.assert_array_equal(arrays[3], state.v.data[1:, :, :])
+
+    thickness = np.array([[[2.0, 4.0]]])
+    finalized = DRIVER._finalize_full_means((
+        np.array([[[20.0, 80.0]]]),
+        np.array([[[70.0, 180.0]]]),
+        np.ones((1, 1, 2)),
+        2.0 * np.ones((1, 1, 2)),
+        3.0 * np.ones((1, 1, 2)),
+        thickness,
+    ))
+    np.testing.assert_array_equal(np.asarray(finalized[0]), [[[10.0, 20.0]]])
+    np.testing.assert_array_equal(np.asarray(finalized[1]), [[[35.0, 45.0]]])
+    np.testing.assert_array_equal(np.asarray(finalized[5]), thickness)
+
+
+def test_full_state_means_are_an_observer_of_ordinary_steps(monkeypatch):
+    from legoesm.ocean.fidelity import nemo_testcase_recipe
+    from legoesm.ocean import vertical
+
+    field = lambda value: SimpleNamespace(data=np.asarray(value, dtype=np.float64))
+
+    def initial_state():
+        return SimpleNamespace(
+            eta=field(np.zeros((2, 3))),
+            H_bathy=field(np.ones((2, 3))),
+            T=field(np.ones((2, 3, 2))),
+            S=field(2.0 * np.ones((2, 3, 2))),
+            u=field(np.ones((2, 4, 2))),
+            v=field(np.ones((3, 3, 2))),
+            tke=field(np.ones((2, 3, 2))),
+            uu_b=field(np.ones((2, 4))),
+            vv_b=field(np.ones((3, 3))),
+        )
+
+    class Model:
+        @staticmethod
+        def step(state, dt, *, freshwater, surface_forcing):
+            del dt, freshwater, surface_forcing
+            values = vars(state).copy()
+            for name in ("eta", "T", "S", "u", "v", "tke", "uu_b", "vv_b"):
+                values[name] = field(getattr(state, name).data + 1.0)
+            return SimpleNamespace(**values)
+
+    monkeypatch.setattr(
+        nemo_testcase_recipe, "gyre_surface_forcings",
+        lambda card, state, kt: (None, None),
+    )
+    monkeypatch.setattr(
+        vertical, "compute_layer_thickness",
+        lambda eta, bathymetry, z_coord: np.ones((2, 3, 2)),
+    )
+    card = SimpleNamespace(dt_s=1.0, recipe=SimpleNamespace(z_coord=object()))
+    plain, _ = DRIVER.run_python_day(
+        Model(), card, initial_state(), first_kt=1, n_steps=2)
+    observed, _, full_means = DRIVER.run_python_day_with_full_state_means(
+        Model(), card, initial_state(), first_kt=1, n_steps=2)
+    for name in ("eta", "T", "S", "u", "v", "tke", "uu_b", "vv_b"):
+        np.testing.assert_array_equal(
+            getattr(observed, name).data, getattr(plain, name).data)
+    assert len(full_means) == len(DRIVER.FULL_STATE_FIELD_NAMES)
 
 
 @pytest.mark.slow

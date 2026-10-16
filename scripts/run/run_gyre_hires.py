@@ -21,6 +21,14 @@ FIELD_NAMES = (
     "barotropic_u_m_s",
     "barotropic_v_m_s",
 )
+FULL_STATE_FIELD_NAMES = (
+    "temperature_c_3d",
+    "salinity_psu_3d",
+    "u_m_s_3d",
+    "v_m_s_3d",
+    "tke_m2_s2_3d",
+    "layer_thickness_m_3d",
+)
 SCAN_PARITY_ATOL = 1.0e-12
 
 
@@ -116,6 +124,80 @@ def _finalize_means(accumulators):
     return tuple(means)
 
 
+def parse_day_window(value: str | None, *, days: int) -> tuple[int, int] | None:
+    """Parse an inclusive ``START:END`` model-day window."""
+    if value is None:
+        return None
+    try:
+        start_text, end_text = value.split(":", 1)
+        start, end = int(start_text), int(end_text)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("full-state window must be START:END") from exc
+    if start < 1 or end < start or end > days:
+        raise ValueError(
+            f"full-state window must satisfy 1 <= START <= END <= {days}")
+    return start, end
+
+
+def validate_full_state_request(
+    *, days: int, per_step: bool, window: tuple[int, int] | None,
+) -> None:
+    """Require observer-free per-step integration for full-state means."""
+    if window is not None and not per_step:
+        raise ValueError(
+            "full-state daily means require --per-step so diagnostic "
+            "accumulation cannot change the compiled-day scan")
+    if per_step and days <= 0:
+        raise ValueError("per-step integration requires a positive day count")
+
+
+def _full_state_arrays(state, card):
+    """Return native-grid 3-D prognostics needed by the momentum budget."""
+    from legoesm.ocean.vertical import compute_layer_thickness
+
+    if state.tke is None:
+        raise ValueError("GYRE full-state output requires prognostic TKE")
+    return (
+        state.T.data,
+        state.S.data,
+        state.u.data[:, 1:, :],
+        state.v.data[1:, :, :],
+        state.tke.data,
+        compute_layer_thickness(
+            state.eta.data, state.H_bathy.data, card.recipe.z_coord),
+    )
+
+
+def _full_mean_accumulators(state, card):
+    """Return IOIPSL-compatible 3-D mean samples plus cell thickness."""
+    temperature, salinity, u, v, tke, thickness = _full_state_arrays(
+        state, card)
+    return (
+        temperature * thickness,
+        salinity * thickness,
+        u,
+        v,
+        tke,
+        thickness,
+    )
+
+
+def _finalize_full_means(accumulators):
+    """Convert mean tracer contents to thickness-weighted concentrations."""
+    import jax.numpy as jnp
+
+    temperature_content, salinity_content, u, v, tke, thickness = accumulators
+    safe = jnp.where(thickness > 0.0, thickness, 1.0)
+    return (
+        jnp.where(thickness > 0.0, temperature_content / safe, 0.0),
+        jnp.where(thickness > 0.0, salinity_content / safe, 0.0),
+        u,
+        v,
+        tke,
+        thickness,
+    )
+
+
 def cold_start_scan_state(model, card, state):
     """Run NEMO's required cold-start step, then stabilize the scan carry.
 
@@ -189,6 +271,38 @@ def run_python_day(model, card, state, first_kt: int, n_steps: int):
             for mean, value in zip(means, _mean_accumulators(state, card))
         )
     return state, _finalize_means(means)
+
+
+def run_python_day_with_full_state_means(
+    model, card, state, first_kt: int, n_steps: int,
+):
+    """Run ordinary compiled steps; accumulate matched 3-D means outside JIT."""
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import gyre_surface_forcings
+
+    if type(n_steps) is not int or n_steps <= 0:
+        raise ValueError("Python full-state day n_steps must be a positive integer")
+    cheap = tuple(np.zeros_like(np.asarray(value))
+                  for value in _mean_accumulators(state, card))
+    full = tuple(np.zeros_like(np.asarray(value))
+                 for value in _full_mean_accumulators(state, card))
+    for offset in range(n_steps):
+        freshwater, surface = gyre_surface_forcings(
+            card, state, first_kt + offset)
+        state = model.step(
+            state, card.dt_s, freshwater=freshwater,
+            surface_forcing=surface)
+        count = float(offset + 1)
+        cheap = tuple(
+            (mean * (count - 1.0) + np.asarray(value)) / count
+            for mean, value in zip(
+                cheap, _mean_accumulators(state, card), strict=True)
+        )
+        full = tuple(
+            (mean * (count - 1.0) + np.asarray(value)) / count
+            for mean, value in zip(
+                full, _full_mean_accumulators(state, card), strict=True)
+        )
+    return state, _finalize_means(cheap), _finalize_full_means(full)
 
 
 def prognostic_differences(left, right) -> dict[str, float | int | bool]:
@@ -364,7 +478,8 @@ def cpu_scan_parity(namelist, *, days: int = 2, commit: str | None = None) -> di
 
 def run_long(
     namelist, output: Path, *, days: int, mode: str, commit: str,
-    physical_gpu: int | None = None,
+    physical_gpu: int | None = None, per_step: bool = False,
+    full_state_window: tuple[int, int] | None = None,
 ) -> dict:
     """Integrate a resolved GYRE deck and atomically write each model day."""
     import jax
@@ -377,6 +492,8 @@ def run_long(
 
     validate_gyre_namelist(namelist)
     validate_physical_gpu(mode, physical_gpu)
+    validate_full_state_request(
+        days=days, per_step=per_step, window=full_state_window)
     if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
         raise ValueError("commit must be a forty-character lowercase Git SHA")
     steps_per_day_f = SECONDS_PER_DAY / namelist.rn_Dt_s
@@ -408,7 +525,7 @@ def run_long(
     state = card.recipe.initial_state
     cold_tail = None
     cold_sample = None
-    if mode == "gpu-native":
+    if mode == "gpu-native" and not per_step:
         state, cold_sample = cold_start_scan_state(model, card, state)
         cold_tail = build_scanned_day_mean_stepper(model, card, steps_per_day - 1)
         scanned_day = build_scanned_day_mean_stepper(model, card, steps_per_day)
@@ -431,11 +548,12 @@ def run_long(
         "transcendentals": "native" if mode == "gpu-native" else "libm",
         "days": days,
         "steps_per_day": steps_per_day,
+        "per_step": per_step,
         "integration": (
             "one required eager AB3/AM4 cold-start step, then compiled "
             "lax.scan days; seasonal forcing inside scan"
             if scanned_day is not None
-            else "certified per-step Python loop"
+            else "ordinary compiled model.step in a per-step Python loop"
         ),
         "sampling": ["end_of_day_snapshot", "daily_mean"],
         "namelist": namelist._asdict(),
@@ -451,8 +569,23 @@ def run_long(
             "surface_temperature_c": (
                 "thickness weighted: mean(T*e3t)/mean(e3t), matching NEMO IOIPSL votemper/vovvle3t"
             ),
+            "temperature_c_3d_and_salinity_psu_3d": (
+                "thickness weighted: mean(tracer*e3t)/mean(e3t), matching "
+                "NEMO IOIPSL votemper/vosaline divided by vovvle3t"
+            ),
             "other_fields": "arithmetic mean of per-step end states",
         },
+        "full_state_window": (
+            None if full_state_window is None else list(full_state_window)),
+        "full_state_fields": (
+            list(FULL_STATE_FIELD_NAMES)
+            if full_state_window is not None else None
+        ),
+        "full_state_observer_contract": (
+            "per-step model.step is compiled independently; 3-D mean "
+            "accumulation is host-side and cannot alter the step graph"
+            if full_state_window is not None else None
+        ),
     }
     pending = output / "manifest.pending.json"
     hashes: dict[str, str] = {}
@@ -462,8 +595,14 @@ def run_long(
 
     for day in range(1, days + 1):
         first_kt = (day - 1) * steps_per_day + 1
-        if scanned_day is None:
-            state, means = run_python_day(model, card, state, first_kt, steps_per_day)
+        full_means = None
+        if (full_state_window is not None
+                and full_state_window[0] <= day <= full_state_window[1]):
+            state, means, full_means = run_python_day_with_full_state_means(
+                model, card, state, first_kt, steps_per_day)
+        elif scanned_day is None:
+            state, means = run_python_day(
+                model, card, state, first_kt, steps_per_day)
         elif day == 1:
             assert cold_tail is not None and cold_sample is not None
             state, means = cold_tail(state, 2, initial_means=cold_sample, initial_count=1)
@@ -484,6 +623,14 @@ def run_long(
         for name, snapshot, mean in zip(FIELD_NAMES, _state_arrays(state), means):
             arrays[name] = np.asarray(snapshot, dtype=np.float64)
             arrays[f"{name}_daily_mean"] = np.asarray(mean, dtype=np.float64)
+        if full_means is not None:
+            for name, snapshot, mean in zip(
+                FULL_STATE_FIELD_NAMES, _full_state_arrays(state, card),
+                full_means, strict=True,
+            ):
+                arrays[name] = np.asarray(snapshot, dtype=np.float64)
+                arrays[f"{name}_daily_mean"] = np.asarray(
+                    mean, dtype=np.float64)
         name = f"day{day:04d}.npz"
         temporary = output / f".{name}.tmp"
         with temporary.open("wb") as stream:
@@ -520,6 +667,14 @@ def main(argv=None) -> int:
         action="store_true",
         help="required acknowledgement: emit daily means beside snapshots",
     )
+    parser.add_argument(
+        "--per-step", action="store_true",
+        help="run ordinary compiled model.step calls outside a day scan",
+    )
+    parser.add_argument(
+        "--full-state-window",
+        help="inclusive START:END days for 3-D snapshots and daily means",
+    )
     args = parser.parse_args(argv)
     if not args.daily_means:
         parser.error("--daily-means is required for this climate driver")
@@ -527,9 +682,12 @@ def main(argv=None) -> int:
         from legoesm.ocean.fidelity.provenance import git_sha
 
         namelist = resolved_daily_namelist(args.deck, args.days)
+        full_state_window = parse_day_window(
+            args.full_state_window, days=args.days)
         manifest = run_long(
             namelist, args.output, days=args.days, mode=args.mode,
             commit=git_sha(), physical_gpu=args.physical_gpu,
+            per_step=args.per_step, full_state_window=full_state_window,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"REFUSE: {exc}", file=sys.stderr)

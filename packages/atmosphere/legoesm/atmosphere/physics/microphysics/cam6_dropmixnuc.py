@@ -173,23 +173,15 @@ def cam6_dropmixnuc(ncldwtr, temp, pmid, pint, rpdel, zm, kvh, wsub, cldn, cldo,
     C = [jnp.zeros_like(aer_num[m]) for m in range(nmode)]  # raercol_cw(number): supplied cw = 0
 
     # --- grow_shrink_main_k_loop (:640-735) ---------------------------------
-    cldo_i = cldo * (1.0 - cldliqf)
-    cldn_i = cldn * (1.0 - cldliqf)
-    shrink_i = cldn_i < cldo_i
-    dumc = jnp.where(shrink_i, (cldn_i - cldo_i) / jnp.where(shrink_i, cldo_i, 1.0)
-                     * (1.0 - cldliqf), 0.0)
-    for m in range(nmode):
-        dact = C[m] * dumc
-        C[m], R[m] = C[m] + dact, R[m] - dact
+    # The two shrink blocks move cloud-borne aerosol (raercol_cw) back to
+    # interstitial; raercol_cw is still the supplied cloud-borne aerosol here,
+    # which is zero (user decision 2026-10-16), so those transfers are exact
+    # no-ops and are omitted.  The droplet decay of the second block is kept.
     cldo_tmp = lcldo
     cldn_tmp = lcldn * jnp.exp(-dtmicro / _TAU_CLD_REGENERATE_S)
     shrink = cldn_tmp < cldo_tmp
     frac = jnp.where(shrink, (cldn_tmp - cldo_tmp) / jnp.where(shrink, cldo_tmp, 1.0), 0.0)
     qcld = jnp.where(shrink, qcld * (1.0 + frac), qcld)
-    dumc = frac * cldliqf
-    for m in range(nmode):
-        dact = C[m] * dumc
-        C[m], R[m] = C[m] + dact, R[m] - dact
     grow = lcldn - cldn_tmp > _CLD_CHANGE_MIN
     na = jnp.stack([a[0] for a in acts]); va = jnp.stack([a[1] for a in acts])
     hy = jnp.stack([a[2] for a in acts])
@@ -214,12 +206,10 @@ def cam6_dropmixnuc(ncldwtr, temp, pmid, pint, rpdel, zm, kvh, wsub, cldn, cldo,
     dum = csbot_cscen / dz
     nact = [jnp.where(base, fluxn[m] * dumc * dum, 0.0) for m in range(nmode)]
     taumix = jnp.where(base[:, -1], ffa[:, -1] / dz[:, -1], 0.0)        # (ncol,)
-    clear = ~incloud
-    qcld = jnp.where(clear, 0.0, qcld)
-    merge = clear & (cldn < _CLD_CHANGE_MIN)
-    for m in range(nmode):
-        R[m] = jnp.where(merge, R[m] + C[m], R[m])
-        C[m] = jnp.where(merge, 0.0, C[m])
+    # Not in cloud: droplets removed.  CAM's cldn < 0.01 merge of raercol_cw into
+    # raercol (:869-881) is an exact no-op here: raercol_cw is non-zero only
+    # where the grow branch fired, which needs lcldn > 0.01, i.e. in cloud.
+    qcld = jnp.where(~incloud, 0.0, qcld)
 
     # --- substep setup (:898-978) -------------------------------------------
     ekkp, ekkm = _ekkp_ekkm(ekd, csbot, zn, zs)

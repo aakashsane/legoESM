@@ -739,3 +739,7 @@ def test_process_trace_exposes_write_only_content_terms():
     assert "return_final_content_terms=_return_tracer_process_trace" in source
     assert "if return_final_content_terms:" in source
     assert "content_a = (advection_content_a" in source
+    gate_source = SCRIPT.read_text(encoding="utf-8")
+    assert '"term": "completed_content_boundary"' in gate_source
+    assert "planted_content[wet] = np.nextafter" in gate_source
+    assert "planted_term" not in gate_source

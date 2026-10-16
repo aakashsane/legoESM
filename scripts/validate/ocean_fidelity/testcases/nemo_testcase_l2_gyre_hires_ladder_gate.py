@@ -3047,45 +3047,40 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
             ), None),
         }
 
-        for term_name, reference_term, other_term in (
-            ("before_content", nemo_before_content,
-             own_accumulated_content),
-            ("accumulated_krhs_content", nemo_accumulated_content,
-             own_before_content),
-        ):
-            planted_term = np.array(reference_term, copy=True)
-            index = tuple(int(value) for value in np.argwhere(wet)[0])
-            planted_term[index] = np.nextafter(
-                planted_term[index], np.float64(np.inf))
-            planted_content = (
-                planted_term + other_term
-                if term_name == "before_content"
-                else other_term + planted_term)
-            baseline_content = mixed_contents[term_name]
-            _, baseline_result = content_arm(
-                f"control.content.{context_name}.{term_name}.baseline",
-                context, baseline_content)
-            _, planted_result = content_arm(
-                f"control.content.{context_name}.{term_name}.one_ulp",
-                context, planted_content)
-            baseline_state = getattr(
-                baseline_result, "state_after", baseline_result)
-            planted_state = getattr(
-                planted_result, "state_after", planted_result)
-            plant_score = exact_score(
-                f"control.content.{context_name}.{term_name}.one_ulp",
-                np.asarray(baseline_state.T.data, dtype=np.float64),
-                np.asarray(planted_state.T.data, dtype=np.float64), wet)
-            if plant_score["n_unequal"] == 0:
-                raise RuntimeError(
-                    f"content {context_name}/{term_name} plant did not reach T")
-            content_plants.append({
-                "context": context_name,
-                "term": term_name,
-                "index": list(index),
-                "score": plant_score,
-                "status": "FIRED",
-            })
+        # Plant the actual selected boundary, not an addend below it.  A ULP
+        # on the much smaller accumulated addend can legitimately disappear
+        # when it is summed with before content; calling that a blind selector
+        # would be the same injection-versus-accumulation error the campaign
+        # rules prohibit.  Every active completed-content word moves by one
+        # ULP, and at least one solved-T word must respond.
+        planted_content = np.array(nemo_literal_content, copy=True)
+        planted_content[wet] = np.nextafter(
+            planted_content[wet], np.float64(np.inf))
+        _, baseline_result = content_arm(
+            f"control.content.{context_name}.completed.baseline",
+            context, nemo_literal_content)
+        _, planted_result = content_arm(
+            f"control.content.{context_name}.completed.one_ulp",
+            context, planted_content)
+        baseline_state = getattr(
+            baseline_result, "state_after", baseline_result)
+        planted_state = getattr(
+            planted_result, "state_after", planted_result)
+        plant_score = exact_score(
+            f"control.content.{context_name}.completed.one_ulp",
+            np.asarray(baseline_state.T.data, dtype=np.float64),
+            np.asarray(planted_state.T.data, dtype=np.float64), wet)
+        if plant_score["n_unequal"] == 0:
+            raise RuntimeError(
+                f"content {context_name} completed-boundary plant did not reach T")
+        content_plants.append({
+            "context": context_name,
+            "term": "completed_content_boundary",
+            "input_words_moved": int(np.count_nonzero(wet)),
+            "ulp_per_input_word": 1,
+            "score": plant_score,
+            "status": "FIRED",
+        })
 
     isolated_substitutions = content_context_rows[
         "content_isolation"]["substitutions"]

@@ -51,6 +51,8 @@ _RRTMG_SW_WAVENUM_HIGH = (3250.0, 4000.0, 4650.0, 5150.0, 6150.0, 7700.0, 8050.0
                           12850.0, 16000.0, 22650.0, 29000.0, 38000.0, 50000.0,
                           2600.0)
 _CM_TO_MICRON = 1.0e4
+# The file prints its band sequence to 0.01 micron, so a match is within half that.
+_SW_SEQ_ATOL_MICRON = 0.006
 
 # --- guards of interpolate_ice_optics_sw/lw (cloud_rad_props.F90:491, :641, :654) ---
 _PATH_MIN = 1.0e-80      # [kg/m2] below: zero optics
@@ -80,11 +82,8 @@ def rrtmg_to_rrtmgp_sw(table_rows):
 
 
 def _sha256(path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    with open(path, "rb") as f:          # 72 KB file: one read
+        return hashlib.sha256(f.read()).hexdigest()
 
 
 def load_mitchell_ice_optics(path, expected_sha256: str = ICEOPTICS_SHA256,
@@ -105,7 +104,7 @@ def load_mitchell_ice_optics(path, expected_sha256: str = ICEOPTICS_SHA256,
             raise ValueError(f"Mitchell ice optics {path}: no SW band sequence attribute")
         seq = np.array([float(s) for s in str(seq).replace(",", " ").split()])
         want = _CM_TO_MICRON / np.asarray(_RRTMG_SW_WAVENUM_HIGH)
-        if seq.shape != want.shape or not np.allclose(seq, want, rtol=0.0, atol=0.006):
+        if seq.shape != want.shape or not np.allclose(seq, want, rtol=0.0, atol=_SW_SEQ_ATOL_MICRON):
             raise ValueError(f"Mitchell ice optics {path}: SW band sequence {seq} is not "
                              f"RRTMG's {np.round(want, 2)}")
         d = np.asarray(ds["d_eff"].values, dtype=np.float64)

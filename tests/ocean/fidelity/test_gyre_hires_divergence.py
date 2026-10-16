@@ -58,6 +58,7 @@ def test_wet_span_regions_and_signed_excess_localize_western_seed():
         reference, candidate, twin, mask, start_day=1, stop_day=4)
     assert rows[0]["region"] == "western_boundary"
     assert rows[0]["signed_excess_sse"] == 144.0
+    assert rows[0]["signed_excess_share"] == 1.0
     assert all(row["signed_excess_sse"] == 0.0 for row in rows[1:])
 
 
@@ -73,12 +74,39 @@ def test_first_factor_excess_names_earliest_field_and_tie():
     assert result["fields"] == ["ssh", "sst"]
 
 
+def test_first_factor_excess_serializes_a_zero_twin_floor_without_infinity():
+    def curve(values):
+        return {"normalized_rms_difference": np.asarray(values, dtype=float)}
+
+    result = DIVERGENCE.first_factor_excess(
+        {"sst": curve([1.0])}, {"sst": curve([0.0])},
+        factor=4.0, start_day=1, stop_day=1)
+    assert result["rows"] == [{
+        "field": "sst", "candidate": 1.0, "twin": 0.0,
+        "ratio": None, "twin_zero": True,
+    }]
+
+
 def test_growth_law_controls_separate_exponential_and_algebraic():
     days = np.arange(30.0, 181.0)
     exponential = DIVERGENCE.fit_growth_laws(days, np.exp(0.02 * days))
     algebraic = DIVERGENCE.fit_growth_laws(days, days ** 2.5)
     assert exponential["classification"] == "exponential"
     assert algebraic["classification"] == "algebraic"
+    with pytest.raises(Exception, match="positive fitted growth"):
+        DIVERGENCE.fit_growth_laws(days, np.exp(-0.02 * days))
+
+
+def test_thickness_weighted_depth_mean_known_answer_and_refusals():
+    velocity = np.array([[[[1.0]], [[3.0]]], [[[2.0]], [[4.0]]]])
+    weights = np.array([[[1.0]], [[3.0]]])
+    result = DIVERGENCE.thickness_weighted_depth_mean(velocity, weights)
+    assert np.array_equal(result[:, 0, 0], [2.5, 3.5])
+    with pytest.raises(Exception, match="negative"):
+        DIVERGENCE.thickness_weighted_depth_mean(velocity, -weights)
+    with pytest.raises(Exception, match="no active"):
+        DIVERGENCE.thickness_weighted_depth_mean(
+            velocity, np.zeros_like(weights))
 
 
 def test_time_tile_assembly_places_prefix_dimensions():

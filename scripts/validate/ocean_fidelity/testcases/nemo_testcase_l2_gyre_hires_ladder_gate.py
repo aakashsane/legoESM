@@ -3057,10 +3057,11 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
     minimal_joint = minimal_exact_subsets(full_search_rows)
     if removed_by is not None:
         classification = "ONE_VARIABLE_OWNER"
-    elif minimal_joint and len(minimal_joint[0]) > 1:
-        classification = "COUPLED_ROUNDING_ORDER_DEBT"
     elif minimal_joint:
-        classification = "ONE_VARIABLE_OWNER"
+        # Exactness under a multi-array intervention localises the boundary,
+        # but does not by itself prove that every upstream formation has the
+        # same expression and differs only by rounding order.
+        classification = "COUPLED_INPUT_COMPOSITION_DEBT"
     elif all_inputs["temperature"]["n_unequal"] > 0:
         classification = "OPERATOR_COMPOSITION"
     else:
@@ -3084,8 +3085,71 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
             nemo_inputs[name], own[name], candidate_masks[name])
         for name in ordered
     ]
+    e3t_full = np.ones_like(wet, dtype=bool)
+    e3t_inactive = ~wet
+    e3t_identity = {
+        "active": exact_score(
+            "GYRE-zco-r4.kt1.input.tracer_e3t.active",
+            nemo_inputs["tracer_e3t"], own["tracer_e3t"], wet),
+        "inactive": exact_score(
+            "GYRE-zco-r4.kt1.input.tracer_e3t.inactive",
+            nemo_inputs["tracer_e3t"], own["tracer_e3t"], e3t_inactive),
+        "full_array": exact_score(
+            "GYRE-zco-r4.kt1.input.tracer_e3t.full_array",
+            nemo_inputs["tracer_e3t"], own["tracer_e3t"], e3t_full),
+    }
+
+    # Discriminate value replacement from merely selecting an identical array
+    # through the same private seam.  Score each arm against both the NEMO
+    # output and the corresponding all-false-selector baseline in the same
+    # compiled graph.  The active-only and inactive-only arrays name exactly
+    # which words originate in NEMO.
+    e3t_variants = {
+        "selected_identity": own["tracer_e3t"],
+        "active_only_oracle": np.where(
+            wet, nemo_inputs["tracer_e3t"], own["tracer_e3t"]),
+        "inactive_only_oracle": np.where(
+            wet, own["tracer_e3t"], nemo_inputs["tracer_e3t"]),
+        "full_oracle": nemo_inputs["tracer_e3t"],
+    }
+    e3t_selector_controls = {}
+    base_sets = {
+        "temperature": ("formed_K", "temperature_content"),
+        "joint": ("formed_K", "temperature_content", "salinity_content"),
+    }
+    for base_name, base_members in base_sets.items():
+        base_inputs = {name: nemo_inputs[name] for name in base_members}
+        base_result = run_arm(fixed(base_inputs))
+        base_rows = output_rows(f"e3t.{base_name}.all_false", base_result)
+        variant_rows = {}
+        for variant_name, e3t_value in e3t_variants.items():
+            selected_result = run_arm(fixed({
+                **base_inputs, "tracer_e3t": e3t_value,
+            }))
+            rows_to_nemo = output_rows(
+                f"e3t.{base_name}.{variant_name}", selected_result)
+            selected_state = getattr(
+                selected_result, "state_after", selected_result)
+            base_state = getattr(base_result, "state_after", base_result)
+            rows_to_baseline = {
+                field: exact_score(
+                    f"control.e3t.{base_name}.{variant_name}.vs_all_false.{field}",
+                    np.asarray(getattr(base_state, field).data),
+                    np.asarray(getattr(selected_state, field).data),
+                    wet,
+                )
+                for field in ("T", "S")
+            }
+            variant_rows[variant_name] = {
+                "against_nemo": rows_to_nemo,
+                "against_all_false_selector": rows_to_baseline,
+            }
+        e3t_selector_controls[base_name] = {
+            "all_false_against_nemo": base_rows,
+            "variants": variant_rows,
+        }
     report = {
-        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v4",
+        "format": "nemo-testcase-l2-gyre-r4-step1-vertical-owner-v5",
         "worktree": worktree_stamp(),
         "oracle_admission": admission,
         "policy": "fp64/x64/cpu/libm certified",
@@ -3108,6 +3172,8 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
             "joint": minimal_joint,
         },
         "minimal_joint_member_necessity": member_necessity,
+        "tracer_e3t_identity": e3t_identity,
+        "tracer_e3t_selector_controls": e3t_selector_controls,
         "first_residual_removing_substitution": removed_by,
         "all_recorded_inputs": all_inputs,
         "controls": {"passive_seam": passive, "active_plants": plants},
@@ -3126,7 +3192,7 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         },
         "verdict": (
             "CONFIRMED_OWNER" if removed_by is not None
-            else "CONFIRMED_COMPOSITION"),
+            else "MEASURED_COUPLED_COMPOSITION_DEBT"),
     }
     output.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2))

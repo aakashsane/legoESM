@@ -254,6 +254,12 @@ def regional_excess(
             "twin_sse": twin_sse,
             "signed_excess_sse": candidate_sse - twin_sse,
         })
+    total_excess = float(np.sum(
+        [row["signed_excess_sse"] for row in result], dtype=np.float64))
+    require(np.isfinite(total_excess) and total_excess > 0.0,
+            "regional candidate has no positive signed SSE excess")
+    for row in result:
+        row["signed_excess_share"] = row["signed_excess_sse"] / total_excess
     return result
 
 
@@ -286,7 +292,8 @@ def first_factor_excess(
         "fields": [row[1] for row in first],
         "rows": [
             {"field": field, "candidate": value, "twin": floor,
-             "ratio": value / floor if floor > 0.0 else float("inf")}
+             "ratio": value / floor if floor > 0.0 else None,
+             "twin_zero": floor == 0.0}
             for _, field, value, floor in first
         ],
     }
@@ -311,6 +318,8 @@ def fit_growth_laws(days: np.ndarray, error: np.ndarray) -> dict:
 
     exponential, exp_rms = fit(days)
     algebraic, alg_rms = fit(np.log(days))
+    require(exponential[1] > 0.0 and algebraic[1] > 0.0,
+            "registered growth fits require positive fitted growth")
     return {
         "classification": "exponential" if exp_rms < alg_rms else "algebraic",
         "exponential": {
@@ -351,6 +360,28 @@ def _assemble_time_tiles(
     return assembled
 
 
+def thickness_weighted_depth_mean(
+    velocity: np.ndarray, weights: np.ndarray,
+) -> np.ndarray:
+    """Form daily z-coordinate column means with validated layer weights."""
+    velocity = np.asarray(velocity, dtype=np.float64)
+    weights = np.asarray(weights, dtype=np.float64)
+    require(velocity.ndim == 4 and weights.ndim == 3
+            and velocity.shape[1:] == weights.shape,
+            "depth-mean velocity/weight shapes differ")
+    require(np.all(np.isfinite(velocity)) and np.all(np.isfinite(weights)),
+            "non-finite depth-mean input")
+    require(np.all(weights >= 0.0), "negative depth-mean layer weight")
+    column = np.sum(weights, axis=0, dtype=np.float64)
+    require(np.any(column > 0.0), "depth-mean weights have no active column")
+    numerator = np.sum(
+        velocity * weights[None, ...], axis=1, dtype=np.float64)
+    return np.divide(
+        numerator, column[None, ...], out=np.zeros_like(numerator),
+        where=column[None, ...] > 0.0,
+    )
+
+
 def load_nemo_depth_mean(root: Path, days: int) -> dict[str, np.ndarray]:
     """Read z-coordinate thickness-weighted daily U/V column means."""
     import netCDF4
@@ -383,18 +414,10 @@ def load_nemo_depth_mean(root: Path, days: int) -> dict[str, np.ndarray]:
                         f"{field}: mesh/output tile positions differ")
                 weights = (np.asarray(mesh[metric][0], dtype=np.float64)
                            * np.asarray(mesh[mask_name][0], dtype=np.float64))
-                column = np.sum(weights, axis=0, dtype=np.float64)
-                require(np.all(column[column > 0.0] > 0.0),
-                        f"{field}: invalid column thickness")
                 velocity = np.asarray(dataset[variable][:days], dtype=np.float64)
                 require(velocity.shape[0] == days,
                         f"{field}: too few daily records")
-                numerator = np.sum(
-                    velocity * weights[None, ...], axis=1, dtype=np.float64)
-                mean = np.divide(
-                    numerator, column[None, ...],
-                    out=np.zeros_like(numerator), where=column[None, ...] > 0.0,
-                )
+                mean = thickness_weighted_depth_mean(velocity, weights)
                 tiles.append((dataset.DOMAIN_position_first, mean))
             result[field] = _assemble_time_tiles(tiles)
     return result
@@ -460,6 +483,8 @@ def _validate_twin(curve: dict[str, dict[str, np.ndarray]]) -> dict:
 
 
 def main(argv=None) -> int:
+    from legoesm.ocean.fidelity.provenance import worktree_stamp
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vector-nemo-root", type=Path, required=True)
     parser.add_argument("--scalar-nemo-root", type=Path, required=True)
@@ -555,16 +580,26 @@ def main(argv=None) -> int:
             del series
 
         twin_validation = _validate_twin(curves["nemo_scalar"])
-        exact_control = normalized_rms_and_correlation(
-            vector_curve["ssh"][0], vector_curve["ssh"][0], masks["wet"])
-        planted = np.array(vector_curve["ssh"][0], copy=True)
-        plant_index = tuple(np.argwhere(masks["wet"])[0])
-        planted[plant_index] = np.nextafter(planted[plant_index], np.inf)
-        plant_control = normalized_rms_and_correlation(
-            vector_curve["ssh"][0], planted, masks["wet"])
-        require(exact_control["normalized_rms_difference"] == 0.0
-                and plant_control["normalized_rms_difference"] > 0.0,
-                "divergence exact/one-ULP controls did not separate")
+        field_controls = {}
+        for field, mask in field_masks.items():
+            reference = vector_curve[field][0]
+            exact = normalized_rms_and_correlation(reference, reference, mask)
+            planted = np.array(reference, copy=True)
+            plant_index = tuple(np.argwhere(mask)[0])
+            planted[plant_index] = np.nextafter(
+                planted[plant_index], np.inf)
+            plant = normalized_rms_and_correlation(reference, planted, mask)
+            require(exact["normalized_rms_difference"] == 0.0
+                    and plant["normalized_rms_difference"] > 0.0,
+                    f"{field}: exact/one-ULP controls did not separate")
+            field_controls[field] = {
+                "exact": exact,
+                "one_ulp": {
+                    **plant,
+                    "index": [int(value) for value in plant_index],
+                    "status": "FIRED",
+                },
+            }
 
         first_excess = first_factor_excess(
             curves["legoesm_candidate"], curves["nemo_scalar"])
@@ -575,34 +610,36 @@ def main(argv=None) -> int:
             )
             for field, mask in field_masks.items()
         }
-        # If fields tie at the first daily sample, carry the largest
-        # candidate/twin ratio into the regional and growth discriminator.
-        # Infinite ratio is meaningful: the NEMO twin is still exact while
-        # the legoESM candidate has moved.
-        leading_field = max(
-            first_excess["rows"], key=lambda row: row["ratio"])["field"]
-        leading_region = max(
-            regional[leading_field], key=lambda row: row["signed_excess_sse"])
         region_names = (
             "western_boundary", "western_interior", "central_interior",
             "eastern_interior", "eastern_boundary",
         )
-        leading_bin = region_names.index(leading_region["region"])
-        leading_mask = wet_span_bins(field_masks[leading_field]) == leading_bin
-        leading_curve = divergence_curve(
-            vector_curve[leading_field],
-            raw_curves["legoesm_candidate"][leading_field], leading_mask)
         fit_days = np.arange(30, 181, dtype=np.float64)
-        basin_growth = fit_growth_laws(
-            fit_days, curves["legoesm_candidate"][leading_field][
-                "absolute_rms_difference"][29:180])
-        region_growth = fit_growth_laws(
-            fit_days, leading_curve["absolute_rms_difference"][29:180])
-        growth_classification = (
-            basin_growth["classification"]
-            if basin_growth["classification"] == region_growth["classification"]
-            else "mixed"
-        )
+        leading_regions = {}
+        growth = {}
+        for field in first_excess["fields"]:
+            leading_region = max(
+                regional[field], key=lambda row: row["signed_excess_sse"])
+            leading_bin = region_names.index(leading_region["region"])
+            leading_mask = wet_span_bins(field_masks[field]) == leading_bin
+            leading_curve = divergence_curve(
+                vector_curve[field], raw_curves["legoesm_candidate"][field],
+                leading_mask)
+            basin_growth = fit_growth_laws(
+                fit_days, curves["legoesm_candidate"][field][
+                    "absolute_rms_difference"][29:180])
+            region_growth = fit_growth_laws(
+                fit_days, leading_curve["absolute_rms_difference"][29:180])
+            leading_regions[field] = leading_region
+            growth[field] = {
+                "classification": (
+                    basin_growth["classification"]
+                    if basin_growth["classification"]
+                    == region_growth["classification"] else "mixed"
+                ),
+                "basin": basin_growth,
+                "leading_region": region_growth,
+            }
 
         arrays_path = args.output / "gyre_hires_divergence_arrays.npz"
         np.savez_compressed(arrays_path, **{
@@ -612,7 +649,11 @@ def main(argv=None) -> int:
             for metric, value in metrics.items()
         })
         report = {
-            "schema": "gyre-r4-smag-divergence-envelope-v2",
+            "schema": "gyre-r4-smag-divergence-envelope-v3",
+            "instrument": {
+                "worktree": worktree_stamp(),
+                "argv": list(sys.argv if argv is None else [__file__, *argv]),
+            },
             "definition": {
                 "divergence": (
                     "RMS(candidate-reference) / RMS(reference spatial anomaly)"
@@ -643,6 +684,18 @@ def main(argv=None) -> int:
                 "eddy_years": [1, TOTAL_DAYS // 365],
             },
             "provenance": provenance,
+            "mesh_mask_artifacts": {
+                "nemo_vector": {
+                    path.name: sha256(path)
+                    for path in sorted(args.vector_nemo_root.glob(
+                        "mesh_mask_????.nc"))
+                },
+                "nemo_scalar": {
+                    path.name: sha256(path)
+                    for path in sorted(args.scalar_nemo_root.glob(
+                        "mesh_mask_????.nc"))
+                },
+            },
             "mask_identity": {
                 "T": "NEMO mesh mask equals legoESM card mask",
                 "U": "NEMO mesh mask equals legoESM card mask",
@@ -650,21 +703,14 @@ def main(argv=None) -> int:
             },
             "instrument_validation": {
                 "nemo_twin_benchmark": twin_validation,
-                "exact_control": exact_control,
-                "one_ulp_control": {
-                    **plant_control,
-                    "index": [int(value) for value in plant_index],
-                    "status": "FIRED",
-                },
+                "per_field_exact_and_one_ulp": field_controls,
             },
             "checkpoints": _checkpoint_rows(curves),
             "first_four_times_twin": first_excess,
             "regional_signed_sse_excess": regional,
-            "leading_region": {"field": leading_field, **leading_region},
-            "growth_days_30_180": {
-                "classification": growth_classification,
-                "basin": basin_growth,
-                "leading_region": region_growth,
+            "leading_region_by_tied_field": leading_regions,
+            "growth_days_30_180_by_tied_field": {
+                **growth,
                 "metric": "absolute RMS error; fit residual in log-error space",
             },
             "yearly_statistics": yearly,
@@ -672,7 +718,7 @@ def main(argv=None) -> int:
         }
         report_path = args.output / "gyre_hires_divergence_report.json"
         report_path.write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
             encoding="utf-8",
         )
     except Exception as exc:  # noqa: BLE001 - fail-closed instrument boundary

@@ -575,7 +575,12 @@ def main(argv=None) -> int:
             )
             for field, mask in field_masks.items()
         }
-        leading_field = first_excess["fields"][0]
+        # If fields tie at the first daily sample, carry the largest
+        # candidate/twin ratio into the regional and growth discriminator.
+        # Infinite ratio is meaningful: the NEMO twin is still exact while
+        # the legoESM candidate has moved.
+        leading_field = max(
+            first_excess["rows"], key=lambda row: row["ratio"])["field"]
         leading_region = max(
             regional[leading_field], key=lambda row: row["signed_excess_sse"])
         region_names = (

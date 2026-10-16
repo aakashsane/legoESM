@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import re
 import struct
@@ -2744,6 +2745,23 @@ def minimal_exact_subsets(
     return [list(members) for members in exact if len(members) == size]
 
 
+def ordered_vertical_core_subsets() -> list[tuple[str, ...]]:
+    """All multi-input subsets, with the two preregistered arms first."""
+    core = (
+        "heat_K", "formed_K", "temperature_content", "salinity_content")
+    result = [
+        ("formed_K", "temperature_content"),
+        ("formed_K", "temperature_content", "salinity_content"),
+    ]
+    result.extend(
+        members
+        for size in range(2, len(core) + 1)
+        for members in itertools.combinations(core, size)
+        if members not in result
+    )
+    return result
+
+
 def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
     """Walk the remaining entry-kt=2 T/S boundary one ZDF input at a time."""
     import jax
@@ -2939,12 +2957,11 @@ def run_step1_vertical_owner(oracle_root: Path, output: Path) -> dict:
         })
         removed_by = first_residual_removing_substitution(rows)
 
-    subset_names = (
-        ("formed_K", "temperature_content"),
-        ("formed_K", "temperature_content", "salinity_content"),
-        ("formed_K", "salinity_content"),
-        ("temperature_content", "salinity_content"),
-    )
+    # e3w/e3t are independently bit-exact above.  Exhaust the power set of
+    # the four non-exact source-ordered inputs so "minimal" is measured, not
+    # inferred from one promising pair.  The preregistered formed-K + T arm
+    # remains first, followed immediately by the requested salinity addition.
+    subset_names = ordered_vertical_core_subsets()
     subset_rows = []
     if removed_by is None:
         for members in subset_names:

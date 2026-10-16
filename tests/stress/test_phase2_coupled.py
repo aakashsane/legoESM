@@ -28,7 +28,7 @@ def _make_driver(preset="aquaplanet", days=30, resolution=8, nlev=5, dt=600.0):
 
     atm_config = ExperimentConfig(
         grid=GridConfig(grid_type="cubed_sphere", resolution=resolution, nlev=nlev),
-        dycore=DycoreConfig(dt=dt, model_type="hydrostatic"),
+        dycore=DycoreConfig(energy_fixer=False, dt=dt, model_type="hydrostatic"),
         output=OutputConfig(diag_days=max(days, 1)),
         radiation="gray",
         days=days,
@@ -172,7 +172,7 @@ class TestSlabCarbon30Day:
             pytest.skip("No prognostic CO2 tracer")
         assert jnp.all(jnp.isfinite(driver._co2_field)), "CO2 field has NaN/inf"
         M_CO2, M_air = constants.M_CO2, constants.M_air
-        co2_ppmv = float(jnp.mean(driver._co2_field)) / (M_CO2 / M_air) * 1e6
+        co2_ppmv = float(driver._co2_global_mean_kgkg()) / (M_CO2 / M_air) * 1e6
         assert 200.0 < co2_ppmv < 800.0, f"CO2 = {co2_ppmv:.1f} ppmv out of [200,800]"
 
     def test_co2_changed_from_init(self, driver):
@@ -181,7 +181,7 @@ class TestSlabCarbon30Day:
             pytest.skip("No prognostic CO2 tracer")
         M_CO2, M_air = constants.M_CO2, constants.M_air
         co2_init_kgkg = driver.coupled_cfg.co2_ppmv_init * 1.0e-6 * (M_CO2 / M_air)
-        co2_now_kgkg = float(jnp.mean(driver._co2_field))
+        co2_now_kgkg = float(driver._co2_global_mean_kgkg())
         assert co2_now_kgkg != pytest.approx(co2_init_kgkg, rel=1e-6), (
             "CO2 unchanged from init"
         )
@@ -217,7 +217,7 @@ class TestFullCoupled30Day:
             pytest.skip("No prognostic CO2 tracer")
         assert jnp.all(jnp.isfinite(driver._co2_field)), "CO2 field has NaN/inf"
         M_CO2, M_air = constants.M_CO2, constants.M_air
-        co2_ppmv = float(jnp.mean(driver._co2_field)) / (M_CO2 / M_air) * 1e6
+        co2_ppmv = float(driver._co2_global_mean_kgkg()) / (M_CO2 / M_air) * 1e6
         assert 200.0 < co2_ppmv < 800.0, f"CO2 = {co2_ppmv:.1f} ppmv out of [200,800]"
 
 

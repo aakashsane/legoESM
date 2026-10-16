@@ -347,7 +347,7 @@ def test_flux_heats_the_node_and_melt_follows_from_its_enthalpy():
     c_ice*S*(T - Tf)/L_f at the next step; the exported surface humidity is
     ice saturation at the capped skin (T_freeze)."""
     from legoesm.land.multilayer_land import step_multilayer_land_with_diagnostics
-    from legoesm.thermo import charged_latent_heat, saturation_mixing_ratio_ice
+    from legoesm.thermo import saturation_mixing_ratio_ice
     cfg = MultiLayerLandConfig(
         soil_grid=SoilGridConfig(n_layers=10, total_depth=3.0), thermal=_TH,
         surface_scheme=TwoLeafCanopyConfig())
@@ -366,10 +366,9 @@ def test_flux_heats_the_node_and_melt_follows_from_its_enthalpy():
         s1, r1, sfc = out[0], out[1], out[-1]
         transp = sfc.lhflx - sfc.LE_soil
         assert float(transp[0]) >= 0.0          # no canopy dew onto the pack
-        # Pack mass leaves at the latent heat the two-leaf scheme CHARGED
-        # (vaporization at the start-of-step skin, here T_freeze); the
-        # L_s - L_v difference is returned to the ground heat (main's rule).
-        sublim = sfc.LE_soil / charged_latent_heat("two_leaf", jnp.array([_TF]))
+        # Pack mass leaves at the latent heat the two-leaf scheme CHARGED, which
+        # since #1875 is the sublimation heat over snow (sfc.L_soil).
+        sublim = sfc.LE_soil / sfc.L_soil
         return s0.snow_depth - s1.snow_depth - sublim * dt, s1, r1
 
     m1, s1, r1 = melt(st, step(st))
@@ -526,7 +525,7 @@ def test_held_column_reports_the_capped_skin():
     new, resp, _c, sfc = step_multilayer_land_with_diagnostics(
         st, f, cfg, 1.0, 1800.0, lat=jnp.full(1, 1.0))
     _h, held_resp, _hc, mask, _n = _hold_unsolved_columns(
-        st, new, resp, sfc._replace(converged=jnp.array([False])), f, cfg, 1)
+        st, new, resp, sfc._replace(converged=jnp.array([False])), f, cfg, 1)[:5]
     assert bool(mask[0])
     np.testing.assert_array_equal(np.asarray(_h.T_snow), [276.0])  # pending melt kept
     np.testing.assert_allclose(np.asarray(held_resp.T_sfc), [_TF])

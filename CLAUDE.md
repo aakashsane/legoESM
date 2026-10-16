@@ -87,7 +87,7 @@ Senior JAX+ESM dev. Skeptical, verify-first. Optimize: correctness, physical con
 - `TrainablePhysicsParams` wraps 8 params, Equinox module, sigmoid constraints.
 - ERA5: `era5_to_state.py` lat-lon → grid, Zarr cache.
 - Losses: `training/losses.py` imports `ml/loss.py`. No dup.
-- **MPI AD**: `global_sum_mpi` (allreduce SUM) backward = identity — correct ONLY when the sum is the final loss. Sum used INSIDE the computation (mass fixers, global dot, eta floor, freshwater/barotropic sums) needs `broadcast_allreduce_sum` (`parallel/reductions.py`); 15 sites still use identity (2026-09-26 review, tracked issue). MPI halo: `_sendrecv_vjp` custom_vjp. `global_max_mpi`/`global_min_mpi` NOT diff — keep out of losses.
+- **MPI AD**: `global_sum_mpi` / `batch_allreduce_mpi(op="sum")` / `global_sum_if_distributed` backward = allreduce SUM of the cotangent (correct for sums reused inside the computation; #1814). The reduction that PRODUCES the loss every rank evaluates and differentiates identically (normalised or not, e.g. a global mean) takes `global_sum_mpi(..., final_loss=True)` (identity backward). Forward mode (jvp) on both paths = allreduce SUM of the tangent (the default is a linear primitive whose transpose is also allreduce SUM). MPI halo: `_sendrecv_vjp` custom_vjp. `global_max_mpi`/`global_min_mpi` NOT diff — keep out of losses.
 - **NO INERT PARAMETERS EVER (STRICT, user 2026-08-17).** Every leaf of trainable pytree must carry loss gradient. Mode-inactive params frozen OUT of trainable set (`_inactive_keys` pattern); first training step gates rest via `assert_no_inert` (`train_land_params_era5.py`) — zero-gradient leaf aborts run. Any new trainer/calibrator adopt both pieces; param "wired in but off" without freeze-out = defect.
 
 ## RULE 4 — SEARCH BEFORE YOU BUILD, AND PONYTAIL FULL IS THE DEFAULT.
@@ -229,6 +229,34 @@ leave choice pending.
 
 NOT COVERED, proceed normally: what user asked in that message; pure additions
 changing no existing behaviour; tests; comments; docs; error text.
+
+**2026-10-16 EXTENSION — NO SIDE IMPLEMENTATION DECISIONS (STRICT).** User:
+*"No side implementation decisions as strict Claude.md rule."* Approving a
+change does NOT approve the decisions made while implementing it.
+
+A SIDE DECISION = any value, behaviour, or method that changes what the code
+computes, accepts, rejects, or reads, and is NOT dictated by the user's answer,
+the oracle being ported, or existing repo code reused unchanged. Each one gets
+ASKED (one line, current -> proposed, batched) before the code embodying it;
+one found mid-implementation → stop and ask then. Classes, not exhaustive:
+- tolerances and acceptance thresholds (incl. checks on input files, and the
+  tolerance an oracle-match test certifies)
+- guards, floors, caps, clamp vs extrapolate, and their fp32-vs-fp64 behaviour
+- edge cases: zero/empty/missing input, absent file, old checkpoint
+- mappings between representations (bands, grids, levels, units)
+- algorithm and order: interpolation, aggregation, update/operation order
+- where data or files live; names and defaults of user-facing switches
+- which lanes/grids get it; error vs warning vs fallback there
+
+PRECEDENCE: this OVERRIDES the "NOT COVERED" line above for pure additions and
+tests whenever they carry a side decision. Still exempt: error MESSAGE wording,
+comments, docs. Ponytail/minimal-diff governs how much code, never licenses
+picking a value. "Formatting only", "minor", "internal", "implementation
+detail", "numerically negligible" are NOT exemptions. Subagent briefs must
+state this rule. Any item on an end-of-task UNASKED list is a violation of this
+rule (target: empty), not a disclosure that discharges it. FAILURE 2026-10-16:
+radiation stage 1 shipped a band-list check tolerance and an fp32 tiny-path
+guard behaviour, both labelled "formatting only", neither asked.
 
 MECHANICAL CHECK, end of every task: print list of choices made, each one line,
 marked ASKED or UNASKED. Empty UNASKED list = target. Anything on UNASKED list
@@ -444,7 +472,7 @@ explicitly that you did not. "I was careful" is not compliance.
   require showing that line run in configuration under test: print ENCLOSING
   FUNCTION (`awk` nearest `def` above it), confirm active lane/driver call it.
   FAILURE: blamed positivity clamps at `model_driver.py:10923` for century's
-  water source; they live in `_run_per_step` while century run `_run_mpas`,
+  water source; they live in `_run_per_step` while century run `_run_column`,
   which contain no moisture clamp at all. Fix nearly written for lane the run
   never touch. Same class as reading entry point instead of full path.
 - **REUSING A REFERENCE IMPL MEANS PORTING ITS EXCLUSIONS, not just its
@@ -493,7 +521,7 @@ explicitly that you did not. "I was careful" is not compliance.
   missing feature MUST be re-verified in CURRENT code at point of use before
   repeated as finding — this repo routinely fix things without updating prose.
   Comment name module imposing guard → OPEN THAT MODULE. FAILURES (2026-07-30,
-  three in one day): quoted `_run_mpas` "turbulent surface fluxes are
+  three in one day): quoted `_run_column` "turbulent surface fluxes are
   intentionally NOT applied" comment and `AMIP.md` Known #3 to claim MPAS has no
   turbulence — MPAS turbulence path exist (`turbulence/integration.py`, Perot
   edge->cell) and run resolve `turbulence=louis` + `surface_bulk_scheme=coare3`;
@@ -788,7 +816,7 @@ findable offline in seconds; arms bought nothing.
 - Backends differ (Metal/GPU/CPU/spectral/MPI). Apple Silicon: spectral on CPU.
 - **MPI**: `initialize_distributed(global_n=N)` → `scatter_to_local()` → rank-local step → `gather_to_global()` for I/O only. Never full global per rank.
 - **4D halo**: `pad_halo_4d()`+`pad_halo_vector_4d()` all vert in one msg. All 3D ops in `operators_3d.py` use 4D. Never `vmap(pad_halo)`.
-- **MPI halo AD**: all `sendrecv` via `_sendrecv_vjp` (`@jax.custom_vjp` in `halo_exchange.py`). Only `allreduce(SUM)` AD-safe (final-loss sums; intermediate sums need `broadcast_allreduce_sum`); `MAX`/`MIN`/`allgather`/`bcast` = diagnostics only.
+- **MPI halo AD**: all `sendrecv` via `_sendrecv_vjp` (`@jax.custom_vjp` in `halo_exchange.py`). Only `allreduce(SUM)` AD-safe (via `global_sum_mpi`; `final_loss=True` only for a sum seeded as the loss); `MAX`/`MIN`/`allgather`/`bcast` = diagnostics only.
 - **Device mesh under MPI**: per-rank count to `create_device_mesh()`, not total.
 
 ## Oracle-Recipe Fidelity (ocean) — see docs/ocean/fidelity/oracle_recipe_strategy.md

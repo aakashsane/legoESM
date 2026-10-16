@@ -170,6 +170,10 @@ class MultiLayerLandConfig(NamedTuple):
     # Sub-grid elevation-band snow (VIC snow bands / CESM MEC); ``None`` (default)
     # runs the single cell-mean snowpack.  See ``legoesm.land.snow_bands``.
     elev_bands: ElevationSnowBandConfig | None = None
+    # Canopy hides ground snow in the column albedo (CLM5 two-stream over the
+    # snow-buried leaf + stem area; snow-free albedo unchanged).  Two-leaf canopy
+    # only.  Off = the unmasked snow blend.
+    canopy_snow_masking: bool = False
     # Snowpack model: "bulk" (one SWE reservoir, energy-limited melt at the soil
     # skin) or "layered" (``legoesm.land.snow_column``: an equal-mass multi-layer
     # pack solved implicitly together with the soil column, with phase change,
@@ -193,7 +197,11 @@ class MultiLayerLandConfig(NamedTuple):
     soil_grid: SoilGridConfig = SoilGridConfig()
     hydraulics: SoilHydraulicsConfig = SoilHydraulicsConfig()
     thermal: SoilThermalConfig = SoilThermalConfig()
-    richards: RichardsConfig = RichardsConfig(fc_drain_saturation=0.5)
+    # The four fields below are pinned explicitly (user-approved 2026-10-05), so
+    # they do not follow later changes to RichardsConfig defaults; the other
+    # RichardsConfig fields still inherit its defaults.
+    richards: RichardsConfig = RichardsConfig(
+        fc_drain_saturation=0.5, max_iter=30, max_dse_per_iter=0.1, theta_tol=1e-6)
     # Carbon cycle
     carbon: CarbonConfig = CarbonConfig()
     # Stomatal conductance / plant physiology
@@ -437,6 +445,12 @@ def apply_biophysics_lmip_two_leaf(config: MultiLayerLandConfig) -> MultiLayerLa
     """Apply the biophysics LMIP calibration, including its albedo scalars."""
     from legoesm.land.clm_surface_map import biophysics_lmip_albedo_scalars
     cfg = config._replace(**biophysics_lmip_two_leaf_setup())
+    # The calibration fixes the SCHEME (two-leaf, BT, Ball-Berry), not the
+    # solver's iteration cap: carry the caller's cap, or a run asking for
+    # another cap silently gets 60 back (codex 2026-10-04).
+    if isinstance(config.surface_scheme, TwoLeafCanopyConfig):
+        cfg = cfg._replace(surface_scheme=cfg.surface_scheme._replace(
+            max_iters=config.surface_scheme.max_iters))
     # SCALARS ONLY on the existing albedo config: it also carries the per-column
     # snow_cover_scale map built from the surfdata, and replacing the whole
     # object would discard it.

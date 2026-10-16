@@ -301,3 +301,22 @@ def test_dispatch_unknown_turbulence_raises():
     """Dispatch hardening: an unknown turbulence scheme raises ValueError."""
     with pytest.raises(ValueError, match="[Uu]nknown turbulence scheme"):
         get_turbulence_fn(TurbulenceConfig(scheme="not_a_scheme"))
+
+
+def test_edmf_plume_surface_flux_is_part_of_the_surface_flux():
+    """ED + MF at the surface equals the physical surface flux (SST07 Eq. 5).
+    With no surface heat flux a buoyant plume (parcel_dT > 0) only
+    redistributes theta: the column's mass-weighted (rho*dz, the scheme's own
+    weights) theta tendency is zero to round-off.  Before, the plume's bottom
+    flux a*rho*w*(theta_u - theta) was injected on top of the surface flux."""
+    out, _, inp = _run(TurbulentEDMFConfig(parcel_dT=1.0), grid=_grid(),
+                       theta_top=300.0, theta_sfc=300.0, no_surface_flux=True)
+    assert np.max(np.abs(np.asarray(out.shflx))) < 1e-6
+    p_full, z_half, rho = (np.asarray(inp[5]), np.asarray(inp[8]),
+                           np.asarray(inp[9]))
+    w = rho * np.clip(np.abs(z_half[:, :-1] - z_half[:, 1:]), 1.0, None)
+    dtheta = np.asarray(out.dT_dt) / (p_full / constants.p_ref) ** constants.kappa
+    budget = (w * dtheta).sum(-1)
+    scale = (w * np.abs(dtheta)).sum(-1)
+    assert np.all(scale > 0.0)                    # the plume is active
+    assert np.all(np.abs(budget) < 1e-10 * scale), (budget, scale)

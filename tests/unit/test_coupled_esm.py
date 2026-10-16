@@ -30,7 +30,7 @@ def _make_driver(preset="aquaplanet", days=1, resolution=8, nlev=5, dt=600.0,
 
     atm_config = ExperimentConfig(
         grid=GridConfig(grid_type="cubed_sphere", resolution=resolution, nlev=nlev),
-        dycore=DycoreConfig(dt=dt, model_type="hydrostatic"),
+        dycore=DycoreConfig(energy_fixer=False, dt=dt, model_type="hydrostatic"),
         output=OutputConfig(diag_days=max(days, 1)),
         radiation="gray",
         days=days,
@@ -133,7 +133,7 @@ class TestMixedGridCoupling(unittest.TestCase):
 
         atm_config = ExperimentConfig(
             grid=GridConfig(grid_type="latlon", resolution=atm_nlat, nlev=5),
-            dycore=DycoreConfig(dt=600.0, model_type="hydrostatic",
+            dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic",
                                 discretization="finite_volume"),
             output=OutputConfig(diag_days=max(days, 1)),
             radiation="gray", days=days,
@@ -216,7 +216,7 @@ class TestCoupledResumeStatePersistence(unittest.TestCase):
     def setUpClass(cls):
         import tempfile
         cls._tmp = tempfile.TemporaryDirectory()
-        # slab_simple has land, so the lagged runoff channel is genuinely
+        # slab_simple has land, so the lagged surface water flux is genuinely
         # nonzero — the round-trip equality below is not vacuous.
         cls.driver = _make_driver("slab_simple", days=1,
                                   output_dir=cls._tmp.name)
@@ -234,7 +234,11 @@ class TestCoupledResumeStatePersistence(unittest.TestCase):
         ref = self.driver._last_sfc_response
         self.assertIsNotNone(ref)
         self.assertIsNotNone(self.driver._sst_mean_init)
-        self.assertTrue(bool(jnp.any(ref.river_runoff_flux != 0.0)))
+        # Non-vacuity: the buffer carries a live land-sourced channel.  Not
+        # the river runoff: after this 1-day run the slab bucket sits at
+        # ~75 of W_max=150 kg/m2 and runoff is exactly 0 everywhere (job
+        # 10331261) -- the surface water flux is the channel that is live.
+        self.assertTrue(bool(jnp.any(ref.surface_mass_flux != 0.0)))
 
         resumed = _make_driver("slab_simple", days=1)  # fresh: lag buffer None
         self.assertIsNone(resumed._last_sfc_response)
@@ -318,7 +322,7 @@ class TestUnfusedRadiation(unittest.TestCase):
         from legoesm.driver.coupled_esm_driver import CoupledESMDriver
         atm = ExperimentConfig(
             grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
-            dycore=DycoreConfig(dt=600.0, model_type="hydrostatic"),
+            dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic"),
             output=OutputConfig(diag_days=days),
             radiation="gray", days=days,
             rad_update_steps=rad_update_steps,
@@ -424,6 +428,60 @@ class TestCarbonRadiationCoupling(unittest.TestCase):
         self.assertGreater(ov, 1e-4)
         self.assertLess(ov, 1e-3)
 
+    def test_co2_override_is_air_mass_weighted(self):
+        """#1817: radiative CO2 = total CO2 mass / total air mass, not jnp.mean."""
+        import numpy as np
+        from legoesm import constants
+        driver = _make_driver("slab_carbon", days=1)
+        # Lowest layer twice as rich: plain and mass-weighted means differ.
+        driver._co2_field = driver._co2_field.at[..., -1].multiply(2.0)
+        q = np.asarray(driver._co2_field)
+        dp = np.asarray(driver._atm.sigma.layer_thickness_dp(
+            driver._atm.state.p_s.data))
+        area = np.asarray(driver._atm.grid.grid_area)[..., None]
+        ratio = constants.M_CO2 / constants.M_air
+        expected = float((q * dp * area).sum() / (dp * area).sum()) / ratio
+        unweighted = float(q.mean()) / ratio
+        self.assertGreater(abs(unweighted - expected), 1e-3 * expected)
+        driver._update_co2_radiation()
+        ov = driver._atm._co2_vmr_override
+        self.assertAlmostEqual(ov, expected, delta=1e-6 * expected)  # float32 field
+        # d(mean)/dq = each cell-layer's share of the air mass (dp*area).
+        field0 = driver._co2_field
+
+        def mean_of(field):
+            driver._co2_field = field
+            return driver._co2_global_mean_kgkg()
+
+        g = np.asarray(jax.grad(mean_of)(field0))
+        driver._co2_field = field0
+        share = (dp * area) / (dp * area).sum()
+        np.testing.assert_allclose(g, share, rtol=1e-5, atol=0.0)
+        # MPAS-style halo: non-owned cells hold NaN; they must not reach the
+        # value or the gradient.
+        from types import SimpleNamespace
+        own = np.ones(dp.shape[:-1], bool)
+        own.reshape(-1)[::3] = False
+        driver._atm._voronoi_layout = SimpleNamespace(
+            owned_mask_cells=jnp.asarray(own))
+        nan_halo = jnp.where(jnp.asarray(own)[..., None], field0, jnp.nan)
+        state0 = driver._atm.state
+        driver._atm.state = state0._replace(p_s=state0.p_s.replace(
+            data=jnp.where(jnp.asarray(own), state0.p_s.data, jnp.nan)))
+        m = own[..., None]
+        expected_owned = float((q * dp * area * m).sum() / (dp * area * m).sum())
+        self.assertAlmostEqual(float(mean_of(nan_halo)), expected_owned,
+                               delta=1e-6 * expected_owned)
+        self.assertTrue(np.all(np.isfinite(np.asarray(
+            jax.grad(mean_of)(nan_halo)))))
+        driver._atm._voronoi_layout = None
+        driver._atm.state = state0
+        driver._co2_field = field0
+        # The logged global mean is the value that forces the radiation.
+        driver._log_coupled_diag(0.0)
+        self.assertAlmostEqual(driver._coupled_diag[-1]["co2_ppmv_mean"],
+                               ov * 1e6, delta=1e-6 * ov * 1e6)
+
 
 class TestSlabSimple(unittest.TestCase):
     """Slab ocean + slab bucket land."""
@@ -526,7 +584,7 @@ class TestLandModeDispatch(unittest.TestCase):
 
         atm_config = ExperimentConfig(
             grid=GridConfig(grid_type="cubed_sphere", resolution=8, nlev=5),
-            dycore=DycoreConfig(dt=600.0, model_type="hydrostatic"),
+            dycore=DycoreConfig(energy_fixer=False, dt=600.0, model_type="hydrostatic"),
             output=OutputConfig(diag_days=1),
             radiation="gray",
             days=1,

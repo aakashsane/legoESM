@@ -31,6 +31,7 @@ def _state(scale: float) -> MultiLayerLandState:
 def test_land_ml_survives_carry_aux_npz_roundtrip(tmp_path):
     saved = _state(1.0)
     src = SimpleNamespace(
+        state=SimpleNamespace(),   # _checkpoint_carry_aux probes the dycore state
         _carry_aux={}, _land_ml_state=saved,
         _double_moment_step_inputs=lambda: {},
         _land_soil_dz=lambda: np.zeros(6, dtype=np.float64),
@@ -66,6 +67,7 @@ def test_none_optional_fields_survive_roundtrip(tmp_path):
     be skipped on save and left untouched on restore."""
     saved = _state(1.0)._replace(TgC=None)
     src = SimpleNamespace(
+        state=SimpleNamespace(),   # _checkpoint_carry_aux probes the dycore state
         _carry_aux={}, _land_ml_state=saved,
         _double_moment_step_inputs=lambda: {},
         _land_soil_dz=lambda: np.zeros(6, dtype=np.float64),
@@ -101,6 +103,7 @@ def test_partial_checkpoint_raises(tmp_path):
     # cold-start values (a mixed restart), exactly what #730 exists to prevent.
     saved = _state(1.0)
     src = SimpleNamespace(
+        state=SimpleNamespace(),   # _checkpoint_carry_aux probes the dycore state
         _carry_aux={}, _land_ml_state=saved,
         _double_moment_step_inputs=lambda: {},
         _land_soil_dz=lambda: np.zeros(6, dtype=np.float64),
@@ -159,6 +162,7 @@ def test_canopy_warm_start_cache_is_not_a_checkpoint_field(tmp_path):
     cache = np.full((4, 6), np.nan, dtype=np.float32)
     saved = _state(1.0)._replace(canopy_x=cache)
     src = SimpleNamespace(
+        state=SimpleNamespace(),   # _checkpoint_carry_aux probes the dycore state
         _carry_aux={}, _land_ml_state=saved,
         _double_moment_step_inputs=lambda: {},
         _land_soil_dz=lambda: np.zeros(6, dtype=np.float64),
@@ -191,6 +195,7 @@ def test_snow_node_initialised_when_checkpoint_lacks_it(tmp_path):
     saved = saved._replace(T_soil=np.full((4, 6), 280.0, np.float32),
                            snow_depth=np.array([0, 5, 0, 5], np.float32))
     src = SimpleNamespace(
+        state=SimpleNamespace(),   # _checkpoint_carry_aux probes the dycore state
         _carry_aux={}, _land_ml_state=saved,
         _double_moment_step_inputs=lambda: {},
         _land_soil_dz=lambda: np.zeros(6, dtype=np.float64),

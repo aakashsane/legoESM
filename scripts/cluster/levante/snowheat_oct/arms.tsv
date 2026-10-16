@@ -11,6 +11,8 @@ sh2_off_b	280	365	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HE
 # 1-day bit-identity gate: explicit switch OFF vs the plain production default
 # on the same tree and restart, and the plain default twice (reproducibility).
 sh2_gate_off	275	276	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD	 --no-land-snow-insulation
+# switch ON for one day: its state must differ from gate_off in a shared entry
+sh2_gate_on	275	276	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD	 --land-snow-insulation
 sh2_gate_base	275	276	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD
 # base twice: proves the gate can say IDENTICAL at all (run-to-run determinism)
 sh2_gate_base2	275	276	/work/bd1083/b309178/diffESM/legoesm_pg/wt_snowheat_ab_main	HEAD

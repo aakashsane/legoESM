@@ -644,6 +644,15 @@ def cam6_aten():
                * constants.rho_water))
 
 
+def _sqrt_times_self(g):
+    """CAM's ``gsqrt = sqrt(g); g = gsqrt*g`` (same rounding), with a zero-safe
+    gradient: at ``g = 0`` the value is 0 and d/dg = 0, where autodiff of
+    ``sqrt(g)*g`` would give ``inf*0 = NaN``."""
+    pos = g > 0.0
+    g_s = jnp.where(pos, g, 1.0)
+    return jnp.where(pos, jnp.sqrt(g_s) * g_s, 0.0)
+
+
 def cam6_maxsat(zeta, eta, smc, f1, f2):
     """CAM6 ``maxsat`` (ndrop.F90:1704-1750), statement for statement.
 
@@ -660,10 +669,8 @@ def cam6_maxsat(zeta, eta, smc, f1, f2):
                                | (smc[m] * smc[m] > _CAM6_MAXSAT_RATIO * eta[m]))
         ok = eta[m] > _CAM6_ETA_MIN
         eta_s = jnp.where(ok, eta[m], 1.0)
-        g1 = zeta / eta_s
-        g1 = jnp.sqrt(g1) * g1
-        g2 = smc[m] / jnp.sqrt(eta_s + 3.0 * zeta)
-        g2 = jnp.sqrt(g2) * g2
+        g1 = _sqrt_times_self(zeta / eta_s)
+        g2 = _sqrt_times_self(smc[m] / jnp.sqrt(eta_s + 3.0 * zeta))
         term = (f1[m] * g1 + f2[m] * g2) / (smc[m] * smc[m])
         total = jnp.where(ok, total + term, _CAM6_SUM_HUGE)
     safe_total = jnp.where(tiny_all, 1.0, total)

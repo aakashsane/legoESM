@@ -109,3 +109,11 @@ def test_grad_finite_and_jit_parity():
         jnp.asarray(1.3), jnp.asarray(278.0), jnp.asarray(1.0), jnp.asarray(na4), v,
         jnp.asarray(hyg4), jnp.asarray(sig4), 10.0)[0]))(jnp.asarray(vol4))
     assert np.all(np.isfinite(np.asarray(g4)))
+
+
+def test_maxsat_gradient_finite_at_zero_zeta_and_reset():
+    """Codex S1 finding: zeta = 0 with a reset mode gave a NaN gradient."""
+    _, _, f1, f2 = cam6_mode_sigma_factors(jnp.array([1.8]))
+    for eta in (jnp.array([1e-21]), jnp.array([1.0])):
+        g = jax.grad(lambda z: cam6_maxsat(z, eta, jnp.array([1e-10]), f1, f2))(jnp.asarray(0.0))
+        assert np.isfinite(float(g))

@@ -2929,31 +2929,43 @@ def run_step1_vertical_owner(
             ),
         }
 
-    production = output_rows("production", free)
+    ordinary_result = run_arm()
+    production = output_rows("production", ordinary_result)
     passive_result = run_arm(fixed({}))
     passive = {
         field: exact_score(
-            f"control.step1_vertical_seam_disabled.{field}",
+            f"control.step1_vertical_trace_passive.{field}",
+            np.asarray(getattr(ordinary_result, field).data),
             np.asarray(getattr(free.state_after, field).data),
+            wet,
+        )
+        for field in ("T", "S")
+    }
+    selector_disabled = {
+        field: exact_score(
+            f"control.step1_vertical_selector_disabled.{field}",
+            np.asarray(getattr(ordinary_result, field).data),
             np.asarray(getattr(passive_result, field).data),
             wet,
         )
         for field in ("T", "S")
     }
-    if not all(row["n_unequal"] == 0 for row in passive.values()):
-        raise RuntimeError("step-1 vertical seam changes the disabled path")
+    if not all(
+        row["n_unequal"] == 0
+        for rows_to_check in (passive, selector_disabled)
+        for row in rows_to_check.values()
+    ):
+        raise RuntimeError("step-1 vertical trace or disabled seam changes production")
 
     # Round 12: walk the two addends consumed by the executed tra_zdf RHS,
     # in source order.  NEMO records both operands and the completed RHS;
-    # the private production trace publishes the analogous regrouping without
-    # feeding it back into the trajectory.  Keep the actual production
-    # association beside the regrouping: equality is measured, never assumed.
-    own_content_terms = tuple(
-        np.asarray(value, dtype=np.float64)
-        for value in free.content_terms[0]
-    )
-    own_before_content, own_accumulated_content, own_regrouped_content = (
-        own_content_terms)
+    # the existing passive trace exposes the operands already used by the
+    # production path.  Do not add a second in-graph regrouping: materializing
+    # one changed XLA fusion in an early round-12 draft, exactly the observer
+    # effect this passive control is meant to catch.
+    own_before_content = (
+        np.asarray(free.qsr_association.thickness_kbb, dtype=np.float64)
+        * np.asarray(free.Tbb, dtype=np.float64))
     nemo_before_content = (
         native("e3t_Kbb", 30) * native("T_Kbb_in", 30))
     nemo_accumulated_content = (
@@ -2972,12 +2984,9 @@ def run_step1_vertical_owner(
         "before_content": exact_score(
             "GYRE-zco-r4.kt1.content.before",
             nemo_before_content, own_before_content, wet),
-        "accumulated_krhs_content": exact_score(
-            "GYRE-zco-r4.kt1.content.accumulated_krhs",
-            nemo_accumulated_content, own_accumulated_content, wet),
-        "regrouped_against_production": exact_score(
-            "control.step1_content.regrouped_vs_production",
-            own["temperature_content"], own_regrouped_content, wet),
+        "completed_content_after_exact_before": exact_score(
+            "GYRE-zco-r4.kt1.content.completed_after_exact_before",
+            nemo_literal_content, own["temperature_content"], wet),
         "production_against_nemo": exact_score(
             "GYRE-zco-r4.kt1.content.production",
             nemo_inputs["temperature_content"],
@@ -3003,11 +3012,17 @@ def run_step1_vertical_owner(
         },
     }
     mixed_contents = {
-        "source_association_baseline": own_regrouped_content,
+        "source_association_baseline": own["temperature_content"],
+        # The before addend is already bit-exact.  Express its replacement as
+        # a zero delta on the actual production content so this arm does not
+        # invent an inverse for the accumulated floating-point addition.
         "before_content": (
-            nemo_before_content + own_accumulated_content),
-        "accumulated_krhs_content": (
-            own_before_content + nemo_accumulated_content),
+            own["temperature_content"]
+            + (nemo_before_content - own_before_content)),
+        # With an exact before addend, replacing only the remaining addend is
+        # exactly NEMO's recorded completed RHS.  No endpoint subtraction is
+        # used to manufacture a NEMO increment.
+        "accumulated_krhs_content": nemo_literal_content,
         "both_content_addends": nemo_literal_content,
     }
     content_context_rows = {}
@@ -3092,7 +3107,9 @@ def run_step1_vertical_owner(
         if row["temperature"]["n_unequal"] == 0
     ]
     association_moved = (
-        content_input_rows["regrouped_against_production"]["n_unequal"] > 0)
+        content_input_rows["before_content"]["n_unequal"] == 0
+        and content_input_rows[
+            "completed_content_after_exact_before"]["n_unequal"] > 0)
     if association_moved:
         content_classification = "COMPOSITION_DEBT"
     elif len(exact_single_content_terms) == 1:
@@ -3114,6 +3131,12 @@ def run_step1_vertical_owner(
         "first_material_term": content_context_rows[
             "content_isolation"]["first_material_term"],
         "classification": content_classification,
+        "formation_disposition": (
+            "production evolves content as (before - dt*FCT_div) + "
+            "dt*h_Kmm*source while NEMO forms before + "
+            "(dt*h_Kmm)*Krhs; exact before plus a last-bit completed-RHS "
+            "difference is a measured association/composition debt"
+        ),
     }
     if content_only:
         report = {
@@ -3126,7 +3149,10 @@ def run_step1_vertical_owner(
             "native_dtypes": native_dtypes,
             "production": production,
             "temperature_content_source_walk": content_walk,
-            "controls": {"passive_seam": passive},
+            "controls": {
+                "passive_trace": passive,
+                "disabled_selector": selector_disabled,
+            },
             "compiled_nemo_sources": {
                 "rhs": (
                     "GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/"
@@ -3392,7 +3418,11 @@ def run_step1_vertical_owner(
         "tracer_e3t_selector_controls": e3t_selector_controls,
         "first_residual_removing_substitution": removed_by,
         "all_recorded_inputs": all_inputs,
-        "controls": {"passive_seam": passive, "active_plants": plants},
+        "controls": {
+            "passive_trace": passive,
+            "disabled_selector": selector_disabled,
+            "active_plants": plants,
+        },
         "classification": classification,
         "owner": removed_by if removed_by is not None else classification,
         "compiled_nemo_sources": {

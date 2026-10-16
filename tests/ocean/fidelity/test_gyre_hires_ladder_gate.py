@@ -726,20 +726,17 @@ def test_fixed_vertical_probe_exposes_independent_salinity_content():
         "content_T", "content_S")
 
 
-def test_process_trace_exposes_write_only_content_terms():
-    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
-        _NEMOWSTracerProcessTrace,
-    )
-
-    assert _NEMOWSTracerProcessTrace._fields[-1] == "content_terms"
+def test_content_walk_uses_existing_passive_trace_and_completed_boundary():
     source = (
         ROOT / "packages/ocean/legoesm/ocean/dynamics/"
         "ocean_model_latlon_cgrid.py"
     ).read_text(encoding="utf-8")
-    assert "return_final_content_terms=_return_tracer_process_trace" in source
-    assert "if return_final_content_terms:" in source
     assert "content_a = (advection_content_a" in source
+    assert "return_final_content_terms" not in source
     gate_source = SCRIPT.read_text(encoding="utf-8")
+    assert "control.step1_vertical_trace_passive" in gate_source
+    assert "nemo_before_content - own_before_content" in gate_source
+    assert "completed_content_after_exact_before" in gate_source
     assert '"term": "completed_content_boundary"' in gate_source
     assert "planted_content[wet] = np.nextafter" in gate_source
     assert "planted_term" not in gate_source

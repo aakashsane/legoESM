@@ -622,7 +622,8 @@ _CERTIFIED_CARD_DIGESTS_ROUND5 = {          # 85607c118588 + rounds 4 and 5
 # tanks and both VORTEX cards, and the companion test below asserts the added
 # field's value on each certified card.
 # re-pinned 2026-10-16 (#2009, #1910 config fields); re-pinned 2026-10-17 for
-# the ORCA2 lane's 32 appended config fields and each deck's explicit
+# the ORCA2 lane's new config fields (23 appended to the lat-lon config, 32 in
+# all nested configs) and each deck's explicit
 # rn_bt_alpha -- the non-config part of every digest is unchanged.
 _CERTIFIED_CARD_DIGESTS = {
     "GYRE-zco": "9d5f9970066d0bc0",

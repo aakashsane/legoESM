@@ -1096,12 +1096,17 @@ def test_nemo_literal_ene_coefficients_match_source_recurrence_and_red_scale():
     # The recurrence wraps j.  On this closed (non-periodic) box the two
     # southern U corners of the southern row instead read NEMO's closed-south
     # halo fills (dyn_vor_init / dommsk, dynvor.f90:935-937,
-    # dommsk.f90:229-258), which the ORCA2 card tests pin; compare them on
-    # the interior rows only, every other coefficient on every row.
+    # dommsk.f90:229-258); compare them on
+    # the interior rows only, every other coefficient on every row; on the
+    # southern row those two read the zero-filled southern V mask, so NEMO's
+    # closed-south association makes them exactly zero there.
     closed_south = {"ffu_se", "ffu_sw"}
     for name in expected:
         rows = slice(1, None) if name in closed_south else slice(None)
         np.testing.assert_array_equal(actual[name][rows], expected[name][rows])
+    for name in closed_south:
+        np.testing.assert_array_equal(actual[name][0], 0.0)
+        assert np.all(expected[name][0] != 0.0)
 
     # The formerly folded ``ff/e3f`` form is numerically close but not the
     # same binary64 program: this makes the source-association pin fail if the

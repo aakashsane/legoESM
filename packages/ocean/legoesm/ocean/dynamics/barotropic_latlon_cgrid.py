@@ -1055,11 +1055,15 @@ def _nemo_south_copy_fill(field):
 
 def _nemo_een_south_e3f0(e3f0, mesh_e3f0):
     """Southern ``e3f_0vor`` after zero fill and mesh-thickness restore."""
+    if get_meridionally_periodic():
+        return lat_south(e3f0)        # jpfillperio (lbclnk.f90:2028)
     return jnp.concatenate([mesh_e3f0[:1], e3f0[:-1]], axis=0)
 
 
 def _nemo_south_zero_fill(field):
     """NEMO default constant-zero association for a southern halo."""
+    if get_meridionally_periodic():
+        return lat_south(field)       # jpfillperio (lbclnk.f90:2028)
     return jnp.concatenate([jnp.zeros_like(field[:1]), field[:-1]], axis=0)
 
 

@@ -283,8 +283,9 @@ def run_python_day_with_full_state_means(
         raise ValueError("Python full-state day n_steps must be a positive integer")
     cheap = tuple(np.zeros_like(np.asarray(value))
                   for value in _mean_accumulators(state, card))
-    full = tuple(np.zeros_like(np.asarray(value))
-                 for value in _full_mean_accumulators(state, card))
+    # The prognostic TKE field is None until the first model.step seeds it,
+    # so the full-state template is built from the first post-step sample.
+    full = None
     for offset in range(n_steps):
         freshwater, surface = gyre_surface_forcings(
             card, state, first_kt + offset)
@@ -297,10 +298,13 @@ def run_python_day_with_full_state_means(
             for mean, value in zip(
                 cheap, _mean_accumulators(state, card), strict=True)
         )
+        sample = tuple(
+            np.asarray(value) for value in _full_mean_accumulators(state, card))
+        if full is None:
+            full = tuple(np.zeros_like(value) for value in sample)
         full = tuple(
-            (mean * (count - 1.0) + np.asarray(value)) / count
-            for mean, value in zip(
-                full, _full_mean_accumulators(state, card), strict=True)
+            (mean * (count - 1.0) + value) / count
+            for mean, value in zip(full, sample, strict=True)
         )
     return state, _finalize_means(cheap), _finalize_full_means(full)
 

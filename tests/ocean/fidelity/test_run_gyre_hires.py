@@ -166,6 +166,42 @@ def test_full_state_means_are_an_observer_of_ordinary_steps(monkeypatch):
     assert len(full_means) == len(DRIVER.FULL_STATE_FIELD_NAMES)
 
 
+def test_full_state_window_starting_before_tke_is_seeded(monkeypatch):
+    """The first model.step seeds state.tke (None -> field); day 1 must work."""
+    from legoesm.ocean.fidelity import nemo_testcase_recipe
+    from legoesm.ocean import vertical
+
+    field = lambda value: SimpleNamespace(data=np.asarray(value, dtype=np.float64))
+    state = SimpleNamespace(
+        eta=field(np.zeros((2, 3))), H_bathy=field(np.ones((2, 3))),
+        T=field(np.ones((2, 3, 2))), S=field(2.0 * np.ones((2, 3, 2))),
+        u=field(np.ones((2, 4, 2))), v=field(np.ones((3, 3, 2))),
+        tke=None, uu_b=field(np.ones((2, 4))), vv_b=field(np.ones((3, 3))),
+    )
+
+    class Model:
+        @staticmethod
+        def step(state, dt, *, freshwater, surface_forcing):
+            del dt, freshwater, surface_forcing
+            values = vars(state).copy()
+            values["tke"] = field(np.ones((2, 3, 1)))
+            return SimpleNamespace(**values)
+
+    monkeypatch.setattr(
+        nemo_testcase_recipe, "gyre_surface_forcings",
+        lambda card, state, kt: (None, None))
+    monkeypatch.setattr(
+        vertical, "compute_layer_thickness",
+        lambda eta, bathymetry, z_coord: np.ones((2, 3, 2)))
+    card = SimpleNamespace(dt_s=1.0, recipe=SimpleNamespace(z_coord=object()))
+    _, _, full_means = DRIVER.run_python_day_with_full_state_means(
+        Model(), card, state, first_kt=1, n_steps=2)
+    assert len(full_means) == len(DRIVER.FULL_STATE_FIELD_NAMES)
+    np.testing.assert_array_equal(np.asarray(full_means[4]), np.ones((2, 3, 1)))
+    with pytest.raises(ValueError, match="requires prognostic TKE"):
+        DRIVER._full_state_arrays(state, card)
+
+
 @pytest.mark.slow
 def test_tiny_real_gyre_two_day_scan_matches_certified_loop():
     import jax

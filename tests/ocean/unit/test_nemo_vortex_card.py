@@ -625,9 +625,9 @@ _CERTIFIED_CARD_DIGESTS_ROUND5 = {          # 85607c118588 + rounds 4 and 5
 # the ORCA2 lane's 32 appended config fields and each deck's explicit
 # rn_bt_alpha -- the non-config part of every digest is unchanged.
 _CERTIFIED_CARD_DIGESTS = {
-    "GYRE-zco": "6ee6d2cdc641ff5d",
-    "LOCK_EXCHANGE-zco": "d949a5eeabe00ce9",
-    "OVERFLOW-zps": "8d9563e39d0fff3d",
+    "GYRE-zco": "9d5f9970066d0bc0",
+    "LOCK_EXCHANGE-zco": "b6e27b00610d6ad5",
+    "OVERFLOW-zps": "84f18b027e16c617",
 }
 
 

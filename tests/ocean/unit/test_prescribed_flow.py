@@ -267,6 +267,7 @@ def test_positional_construction_unshifted_by_tail_field():
         "barotropic_forcing_centred", "store_mass_flux", "store_salt_flux",
         "zdf_implicit_solver_evaluation",
         # appended by the NEMO ORCA2 lane (card-selected, default off)
+        "een_fold_image_v_row",
         "rk3_stage1_ssh_nemo_literal",
         "rk3_stage1_rhs_nemo_literal",
         "rk3_stage_velocity_written_order",

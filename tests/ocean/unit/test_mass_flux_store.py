@@ -1371,10 +1371,11 @@ def test_store_mass_flux_is_the_last_config_field():
     # exact-salt gateway instrument), preserving every earlier position.
     # ``zdf_implicit_solver_evaluation`` was appended by ``d80df3ed7``; the
     # earlier two slots retain their positions immediately before it.
-    # The NEMO ORCA2 lane then appended its 22 card-selected statement
+    # The NEMO ORCA2 lane then appended its 23 card-selected statement
     # switches, every one defaulting to the previous behaviour.
     tail = ("store_mass_flux", "store_salt_flux",
             "zdf_implicit_solver_evaluation",
+            "een_fold_image_v_row",
             "rk3_stage1_ssh_nemo_literal",
             "rk3_stage1_rhs_nemo_literal",
             "rk3_stage_velocity_written_order",

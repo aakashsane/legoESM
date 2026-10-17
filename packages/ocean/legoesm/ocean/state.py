@@ -1147,11 +1147,6 @@ class BarotropicConfig(NamedTuple):
     bebt: float = 0.2               # Semi-implicit barotropic PGF [0,1]. 0=forward-backward, 0.2=MOM6 default.
     maxvel_barotropic: float = 0.0  # Velocity clipping [m/s]. 0=disabled. MOM6 uses 6.0.
     barotropic_time_filter: str = "cosine"  # "box", "cosine", "power_law" (SM2005 extended window), "nemo_boxcar_centred"/"nemo_boxcar_ab3" (centred nn_bt_flt=2), "nemo_boxcar1_ab3" (forward nn_bt_flt=1), or "nemo_ab3am4" (nn_bt_flt=3)
-    # NEMO namdyn_spg ``rn_bt_alpha``.  No physical default: every NEMO card
-    # states its resolved deck value, including cards whose selected filter
-    # makes the value inert.  ``None`` is an unset sentinel and the NEMO-card
-    # validator plus every consuming nn_bt_flt=1/2/3 path refuse it.
-    nemo_barotropic_filter_alpha: float | None = None
     # In-substep barotropic Coriolis discretization (node 16, DINO deep-eq jet).
     # "avg" (DEFAULT, bit-identical legacy): plain 4-point V->u / U->v average,
     #   which ANNIHILATES the 2dx zonal checkerboard (the C-grid barotropic
@@ -1652,6 +1647,11 @@ class BarotropicConfig(NamedTuple):
     # vector/flux branch (dynspg_ts.f90:413-421, :436-438, :594).  False
     # keeps the unit to flux-form decks only.
     barotropic_literal_fold_unit_vector_form: bool = False
+    # NEMO namdyn_spg ``rn_bt_alpha``.  No physical default: every NEMO card
+    # states its resolved deck value, including cards whose selected filter
+    # makes the value inert.  ``None`` is an unset sentinel and the NEMO-card
+    # validator plus every consuming nn_bt_flt=1/2/3 path refuse it.
+    nemo_barotropic_filter_alpha: float | None = None
 
 
 class RuntimeChecksConfig(NamedTuple):
@@ -2275,13 +2275,6 @@ class LatLonCGridOceanConfig(NamedTuple):
     # (NEMO vor_een ln_dynvor_msk=F: coast shear-vorticity stays LIVE in the
     # triads; select on NEMO-faithful cards). Unknown raises in the operator.
     een_q_boundary: str = "neumann_fill"
-    # NEMO vor_een on a T-pivot north fold: the u trend on the pivot T row
-    # reads vv, e3v and vmask on the fold-image V row above it
-    # (dynvor.f90:767, :779-780), where NEMO holds the lbc_lnk image of the
-    # row below.  True hands the 3-D vorticity trend that image row; False
-    # (default) is the bit-identical legacy path whose compact V mask leaves
-    # the row dry.  Selected explicitly by a card; needs an active fold.
-    een_fold_image_v_row: bool = False
     # F-point (vertex) layer-thickness rule for the AL81/EEN PV flux:
     # "min" (default, bit-identical legacy) — MITgcm hFacZ convention, min
     #   over the 4 surrounding ACTIVE cells (Adcroft-Hill-Marshall 1997 /

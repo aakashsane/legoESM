@@ -3263,6 +3263,7 @@ def build_tsunami_zco_card() -> NEMOTestcaseCard:
     base = _model_config(
         barotropic_time_filter="nemo_boxcar1_ab3",   # nn_bt_flt = 1, ln_bt_fw = T
         n_barotropic_substeps=nl.nn_e_resolved,
+        nemo_barotropic_filter_alpha=nl.rn_bt_alpha,
         bbl_adv_option=0, bbl_gamma_s=0.0,
         bbl_diffusive_option=0, bbl_aht_m2_s=0.0,
         whole_step_identity="vortex_flux_up3_een",
@@ -4467,6 +4468,7 @@ def build_swg_card(
     )
     base = _model_config(
         barotropic_time_filter="nemo_ab3am4", n_barotropic_substeps=1,
+        nemo_barotropic_filter_alpha=nl.rn_bt_alpha,
         bbl_adv_option=0, bbl_gamma_s=0.0,
         bbl_diffusive_option=0, bbl_aht_m2_s=0.0,
         whole_step_identity="gyre_vector_ene_c2",

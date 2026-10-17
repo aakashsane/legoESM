@@ -582,6 +582,11 @@ def _nemo_literal_reference_face_depths(z_coord, dtype):
     reconstructing a plausible min-depth field is the round-150 defect.
     """
 
+    if get_meridionally_periodic():
+        raise ValueError(
+            "NEMO-literal reference face depths store a closed southern V "
+            "row; a meridionally periodic domain fills it by periodicity "
+            "(jpfillperio), which this statement does not transcribe")
     hu_0 = getattr(z_coord, "nemo_hu_0", None)
     hv_0 = getattr(z_coord, "nemo_hv_0", None)
     if hu_0 is None or hv_0 is None:
@@ -2891,6 +2896,15 @@ def nemo_literal_external_mode_active(config) -> bool:
     production identity on the same explicit config fields that already
     select its literal continuity and transport-accumulation statements.
     """
+    # The bundle transcribes a CLOSED southern boundary: its raw reference
+    # face depths store a zero-depth southern V row and its boundary
+    # association assumes no southern neighbour.  NEMO fills a
+    # meridionally periodic domain's southern halo by periodicity
+    # (jpfillperio, lbclnk.f90:2028), which the bundle does not transcribe,
+    # so a periodic card (TSUNAMI) keeps the external mode it was certified
+    # with instead of silently walling its j-seam.
+    if getattr(config, "meridionally_periodic", False):
+        return False
     barotropic = config.barotropic
     vector_form = (
         barotropic.barotropic_literal_fold_unit_vector_form

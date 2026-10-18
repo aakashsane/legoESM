@@ -1626,6 +1626,10 @@ class ModelDriver:
         self.diagnostics = None
         self._phis_data = None
         self._f_land = None
+        # Voronoi MPI: does the GLOBAL mesh hold any land (None = not known,
+        # use this rank's own cells).  Every rank holds the global product,
+        # so the answer is rank-uniform with no collective.
+        self._f_land_global_any = None
         # Prognostic multilayer (Richards) land state, carried in SegmentCarry.land_ml
         # and persisted across segments.  None ⇒ slab-land (scalar T_land) path.
         self._land_ml_state = None
@@ -2691,6 +2695,7 @@ class ModelDriver:
                         "the terrain product cannot be indexed onto it")
                 self._phis_data = jnp.asarray(np.asarray(_phis_g)[_ids])
                 self._f_land = jnp.asarray(np.asarray(_fl_g)[_ids])
+                self._f_land_global_any = bool(np.any(np.asarray(_fl_g) > 0.0))
             elif getattr(self, "_latlon_native_grid", None) is not None:
                 # lat-lon column lane: the product on the NATIVE lat-lon grid
                 # (its own binning + neighbour filter, the lat-lon lane's
@@ -2744,6 +2749,9 @@ class ModelDriver:
             self._f_land = load_land_fraction(
                 self.grid, land_mask_path
             ).astype(_sd)
+            if self._voronoi_layout is not None:
+                self._f_land_global_any = bool(jnp.any(load_land_fraction(
+                    self._grid_global, land_mask_path) > 0.0))
         if land_mask_path:
             logger.info(
                 f"  Land-sea mask: {land_mask_path} "
@@ -3711,9 +3719,15 @@ class ModelDriver:
         if _sso is not None:
             self.physics.subgrid_topo_stddev = _sso
 
+        # Under cell-partition MPI the land setup must be rank-uniform: a rank
+        # whose cells are all ocean still builds the land tile (solving no
+        # columns), or its neighbours' land halo exchanges and checkpoint
+        # gathers have no partner and the run hangs.
         _has_land = (
             self._f_land is not None
-            and bool(jnp.any(self._f_land > 0))
+            and (self._f_land_global_any
+                 if self._f_land_global_any is not None
+                 else bool(jnp.any(self._f_land > 0)))
         )
         self._has_land_anywhere = _has_land
         if _has_land:
@@ -13445,6 +13459,10 @@ class ModelDriver:
             _land_pack_on = (
                 str(getattr(cfg, "land_surface_scheme", "")) != "clm_ml"
                 and 0 < _land_pack_idx_np.size < _f_land_cols.shape[0])
+            # An all-ocean MPI rank: nothing to solve.  Its outputs are the
+            # packed path's ocean-column fills (zeros, state unchanged), so it
+            # costs nothing instead of solving every ocean column.
+            _land_none = _land_pack_idx_np.size == 0
             _land_ncol_full = int(_f_land_cols.shape[0])
             # Owned (non-halo) columns: under MPAS MPI local cells are owned
             # first, then halo copies, which must not be counted twice.
@@ -13631,7 +13649,19 @@ class ModelDriver:
                         _taumag, _held_f,
                         _n_held, _n_held_land, _n_fb_land, _n_fb_rej,
                         _n_unconv_land, _n_iter_max)
-              return _land_step
+              if not _land_none:
+                  return _land_step
+
+              @jax.jit
+              def _land_step_none(land_state, a2s, doy, lai_doy, lai_year):
+                  # Same output structure and dtypes as the solve (traced
+                  # shape-only, never run), so the land halo exchange packs
+                  # the same message on every rank.
+                  out = jax.eval_shape(
+                      _land_step, land_state, a2s, doy, lai_doy, lai_year)
+                  return (land_state,) + tuple(
+                      jnp.zeros(o.shape, o.dtype) for o in out[1:])
+              return _land_step_none
 
             _land_step_fn = _make_land_step(DT_LAND)
             # Bootstrap variant: one host step's forcing, tile advanced by

@@ -529,7 +529,11 @@ def test_periodic_card_keeps_the_closed_south_external_mode_bundle_off(card):
     cfg = card.recipe.model_config
     assert cfg.meridionally_periodic is True
     assert bt.nemo_literal_external_mode_active(cfg) is False
+    # Even a card that selects the flux-form bundle stays off while y-periodic.
+    selected = cfg._replace(barotropic=cfg.barotropic._replace(
+        nemo_literal_external_mode_flux_form=True))
+    assert bt.nemo_literal_external_mode_active(selected) is False
     assert bt.nemo_literal_external_mode_active(
-        cfg._replace(meridionally_periodic=False)) is True
+        selected._replace(meridionally_periodic=False)) is True
     with meridional_periodicity(True), pytest.raises(ValueError, match="periodic"):
         bt._nemo_literal_reference_face_depths(card.recipe.z_coord, jnp.float64)

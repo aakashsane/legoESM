@@ -39,6 +39,10 @@ REGISTERED_TERMS = (
     "external_mode_correction",
     "total_increment",
 )
+BUDGET_TERM_KEYS = tuple(
+    f"surface_v_{term}_daily_mean" for term in REGISTERED_TERMS)
+BUDGET_DAY_KEY = "day"
+BUDGET_MASK_KEY = "surface_v_wet_mask"
 BUDGET_CONTRACT = "momentum_budget_manifest.json"
 BUDGET_CONTRACT_REQUIREMENTS = {
     "status": "complete",
@@ -239,9 +243,11 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                 or not isinstance(closure_bar, (int, float))
                 or not np.isfinite(closure_bar) or closure_bar < 0):
             errors.append("contract lacks a non-negative numeric closure_bar_abs_m_s")
+        verified_artifacts: dict[str, Path] = {}
         for name_key, digest_key in (
             ("data_artifact", "data_sha256"),
             ("passive_identity_artifact", "passive_identity_sha256"),
+            ("preregistration_artifact", "preregistration_sha256"),
         ):
             name = contract.get(name_key)
             digest = contract.get(digest_key)
@@ -254,6 +260,73 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                 errors.append(f"contract {name_key} is missing: {name}")
             elif digest != sha256(artifact):
                 errors.append(f"contract {digest_key} does not match {name}")
+            else:
+                verified_artifacts[name_key] = artifact
+
+        data_path = verified_artifacts.get("data_artifact")
+        if data_path is not None:
+            try:
+                with np.load(data_path, allow_pickle=False) as data:
+                    required = {
+                        BUDGET_DAY_KEY, BUDGET_MASK_KEY, *BUDGET_TERM_KEYS}
+                    missing = sorted(required - set(data.files))
+                    if missing:
+                        errors.append(
+                            f"budget data lacks {', '.join(missing)}")
+                    else:
+                        days = np.asarray(data[BUDGET_DAY_KEY])
+                        expected_days = np.arange(START_DAY, END_DAY + 1)
+                        if not np.array_equal(days, expected_days):
+                            errors.append("budget data day axis is not exactly 30..180")
+                        mask = np.asarray(data[BUDGET_MASK_KEY])
+                        if mask.ndim != 2 or mask.dtype != np.bool_ or not np.any(mask):
+                            errors.append("budget wet mask must be a non-empty 2-D bool array")
+                        arrays = [np.asarray(data[key]) for key in BUDGET_TERM_KEYS]
+                        expected_shape = (expected_days.size, *mask.shape)
+                        for key, values in zip(BUDGET_TERM_KEYS, arrays):
+                            if values.shape != expected_shape:
+                                errors.append(
+                                    f"budget {key} shape is {values.shape}, expected {expected_shape}")
+                            elif not bool(np.all(np.isfinite(values))):
+                                errors.append(f"budget {key} has non-finite values")
+                        if (all(values.shape == expected_shape for values in arrays)
+                                and isinstance(closure_bar, (int, float))
+                                and not isinstance(closure_bar, bool)
+                                and np.isfinite(closure_bar)
+                                and closure_bar >= 0):
+                            components = np.sum(np.stack(arrays[:-1]), axis=0)
+                            closure_max = float(np.max(np.abs(
+                                components[:, mask] - arrays[-1][:, mask])))
+                            if closure_max > closure_bar:
+                                errors.append(
+                                    f"budget closure {closure_max} exceeds {closure_bar}")
+            except (OSError, ValueError) as exc:
+                errors.append(f"cannot read budget data artifact: {exc}")
+
+        passive_path = verified_artifacts.get("passive_identity_artifact")
+        if passive_path is not None:
+            try:
+                passive = json.loads(passive_path.read_text())
+                if (passive.get("provider") != provider
+                        or passive.get("status") != "PASS"
+                        or passive.get("unequal_words") != 0):
+                    errors.append("passive identity artifact does not prove zero moved words")
+            except (OSError, ValueError) as exc:
+                errors.append(f"cannot read passive identity artifact: {exc}")
+
+        prereg_path = verified_artifacts.get("preregistration_artifact")
+        if prereg_path is not None:
+            try:
+                prereg = json.loads(prereg_path.read_text())
+                commit = prereg.get("registration_commit")
+                if (prereg.get("terms") != list(REGISTERED_TERMS)
+                        or prereg.get("closure_bar_abs_m_s") != closure_bar
+                        or prereg.get("registered_before_data") is not True
+                        or not isinstance(commit, str)
+                        or re.fullmatch(r"[0-9a-f]{40}", commit) is None):
+                    errors.append("preregistration artifact does not pin terms, bar, and prior commit")
+            except (OSError, ValueError) as exc:
+                errors.append(f"cannot read preregistration artifact: {exc}")
     return {
         "provider": provider,
         "path": str(path),

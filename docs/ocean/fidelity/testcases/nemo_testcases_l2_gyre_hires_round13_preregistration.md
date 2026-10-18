@@ -28,7 +28,10 @@ The archive audit and the budget-observability audit are now separate:
   correction, separation of implicit vertical mixing from surface stress, an
   independently recorded total, a passive-observer trajectory-identity
   receipt, artifact hashes, and a numeric closure bar fixed before viewing
-  the term comparison.
+  the term comparison.  The gate reads the term artifact itself: the day axis
+  must be exactly 30–180, every registered surface-V array must share the
+  `(151, j, i)` shape and be finite, the wet mask must be nonempty, and the
+  component sum must close the independent total at the registered bar.
 
 The attribution is `UNMEASURED` unless both statuses pass.  In particular, no
 term may be reconstructed as `F(mean(state))` and labelled
@@ -48,8 +51,9 @@ numeric bar.  That verdict is `ACQUISITION_NEEDED`, not a zero-filled budget.
 
 The non-vacuity control uses two subdaily pairs with identical provider means
 but mean products +1 and −1.  The 2.0 ambiguity must fire.  A synthetic online
-contract must pass, while plants in every semantic contract field and both
-artifact digests must refuse.  The existing missing-field and non-finite
+contract must pass, while plants in every semantic contract field and all three
+artifact digests must refuse.  A correctly hashed active-term closure
+violation must also refuse.  The existing missing-field and non-finite
 state-provider plants remain active.
 
 No physics, deck, fidelity bar, or shared trajectory changes in this round.

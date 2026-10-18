@@ -93,16 +93,35 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
     roots = {provider: tmp_path / provider for provider in ("legoesm", "nemo")}
     for provider, root in roots.items():
         root.mkdir()
-        (root / "terms.bin").write_bytes(b"production terms")
-        (root / "passive.json").write_bytes(b"passive identity")
+        shape = (151, 1, 1)
+        terms = {
+            key: np.zeros(shape) for key in PREFLIGHT.BUDGET_TERM_KEYS}
+        np.savez(
+            root / "terms.npz",
+            day=np.arange(30, 181),
+            surface_v_wet_mask=np.ones((1, 1), dtype=bool),
+            **terms,
+        )
+        (root / "passive.json").write_text(json.dumps({
+            "provider": provider, "status": "PASS", "unequal_words": 0,
+        }))
+        (root / "preregistration.json").write_text(json.dumps({
+            "terms": list(PREFLIGHT.REGISTERED_TERMS),
+            "closure_bar_abs_m_s": 0.0,
+            "registered_before_data": True,
+            "registration_commit": "a" * 40,
+        }))
         contract = {
             "provider": provider,
             **PREFLIGHT.BUDGET_CONTRACT_REQUIREMENTS,
             "closure_bar_abs_m_s": 0.0,
-            "data_artifact": "terms.bin",
-            "data_sha256": PREFLIGHT.sha256(root / "terms.bin"),
+            "data_artifact": "terms.npz",
+            "data_sha256": PREFLIGHT.sha256(root / "terms.npz"),
             "passive_identity_artifact": "passive.json",
             "passive_identity_sha256": PREFLIGHT.sha256(root / "passive.json"),
+            "preregistration_artifact": "preregistration.json",
+            "preregistration_sha256": PREFLIGHT.sha256(
+                root / "preregistration.json"),
         }
         (root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(contract))
 
@@ -136,6 +155,7 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
         ("closure_bar_abs_m_s", None),
         ("data_sha256", "0" * 64),
         ("passive_identity_sha256", "0" * 64),
+        ("preregistration_sha256", "0" * 64),
     ):
         planted = dict(nemo_contract)
         planted[key] = bad
@@ -145,6 +165,20 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
             roots["legoesm"], roots["nemo"])["verdict"] == "ACQUISITION_NEEDED"
     (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
         json.dumps(nemo_contract))
+
+    # A correctly hashed but non-closing active term must still refuse.
+    nemo_root = roots["nemo"]
+    arrays = {
+        key: np.zeros((151, 1, 1)) for key in PREFLIGHT.BUDGET_TERM_KEYS}
+    arrays[PREFLIGHT.BUDGET_TERM_KEYS[0]][0, 0, 0] = 1.0
+    np.savez(
+        nemo_root / "terms.npz", day=np.arange(30, 181),
+        surface_v_wet_mask=np.ones((1, 1), dtype=bool), **arrays)
+    planted = dict(nemo_contract)
+    planted["data_sha256"] = PREFLIGHT.sha256(nemo_root / "terms.npz")
+    (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(planted))
+    assert PREFLIGHT.build_report(
+        roots["legoesm"], nemo_root)["verdict"] == "ACQUISITION_NEEDED"
 
 
 def test_daily_means_cannot_identify_a_nonlinear_daily_mean_product():

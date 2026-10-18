@@ -141,8 +141,10 @@ OPEN, in order:
 The focused preflight suite passes 6/6 before the final lane battery.  It
 covers missing/non-finite state providers, a refusing joint provider, the
 state-pass/budget-refuse regression, a positive synthetic online contract,
-plants in every semantic contract field and both artifact digests, and the
-nonlinear daily-mean ambiguity control.  Final battery and citation-gate
+plants in every semantic contract field and all three artifact digests, and the
+nonlinear daily-mean ambiguity control.  A correctly hashed, active one-unit
+term that does not close the independent total is also planted and refused.
+Final battery and citation-gate
 counts are:
 
 `FULL_LANE_BATTERY_SPLIT_PASS: 133 passed, 4 deselected across 12 pytest processes`

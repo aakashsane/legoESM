@@ -1001,6 +1001,10 @@ def build_lock_exchange_zco_card() -> NEMOTestcaseCard:
         whole_step_identity="lane1_flux_up3",
         tke_langmuir_evaluation=None,
     )
+    # The literal external-mode bundle on this flux-form tank: its kt=1-10
+    # NEMO-record distances are equal with and without it (2026-10-17).
+    model_config = model_config._replace(barotropic=model_config.barotropic._replace(
+        nemo_literal_external_mode_flux_form=True))
     recipe = NEMORecipe(
         model_config=model_config,
         physics_config=model_config.physics,
@@ -1093,6 +1097,10 @@ def build_overflow_zps_card() -> NEMOTestcaseCard:
         whole_step_identity="lane1_flux_up3",
         tke_langmuir_evaluation=None,
     )
+    # The literal external-mode bundle on this flux-form tank: its kt=1-10
+    # NEMO-record distances are equal with and without it (2026-10-17).
+    model_config = model_config._replace(barotropic=model_config.barotropic._replace(
+        nemo_literal_external_mode_flux_form=True))
     recipe = NEMORecipe(
         model_config=model_config,
         physics_config=model_config.physics,
@@ -1864,7 +1872,8 @@ def build_orca2_zps_card(deck_root: str | Path) -> NEMOTestcaseCard:
         model_config=model_config,
         physics_config=model_config.physics,
         grid=grid,
-        z_coord=z_coord._replace(nemo_r3t_stored_product=True),
+        z_coord=z_coord._replace(nemo_r3t_stored_product=True,
+                                 nemo_stage_faces_raw_mesh=True),
         land_mask=jnp.asarray(tmask[..., 0], dtype=jnp.float64),
         initial_state=state,
         iwm_forcing=_orca2_iwm_forcing(
@@ -4866,6 +4875,7 @@ def build_orca2g1_flat_card(deck_root: str | Path) -> NEMOTestcaseCard:
         h_partial=jnp.asarray(h_partial, dtype=jnp.float64),
         bottom_level=jnp.asarray(dom["bottom_level"] - 1, dtype=jnp.int32),
         is_active=jnp.asarray(tmask), nemo_r3t_stored_product=True,
+        nemo_stage_faces_raw_mesh=True,
         nemo_e3t_0=jnp.asarray(dom["e3t_0"], dtype=jnp.float64),
         nemo_bbl_e3u_0=jnp.asarray(dom["e3u_0"], dtype=jnp.float64),
         nemo_bbl_e3v_0=jnp.asarray(dom["e3v_0"], dtype=jnp.float64),

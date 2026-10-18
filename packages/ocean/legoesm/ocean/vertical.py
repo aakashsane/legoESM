@@ -1490,6 +1490,12 @@ class OceanPartialCellCoordinate(NamedTuple):
     # every other card leaves them None and is bit-identical.
     nemo_ldf_ahmt: jnp.ndarray | None = None
     nemo_ldf_ahmf: jnp.ndarray | None = None; nemo_r3t_stored_product: bool = False  # card-selected, see _nemo_r3t_product  # noqa: E501,E702
+    # Card-selected: the WS-RK3 stage faces read NEMO's raw face mesh
+    # (e3u_0/e3v_0/umask/vmask on nemo_een_barotropic) instead of rebuilding
+    # it from the card's grid.  Only the ORCA2 cards select it; on VORTEX-SMT
+    # it moved the kt=1-10 NEMO-record distance further, so every other card
+    # keeps the reconstructed source (user decision 2026-10-17).
+    nemo_stage_faces_raw_mesh: bool = False
 
 
 def create_partial_cell_coordinate(
@@ -1694,6 +1700,7 @@ def create_partial_cell_coordinate(
         nemo_e1v=getattr(z_coord, "nemo_e1v", None),
         nemo_een_barotropic=getattr(
             z_coord, "nemo_een_barotropic", None), nemo_r3t_stored_product=getattr(z_coord, "nemo_r3t_stored_product", False) is True,  # noqa: E501
+        nemo_stage_faces_raw_mesh=getattr(z_coord, "nemo_stage_faces_raw_mesh", False) is True,  # noqa: E501
     )
 
 
@@ -1776,6 +1783,7 @@ def create_full_step_coordinate(
         nemo_e1v=getattr(z_coord, "nemo_e1v", None),
         nemo_een_barotropic=getattr(
             z_coord, "nemo_een_barotropic", None), nemo_r3t_stored_product=getattr(z_coord, "nemo_r3t_stored_product", False) is True,  # noqa: E501
+        nemo_stage_faces_raw_mesh=getattr(z_coord, "nemo_stage_faces_raw_mesh", False) is True,  # noqa: E501
     )
 
 

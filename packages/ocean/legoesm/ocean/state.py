@@ -1652,6 +1652,12 @@ class BarotropicConfig(NamedTuple):
     # makes the value inert.  ``None`` is an unset sentinel and the NEMO-card
     # validator plus every consuming nn_bt_flt=1/2/3 path refuse it.
     nemo_barotropic_filter_alpha: float | None = None
+    # Card-selected: the literal external-mode bundle (raw reference face
+    # depths, unmasked/materialised V transport, boundary association) on a
+    # FLUX-form card.  Selected by OVERFLOW and LOCK_EXCHANGE, whose kt=1-10
+    # NEMO-record distances it leaves equal; not by the VORTEX cards, where it
+    # moved VORTEX-SMT further from its record (user decision 2026-10-17).
+    nemo_literal_external_mode_flux_form: bool = False
 
 
 class RuntimeChecksConfig(NamedTuple):

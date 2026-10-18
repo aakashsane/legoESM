@@ -624,11 +624,13 @@ _CERTIFIED_CARD_DIGESTS_ROUND5 = {          # 85607c118588 + rounds 4 and 5
 # re-pinned 2026-10-16 (#2009, #1910 config fields); re-pinned 2026-10-17 for
 # the ORCA2 lane's new config fields (23 appended to the lat-lon config, 32 in
 # all nested configs) and each deck's explicit
-# rn_bt_alpha -- the non-config part of every digest is unchanged.
+# rn_bt_alpha, and again for the card-selected flux-form external-mode
+# switch (True on LOCK_EXCHANGE and OVERFLOW) -- the non-config part of
+# every digest is unchanged.
 _CERTIFIED_CARD_DIGESTS = {
-    "GYRE-zco": "9d5f9970066d0bc0",
-    "LOCK_EXCHANGE-zco": "b6e27b00610d6ad5",
-    "OVERFLOW-zps": "84f18b027e16c617",
+    "GYRE-zco": "dca02dffba3eb14f",
+    "LOCK_EXCHANGE-zco": "10516c2a4d166c73",
+    "OVERFLOW-zps": "9be98498ac9f50de",
 }
 
 
@@ -1041,3 +1043,46 @@ def test_the_transcribed_nint_rounds_half_away_from_zero_like_fortran():
     assert [mod._vortex_nint(v) for v in (0.5, 1.5, 2.5, -0.5, -1.5)] == [
         1, 2, 3, -1, -2]
     assert round(0.5) == 0 and round(2.5) == 2   # the rule NOT transcribed
+
+
+# --------------------------------------------------------------------------
+# The ORCA2 lane's flux-form literal external-mode bundle and its raw-mesh
+# WS-RK3 stage faces moved VORTEX-SMT FURTHER from its kt=1-10 NEMO record
+# (main's phase-3 trajectory gate; user decision 2026-10-17), so both are
+# card-selected and no VORTEX card selects either.
+_VORTEX_CASES = ("VORTEX-zco", "VORTEX-15km-zco", "VORTEX_VEC-zco",
+                 "VORTEX_SMT-zps", "VORTEX_SMT_VEC-zps", "VORTEX_SMT4_VEC-zps")
+
+
+@pytest.mark.parametrize("case", _VORTEX_CASES)
+def test_vortex_cards_select_neither_lane_statement(case):
+    from legoesm.ocean.dynamics.barotropic_latlon_cgrid import (
+        nemo_literal_external_mode_active,
+    )
+    card = build_nemo_testcase_card(case)
+    cfg = card.recipe.model_config
+    assert cfg.barotropic.nemo_literal_external_mode_flux_form is False
+    assert nemo_literal_external_mode_active(cfg) is False
+    assert getattr(card.recipe.z_coord, "nemo_stage_faces_raw_mesh", False) is False
+
+
+def test_both_vortex_smt_levers_are_live_and_card_selected():
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        LatLonCGridOceanModel,
+    )
+    card = build_nemo_testcase_card("VORTEX_SMT-zps")
+    recipe = card.recipe
+    cfg, z = recipe.model_config, recipe.z_coord
+    assert z.nemo_een_barotropic is not None  # the raw mesh exists to be read
+
+    def one_step(config, coord):
+        model = LatLonCGridOceanModel(recipe.grid, coord, config)
+        state = model.step(recipe.initial_state, card.dt_s)
+        return np.asarray(state.u.data), np.asarray(state.eta.data)
+
+    base = one_step(cfg, z)
+    bundle = one_step(cfg._replace(barotropic=cfg.barotropic._replace(
+        nemo_literal_external_mode_flux_form=True)), z)
+    faces = one_step(cfg, z._replace(nemo_stage_faces_raw_mesh=True))
+    assert any(not np.array_equal(b, a) for a, b in zip(base, bundle))
+    assert any(not np.array_equal(f, a) for a, f in zip(base, faces))

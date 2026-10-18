@@ -9,7 +9,7 @@ Evidence root:
 The acquired legoESM run is commit `e4e0f9f694085c1d3e73762763356bccc60cae77`,
 native fp64 GPU policy, physical GPU 0, per-step integration, days 1–180.
 The amended admission instrument is commit
-`5e56176904c43e12f37d1c3a5ecaa60f2ac1212b`.
+`5b24489a09059ff859c786955bfc720bdd396038`.
 
 ## Verdict
 

@@ -1050,8 +1050,11 @@ def test_the_transcribed_nint_rounds_half_away_from_zero_like_fortran():
 # WS-RK3 stage faces moved VORTEX-SMT FURTHER from its kt=1-10 NEMO record
 # (main's phase-3 trajectory gate; user decision 2026-10-17), so both are
 # card-selected and no VORTEX card selects either.
-_VORTEX_CASES = ("VORTEX-zco", "VORTEX-15km-zco", "VORTEX_VEC-zco",
-                 "VORTEX_SMT-zps", "VORTEX_SMT_VEC-zps", "VORTEX_SMT4_VEC-zps")
+_VORTEX_CASES = (
+    "VORTEX-zco", "VORTEX-15km-zco", "VORTEX-10km-zco",
+    "VORTEX_VEC-zco", "VORTEX_VEC-15km-zco", "VORTEX_VEC-10km-zco",
+    "VORTEX_SMT-zps", "VORTEX_SMT_VEC-zps", "VORTEX_SMT1_VEC-zps",
+    "VORTEX_SMT2_VEC-zps", "VORTEX_SMT3_VEC-zps", "VORTEX_SMT4_VEC-zps")
 
 
 @pytest.mark.parametrize("case", _VORTEX_CASES)

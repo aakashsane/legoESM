@@ -8,6 +8,8 @@ Evidence root:
 `/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round13/`.
 The acquired legoESM run is commit `e4e0f9f694085c1d3e73762763356bccc60cae77`,
 native fp64 GPU policy, physical GPU 0, per-step integration, days 1–180.
+The amended admission instrument is commit
+`5e56176904c43e12f37d1c3a5ecaa60f2ac1212b`.
 
 ## Verdict
 
@@ -141,7 +143,21 @@ covers missing/non-finite state providers, a refusing joint provider, the
 state-pass/budget-refuse regression, a positive synthetic online contract,
 plants in every semantic contract field and both artifact digests, and the
 nonlinear daily-mean ambiguity control.  Final battery and citation-gate
-counts are recorded after verification.
+counts are:
+
+`FULL_LANE_BATTERY_SPLIT_PASS: 133 passed, 4 deselected across 12 pytest processes`
+
+That battery includes the 70-row shipped one-degree no-worsening ceiling and
+the card, phase-3, Smagorinsky, acquisition, 30-day, climate, divergence,
+movie, driver, and both high-resolution ladder suites.  The amended preflight
+evidence is `momentum_budget_identifiability.json`, SHA-256
+`908e079ab71c6e65d99764fd2c4f0cd909e0fb1675cb732c0ce8b1bdf65c03df`;
+exit status 3 is its registered `ACQUISITION_NEEDED` result.  The explicit
+receipt citation gate reports PASS: nine citations, zero unmapped citations,
+zero failures, zero failing map entries, and all 9/9 self-tests firing.  Its
+artifact `receipt_citation_gate.json` has SHA-256
+`e2e431b1e2ab653e407f2b7dc31410cc3dc4490ebda034def8f28448f7f63d47`;
+the citation-gate unit suite passes 17/17.
 
 ## Compiled-source citations
 

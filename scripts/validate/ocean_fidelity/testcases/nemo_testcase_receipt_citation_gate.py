@@ -238,6 +238,25 @@ FILES = {
         NEMO / "cfgs/GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/usrdef_sbc.f90"),
     "GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/sbcmod.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3/BLD/ppsrc/nemo/sbcmod.f90"),
+    # High-resolution GYRE round 13 audits the uninstrumented production
+    # program used by the operator's five-year vector-math reference.  Keep
+    # these qualified so none can bind to a P3 writer override.
+    "GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90"),
+    "GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90"),
+    "GYRE_OMIP_L2/BLD/ppsrc/nemo/stp2d.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/stp2d.f90"),
+    "GYRE_OMIP_L2/BLD/ppsrc/nemo/dynspg.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynspg.f90"),
+    "GYRE_OMIP_L2/BLD/ppsrc/nemo/dynzdf.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/dynzdf.f90"),
+    "GYRE_OMIP_L2/BLD/ppsrc/nemo/trdini.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/trdini.f90"),
+    "GYRE_OMIP_L2/BLD/ppsrc/nemo/iom.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/iom.f90"),
+    "GYRE_OMIP_L2/BLD/ppsrc/nemo/diawri.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/diawri.f90"),
     "GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/usrdef_sbc.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/usrdef_sbc.f90"),
     "GYRE_OMIP_L2_P3_SMW/BLD/ppsrc/nemo/stprk3.f90": (
@@ -1591,6 +1610,38 @@ FILES = {
 # recurring symbol is refused now, and every multi-line citation states its
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
+    # --- GYRE high-resolution round 13: production-budget observability ---
+    'GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3.f90:183-210': [
+        'IF( l_ldfdyn_time                    )   CALL ldf_dyn( kstp, Nbb )',
+        'CALL stp_RK3_stg( 3, kstp, Nbb, Nnn, Nrhs, Naa )', 28],
+    'GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:319-334': [
+        'CASE ( 2 , 3 )    !==  Stage 2 & 3  ==!',
+        ('CALL dyn_adv( kstp, Kmm, Kmm, uu, vv, Krhs, zFu, zFv, zFw )', 2),
+        16],
+    'GYRE_OMIP_L2/BLD/ppsrc/nemo/stprk3_stg.f90:387-418': [
+        'CASE ( 3 )        !==  Stage 3  ==!   add left over RHS terms + time stepping',
+        'vv(ji,jj,jk,Kaa) = vv(ji,jj,jk,Kaa) + zvb(ji,jj)*vmask(ji,jj,jk)',
+        32],
+    'GYRE_OMIP_L2/BLD/ppsrc/nemo/dynzdf.f90:500-528': [
+        ('!==  First recurrence : Dk = Dk - Lk * Uk-1 / Dk-1', 2),
+        'DEALLOCATE( ztrdu, ztrdv )', 29],
+    'GYRE_OMIP_L2/BLD/ppsrc/nemo/stp2d.f90:260-267': [
+        '!             Compute ssh and (uu_b,vv_b)  at N+1  (Kaa)',
+        '&   CALL dyn_spg_ts( kt, Kbb, Kbb, Krhs, uu, vv, ssh, uu_b, vv_b, Kaa )',
+        8],
+    'GYRE_OMIP_L2/BLD/ppsrc/nemo/dynspg.f90:231-240': [
+        'SELECT CASE ( nspg )',
+        'DEALLOCATE( ztrdu , ztrdv )', 10],
+    'GYRE_OMIP_L2/BLD/ppsrc/nemo/trdini.f90:127-138': [
+        'l_trdtra = .FALSE.',
+        "CALL ctl_warn('The trends diagnostics are a work in progress: they are not yet fully tested or functional')",
+        12],
+    'GYRE_OMIP_L2/BLD/ppsrc/nemo/iom.f90:1468-1506': [
+        'SUBROUTINE iom_p2d_sp( cdname, pfield2d )',
+        'END SUBROUTINE iom_p3d_dp', 39],
+    'GYRE_OMIP_L2/BLD/ppsrc/nemo/diawri.f90:524-539': [
+        'CALL histwrite( nid_T, "sozotaux", kt, utau',
+        'CALL histwrite( nid_W, "votkeavm", kt, avm', 16],
     # --- GYRE high-resolution round 10: scalar step-1 vertical solve ---
     'GYRE_OMIP_L2_P3_SMW_R7STEP2/BLD/ppsrc/nemo/trazdf.f90:431-457': [
         'zwt(:,1) = 0._wp',

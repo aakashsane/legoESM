@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -28,6 +29,34 @@ NEMO_REQUIREMENTS = {
     "V": ("vomecrty",),
     "W": ("votkeavt", "votkeavm", "vovecrtz"),
 }
+REGISTERED_TERMS = (
+    "advection",
+    "pressure_kinetic_energy_gradient",
+    "total_vorticity_coriolis",
+    "smagorinsky_lateral_diffusion",
+    "vertical_mixing",
+    "surface_stress",
+    "external_mode_correction",
+    "total_increment",
+)
+BUDGET_CONTRACT = "momentum_budget_manifest.json"
+BUDGET_CONTRACT_REQUIREMENTS = {
+    "status": "complete",
+    "window_days": [START_DAY, END_DAY],
+    "terms": list(REGISTERED_TERMS),
+    "production_online": True,
+    "external_mode_included": True,
+    "implicit_zdf_stress_separated": True,
+    "closure_total_recorded": True,
+    "passive_trajectory_identity": True,
+}
+LEGO_CARRIED_ZDF_FIELDS = (
+    "tke_avm",
+    "tke_avt",
+    "tke_dissl",
+    "tke_avm_surface",
+)
+NEMO_TREND_FLAGS = ("ln_glo_trd", "ln_dyn_trd", "ln_KE_trd", "ln_vor_trd")
 
 
 def sha256(path: Path) -> str:
@@ -74,6 +103,7 @@ def audit_legoesm_archive(root: Path) -> dict:
 
     required = set(required_legoesm_keys())
     day_rows = []
+    available_keys: set[str] = set()
     for day in (1, START_DAY, END_DAY):
         path = root / f"day{day:04d}.npz"
         row = {"day": day, "path": str(path), "missing": [], "non_finite": []}
@@ -82,6 +112,7 @@ def audit_legoesm_archive(root: Path) -> dict:
             row["missing"] = sorted(required)
         else:
             with np.load(path) as archive:
+                available_keys.update(archive.files)
                 row["missing"] = sorted(required - set(archive.files))
                 for key in sorted(required & set(archive.files)):
                     if not bool(np.all(np.isfinite(archive[key]))):
@@ -98,6 +129,9 @@ def audit_legoesm_archive(root: Path) -> dict:
         "root": str(root.resolve()),
         "manifest_sha256": sha256(manifest_path) if manifest_path.is_file() else None,
         "required_fields": list(LEGO_FULL_FIELDS),
+        "available_keys": sorted(available_keys),
+        "missing_carried_zdf_fields": sorted(
+            set(LEGO_CARRIED_ZDF_FIELDS) - available_keys),
         "sampled_days": day_rows,
         "errors": errors,
         "status": "PASS" if not errors else "REFUSE",
@@ -110,6 +144,7 @@ def audit_nemo_archive(root: Path) -> dict:
 
     errors: list[str] = []
     grids = {}
+    available_variables: set[str] = set()
     for grid, variables in NEMO_REQUIREMENTS.items():
         paths = sorted(root.glob(f"*_grid_{grid}_*.nc"))
         if len(paths) != 8:
@@ -117,6 +152,7 @@ def audit_nemo_archive(root: Path) -> dict:
         tile_rows = []
         for path in paths:
             with Dataset(path) as dataset:
+                available_variables.update(dataset.variables)
                 missing = sorted(set(variables) - set(dataset.variables))
                 time_count = len(dataset.dimensions.get("time_counter", ()))
                 has_position = "DOMAIN_position_first" in dataset.ncattrs()
@@ -139,11 +175,89 @@ def audit_nemo_archive(root: Path) -> dict:
     manifest = root / "manifest.sha256"
     if not manifest.is_file():
         errors.append("missing manifest.sha256")
+    ocean_output = root / "ocean.output"
+    trend_flags = {}
+    if ocean_output.is_file():
+        output = ocean_output.read_text(errors="replace")
+        for flag in NEMO_TREND_FLAGS:
+            match = re.search(rf"\b{re.escape(flag)}\s*=\s*([TF])\b", output)
+            trend_flags[flag] = None if match is None else match.group(1) == "T"
+    else:
+        trend_flags = {flag: None for flag in NEMO_TREND_FLAGS}
     return {
         "root": str(root.resolve()),
         "manifest_sha256": sha256(manifest) if manifest.is_file() else None,
         "requirements": {key: list(value) for key, value in NEMO_REQUIREMENTS.items()},
+        "available_variables": sorted(available_variables),
+        "online_tendency_variables": sorted(
+            name for name in available_variables
+            if name.startswith(("utrd_", "vtrd_"))),
+        "trend_flags": trend_flags,
         "grids": grids,
+        "errors": errors,
+        "status": "PASS" if not errors else "REFUSE",
+    }
+
+
+def nonlinear_daily_mean_control() -> dict:
+    """Exhibit equal daily means with different nonlinear mean products."""
+    velocity = np.asarray([-1.0, 1.0])
+    gradient_a = np.asarray([-1.0, 1.0])
+    gradient_b = np.asarray([1.0, -1.0])
+    means_a = [float(np.mean(velocity)), float(np.mean(gradient_a))]
+    means_b = [float(np.mean(velocity)), float(np.mean(gradient_b))]
+    product_a = float(np.mean(velocity * gradient_a))
+    product_b = float(np.mean(velocity * gradient_b))
+    return {
+        "provider_means_a": means_a,
+        "provider_means_b": means_b,
+        "provider_means_identical": means_a == means_b,
+        "mean_product_a": product_a,
+        "mean_product_b": product_b,
+        "ambiguity": abs(product_a - product_b),
+        "control_fires": means_a == means_b and product_a != product_b,
+    }
+
+
+def audit_budget_contract(root: Path, provider: str) -> dict:
+    """Require an online-production contract, not merely daily state means."""
+    path = root / BUDGET_CONTRACT
+    errors: list[str] = []
+    contract = None
+    if not path.is_file():
+        errors.append(f"missing {BUDGET_CONTRACT}")
+    else:
+        contract = json.loads(path.read_text())
+        if contract.get("provider") != provider:
+            errors.append(f"contract provider is not {provider}")
+        for key, expected in BUDGET_CONTRACT_REQUIREMENTS.items():
+            if contract.get(key) != expected:
+                errors.append(
+                    f"contract {key} is {contract.get(key)!r}, expected {expected!r}")
+        closure_bar = contract.get("closure_bar_abs_m_s")
+        if (isinstance(closure_bar, bool)
+                or not isinstance(closure_bar, (int, float))
+                or not np.isfinite(closure_bar) or closure_bar < 0):
+            errors.append("contract lacks a non-negative numeric closure_bar_abs_m_s")
+        for name_key, digest_key in (
+            ("data_artifact", "data_sha256"),
+            ("passive_identity_artifact", "passive_identity_sha256"),
+        ):
+            name = contract.get(name_key)
+            digest = contract.get(digest_key)
+            if (not isinstance(name, str) or not name
+                    or Path(name).name != name):
+                errors.append(f"contract {name_key} is not a safe local filename")
+                continue
+            artifact = root / name
+            if not artifact.is_file():
+                errors.append(f"contract {name_key} is missing: {name}")
+            elif digest != sha256(artifact):
+                errors.append(f"contract {digest_key} does not match {name}")
+    return {
+        "provider": provider,
+        "path": str(path),
+        "contract": contract,
         "errors": errors,
         "status": "PASS" if not errors else "REFUSE",
     }
@@ -152,19 +266,39 @@ def audit_nemo_archive(root: Path) -> dict:
 def build_report(legoesm_root: Path, nemo_root: Path) -> dict:
     legoesm = audit_legoesm_archive(legoesm_root)
     nemo = audit_nemo_archive(nemo_root)
-    admitted = legoesm["status"] == nemo["status"] == "PASS"
+    legoesm_budget = audit_budget_contract(legoesm_root, "legoesm")
+    nemo_budget = audit_budget_contract(nemo_root, "nemo")
+    state_admitted = legoesm["status"] == nemo["status"] == "PASS"
+    budget_admitted = (
+        state_admitted
+        and legoesm_budget["status"] == nemo_budget["status"] == "PASS"
+    )
+    mean_control = nonlinear_daily_mean_control()
     return {
-        "schema": "legoesm-gyre-hires-momentum-budget-preflight-v1",
+        "schema": "legoesm-gyre-hires-momentum-budget-preflight-v2",
         "registered_window_days": [START_DAY, END_DAY],
         "leading_field": "native surface V",
         "leading_region": "western boundary wet-span bin",
+        "registered_terms": list(REGISTERED_TERMS),
         "legoesm": legoesm,
         "nemo": nemo,
-        "verdict": "PASS" if admitted else "ACQUISITION_NEEDED",
+        "state_archive_status": "PASS" if state_admitted else "REFUSE",
+        "budget_observability": {
+            "legoesm": legoesm_budget,
+            "nemo": nemo_budget,
+            "nonlinear_daily_mean_control": mean_control,
+            "status": "PASS" if budget_admitted else "REFUSE",
+        },
+        "owner": "UNMEASURED",
+        "closure": "UNMEASURED",
+        "verdict": "PASS" if budget_admitted else "ACQUISITION_NEEDED",
         "disposition": (
-            "archives admit the registered term attribution"
-            if admitted else
-            "refuse term attribution until every registered 3-D field is present"
+            "online production records admit the registered term attribution"
+            if budget_admitted else
+            "daily state archives do not admit production-term attribution; "
+            "require matched online term records, external-mode coverage, "
+            "implicit vertical-mixing/stress separation, an independent total, "
+            "passive-trajectory identity, and a preregistered numeric closure bar"
         ),
     }
 

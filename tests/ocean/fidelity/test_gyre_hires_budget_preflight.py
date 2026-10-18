@@ -64,4 +64,93 @@ def test_joint_report_cannot_pass_one_refusing_provider(tmp_path, monkeypatch):
     )
     report = PREFLIGHT.build_report(tmp_path, tmp_path / "nemo")
     assert report["verdict"] == "ACQUISITION_NEEDED"
-    assert "refuse term attribution" in report["disposition"]
+    assert "do not admit" in report["disposition"]
+
+
+def test_complete_state_archives_do_not_admit_unobserved_production_terms(
+        tmp_path, monkeypatch):
+    """This is the round-13 regression: full daily state is not a budget."""
+    lego = tmp_path / "lego"
+    lego.mkdir()
+    write_archive(lego)
+    monkeypatch.setattr(
+        PREFLIGHT, "audit_nemo_archive",
+        lambda root: {
+            "root": str(root), "status": "PASS", "errors": [],
+            "online_tendency_variables": [],
+            "trend_flags": {flag: False for flag in PREFLIGHT.NEMO_TREND_FLAGS},
+        },
+    )
+    report = PREFLIGHT.build_report(lego, tmp_path / "nemo")
+    assert report["state_archive_status"] == "PASS"
+    assert report["budget_observability"]["status"] == "REFUSE"
+    assert report["owner"] == report["closure"] == "UNMEASURED"
+    assert report["verdict"] == "ACQUISITION_NEEDED"
+
+
+def test_online_contract_can_pass_and_each_semantic_plant_refuses(
+        tmp_path, monkeypatch):
+    roots = {provider: tmp_path / provider for provider in ("legoesm", "nemo")}
+    for provider, root in roots.items():
+        root.mkdir()
+        (root / "terms.bin").write_bytes(b"production terms")
+        (root / "passive.json").write_bytes(b"passive identity")
+        contract = {
+            "provider": provider,
+            **PREFLIGHT.BUDGET_CONTRACT_REQUIREMENTS,
+            "closure_bar_abs_m_s": 0.0,
+            "data_artifact": "terms.bin",
+            "data_sha256": PREFLIGHT.sha256(root / "terms.bin"),
+            "passive_identity_artifact": "passive.json",
+            "passive_identity_sha256": PREFLIGHT.sha256(root / "passive.json"),
+        }
+        (root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(contract))
+
+    monkeypatch.setattr(
+        PREFLIGHT, "audit_legoesm_archive",
+        lambda root: {"root": str(root), "status": "PASS", "errors": []},
+    )
+    monkeypatch.setattr(
+        PREFLIGHT, "audit_nemo_archive",
+        lambda root: {"root": str(root), "status": "PASS", "errors": []},
+    )
+    assert PREFLIGHT.build_report(roots["legoesm"], roots["nemo"])["verdict"] == "PASS"
+
+    nemo_contract = json.loads(
+        (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).read_text())
+    for key in (
+        "status", "window_days", "terms", "production_online",
+        "external_mode_included",
+        "implicit_zdf_stress_separated", "closure_total_recorded",
+        "passive_trajectory_identity",
+    ):
+        planted = dict(nemo_contract)
+        planted[key] = False if isinstance(planted[key], bool) else None
+        (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
+            json.dumps(planted))
+        assert PREFLIGHT.build_report(
+            roots["legoesm"], roots["nemo"])["verdict"] == "ACQUISITION_NEEDED"
+
+    for key, bad in (
+        ("provider", "legoesm"),
+        ("closure_bar_abs_m_s", None),
+        ("data_sha256", "0" * 64),
+        ("passive_identity_sha256", "0" * 64),
+    ):
+        planted = dict(nemo_contract)
+        planted[key] = bad
+        (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
+            json.dumps(planted))
+        assert PREFLIGHT.build_report(
+            roots["legoesm"], roots["nemo"])["verdict"] == "ACQUISITION_NEEDED"
+    (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
+        json.dumps(nemo_contract))
+
+
+def test_daily_means_cannot_identify_a_nonlinear_daily_mean_product():
+    control = PREFLIGHT.nonlinear_daily_mean_control()
+    assert control["provider_means_a"] == control["provider_means_b"] == [0.0, 0.0]
+    assert control["mean_product_a"] == 1.0
+    assert control["mean_product_b"] == -1.0
+    assert control["ambiguity"] == 2.0
+    assert control["control_fires"] is True

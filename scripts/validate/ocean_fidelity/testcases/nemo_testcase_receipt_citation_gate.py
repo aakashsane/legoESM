@@ -255,6 +255,12 @@ FILES = {
         NEMO / "cfgs/GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynzdf.f90"),
     "GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90"),
+    "GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/stprk3_stg.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/stprk3_stg.f90"),
+    "GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/dynzdf.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/dynzdf.f90"),
+    "GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90"),
     "GYRE_OMIP_L2/BLD/ppsrc/nemo/trdini.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/trdini.f90"),
     "GYRE_OMIP_L2/BLD/ppsrc/nemo/iom.f90": (
@@ -1614,6 +1620,28 @@ FILES = {
 # recurring symbol is refused now, and every multi-line citation states its
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
+    # --- GYRE high-resolution round 16: matched budget boundary audit ---
+    'GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/dynzdf.f90:159-169': [
+        'CALL r14_zdf_pre_row( jj, pvv(:,jj,:,Kaa) )',
+        'pvv(ji,jj,jk,Kaa) = ( pvv(ji,jj,jk,Kaa) - vv_b', 11],
+    'GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/stprk3_stg.f90:502-534': [
+        'CALL dyn_zdf( kstp, Kbb, Kmm, Krhs, uu, vv, Kaa  )',
+        'vv(ji,jj,jk,Kaa) = vv(ji,jj,jk,Kaa) + zvb',
+        'CALL r14_finish( kstp, rDt, vv(:,:,1,Kaa) )', 33],
+    'GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90:153-184': [
+        'SUBROUTINE r14_zdf_row( kj, pv_no_stress, pv_full )',
+        'zr14_vertical(:,kj) = pv_no_stress(:,1) - zr14_pre_zdf(:,kj)',
+        'zr14_sum(:,:,7) = zr14_sum(:,:,7) + pv_final(:,:) - zr14_after_zdf(:,:)',
+        32],
+    'ocean_model_latlon_cgrid.py:13050-13058': [
+        'if _zdf_baroclinic_only:',
+        'v_new = v_new + _v_bt_mean',
+        'v_no_stress = v_no_stress + _v_bt_mean', 9],
+    'ocean_model_latlon_cgrid.py:10423-10442': [
+        'return _NEMOWSMomentumBudgetTrace(',
+        'vertical_mixing=_surface(',
+        'external_mode_correction=_surface(',
+        'total_increment=_surface(state_new.v.data - v0)', 20],
     # --- GYRE high-resolution round 15: recorder extent correction ---
     'GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynzdf.f90:100-105': [
         'REAL(wp) ::   zWu , zWv',

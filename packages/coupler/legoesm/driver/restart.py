@@ -1011,6 +1011,11 @@ def read_companion_manifest(ref_path, manifest: dict, spec, name: str,
         candidates.append(r / name)
         candidates += sorted((r / name).parent.glob(f"{stem}.prev-*.json"),
                              reverse=True)
+    # The atmosphere record whose digest this record paired is the one;
+    # without a pair (or a match), the first identical candidate.
+    paired = ((manifest.get("result") or {}).get("companion_state_digests")
+              or {}).get(name)
+    found = []
     for path in candidates:
         try:
             m = read_run_manifest(path)
@@ -1031,7 +1036,11 @@ def read_companion_manifest(ref_path, manifest: dict, spec, name: str,
             reasons.append(f"{path}: records another configuration than this "
                            f"run's {key} ({len(rows)} fields)")
             continue
-        return path, m
+        if paired and (m.get("result") or {}).get("state_digest") == paired:
+            return path, m
+        found.append((path, m))
+    if found:
+        return found[0]
     raise ValueError("; ".join(reasons))
 
 

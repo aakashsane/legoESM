@@ -616,3 +616,46 @@ def test_archived_coupled_record_finds_its_archived_atmosphere_record(
         coupled, old, restart.RUNNER_REPLAY_SPECS["run_coupled"],
         restart.RUN_MANIFEST_FILENAME, "atmosphere")
     assert path == archived
+
+
+def test_coupled_run_does_not_adopt_a_standalone_atmosphere_record(tmp_path):
+    from legoesm.driver.config import ExperimentConfig
+    cfg = ExperimentConfig()
+    _atm_driver(tmp_path, cfg, tag=None)._write_run_manifest()  # standalone
+    with pytest.raises(RuntimeError, match="one output directory holds one run"):
+        _atm_driver(tmp_path, cfg)._write_run_manifest()
+    # ... and a standalone run does not adopt a coupled run's record
+    other = tmp_path / "c"
+    _atm_driver(other, cfg)._write_run_manifest()
+    with pytest.raises(RuntimeError, match="one output directory holds one run"):
+        _atm_driver(other, cfg, tag=None)._write_run_manifest()
+    # an untagged record beside a coupled record (written before the tag
+    # existed) is still the coupled run's own
+    old = tmp_path / "old"
+    _atm_driver(old, cfg, tag=None)._write_run_manifest()
+    restart.write_run_manifest(old / "coupled", {"runner": "run_coupled"},
+                               config_kind="coupled", runner_tag="run_coupled")
+    _atm_driver(old, cfg)._write_run_manifest()      # preserved, no raise
+
+
+def test_companion_with_the_paired_digest_wins(tmp_path, monkeypatch):
+    """Two identical-configuration atmosphere records (a later segment came
+    back to the same configuration): the one whose digest the coupled record
+    paired is taken, not merely the first."""
+    import shutil
+    import numpy as np
+    ref = _reference(monkeypatch, tmp_path)
+    coupled = ref / "coupled" / restart.RUN_MANIFEST_FILENAME
+    live = ref / restart.RUN_MANIFEST_FILENAME
+    archived = ref / "run_manifest.prev-20261019T000000000000Z-1.json"
+    shutil.copyfile(live, archived)
+    mine = restart.record_final_state_digest(archived, {"a": np.ones(3)})
+    restart.record_final_state_digest(live, {"a": np.zeros(3)})
+    restart.record_final_state_digest(
+        coupled, {"x": np.ones(2)},
+        companion_digests={restart.RUN_MANIFEST_FILENAME: mine})
+    m = restart.read_run_manifest(coupled)
+    path, _ = restart.read_companion_manifest(
+        coupled, m, restart.RUNNER_REPLAY_SPECS["run_coupled"],
+        restart.RUN_MANIFEST_FILENAME, "atmosphere")
+    assert path == archived

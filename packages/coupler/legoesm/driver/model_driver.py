@@ -5818,6 +5818,19 @@ class ModelDriver:
                 f"runs' provenance in one directory. Use a fresh output "
                 f"directory, or remove the existing run_manifest.json."
             )
+        tag = self._manifest_runner_tag or ""
+        old_tag = (existing.get("reproducibility") or {}).get("runner_tag") or ""
+        # An untagged record beside a coupled record is a coupled run's
+        # atmosphere written before the tag existed: still this run.
+        pre_tag_coupled = (tag == "run_coupled" and not old_tag and (
+            self._output_dir / "coupled" / manifest_file.name).exists())
+        if tag != old_tag and not pre_tag_coupled:
+            # One output directory holds one run: a record another runner (or
+            # a standalone run) wrote is not this run's, even at equal config.
+            raise RuntimeError(
+                f"{manifest_file} was written by the {old_tag or 'standalone'!r} "
+                f"runner, this run is {tag or 'standalone'!r}; one output "
+                f"directory holds one run. Use a fresh output directory.")
         logger.info(
             f"Run manifest already present at {manifest_file}; preserving it "
             f"(same config — resume/retry)."

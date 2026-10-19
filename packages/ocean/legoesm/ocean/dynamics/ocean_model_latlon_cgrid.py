@@ -1085,6 +1085,12 @@ class _NEMOWSRK3TestHooks(NamedTuple):
     # stage program.  Private WRITE-only round-51 instrument; no constructible
     # model configuration can select it.
     expose_live_stage_operands: bool = False
+    # Round-14 WRITE-only online budget.  Returns the eight preregistered
+    # native surface-V increments from their production source boundaries.
+    # The public state is supplied by an independently compiled ordinary step,
+    # so enabling the recorder cannot feed a diagnostic value back into the
+    # trajectory.  No constructible model configuration can select it.
+    momentum_budget_trace: bool = False
     # Private controls for the frozen barotropic forcing walk.  Incoming arrays
     # land before dyn_cor_2D's equivalent; final arrays land after it.  A
     # callable final value is a WRITE-only operand observer instead.  None is
@@ -2106,6 +2112,21 @@ class _NEMOWSLiveOperandTrace(NamedTuple):
     stage_tracer_sources: object
 
 
+class _NEMOWSMomentumBudgetTrace(NamedTuple):
+    """Private passive surface-V production increments for GYRE."""
+
+    state_after: object
+    advection: object
+    pressure_kinetic_energy_gradient: object
+    total_vorticity_coriolis: object
+    smagorinsky_lateral_diffusion: object
+    vertical_mixing: object
+    surface_stress: object
+    external_mode_correction: object
+    total_increment: object
+    wet_mask: object
+
+
 def _nemo_qsr_stage3_rate(
     tendency_kbb, qsr_kbb, qsr_kmm, thickness_kbb, thickness_kmm,
 ):
@@ -3038,6 +3059,18 @@ class LatLonCGridOceanModel:
             raise ValueError(
                 "expose_stage3_raw_momentum cannot be combined with another "
                 "momentum exposure: they share the returned u/v slots")
+        _budget_hook = self._nemo_ws_test_hooks.momentum_budget_trace
+        if not isinstance(_budget_hook, bool):
+            raise ValueError("momentum_budget_trace must be a bool")
+        if _budget_hook and (
+                self._nemo_ws_test_hooks.expose_barotropic_substeps
+                or self._nemo_ws_test_hooks.expose_live_stage_operands
+                or self._nemo_ws_test_hooks.tracer_process_trace is not None
+                or self._nemo_ws_test_hooks.tracer_ldf_diagnostics is not None
+                or _stage3_raw_hook or _stage3_rhs_hook):
+            raise ValueError(
+                "momentum_budget_trace cannot be combined with another "
+                "whole-step diagnostic return")
         _zdf_momentum_observer = (
             self._nemo_ws_test_hooks.zdf_momentum_observer)
         if (_zdf_momentum_observer is not None
@@ -3058,6 +3091,13 @@ class LatLonCGridOceanModel:
         self.config = self._validate_config(_config_for_validation)
         if _oracle_endpoint_diagnostic_eos_bypass:
             self.config = self.config._replace(eos_depth="geometric")
+        if _budget_hook and (
+                self.config.momentum_time_integrator != "rk3_ws"
+                or not self.config.implicit_vertical_mixing
+                or not self.config.surface_stress_implicit):
+            raise ValueError(
+                "momentum_budget_trace requires the GYRE WS-RK3 program "
+                "with implicit vertical mixing and implicit surface stress")
         if (self._nemo_ws_test_hooks
                 .stage3_advection_content_override is not None):
             if self.config.tracer_time_integrator != "rk3_ws":
@@ -5620,6 +5660,7 @@ class LatLonCGridOceanModel:
                    _nemo_stage1_zad_eta_after_override=None,
                    _return_barotropic_substeps: bool = False,
                    _return_live_stage_operands: bool = False,
+                   _return_momentum_budget_trace: bool = False,
                    _return_tracer_process_trace: bool = False,
                    _return_ldf_diagnostic_trace: bool = False,
                    _ldf_state=None, _tke_n2_bundle_override=None,
@@ -5896,7 +5937,8 @@ class LatLonCGridOceanModel:
         _rhs_term_observer = (
             self._nemo_ws_test_hooks.slow_forcing_rhs_term_observer)
         _want_rhs_components = (
-            _return_live_stage_operands or callable(_rhs_term_observer)
+            _return_live_stage_operands or _return_momentum_budget_trace
+            or callable(_rhs_term_observer)
             or bool(self._nemo_ws_test_hooks
                     .expose_stage1_momentum_rhs_split))
         _tend_result = self.tendencies(
@@ -6423,6 +6465,10 @@ class LatLonCGridOceanModel:
         _nemo_ws_qsr_association = None
         _nemo_ws_process_boundaries = None
         _nemo_ws_process_Taa = None; _nemo_ws_ldf_diagnostics = None
+        _nemo_ws_budget_stage3_components = None
+        _nemo_ws_budget_stage3_extra_rhs = None
+        _nemo_ws_budget_v_after_zdf = None
+        _nemo_ws_budget_v_no_stress = None
         _nemo_ws_vertical_solve_trace, _return_vertical_solve_trace = None, (_return_tracer_process_trace and self._nemo_ws_test_hooks.vertical_solve_trace)
         if getattr(_cfg_b, "momentum_time_integrator", "euler") == "rk3":
             u0 = state.u.data
@@ -6477,6 +6523,8 @@ class LatLonCGridOceanModel:
                 stage_face_thickness=None, stage_index=0,
                 stage_zad_operands=None,
             ):
+                nonlocal _nemo_ws_budget_stage3_components
+                nonlocal _nemo_ws_budget_stage3_extra_rhs
                 st = state._replace(
                     u=state.u.replace(data=u_in * u_mask_3d),
                     v=state.v.replace(data=v_in * v_mask_3d),
@@ -6553,7 +6601,8 @@ class LatLonCGridOceanModel:
                     stage_index == _operator_stage
                     and bool(self._nemo_ws_test_hooks.expose_momentum_operator))
                 _return_components = (
-                    _expose_operator or _return_live_stage_operands)
+                    _expose_operator or _return_live_stage_operands
+                    or (_return_momentum_budget_trace and stage_index == 3))
                 _zad_observers = (None,
                     self._nemo_ws_test_hooks.stage2_zad_operand_observer,
                     self._nemo_ws_test_hooks.stage3_zad_operand_observer)
@@ -6640,6 +6689,11 @@ class LatLonCGridOceanModel:
                                          _return_components))
                 if _return_components:
                     td, _, _operator_components = td_result
+                    if (_return_momentum_budget_trace
+                            and stage_index == 3):
+                        _nemo_ws_budget_stage3_components = (
+                            _operator_components)
+                        _nemo_ws_budget_stage3_extra_rhs = extra_rhs
                     if (_return_live_stage_operands
                             and stage_index in (2, 3)):
                         _nemo_ws_live_operator_operands[stage_index - 1] = (
@@ -10072,6 +10126,8 @@ class LatLonCGridOceanModel:
                     surface_tracer_forcing=tend.surface_tracer_forcing,
                     tracer_source=tend.tracer_source,
                     tke_old=_tke_old, tke_source=_tke_source, return_tke=True,
+                    return_momentum_budget_split=(
+                        _return_momentum_budget_trace),
                     return_tke_entry=_return_live_stage_operands, return_tracer_solve_trace=_return_vertical_solve_trace,
                     grid=_grid, n2_tracers=_n2_tracers,
                     n2_tracers_before=_n2_tracers_before,
@@ -10101,6 +10157,9 @@ class LatLonCGridOceanModel:
                     (state_new, tke_new,
                      _nemo_ws_live_tke_entry,
                      _nemo_ws_live_tke_statement_trace) = _tke_result
+                elif _return_momentum_budget_trace:
+                    (state_new, tke_new,
+                     _nemo_ws_budget_v_no_stress) = _tke_result
                 else:
                     state_new, tke_new, _nemo_ws_vertical_solve_trace = (_tke_result if _return_vertical_solve_trace else (*_tke_result, None))
             else:
@@ -10125,9 +10184,18 @@ class LatLonCGridOceanModel:
                     nemo_aimp_tracer_w=_nemo_ws_aimp_tracer_w,
                     nemo_tracer_content_rhs=_nemo_ws_tracer_content_rhs,
                     nemo_aimp_momentum_w_u=_nemo_ws_aimp_momentum_w_u,
-                    nemo_aimp_momentum_w_v=_nemo_ws_aimp_momentum_w_v, return_tracer_solve_trace=_return_vertical_solve_trace,
+                    nemo_aimp_momentum_w_v=_nemo_ws_aimp_momentum_w_v,
+                    return_momentum_budget_split=(
+                        _return_momentum_budget_trace),
+                    return_tracer_solve_trace=_return_vertical_solve_trace,
                     z_coord=z_coord, config=config, iwm_fields=iwm_fields)
-                state_new, _nemo_ws_vertical_solve_trace = (_zdf_result if _return_vertical_solve_trace else (_zdf_result, None))
+                if _return_momentum_budget_trace:
+                    (state_new,
+                     _nemo_ws_budget_v_no_stress) = _zdf_result
+                else:
+                    state_new, _nemo_ws_vertical_solve_trace = (_zdf_result if _return_vertical_solve_trace else (_zdf_result, None))
+            if _return_momentum_budget_trace:
+                _nemo_ws_budget_v_after_zdf = state_new.v.data
         if _return_tracer_process_trace:
             _nemo_ws_process_Taa = state_new.T.data
         if tke_new is not None:
@@ -10337,6 +10405,43 @@ class LatLonCGridOceanModel:
         # carry's dtypes stay stable.
         state_new = self._carry_nemo_rk3_after_ssh(state, state_new)
         state_new = cast_pytree(state_new, None, "storage", allow_downcast=True)
+        if _return_momentum_budget_trace:
+            if (getattr(_cfg_b, "momentum_time_integrator", "euler")
+                    != "rk3_ws"):
+                raise ValueError(
+                    "momentum budget trace requires "
+                    "momentum_time_integrator='rk3_ws'")
+            if (_nemo_ws_budget_stage3_components is None
+                    or _nemo_ws_budget_v_after_zdf is None
+                    or _nemo_ws_budget_v_no_stress is None):
+                raise ValueError("GYRE momentum budget trace is incomplete")
+            _budget = _nemo_ws_budget_stage3_components
+            _extra_v = (
+                jnp.zeros_like(v3_raw)
+                if _nemo_ws_budget_stage3_extra_rhs is None
+                else _nemo_ws_budget_stage3_extra_rhs[1])
+            _surface = lambda values: values[1:, :, 0]  # noqa: E731
+            _dt_budget = jnp.asarray(dt_mom, dtype=v0.dtype)
+            return _NEMOWSMomentumBudgetTrace(
+                state_after=state_new,
+                advection=_surface(_dt_budget * (
+                    _budget["zad_v"].data + _extra_v)),
+                pressure_kinetic_energy_gradient=_surface(_dt_budget * (
+                    _budget["hpg_v"].data + _budget["keg_v"].data)),
+                total_vorticity_coriolis=_surface(
+                    _dt_budget * _budget["vorticity_v"].data),
+                smagorinsky_lateral_diffusion=_surface(
+                    _dt_budget * _budget["ldf_v"].data),
+                vertical_mixing=_surface(
+                    _nemo_ws_budget_v_no_stress - v3_raw),
+                surface_stress=_surface(
+                    _nemo_ws_budget_v_after_zdf
+                    - _nemo_ws_budget_v_no_stress),
+                external_mode_correction=_surface(
+                    state_new.v.data - _nemo_ws_budget_v_after_zdf),
+                total_increment=_surface(state_new.v.data - v0),
+                wet_mask=state.v_mask.data[1:, :] > 0.5,
+            )
         if _return_ldf_diagnostic_trace:
             if _nemo_ws_ldf_diagnostics is None:
                 raise ValueError("WS-RK3 LDF diagnostic trace is incomplete")
@@ -11700,6 +11805,7 @@ class LatLonCGridOceanModel:
         K_diss_v_w=None,
         return_K_diss_v: bool = False,
         return_K_profiles: bool = False,
+        return_momentum_budget_split: bool = False,
         return_tracer_solve_trace: bool = False,
         effective_K_test_override=None,
         grid=None,
@@ -12347,6 +12453,11 @@ class LatLonCGridOceanModel:
         # with at least two wet levels.
         u_new, v_new = state.u.data, state.v.data
         u_solve_in, v_solve_in = state.u.data, state.v.data
+        # The companion RHS exists only in the static diagnostic trace.  Keep
+        # the ordinary production expression below byte-for-byte unchanged:
+        # this seam must not move a trajectory when the recorder is absent.
+        v_solve_no_stress = (
+            state.v.data if return_momentum_budget_split else None)
         _zdf_explicit_u, _zdf_explicit_v = u_solve_in, v_solve_in
         if do_momentum and getattr(_cfg_b, "surface_stress_implicit",
                                    False) and surface_forcing is not None:
@@ -12538,6 +12649,8 @@ class LatLonCGridOceanModel:
                     "both uu_b and vv_b, or neither")
             u_solve_in = u_solve_in - _u_bt_mean
             v_solve_in = v_solve_in - _v_bt_mean
+            if v_solve_no_stress is not None:
+                v_solve_no_stress = v_solve_no_stress - _v_bt_mean
         _zdf_baro_subtract_u, _zdf_baro_subtract_v = (
             u_solve_in, v_solve_in)
 
@@ -12710,7 +12823,20 @@ class LatLonCGridOceanModel:
                 v_solve_in = v_solve_in - (
                     dt_mom * _r_eff_v[..., jnp.newaxis]
                     / jnp.maximum(_drg_e3v, 1e-10) * _is_bot_v * _v_bt_mean)
+                if v_solve_no_stress is not None:
+                    v_solve_no_stress = v_solve_no_stress - (
+                        dt_mom * _r_eff_v[..., jnp.newaxis]
+                        / jnp.maximum(_drg_e3v, 1e-10)
+                        * _is_bot_v * _v_bt_mean)
         _zdf_baro_drag_u, _zdf_baro_drag_v = u_solve_in, v_solve_in
+        if return_momentum_budget_split:
+            if not do_momentum:
+                raise ValueError(
+                    "momentum budget split requires do_momentum=True")
+            # The ZDF matrix is independent of its velocity RHS.  Withhold
+            # only dynzdf's vtauV surface deposit and run the identical formed
+            # matrix a second time.  This is a passive one-variable response,
+            # not a residual label: production still consumes v_solve_in.
 
         # ---- Solve dispatch: batched (opt-in diag) / T+S pair / singles ---
         # Trace-time env switches (feature-gating exception: static
@@ -12741,6 +12867,10 @@ class LatLonCGridOceanModel:
         # performance-only batched solver: doing so would replace its three
         # separate recurrences with the shared generic lowering.
         _vmix_batched = _vmix_batched and not _zdf_literal
+        if return_momentum_budget_split and _vmix_batched:
+            raise ValueError(
+                "momentum budget split requires the source-ordered per-field "
+                "vertical solve, not LEGOESM_VMIX_BATCHED")
         # Double-diffusion salinity diffusivity: K_v (heat) + (avs - avt).
         # ``dK_ddm_salt is None`` (ddm off) ⇒ K_s_cell IS K_v_cell (same
         # object) ⇒ the shared-K pair fast path stays BYTE-IDENTICAL.
@@ -12882,6 +13012,13 @@ class LatLonCGridOceanModel:
                         evaluation="nemo_literal",
                         extra_diag=extra_diag_v,
                         implicit_w=nemo_aimp_momentum_w_v)
+                    if return_momentum_budget_split:
+                        v_no_stress = (
+                            implicit_vertical_diffusion_ocean_momentum_dispatch(
+                                v_solve_no_stress, A_v_v, dz_v, dz_half_v,
+                                dt_mom, _vwet, evaluation="nemo_literal",
+                                extra_diag=extra_diag_v,
+                                implicit_w=nemo_aimp_momentum_w_v))
                 else:
                     u_new = implicit_vertical_diffusion_ocean(
                         u_solve_in, A_v_u, dz_u, dz_half_u, dt_mom,
@@ -12891,6 +13028,10 @@ class LatLonCGridOceanModel:
                         v_solve_in, A_v_v, dz_v, dz_half_v, dt_mom,
                         extra_diag=extra_diag_v,
                     )
+                    if return_momentum_budget_split:
+                        v_no_stress = implicit_vertical_diffusion_ocean(
+                            v_solve_no_stress, A_v_v, dz_v, dz_half_v,
+                            dt_mom, extra_diag=extra_diag_v)
         if do_tracers:
             _tracer_apply_mask = (_literal_t_wet if _zdf_literal
                                   else mask_3d > 0.5)
@@ -12913,10 +13054,15 @@ class LatLonCGridOceanModel:
                 # A_v=0 (test 3: strip + re-add round-trips to the input).
                 u_new = u_new + _u_bt_mean
                 v_new = v_new + _v_bt_mean
+                if return_momentum_budget_split:
+                    v_no_stress = v_no_stress + _v_bt_mean
             _u_apply_mask = _uwet if _zdf_literal else u_mask_3d > 0.5
             _v_apply_mask = _vwet if _zdf_literal else v_mask_3d > 0.5
             u_new = jnp.where(_u_apply_mask, u_new, state.u.data)
             v_new = jnp.where(_v_apply_mask, v_new, state.v.data)
+            if return_momentum_budget_split:
+                v_no_stress = jnp.where(
+                    _v_apply_mask, v_no_stress, state.v.data)
             if self._tke_realized_kdiss_active() and (
                     return_K_diss_v or (K_diss_v_w is None and do_tracers)):
                 # Realized implicit-friction dissipation K_diss_v (Veros
@@ -13052,6 +13198,10 @@ class LatLonCGridOceanModel:
                           dims=("lat", "lon", "level"), units="s^-1")),
             )
         if return_K_diss_v:
+            if return_momentum_budget_split:
+                raise ValueError(
+                    "momentum budget split cannot be combined with "
+                    "return_K_diss_v")
             return state_out, K_diss_v_w
         if return_tke:
             if return_tke_entry:
@@ -13071,6 +13221,12 @@ class LatLonCGridOceanModel:
                         "WRITE-only tracer solve trace was requested but the "
                         "NEMO-literal tracer solve did not expose it")
                 return state_out, tke_new, _tracer_solve_trace
+            if return_momentum_budget_split:
+                if v_no_stress is None:
+                    raise ValueError(
+                        "momentum budget split did not form the no-stress "
+                        "solution")
+                return state_out, tke_new, v_no_stress
             return state_out, tke_new
         if return_tracer_solve_trace:
             if _tracer_solve_trace is None:
@@ -13078,6 +13234,12 @@ class LatLonCGridOceanModel:
                     "WRITE-only tracer solve trace was requested but the "
                     "NEMO-literal tracer solve did not expose it")
             return state_out, _tracer_solve_trace
+        if return_momentum_budget_split:
+            if v_no_stress is None:
+                raise ValueError(
+                    "momentum budget split did not form the no-stress "
+                    "solution")
+            return state_out, v_no_stress
         return state_out
 
     def diagnose_vertical_K(self, state: LatLonCGridOceanState, dt: float,
@@ -13271,6 +13433,20 @@ class LatLonCGridOceanModel:
                     _nemo_stage1_zad_eta_after_override=(
                         _nemo_stage1_zad_eta_after_override))
                 return result._replace(state_after=state_after)
+            if self._nemo_ws_test_hooks.momentum_budget_trace:
+                # The recorder's extra return graph is diagnostic only.  Its
+                # prognostic carry comes from the same independently compiled
+                # ordinary step used by the live-operand gate, which makes the
+                # recorder passive by construction and by the identity test.
+                state_after = self._step_live_operand_reference_jitted(
+                    state, dt, freshwater, surface_forcing, sponge,
+                    grid=grid, vertex_mask=vertex_mask, t_seconds=t_seconds,
+                    _shortwave_tendency_test_delta=(
+                        _shortwave_tendency_test_delta),
+                    _vertical_K_test_override=_vertical_K_test_override,
+                    _nemo_stage1_zad_eta_after_override=(
+                        _nemo_stage1_zad_eta_after_override))
+                return result._replace(state_after=state_after)
             if (self._nemo_ws_test_hooks.tracer_process_trace is not None
                     or self._nemo_ws_test_hooks.tracer_ldf_diagnostics is not None):
                 # As with the live stage operands, returning extra arrays can
@@ -13421,6 +13597,18 @@ class LatLonCGridOceanModel:
                 surface_forcing=surface_forcing, sponge=sponge,
                 grid=grid, vertex_mask=vertex_mask, t_seconds=t_seconds,
                 _return_barotropic_substeps=True,
+                _nemo_stage1_zad_eta_after_override=(
+                    _nemo_stage1_zad_eta_after_override))
+        if self._nemo_ws_test_hooks.momentum_budget_trace:
+            if _oi != "forward_euler":
+                raise ValueError(
+                    "momentum_budget_trace is a private forward_euler "
+                    "WS-RK3 fidelity hook")
+            return self._step_impl(
+                state, dt, freshwater=freshwater,
+                surface_forcing=surface_forcing, sponge=sponge,
+                grid=grid, vertex_mask=vertex_mask, t_seconds=t_seconds,
+                _return_momentum_budget_trace=True,
                 _nemo_stage1_zad_eta_after_override=(
                     _nemo_stage1_zad_eta_after_override))
         if self._nemo_ws_test_hooks.expose_live_stage_operands:

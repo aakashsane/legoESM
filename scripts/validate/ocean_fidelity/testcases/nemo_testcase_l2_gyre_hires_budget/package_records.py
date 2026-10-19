@@ -1,0 +1,291 @@
+#!/usr/bin/env python3
+"""Admit NEMO's passive Round-14 online surface-V budget records."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import struct
+import sys
+from pathlib import Path
+
+import numpy as np
+
+TERMS = (
+    "advection",
+    "pressure_kinetic_energy_gradient",
+    "total_vorticity_coriolis",
+    "smagorinsky_lateral_diffusion",
+    "vertical_mixing",
+    "surface_stress",
+    "external_mode_correction",
+    "total_increment",
+)
+FIRST_DAY = 30
+LAST_DAY = 180
+STEPS_PER_DAY = 24
+CLOSURE_BAR_ABS_M_S = 1.0e-12
+MAGIC = b"NEMO_R14_GYRBUD "
+HALO = 2
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def read_record(path: Path) -> dict[str, object]:
+    """Read one fixed-layout Fortran stream and remove the two-cell halo."""
+    raw = path.read_bytes()
+    header_bytes = 16 + 9 * 4 + 2 * 8
+    if len(raw) < header_bytes or raw[:16] != MAGIC:
+        raise ValueError(f"{path.name}: bad or truncated magic")
+    values = struct.unpack_from("=9i", raw, 16)
+    version, day, step, ni, nj, nk, bits, nterms, samples = values
+    dt_s, closure_bar = struct.unpack_from("=2d", raw, 16 + 9 * 4)
+    if (version, nk, bits, nterms, samples) != (1, 30, 64, len(TERMS), 24):
+        raise ValueError(f"{path.name}: unsupported header {values}")
+    if step != day * STEPS_PER_DAY or dt_s != 3600.0:
+        raise ValueError(f"{path.name}: day/step/dt cadence is inconsistent")
+    if closure_bar != CLOSURE_BAR_ABS_M_S:
+        raise ValueError(f"{path.name}: closure bar changed to {closure_bar}")
+    words = np.frombuffer(raw, dtype="<f8", offset=header_bytes)
+    expected = ni * nj * (1 + len(TERMS))
+    if words.size != expected:
+        raise ValueError(
+            f"{path.name}: has {words.size} payload words, expected {expected}")
+    mask_native = words[: ni * nj].reshape((ni, nj), order="F")
+    terms_native = words[ni * nj :].reshape(
+        (ni, nj, len(TERMS)), order="F")
+    if ni <= 2 * HALO or nj <= 2 * HALO:
+        raise ValueError(f"{path.name}: domain is smaller than its halo")
+    mask = mask_native[HALO:-HALO, HALO:-HALO].T > 0.5
+    terms = terms_native[HALO:-HALO, HALO:-HALO, :].transpose(2, 1, 0)
+    if mask.shape != (82, 122) or int(np.count_nonzero(mask)) != 9480:
+        raise ValueError(
+            f"{path.name}: unexpected native mask {mask.shape}, "
+            f"wet={np.count_nonzero(mask)}")
+    if not bool(np.all(np.isfinite(terms))):
+        raise ValueError(f"{path.name}: non-finite budget word")
+    closure = float(np.max(np.abs(
+        np.sum(terms[:-1], axis=0)[mask] - terms[-1][mask])))
+    if closure > CLOSURE_BAR_ABS_M_S:
+        raise ValueError(
+            f"{path.name}: closure {closure} exceeds "
+            f"{CLOSURE_BAR_ABS_M_S}")
+    return {
+        "day": day,
+        "step": step,
+        "mask": mask,
+        "terms": terms,
+        "closure_max_abs_m_s": closure,
+        "sha256": sha256(path),
+    }
+
+
+def compare_restarts(control: Path, instrumented: Path) -> dict[str, object]:
+    """Prove every common numeric restart word is bitwise unchanged."""
+    from netCDF4 import Dataset
+
+    unequal_words = 0
+    compared_words = 0
+    moved_variables = []
+    with Dataset(control) as left, Dataset(instrumented) as right:
+        left.set_auto_mask(False)
+        right.set_auto_mask(False)
+        left_names = {
+            name for name, var in left.variables.items()
+            if np.dtype(var.dtype).kind in "biufc"}
+        right_names = {
+            name for name, var in right.variables.items()
+            if np.dtype(var.dtype).kind in "biufc"}
+        if left_names != right_names:
+            raise ValueError(
+                "restart numeric-variable registry changed: "
+                f"only_control={sorted(left_names - right_names)}, "
+                f"only_instrumented={sorted(right_names - left_names)}")
+        for name in sorted(left_names):
+            a = np.asarray(left.variables[name][:])
+            b = np.asarray(right.variables[name][:])
+            if a.shape != b.shape or a.dtype != b.dtype:
+                raise ValueError(f"restart variable {name} changed shape or dtype")
+            a_words = np.ascontiguousarray(a).view(np.uint8).reshape(
+                a.size, a.dtype.itemsize)
+            b_words = np.ascontiguousarray(b).view(np.uint8).reshape(
+                b.size, b.dtype.itemsize)
+            unequal = int(np.count_nonzero(np.any(a_words != b_words, axis=1)))
+            unequal_words += unequal
+            compared_words += int(a.size)
+            if unequal:
+                maximum = None
+                if a.dtype.kind in "iufc":
+                    differences = np.abs(a.astype(np.complex128)
+                                         - b.astype(np.complex128))
+                    finite = np.isfinite(differences)
+                    if bool(np.any(finite)):
+                        maximum = float(np.max(differences[finite]))
+                moved_variables.append({
+                    "variable": name,
+                    "unequal_words": unequal,
+                    "max_abs": maximum,
+                })
+    return {
+        "provider": "nemo",
+        "status": "PASS" if unequal_words == 0 else "REFUSE",
+        "unequal_words": unequal_words,
+        "compared_words": compared_words,
+        "moved_variables": moved_variables,
+        "control_restart": control.name,
+        "instrumented_restart": instrumented.name,
+        "control_sha256": sha256(control),
+        "instrumented_sha256": sha256(instrumented),
+    }
+
+
+def package(
+    run_root: Path, control_restart: Path, instrumented_restart: Path,
+    preregistration: Path, registration_commit: str, producer_commit: str,
+    resolved_namelist: Path, writer_source_manifest: Path,
+    binary: Path,
+) -> dict[str, object]:
+    if len(registration_commit) != 40 or any(
+            char not in "0123456789abcdef" for char in registration_commit):
+        raise ValueError("registration commit must be a lowercase forty-character SHA")
+    if len(producer_commit) != 40 or any(
+            char not in "0123456789abcdef" for char in producer_commit):
+        raise ValueError("producer commit must be a lowercase forty-character SHA")
+    records = []
+    for day in range(FIRST_DAY, LAST_DAY + 1):
+        path = run_root / f"oracle_gyre_r14_budget_day{day:04d}.bin"
+        if not path.is_file():
+            raise ValueError(f"missing {path.name}")
+        records.append(read_record(path))
+    extras = sorted(run_root.glob("oracle_gyre_r14_budget_day*.bin"))
+    if len(extras) != len(records):
+        raise ValueError(
+            f"found {len(extras)} budget records, expected {len(records)}")
+    mask = np.asarray(records[0]["mask"])
+    if any(not np.array_equal(record["mask"], mask) for record in records):
+        raise ValueError("surface-V mask changes across budget records")
+
+    passive = compare_restarts(control_restart, instrumented_restart)
+    if passive["status"] != "PASS":
+        raise ValueError(
+            f"write-only recorder moved {passive['unequal_words']} restart words")
+    passive_name = "momentum_budget_passive_identity.json"
+    (run_root / passive_name).write_text(
+        json.dumps(passive, indent=2, sort_keys=True) + "\n")
+
+    prereg = {
+        "terms": list(TERMS),
+        "closure_bar_abs_m_s": CLOSURE_BAR_ABS_M_S,
+        "registered_before_data": True,
+        "registration_commit": registration_commit,
+        "source": str(preregistration),
+        "source_sha256": sha256(preregistration),
+    }
+    prereg_name = "momentum_budget_preregistration.json"
+    (run_root / prereg_name).write_text(
+        json.dumps(prereg, indent=2, sort_keys=True) + "\n")
+
+    namelist_name = "resolved_namelist_lines.txt"
+    source_name = "writer_source.sha256"
+    (run_root / namelist_name).write_bytes(resolved_namelist.read_bytes())
+    (run_root / source_name).write_bytes(writer_source_manifest.read_bytes())
+
+    data_name = "momentum_budget_terms.npz"
+    arrays = {
+        f"surface_v_{name}_daily_mean": np.stack([
+            np.asarray(record["terms"])[index]
+            for record in records])
+        for index, name in enumerate(TERMS)
+    }
+    with (run_root / data_name).open("wb") as stream:
+        np.savez_compressed(
+            stream,
+            day=np.arange(FIRST_DAY, LAST_DAY + 1, dtype=np.int64),
+            surface_v_wet_mask=mask,
+            **arrays)
+
+    contract = {
+        "provider": "nemo",
+        "status": "complete",
+        "producer_commit": producer_commit,
+        "deck": "r4_smag",
+        "precision_flavour": "vector-math-conda",
+        "cadence": {
+            "dt_s": 3600.0,
+            "steps_per_day": STEPS_PER_DAY,
+            "first_day": FIRST_DAY,
+            "last_day": LAST_DAY,
+            "first_step": 697,
+            "last_step": 4320,
+            "samples_per_record": STEPS_PER_DAY,
+            "records": LAST_DAY - FIRST_DAY + 1,
+        },
+        "resolved_namelist_artifact": namelist_name,
+        "resolved_namelist_sha256": sha256(run_root / namelist_name),
+        "writer_source_manifest_artifact": source_name,
+        "writer_source_manifest_sha256": sha256(run_root / source_name),
+        "binary_sha256": sha256(binary),
+        "same_binary_control": True,
+        "activation_environment": "GYRE_R14_BUDGET=1",
+        "control_environment": "GYRE_R14_BUDGET=0",
+        "window_days": [FIRST_DAY, LAST_DAY],
+        "terms": list(TERMS),
+        "production_online": True,
+        "external_mode_included": True,
+        "implicit_zdf_stress_separated": True,
+        "closure_total_recorded": True,
+        "passive_trajectory_identity": True,
+        "closure_bar_abs_m_s": CLOSURE_BAR_ABS_M_S,
+        "data_artifact": data_name,
+        "data_sha256": sha256(run_root / data_name),
+        "passive_identity_artifact": passive_name,
+        "passive_identity_sha256": sha256(run_root / passive_name),
+        "preregistration_artifact": prereg_name,
+        "preregistration_sha256": sha256(run_root / prereg_name),
+        "record_sha256": {
+            f"day{record['day']:04d}": record["sha256"]
+            for record in records
+        },
+        "closure_max_abs_m_s": max(
+            float(record["closure_max_abs_m_s"]) for record in records),
+    }
+    (run_root / "momentum_budget_manifest.json").write_text(
+        json.dumps(contract, indent=2, sort_keys=True) + "\n")
+    return contract
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-root", type=Path, required=True)
+    parser.add_argument("--control-restart", type=Path, required=True)
+    parser.add_argument("--instrumented-restart", type=Path, required=True)
+    parser.add_argument("--preregistration", type=Path, required=True)
+    parser.add_argument("--registration-commit", required=True)
+    parser.add_argument("--producer-commit", required=True)
+    parser.add_argument("--resolved-namelist", type=Path, required=True)
+    parser.add_argument("--writer-source-manifest", type=Path, required=True)
+    parser.add_argument("--binary", type=Path, required=True)
+    args = parser.parse_args(argv)
+    try:
+        contract = package(
+            args.run_root, args.control_restart,
+            args.instrumented_restart, args.preregistration,
+            args.registration_commit, args.producer_commit,
+            args.resolved_namelist, args.writer_source_manifest,
+            args.binary)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        print(f"REFUSE: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(contract, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

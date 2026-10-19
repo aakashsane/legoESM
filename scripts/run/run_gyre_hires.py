@@ -30,6 +30,22 @@ FULL_STATE_FIELD_NAMES = (
     "layer_thickness_m_3d",
 )
 SCAN_PARITY_ATOL = 1.0e-12
+BUDGET_TERMS = (
+    "advection",
+    "pressure_kinetic_energy_gradient",
+    "total_vorticity_coriolis",
+    "smagorinsky_lateral_diffusion",
+    "vertical_mixing",
+    "surface_stress",
+    "external_mode_correction",
+    "total_increment",
+)
+BUDGET_CLOSURE_BAR_ABS_M_S = 1.0e-12
+BUDGET_REGISTRATION_COMMIT = "3293fd5f49c332038cc61735ed1dc7bbc0f7b798"
+BUDGET_PREREGISTRATION = (
+    "docs/ocean/fidelity/testcases/"
+    "nemo_testcases_l2_gyre_hires_round14_preregistration.md"
+)
 
 
 def validate_physical_gpu(mode: str, physical_gpu: int | None, environ=None) -> None:
@@ -137,6 +153,27 @@ def parse_day_window(value: str | None, *, days: int) -> tuple[int, int] | None:
         raise ValueError(
             f"full-state window must satisfy 1 <= START <= END <= {days}")
     return start, end
+
+
+def validate_momentum_budget_request(
+    *, deck: str, days: int, mode: str, per_step: bool,
+    window: tuple[int, int] | None,
+) -> None:
+    """Fail closed unless the registered compiled GYRE budget is selected."""
+    if window is None:
+        return
+    if deck != "r4_smag":
+        raise ValueError("momentum budget is registered only for deck r4_smag")
+    if window != (30, 180):
+        raise ValueError("momentum budget window is preregistered as 30:180")
+    if days != 180:
+        raise ValueError("momentum budget acquisition must run exactly 180 days")
+    if mode != "gpu-native":
+        raise ValueError("momentum budget acquisition requires gpu-native mode")
+    if per_step:
+        raise ValueError(
+            "momentum budget uses its own compiled-day scan; do not combine "
+            "it with --per-step")
 
 
 def validate_full_state_request(
@@ -252,6 +289,91 @@ def build_scanned_day_mean_stepper(model, card, n_steps: int):
         )
 
     return scanned
+
+
+def build_scanned_day_budget_stepper(model, card, n_steps: int):
+    """Compile one day and sum passive source-boundary increments online."""
+    import jax
+    import jax.numpy as jnp
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import gyre_surface_forcings
+
+    if type(n_steps) is not int or n_steps <= 0:
+        raise ValueError("budget day n_steps must be a positive integer")
+
+    def scan_body(carry, values):
+        state, climate_sums, budget_sums = carry
+        kt, = values
+        freshwater, surface = gyre_surface_forcings(card, state, kt)
+        trace = model.step(
+            state, card.dt_s, freshwater=freshwater,
+            surface_forcing=surface)
+        state = trace.state_after
+        climate_sample = _mean_accumulators(state, card)
+        budget_sample = tuple(getattr(trace, name) for name in BUDGET_TERMS)
+        climate_sums = tuple(
+            total + value
+            for total, value in zip(climate_sums, climate_sample, strict=True))
+        budget_sums = tuple(
+            total + value
+            for total, value in zip(budget_sums, budget_sample, strict=True))
+        return (state, climate_sums, budget_sums), None
+
+    @jax.jit
+    def compiled(state, first_kt):
+        climate_sums = tuple(
+            jnp.zeros_like(value) for value in _mean_accumulators(state, card))
+        mask = state.v_mask.data[1:, :] > 0.5
+        budget_sums = tuple(
+            jnp.zeros(mask.shape, dtype=state.v.data.dtype)
+            for _ in BUDGET_TERMS)
+        steps = jnp.arange(n_steps, dtype=jnp.int64) + first_kt
+        (state, climate_sums, budget_sums), _ = jax.lax.scan(
+            scan_body, (state, climate_sums, budget_sums), (steps,))
+        count = jnp.asarray(n_steps, dtype=state.v.data.dtype)
+        climate_means = _finalize_means(tuple(
+            total / count for total in climate_sums))
+        budget_means = tuple(total / count for total in budget_sums)
+        return state, climate_means, budget_means, mask
+
+    return compiled
+
+
+def state_bitwise_identity(left, right) -> dict[str, object]:
+    """Count every moved array word in two state pytrees."""
+    import jax
+
+    left_leaves, left_tree = jax.tree_util.tree_flatten(left)
+    right_leaves, right_tree = jax.tree_util.tree_flatten(right)
+    if left_tree != right_tree:
+        raise ValueError("passive identity states have different pytrees")
+    unequal_words = 0
+    compared_words = 0
+    moved_leaves = []
+    for index, (a_raw, b_raw) in enumerate(
+            zip(left_leaves, right_leaves, strict=True)):
+        a = np.asarray(a_raw)
+        b = np.asarray(b_raw)
+        if a.shape != b.shape or a.dtype != b.dtype:
+            raise ValueError(
+                f"passive identity leaf {index} changed shape or dtype")
+        # Compare storage words, not numerical equality: ``a != b`` misses a
+        # moved sign bit on zero and cannot distinguish NaN payloads.  The
+        # passivity claim is byte identity of every prognostic word.
+        a_bytes = np.ascontiguousarray(a).view(np.uint8).reshape(
+            a.size, a.dtype.itemsize)
+        b_bytes = np.ascontiguousarray(b).view(np.uint8).reshape(
+            b.size, b.dtype.itemsize)
+        unequal = int(np.count_nonzero(np.any(a_bytes != b_bytes, axis=1)))
+        unequal_words += unequal
+        compared_words += int(a.size)
+        if unequal:
+            moved_leaves.append({"leaf": index, "unequal_words": unequal})
+    return {
+        "status": "PASS" if unequal_words == 0 else "REFUSE",
+        "unequal_words": unequal_words,
+        "compared_words": compared_words,
+        "moved_leaves": moved_leaves,
+    }
 
 
 def run_python_day(model, card, state, first_kt: int, n_steps: int):
@@ -481,9 +603,10 @@ def cpu_scan_parity(namelist, *, days: int = 2, commit: str | None = None) -> di
 
 
 def run_long(
-    namelist, output: Path, *, days: int, mode: str, commit: str,
+    namelist, output: Path, *, deck: str, days: int, mode: str, commit: str,
     physical_gpu: int | None = None, per_step: bool = False,
     full_state_window: tuple[int, int] | None = None,
+    momentum_budget_window: tuple[int, int] | None = None,
 ) -> dict:
     """Integrate a resolved GYRE deck and atomically write each model day."""
     import jax
@@ -498,6 +621,13 @@ def run_long(
     validate_physical_gpu(mode, physical_gpu)
     validate_full_state_request(
         days=days, per_step=per_step, window=full_state_window)
+    validate_momentum_budget_request(
+        deck=deck, days=days, mode=mode, per_step=per_step,
+        window=momentum_budget_window)
+    if full_state_window is not None and momentum_budget_window is not None:
+        raise ValueError(
+            "full-state and momentum-budget windows are separate acquisition "
+            "lanes and cannot be combined")
     if len(commit) != 40 or any(char not in "0123456789abcdef" for char in commit):
         raise ValueError("commit must be a forty-character lowercase Git SHA")
     steps_per_day_f = SECONDS_PER_DAY / namelist.rn_Dt_s
@@ -526,6 +656,16 @@ def run_long(
 
     card = build_gyre_zco_card(namelist)
     model = LatLonCGridOceanModel(card.recipe.grid, card.recipe.z_coord, card.recipe.model_config)
+    budget_model = None
+    budget_day = None
+    if momentum_budget_window is not None:
+        from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+            _NEMOWSRK3TestHooks,
+        )
+        budget_model = LatLonCGridOceanModel(
+            card.recipe.grid, card.recipe.z_coord, card.recipe.model_config,
+            _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                momentum_budget_trace=True))
     state = card.recipe.initial_state
     cold_tail = None
     cold_sample = None
@@ -533,6 +673,10 @@ def run_long(
         state, cold_sample = cold_start_scan_state(model, card, state)
         cold_tail = build_scanned_day_mean_stepper(model, card, steps_per_day - 1)
         scanned_day = build_scanned_day_mean_stepper(model, card, steps_per_day)
+        if budget_model is not None:
+            budget_model.prime_step_caches(state)
+            budget_day = build_scanned_day_budget_stepper(
+                budget_model, card, steps_per_day)
     else:
         scanned_day = None
     output.mkdir(parents=True)
@@ -590,6 +734,18 @@ def run_long(
             "accumulation is host-side and cannot alter the step graph"
             if full_state_window is not None else None
         ),
+        "momentum_budget_window": (
+            None if momentum_budget_window is None
+            else list(momentum_budget_window)),
+        "momentum_budget_terms": (
+            None if momentum_budget_window is None else list(BUDGET_TERMS)),
+        "momentum_budget_closure_bar_abs_m_s": (
+            None if momentum_budget_window is None
+            else BUDGET_CLOSURE_BAR_ABS_M_S),
+        "momentum_budget_contract": (
+            "passive companion trace; per-step source-boundary increments "
+            "summed inside the compiled daily lax.scan"
+            if momentum_budget_window is not None else None),
     }
     pending = output / "manifest.pending.json"
     hashes: dict[str, str] = {}
@@ -597,10 +753,53 @@ def run_long(
         pending, manifest | {"status": "pending", "completed_days": 0, "daily_sha256": hashes}
     )
 
+    budget_records: list[tuple[np.ndarray, ...]] = []
+    budget_closures: list[float] = []
+    budget_mask = None
+    passive_identity = None
     for day in range(1, days + 1):
         first_kt = (day - 1) * steps_per_day + 1
         full_means = None
-        if (full_state_window is not None
+        budget_means = None
+        if (momentum_budget_window is not None
+                and momentum_budget_window[0] <= day
+                <= momentum_budget_window[1]):
+            assert budget_day is not None and scanned_day is not None
+            entry_state = state
+            state, means, budget_means, live_mask = budget_day(
+                state, first_kt)
+            if day == momentum_budget_window[0]:
+                control_state, _ = scanned_day(entry_state, first_kt)
+                jax.block_until_ready(control_state.eta.data)
+                jax.block_until_ready(state.eta.data)
+                passive_identity = state_bitwise_identity(
+                    control_state, state) | {
+                        "provider": "legoesm",
+                        "window_entry_day": day,
+                        "steps": steps_per_day,
+                    }
+                if passive_identity["status"] != "PASS":
+                    raise RuntimeError(
+                        "momentum budget recorder moved the trajectory: "
+                        f"{passive_identity['unequal_words']} unequal words")
+            live_mask_np = np.asarray(live_mask, dtype=bool)
+            if budget_mask is None:
+                budget_mask = live_mask_np
+            elif not np.array_equal(budget_mask, live_mask_np):
+                raise RuntimeError("surface-V wet mask changed during budget")
+            budget_tuple = tuple(
+                np.asarray(value, dtype=np.float64)
+                for value in budget_means)
+            components = np.sum(np.stack(budget_tuple[:-1]), axis=0)
+            closure = float(np.max(np.abs(
+                components[budget_mask] - budget_tuple[-1][budget_mask])))
+            if closure > BUDGET_CLOSURE_BAR_ABS_M_S:
+                raise RuntimeError(
+                    f"momentum budget day {day} closure {closure} exceeds "
+                    f"{BUDGET_CLOSURE_BAR_ABS_M_S}")
+            budget_closures.append(closure)
+            budget_records.append(budget_tuple)
+        elif (full_state_window is not None
                 and full_state_window[0] <= day <= full_state_window[1]):
             state, means, full_means = run_python_day_with_full_state_means(
                 model, card, state, first_kt, steps_per_day)
@@ -635,6 +834,11 @@ def run_long(
                 arrays[name] = np.asarray(snapshot, dtype=np.float64)
                 arrays[f"{name}_daily_mean"] = np.asarray(
                     mean, dtype=np.float64)
+        if budget_means is not None:
+            for name, mean in zip(
+                    BUDGET_TERMS, budget_means, strict=True):
+                arrays[f"surface_v_{name}_daily_mean"] = np.asarray(
+                    mean, dtype=np.float64)
         name = f"day{day:04d}.npz"
         temporary = output / f".{name}.tmp"
         with temporary.open("wb") as stream:
@@ -646,10 +850,85 @@ def run_long(
             pending,
             manifest | {"status": "pending", "completed_days": day, "daily_sha256": hashes},
         )
+    budget_contract = None
+    if momentum_budget_window is not None:
+        if (budget_mask is None or passive_identity is None
+                or len(budget_records) != 151):
+            raise RuntimeError("momentum budget did not produce all 151 days")
+        prereg_path = Path(__file__).resolve().parents[2] / BUDGET_PREREGISTRATION
+        if not prereg_path.is_file():
+            raise RuntimeError(f"missing budget preregistration {prereg_path}")
+        preregistration = {
+            "terms": list(BUDGET_TERMS),
+            "closure_bar_abs_m_s": BUDGET_CLOSURE_BAR_ABS_M_S,
+            "registered_before_data": True,
+            "registration_commit": BUDGET_REGISTRATION_COMMIT,
+            "source": BUDGET_PREREGISTRATION,
+            "source_sha256": hashlib.sha256(
+                prereg_path.read_bytes()).hexdigest(),
+        }
+        prereg_name = "momentum_budget_preregistration.json"
+        passive_name = "momentum_budget_passive_identity.json"
+        data_name = "momentum_budget_terms.npz"
+        _write_json_atomic(output / prereg_name, preregistration)
+        _write_json_atomic(output / passive_name, passive_identity)
+        stacked = {
+            f"surface_v_{name}_daily_mean": np.stack(
+                [record[index] for record in budget_records])
+            for index, name in enumerate(BUDGET_TERMS)
+        }
+        with (output / data_name).open("wb") as stream:
+            np.savez_compressed(
+                stream,
+                day=np.arange(30, 181, dtype=np.int64),
+                surface_v_wet_mask=budget_mask,
+                **stacked)
+        budget_contract = {
+            "provider": "legoesm",
+            "status": "complete",
+            "producer_commit": commit,
+            "deck": deck,
+            "precision_flavour": "native-fp64-gpu",
+            "physical_gpu_index": physical_gpu,
+            "resolved_namelist": namelist._asdict(),
+            "cadence": {
+                "dt_s": float(card.dt_s),
+                "first_day": 30,
+                "last_day": 180,
+                "first_step": 697,
+                "last_step": 4320,
+                "steps_per_day": steps_per_day,
+                "samples_per_record": steps_per_day,
+                "records": 151,
+            },
+            "window_days": [30, 180],
+            "terms": list(BUDGET_TERMS),
+            "production_online": True,
+            "external_mode_included": True,
+            "implicit_zdf_stress_separated": True,
+            "closure_total_recorded": True,
+            "passive_trajectory_identity": True,
+            "closure_bar_abs_m_s": BUDGET_CLOSURE_BAR_ABS_M_S,
+            "closure_max_abs_m_s": max(budget_closures),
+            "driver_sha256": hashlib.sha256(
+                Path(__file__).read_bytes()).hexdigest(),
+            "data_artifact": data_name,
+            "data_sha256": hashlib.sha256(
+                (output / data_name).read_bytes()).hexdigest(),
+            "passive_identity_artifact": passive_name,
+            "passive_identity_sha256": hashlib.sha256(
+                (output / passive_name).read_bytes()).hexdigest(),
+            "preregistration_artifact": prereg_name,
+            "preregistration_sha256": hashlib.sha256(
+                (output / prereg_name).read_bytes()).hexdigest(),
+        }
+        _write_json_atomic(
+            output / "momentum_budget_manifest.json", budget_contract)
     completed = manifest | {
         "status": "complete",
         "completed_days": days,
         "daily_sha256": hashes,
+        "momentum_budget_manifest": budget_contract,
     }
     _write_json_atomic(pending, completed)
     pending.replace(output / "manifest.json")
@@ -679,6 +958,10 @@ def main(argv=None) -> int:
         "--full-state-window",
         help="inclusive START:END days for 3-D snapshots and daily means",
     )
+    parser.add_argument(
+        "--momentum-budget-window",
+        help="inclusive preregistered online-budget window (must be 30:180)",
+    )
     args = parser.parse_args(argv)
     if not args.daily_means:
         parser.error("--daily-means is required for this climate driver")
@@ -688,10 +971,14 @@ def main(argv=None) -> int:
         namelist = resolved_daily_namelist(args.deck, args.days)
         full_state_window = parse_day_window(
             args.full_state_window, days=args.days)
+        momentum_budget_window = parse_day_window(
+            args.momentum_budget_window, days=args.days)
         manifest = run_long(
-            namelist, args.output, days=args.days, mode=args.mode,
+            namelist, args.output, deck=args.deck, days=args.days,
+            mode=args.mode,
             commit=git_sha(), physical_gpu=args.physical_gpu,
             per_step=args.per_step, full_state_window=full_state_window,
+            momentum_budget_window=momentum_budget_window,
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"REFUSE: {exc}", file=sys.stderr)

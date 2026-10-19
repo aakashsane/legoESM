@@ -107,14 +107,21 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
         }))
         (root / "preregistration.json").write_text(json.dumps({
             "terms": list(PREFLIGHT.REGISTERED_TERMS),
-            "closure_bar_abs_m_s": 0.0,
+            "closure_bar_abs_m_s": PREFLIGHT.REGISTERED_CLOSURE_BAR_ABS_M_S,
             "registered_before_data": True,
-            "registration_commit": "a" * 40,
+            "registration_commit": PREFLIGHT.REGISTRATION_COMMIT,
         }))
         contract = {
             "provider": provider,
             **PREFLIGHT.BUDGET_CONTRACT_REQUIREMENTS,
-            "closure_bar_abs_m_s": 0.0,
+            "producer_commit": "b" * 40,
+            "deck": "r4_smag",
+            "precision_flavour": (
+                "native-fp64-gpu" if provider == "legoesm"
+                else "vector-math-conda"),
+            "cadence": dict(PREFLIGHT.BUDGET_CADENCE),
+            "closure_bar_abs_m_s": PREFLIGHT.REGISTERED_CLOSURE_BAR_ABS_M_S,
+            "closure_max_abs_m_s": 0.0,
             "data_artifact": "terms.npz",
             "data_sha256": PREFLIGHT.sha256(root / "terms.npz"),
             "passive_identity_artifact": "passive.json",
@@ -123,6 +130,29 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
             "preregistration_sha256": PREFLIGHT.sha256(
                 root / "preregistration.json"),
         }
+        if provider == "legoesm":
+            contract["physical_gpu_index"] = 0
+            contract["resolved_namelist"] = {
+                "nn_GYRE": 4,
+                "rn_Dt_s": 3600.0,
+                "rn_Ld_m": 25000.0,
+                "ln_dynldf_lap": False,
+                "ln_dynldf_blp": True,
+                "ln_dynldf_lev": True,
+                "nn_ahm_ijk_t": 32,
+                "rn_csmc": 3.5,
+                "rn_minfac": 1.0,
+                "rn_maxfac": 1.0,
+            }
+        else:
+            namelist = root / "resolved_namelist_lines.txt"
+            namelist.write_text(
+                "nn_GYRE = 4\nrn_Dt = 3600.\nrn_Ld = 25000.\n"
+                "ln_dynldf_lap = .false.\nln_dynldf_blp = .true.\n"
+                "ln_dynldf_lev = .true.\nnn_ahm_ijk_t = 32\n"
+                "rn_csmc = 3.5\nrn_minfac = 1.0\nrn_maxfac = 1.0\n")
+            contract["resolved_namelist_artifact"] = namelist.name
+            contract["resolved_namelist_sha256"] = PREFLIGHT.sha256(namelist)
         (root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(contract))
 
     monkeypatch.setattr(
@@ -152,6 +182,10 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
 
     for key, bad in (
         ("provider", "legoesm"),
+        ("producer_commit", "not-a-sha"),
+        ("deck", "r4"),
+        ("precision_flavour", "scalar-math"),
+        ("cadence", {}),
         ("closure_bar_abs_m_s", None),
         ("data_sha256", "0" * 64),
         ("passive_identity_sha256", "0" * 64),
@@ -179,6 +213,31 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
     (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(planted))
     assert PREFLIGHT.build_report(
         roots["legoesm"], nemo_root)["verdict"] == "ACQUISITION_NEEDED"
+
+
+def test_separate_budget_roots_are_used(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        PREFLIGHT, "audit_legoesm_archive",
+        lambda root: {"root": str(root), "status": "PASS", "errors": []},
+    )
+    monkeypatch.setattr(
+        PREFLIGHT, "audit_nemo_archive",
+        lambda root: {"root": str(root), "status": "PASS", "errors": []},
+    )
+    calls = []
+
+    def fake_budget(root, provider):
+        calls.append((root, provider))
+        return {"root": str(root), "status": "REFUSE", "errors": ["plant"]}
+
+    monkeypatch.setattr(PREFLIGHT, "audit_budget_contract", fake_budget)
+    lego_budget = tmp_path / "lego-budget"
+    nemo_budget = tmp_path / "nemo-budget"
+    report = PREFLIGHT.build_report(
+        tmp_path / "lego-state", tmp_path / "nemo-state",
+        lego_budget, nemo_budget)
+    assert calls == [(lego_budget, "legoesm"), (nemo_budget, "nemo")]
+    assert report["verdict"] == "ACQUISITION_NEEDED"
 
 
 def test_daily_means_cannot_identify_a_nonlinear_daily_mean_product():

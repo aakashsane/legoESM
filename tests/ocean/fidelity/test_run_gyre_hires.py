@@ -35,6 +35,44 @@ def test_gpu_wrapper_has_no_default_device():
     assert "--physical-gpu PHYSICAL_INDEX" in result.stderr
 
 
+def test_budget_wrapper_has_no_default_device_and_exact_request():
+    wrapper = ROOT / "scripts/run/run_gyre_hires_budget_gpu.sh"
+    result = subprocess.run(
+        ["bash", str(wrapper)], check=False, text=True, capture_output=True,
+    )
+    assert result.returncode == 64
+    assert "--physical-gpu PHYSICAL_INDEX" in result.stderr
+    text = wrapper.read_text()
+    assert "--deck r4_smag" in text
+    assert "--days 180" in text
+    assert "--momentum-budget-window 30:180" in text
+    assert "--per-step" not in text
+
+
+def test_budget_request_refuses_every_unregistered_variant():
+    accepted = dict(
+        deck="r4_smag", days=180, mode="gpu-native", per_step=False,
+        window=(30, 180))
+    DRIVER.validate_momentum_budget_request(**accepted)
+    for key, bad in (
+        ("deck", "r4"), ("days", 179), ("mode", "cpu-certified"),
+        ("per_step", True), ("window", (31, 180)),
+    ):
+        planted = dict(accepted)
+        planted[key] = bad
+        with pytest.raises(ValueError):
+            DRIVER.validate_momentum_budget_request(**planted)
+
+
+def test_bitwise_identity_detects_signed_zero_word():
+    positive = (np.asarray([0.0, 1.0], dtype=np.float64),)
+    negative = (np.asarray([-0.0, 1.0], dtype=np.float64),)
+    assert DRIVER.state_bitwise_identity(positive, positive)["status"] == "PASS"
+    planted = DRIVER.state_bitwise_identity(positive, negative)
+    assert planted["status"] == "REFUSE"
+    assert planted["unequal_words"] == 1
+
+
 def test_resolved_daily_decks_keep_declared_resolution_and_cadence():
     shipped = DRIVER.resolved_daily_namelist("shipped", 2)
     r4 = DRIVER.resolved_daily_namelist("r4", 1095)
@@ -233,3 +271,85 @@ def test_tiny_real_gyre_two_day_scan_matches_certified_loop():
     assert report["differences"]["surface_temperature_c_max_abs"] == (
         pytest.approx(1.8106049992638873e-10, rel=1.0e-6)
     )
+
+
+@pytest.mark.slow
+def test_real_r4_smag_budget_trace_is_passive_and_closes():
+    """A reverted hook or missing source boundary fails on the real card."""
+    import jax
+    from legoesm.core.precision import PrecisionPolicy, get_policy, set_policy
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        LatLonCGridOceanModel,
+        _NEMOWSRK3TestHooks,
+    )
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import (
+        GYRE_R4_SMAG_NAMELIST,
+        build_gyre_zco_card,
+        gyre_surface_forcings,
+    )
+
+    if jax.default_backend() != "cpu":
+        pytest.skip("real budget identity is a CPU control")
+    old = get_policy()
+    try:
+        set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+        card = build_gyre_zco_card(GYRE_R4_SMAG_NAMELIST)
+        ordinary = LatLonCGridOceanModel(
+            card.recipe.grid, card.recipe.z_coord,
+            card.recipe.model_config)
+        traced = LatLonCGridOceanModel(
+            card.recipe.grid, card.recipe.z_coord,
+            card.recipe.model_config,
+            _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                momentum_budget_trace=True))
+        entry = card.recipe.initial_state
+        freshwater, surface = gyre_surface_forcings(card, entry, 1)
+        expected = ordinary.step(
+            entry, card.dt_s, freshwater=freshwater,
+            surface_forcing=surface)
+        record = traced.step(
+            entry, card.dt_s, freshwater=freshwater,
+            surface_forcing=surface)
+        jax.block_until_ready(record.state_after.eta.data)
+        seeded, _ = DRIVER.cold_start_scan_state(ordinary, card, entry)
+        traced.prime_step_caches(seeded)
+        plain_scan = DRIVER.build_scanned_day_mean_stepper(
+            ordinary, card, 1)
+        budget_scan = DRIVER.build_scanned_day_budget_stepper(
+            traced, card, 1)
+        expected_scan, _ = plain_scan(seeded, 2)
+        recorded_scan, _, budget_means, scan_mask = budget_scan(seeded, 2)
+        jax.block_until_ready(recorded_scan.eta.data)
+    finally:
+        set_policy(old)
+
+    identity = DRIVER.state_bitwise_identity(expected, record.state_after)
+    assert identity["status"] == "PASS"
+    assert identity["unequal_words"] == 0
+    scan_identity = DRIVER.state_bitwise_identity(
+        expected_scan, recorded_scan)
+    assert scan_identity["status"] == "PASS"
+    assert scan_identity["unequal_words"] == 0
+    terms = [np.asarray(getattr(record, name))
+             for name in DRIVER.BUDGET_TERMS]
+    mask = np.asarray(record.wet_mask, dtype=bool)
+    assert terms[0].shape == mask.shape
+    assert int(np.count_nonzero(mask)) == 9480
+    closure = np.sum(np.stack(terms[:-1]), axis=0) - terms[-1]
+    assert float(np.max(np.abs(closure[mask]))) <= (
+        DRIVER.BUDGET_CLOSURE_BAR_ABS_M_S)
+    scan_terms = [np.asarray(value) for value in budget_means]
+    scan_mask = np.asarray(scan_mask, dtype=bool)
+    scan_closure = (
+        np.sum(np.stack(scan_terms[:-1]), axis=0) - scan_terms[-1])
+    assert float(np.max(np.abs(scan_closure[scan_mask]))) <= (
+        DRIVER.BUDGET_CLOSURE_BAR_ABS_M_S)
+
+    # A planted active-word violation proves the closure control can fail.
+    active = tuple(np.argwhere(mask)[0])
+    planted = terms[0].copy()
+    planted[active] += 1.0e-8
+    planted_closure = (
+        planted + np.sum(np.stack(terms[1:-1]), axis=0) - terms[-1])
+    assert float(np.max(np.abs(planted_closure[mask]))) > (
+        DRIVER.BUDGET_CLOSURE_BAR_ABS_M_S)

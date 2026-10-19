@@ -44,6 +44,8 @@ BUDGET_TERM_KEYS = tuple(
 BUDGET_DAY_KEY = "day"
 BUDGET_MASK_KEY = "surface_v_wet_mask"
 BUDGET_CONTRACT = "momentum_budget_manifest.json"
+REGISTERED_CLOSURE_BAR_ABS_M_S = 1.0e-12
+REGISTRATION_COMMIT = "3293fd5f49c332038cc61735ed1dc7bbc0f7b798"
 BUDGET_CONTRACT_REQUIREMENTS = {
     "status": "complete",
     "window_days": [START_DAY, END_DAY],
@@ -53,6 +55,16 @@ BUDGET_CONTRACT_REQUIREMENTS = {
     "implicit_zdf_stress_separated": True,
     "closure_total_recorded": True,
     "passive_trajectory_identity": True,
+}
+BUDGET_CADENCE = {
+    "dt_s": 3600.0,
+    "steps_per_day": 24,
+    "first_day": START_DAY,
+    "last_day": END_DAY,
+    "first_step": 697,
+    "last_step": 4320,
+    "samples_per_record": 24,
+    "records": END_DAY - START_DAY + 1,
 }
 LEGO_CARRIED_ZDF_FIELDS = (
     "tke_avm",
@@ -238,11 +250,65 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
             if contract.get(key) != expected:
                 errors.append(
                     f"contract {key} is {contract.get(key)!r}, expected {expected!r}")
+        producer_commit = contract.get("producer_commit")
+        if (not isinstance(producer_commit, str)
+                or re.fullmatch(r"[0-9a-f]{40}", producer_commit) is None):
+            errors.append("contract producer_commit is not a lowercase Git SHA")
+        if contract.get("deck") != "r4_smag":
+            errors.append("contract deck is not r4_smag")
+        expected_flavour = {
+            "legoesm": "native-fp64-gpu",
+            "nemo": "vector-math-conda",
+        }[provider]
+        if contract.get("precision_flavour") != expected_flavour:
+            errors.append(
+                f"contract precision_flavour is not {expected_flavour}")
+        cadence = contract.get("cadence")
+        if not isinstance(cadence, dict):
+            errors.append("contract cadence is not a mapping")
+        else:
+            for key, expected in BUDGET_CADENCE.items():
+                if cadence.get(key) != expected:
+                    errors.append(
+                        f"contract cadence {key} is {cadence.get(key)!r}, "
+                        f"expected {expected!r}")
+        if provider == "legoesm":
+            namelist = contract.get("resolved_namelist")
+            expected_namelist = {
+                "nn_GYRE": 4,
+                "rn_Dt_s": 3600.0,
+                "rn_Ld_m": 25000.0,
+                "ln_dynldf_lap": False,
+                "ln_dynldf_blp": True,
+                "ln_dynldf_lev": True,
+                "nn_ahm_ijk_t": 32,
+                "rn_csmc": 3.5,
+                "rn_minfac": 1.0,
+                "rn_maxfac": 1.0,
+            }
+            if not isinstance(namelist, dict):
+                errors.append("contract resolved_namelist is not a mapping")
+            else:
+                for key, expected in expected_namelist.items():
+                    if namelist.get(key) != expected:
+                        errors.append(
+                            f"contract resolved_namelist {key} is "
+                            f"{namelist.get(key)!r}, expected {expected!r}")
+            gpu = contract.get("physical_gpu_index")
+            if isinstance(gpu, bool) or not isinstance(gpu, int) or gpu < 0:
+                errors.append("contract lacks an explicit physical GPU index")
         closure_bar = contract.get("closure_bar_abs_m_s")
-        if (isinstance(closure_bar, bool)
-                or not isinstance(closure_bar, (int, float))
-                or not np.isfinite(closure_bar) or closure_bar < 0):
-            errors.append("contract lacks a non-negative numeric closure_bar_abs_m_s")
+        if closure_bar != REGISTERED_CLOSURE_BAR_ABS_M_S:
+            errors.append(
+                "contract closure_bar_abs_m_s is not the registered "
+                f"{REGISTERED_CLOSURE_BAR_ABS_M_S}")
+        claimed_closure = contract.get("closure_max_abs_m_s")
+        if (isinstance(claimed_closure, bool)
+                or not isinstance(claimed_closure, (int, float))
+                or not np.isfinite(claimed_closure)
+                or claimed_closure < 0
+                or claimed_closure > REGISTERED_CLOSURE_BAR_ABS_M_S):
+            errors.append("contract closure_max_abs_m_s is absent or over bar")
         verified_artifacts: dict[str, Path] = {}
         for name_key, digest_key in (
             ("data_artifact", "data_sha256"),
@@ -262,6 +328,38 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                 errors.append(f"contract {digest_key} does not match {name}")
             else:
                 verified_artifacts[name_key] = artifact
+
+        if provider == "nemo":
+            name = contract.get("resolved_namelist_artifact")
+            digest = contract.get("resolved_namelist_sha256")
+            if (not isinstance(name, str) or not name
+                    or Path(name).name != name):
+                errors.append(
+                    "contract resolved_namelist_artifact is not a safe local filename")
+            else:
+                artifact = root / name
+                if not artifact.is_file():
+                    errors.append("contract resolved namelist artifact is missing")
+                elif digest != sha256(artifact):
+                    errors.append("contract resolved_namelist_sha256 does not match")
+                else:
+                    text = artifact.read_text(errors="replace")
+                    for expression in (
+                        r"\bnn_GYRE\s*=\s*4\b",
+                        r"\brn_Dt\s*=\s*3600\.",
+                        r"\brn_Ld\s*=\s*25000\.",
+                        r"\bln_dynldf_lap\s*=\s*\.false\.",
+                        r"\bln_dynldf_blp\s*=\s*\.true\.",
+                        r"\bln_dynldf_lev\s*=\s*\.true\.",
+                        r"\bnn_ahm_ijk_t\s*=\s*32\b",
+                        r"\brn_csmc\s*=\s*3\.5\b",
+                        r"\brn_minfac\s*=\s*1\.0\b",
+                        r"\brn_maxfac\s*=\s*1\.0\b",
+                    ):
+                        if re.search(expression, text, re.IGNORECASE) is None:
+                            errors.append(
+                                "resolved namelist lacks registered expression "
+                                f"{expression}")
 
         data_path = verified_artifacts.get("data_artifact")
         if data_path is not None:
@@ -286,20 +384,23 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                         for key, values in zip(BUDGET_TERM_KEYS, arrays):
                             if values.shape != expected_shape:
                                 errors.append(
-                                    f"budget {key} shape is {values.shape}, expected {expected_shape}")
+                                    f"budget {key} shape is {values.shape}, "
+                                    f"expected {expected_shape}")
                             elif not bool(np.all(np.isfinite(values))):
                                 errors.append(f"budget {key} has non-finite values")
                         if (all(values.shape == expected_shape for values in arrays)
-                                and isinstance(closure_bar, (int, float))
-                                and not isinstance(closure_bar, bool)
-                                and np.isfinite(closure_bar)
-                                and closure_bar >= 0):
+                                and closure_bar
+                                == REGISTERED_CLOSURE_BAR_ABS_M_S):
                             components = np.sum(np.stack(arrays[:-1]), axis=0)
                             closure_max = float(np.max(np.abs(
                                 components[:, mask] - arrays[-1][:, mask])))
                             if closure_max > closure_bar:
                                 errors.append(
                                     f"budget closure {closure_max} exceeds {closure_bar}")
+                            if closure_max != claimed_closure:
+                                errors.append(
+                                    "contract closure_max_abs_m_s does not "
+                                    "match the data artifact")
             except (OSError, ValueError) as exc:
                 errors.append(f"cannot read budget data artifact: {exc}")
 
@@ -322,9 +423,10 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                 if (prereg.get("terms") != list(REGISTERED_TERMS)
                         or prereg.get("closure_bar_abs_m_s") != closure_bar
                         or prereg.get("registered_before_data") is not True
-                        or not isinstance(commit, str)
-                        or re.fullmatch(r"[0-9a-f]{40}", commit) is None):
-                    errors.append("preregistration artifact does not pin terms, bar, and prior commit")
+                        or commit != REGISTRATION_COMMIT):
+                    errors.append(
+                        "preregistration artifact does not pin terms, bar, "
+                        "and prior commit")
             except (OSError, ValueError) as exc:
                 errors.append(f"cannot read preregistration artifact: {exc}")
     return {
@@ -336,11 +438,20 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
     }
 
 
-def build_report(legoesm_root: Path, nemo_root: Path) -> dict:
+def build_report(
+    legoesm_root: Path,
+    nemo_root: Path,
+    legoesm_budget_root: Path | None = None,
+    nemo_budget_root: Path | None = None,
+) -> dict:
+    """Audit state archives and independently acquired online budgets."""
+    legoesm_budget_root = (
+        legoesm_root if legoesm_budget_root is None else legoesm_budget_root)
+    nemo_budget_root = nemo_root if nemo_budget_root is None else nemo_budget_root
     legoesm = audit_legoesm_archive(legoesm_root)
     nemo = audit_nemo_archive(nemo_root)
-    legoesm_budget = audit_budget_contract(legoesm_root, "legoesm")
-    nemo_budget = audit_budget_contract(nemo_root, "nemo")
+    legoesm_budget = audit_budget_contract(legoesm_budget_root, "legoesm")
+    nemo_budget = audit_budget_contract(nemo_budget_root, "nemo")
     state_admitted = legoesm["status"] == nemo["status"] == "PASS"
     budget_admitted = (
         state_admitted
@@ -348,7 +459,7 @@ def build_report(legoesm_root: Path, nemo_root: Path) -> dict:
     )
     mean_control = nonlinear_daily_mean_control()
     return {
-        "schema": "legoesm-gyre-hires-momentum-budget-preflight-v2",
+        "schema": "legoesm-gyre-hires-momentum-budget-preflight-v3",
         "registered_window_days": [START_DAY, END_DAY],
         "leading_field": "native surface V",
         "leading_region": "western boundary wet-span bin",
@@ -380,10 +491,14 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--legoesm-root", type=Path, required=True)
     parser.add_argument("--nemo-root", type=Path, required=True)
+    parser.add_argument("--legoesm-budget-root", type=Path)
+    parser.add_argument("--nemo-budget-root", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        report = build_report(args.legoesm_root, args.nemo_root)
+        report = build_report(
+            args.legoesm_root, args.nemo_root,
+            args.legoesm_budget_root, args.nemo_budget_root)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(
             json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n")

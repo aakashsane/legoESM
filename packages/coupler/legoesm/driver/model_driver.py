@@ -1267,6 +1267,13 @@ def _mpas_hard_saturation_poststep(T, q_v, q_c, p_full, dt,
     return T_new, q_v_new, q_c_new, q_i_new, dq
 
 
+# The run loop calls the drain every step outside any jit; eagerly its fixed
+# 30-pass bisection dispatched op by op (~140 ms/step on the lat-lon lane).
+_mpas_hard_saturation_poststep_jit = jax.jit(
+    _mpas_hard_saturation_poststep,
+    static_argnames=("dt", "hard_threshold", "hard_max_heating_K", "ice_curve"))
+
+
 # Air-density floor for the Cooper ice-number/mass conversion, matching
 # Morrison's ``_RHO_FLOOR`` (module_mp_graupel density floor in divisions) so the
 # seed ceiling is Morrison-consistent at low density (without floors the p/(R_dT)
@@ -15223,7 +15230,7 @@ class ModelDriver:
                 _qc_fld = _trc["q_c"]
                 _qi_fld = _trc.get("q_i") if _hard_sat_ice_curve else None
                 (_T_hs, _qv_hs, _qc_hs, _qi_hs,
-                 _dq_hs) = _mpas_hard_saturation_poststep(
+                 _dq_hs) = _mpas_hard_saturation_poststep_jit(
                     self.state.T.data, _trc["q_v"].data, _qc_fld.data,
                     self.sigma.pressure_at_full(self.state.p_s.data), DT,
                     _hard_sat_threshold, _hard_sat_max_heating,

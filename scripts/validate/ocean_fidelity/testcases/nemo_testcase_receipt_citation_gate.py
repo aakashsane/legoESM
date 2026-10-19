@@ -1804,7 +1804,7 @@ CITATION_MAP = {
         ('&              + ( zwt(ji,jj+1) - zwt(ji  ,jj) ) * r1_e2v(ji,jj)                      )', 3), 20],
     # --- GYRE gradient-gate round 6: exact program and oracle statements ---
     'nemo_testcase_recipe.py:4066': 'def build_nemo_testcase_card(',
-    'ocean_model_latlon_cgrid.py:13552': 'def _step_jitted(',
+    'ocean_model_latlon_cgrid.py:13559': 'def _step_jitted(',
     'nemo_testcase_l2_gyre_gradient_gate.py:292': (
         'def build_context(card: str, *, transcendentals: str = "libm") -> GateContext:'),
     'nemo_testcase_l2_gyre_gradient_gate.py:342,356,365': [

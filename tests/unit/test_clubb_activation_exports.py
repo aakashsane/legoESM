@@ -74,6 +74,7 @@ def test_exports_are_last_substep_kh_and_final_wp2():
     out2, _ = _prognostic(c, cfg2, m)
     assert not np.allclose(np.asarray(out2.Kh_iface), np.asarray(flip_vertical(d1["Kh_zm"])), rtol=1e-6)
     assert not np.allclose(np.asarray(out2.wp2_iface), np.asarray(flip_vertical(m.wp2)), rtol=1e-6)
+    assert not np.allclose(np.asarray(out2.wp2_iface), np.asarray(flip_vertical(m1.wp2)), rtol=1e-6)
 
 
 def test_other_schemes_default_to_none():

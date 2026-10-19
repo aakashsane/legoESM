@@ -994,8 +994,9 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir = args.output_dir / "snapshots"
     snapshot_dir.mkdir(exist_ok=True)
-    _save_run_metadata(args, cfg, grid, z, args.output_dir, grid_kind)
-    # Run manifest (every process calls it; a failed write aborts the run).
+    # Run manifest (every process calls it; a failed write aborts the run),
+    # before the run metadata, so a refused continuation leaves both as
+    # they were.
     from legoesm.driver.restart import (
         dataset_provenance_entry,
         record_final_state_digest,
@@ -1015,6 +1016,7 @@ def main():
                                       dataset_id="restart_from")]
             if args.restart_from is not None else []),
     )
+    _save_run_metadata(args, cfg, grid, z, args.output_dir, grid_kind)
 
     # Time loop
     n_steps_total = int(round(args.days * 86400.0 / dt))

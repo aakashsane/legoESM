@@ -406,7 +406,7 @@ def _reproduce_runner(args, manifest: dict, allow_drift: bool) -> int:
     """Rerun a component-runner manifest; return the exit code.
 
     The recorded command line is rerun from the recorded launch directory with
-    only the output directory rewritten.  The rerun's own manifest writer
+    only the output directory and the spec's own rewrites changed.  The rerun's own manifest writer
     refuses before stepping unless it resolves to the reference record
     (``legoesm.driver.restart._check_reproduce_reference``).
     """
@@ -427,12 +427,12 @@ def _reproduce_runner(args, manifest: dict, allow_drift: bool) -> int:
             node = node.get(part) if isinstance(node, dict) else None
         return node
 
+    no_digest = [k for k in spec.no_digest_keys if recorded(k)]
+    if no_digest:   # a plain reproduce needs the rerun's digest too
+        logger.error(f"Refusing to reproduce: this run records no final "
+                     f"digest ({', '.join(no_digest)} is set).")
+        return 2
     if args.check:
-        no_digest = [k for k in spec.no_digest_keys if recorded(k)]
-        if no_digest:
-            logger.error(f"Refusing to reproduce --check: this run records no "
-                         f"final digest ({', '.join(no_digest)} is set).")
-            return 2
         try:
             reference = R.recorded_state_digest(manifest)
         except ValueError as exc:

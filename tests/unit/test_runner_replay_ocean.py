@@ -95,6 +95,12 @@ def test_omip_continuation_controls(tmp_path, monkeypatch):
         _omip(monkeypatch, out, "--days", "5", "--checkpoint-days", "1",
               "--max-wallclock-seconds", "100",
               "--restart-buffer-seconds", "5", "--no-final-snapshot")
+    # a restart from this run's own restarts/ continues it
+    rdir = _omip_manifest(out).parent / "restarts"
+    rdir.mkdir()
+    (rdir / "restart_day000001.npz").write_bytes(b"x")
+    with pytest.raises(_Reached):
+        _omip(monkeypatch, out, "--restart", str(rdir / "restart_day000001.npz"))
     with pytest.raises(RuntimeError, match="one output directory holds one run"):
         _omip(monkeypatch, out, "--H-max", "4000")
     # --diag-every also sets the JRA55 forcing block size: not a control
@@ -266,8 +272,11 @@ def test_dino_rerun_closure_and_continuation(tmp_path, monkeypatch):
     with pytest.raises(_Reached):                 # continuation controls
         _dino(monkeypatch, tmp_path / "ref", "--days", "3",
               "--snapshot-every-days", "2", "--allow-multiyear")
+    meta = next((tmp_path / "ref").glob("run_metadata*.json"))
+    before = meta.read_bytes()
     with pytest.raises(RuntimeError, match="one output directory holds one run"):
         _dino(monkeypatch, tmp_path / "ref", "--seed", "4")
+    assert meta.read_bytes() == before      # the refused run wrote nothing
     monkeypatch.setenv(restart.REPRODUCE_REFERENCE_ENV,
                        str(tmp_path / "ref" / restart.RUN_MANIFEST_FILENAME))
     monkeypatch.setenv(restart.REPRODUCE_OUTPUT_ENV, str(tmp_path / "new"))
@@ -279,13 +288,16 @@ def test_dino_rerun_closure_and_continuation(tmp_path, monkeypatch):
               "--snapshot-every-days", "2", "--allow-multiyear")
 
 
-def test_dino_multicontroller_check_is_refused(tmp_path, monkeypatch, caplog):
+@pytest.mark.parametrize("check", [True, False])
+def test_dino_multicontroller_replay_is_refused(tmp_path, monkeypatch, caplog,
+                                                check):
     path = _synthetic(monkeypatch, tmp_path, "run_dino", "run_dino.py",
                       {"cli_args": {"multicontroller": True}}, [],
                       n_processes=1)
     caplog.set_level(logging.INFO)
-    assert _reproduce(path, tmp_path / "new", check=True) == 2
+    assert _reproduce(path, tmp_path / "new", check=check) == 2
     assert "records no final digest" in caplog.text
+    assert not (tmp_path / "new").exists()      # nothing was launched
 
 
 # --- run_omip_core2 ---------------------------------------------------------

@@ -163,8 +163,17 @@ call it a physics owner.  The scalar envelope plant proves that 10-times twin
 clears the preregistered four-times threshold.
 
 The clean scalar acquisition preflight ends in `PREFLIGHT_OK`.  The broader
-CPU/x64 lane battery and line-sensitive citation gate are reported in the
-final commit after this receipt is tested.
+CPU/x64 lane battery reports `245 passed, 5 deselected` in 486.39 seconds; the
+five exclusions are inherited slow controls.  The line-sensitive citation
+gate passes all five compiled-source citations with no unmapped or failing
+entry.  Shifting the first citation by two lines produces the expected nonzero
+exit and `SYMBOL-NOT-AT-LINE` refusal.
+
+Independent-review status is `UNREVIEWED`: the required Claude reviewer was
+invoked read-only but its API host failed DNS resolution, and the required
+GLM-5.2 reviewer is not available in this environment.  Neither failure is
+treated as a review verdict or waiver.  No physics was changed, and the
+scientific conclusion remains held pending the scalar term acquisition.
 
 ## Inherited pins / OPEN
 

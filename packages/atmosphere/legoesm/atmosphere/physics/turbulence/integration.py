@@ -487,6 +487,8 @@ def _carry_update_with_cloud_fraction(carry_field, carry_val, turb_out):
     if turb_out.cloud_fraction is None:
         return carry_val
     updates = {"cloud_fraction": turb_out.cloud_fraction}
+    if turb_out.relvar is not None:
+        updates["relvar"] = turb_out.relvar
     if carry_field is not None and carry_val is not None:
         updates[carry_field] = carry_val
     return updates

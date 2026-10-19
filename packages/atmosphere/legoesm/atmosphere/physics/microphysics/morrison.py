@@ -258,6 +258,7 @@ def morrison_microphysics(
     dt: float,
     config: MorrisonConfig = MorrisonConfig(),
     cloud_fraction: jax.Array | None = None,
+    relvar: jax.Array | None = None,
 ) -> MicrophysicsOutput:
     """Compute Morrison double-moment microphysics tendencies.
 
@@ -268,6 +269,10 @@ def morrison_microphysics(
     cloud_fraction
         Stratiform cloud fraction ``(ncol, nlev)`` (CLUBB's, MG2 ``liqcldf``);
         required by, and read only under, ``config.warm_rain_incloud``.
+    relvar
+        Per-cell CAM6 relative cloud-water variance ``(ncol, nlev)`` from CLUBB
+        (``clubb_intr.F90:2425``), read only by ``warm_rain_scheme="kk2000_cam6"``;
+        ``None`` uses the constant ``config.kk2000_cam6_relvar``.
 
     Returns
     -------
@@ -385,20 +390,21 @@ def morrison_microphysics(
         dq_c_ac = accretion_kk2000(
             q_c_ic, q_r_ic, fact=config.accre_enhan_fact) * cf_eff
     elif config.warm_rain_scheme == "kk2000_cam6":
+        _relvar = config.kk2000_cam6_relvar if relvar is None else relvar
         # CAM6 MG2 autoconversion law.  Accretion is KK2000 on the same
         # 5e-3-capped in-cloud water CAM6 uses for every liquid process
         # (micro_mg2_0.F90:1226) times MG2's sub-grid variance factor
         # accre_enhan*var_coef(relvar, 1.15) (accrete_cloud_water_rain,
         # micro_mg_utils.F90:1316-1328).
         dq_c_au, dN_r_au, x_c = autoconversion_kk2000_cam6(
-            q_c_ic, N_c_ic, rho, config.kk2000_cam6_relvar,
+            q_c_ic, N_c_ic, rho, _relvar,
             fact=config.autocon_fact)
         dq_c_au = dq_c_au * cf_eff
         dN_r_au = dN_r_au * cf_eff
         dq_c_ac = accretion_kk2000(
             jnp.minimum(q_c_ic, KK2000_CAM6_QC_MAX), q_r_ic,
             fact=config.accre_enhan_fact * mg2_var_coef(
-                config.kk2000_cam6_relvar, _MG2_ACCRETION_VARCOEF_EXP,
+                _relvar, _MG2_ACCRETION_VARCOEF_EXP,
                 q_c.dtype)) * cf_eff
     elif config.warm_rain_scheme == "seifert_beheng":
         dq_c_au, dN_r_au, x_c = autoconversion_sb(

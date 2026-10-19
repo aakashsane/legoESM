@@ -173,26 +173,24 @@ def test_checkpoint_with_one_face_wind_is_refused(leg1):
         _resume(tmp, str(half), "leg2_half")
 
 
-def test_resume_into_sfno_drops_the_faces(tmp_path):
-    """A same-shape SFNO Gaussian run (10x20 lat-lon vs T5) loads a lat-lon
-    checkpoint but does not carry face winds; it must not re-save them next
-    to its newer state."""
-    c = _cfg(tmp_path / "ll", 1)
-    a = ModelDriver(c._replace(grid=c.grid._replace(resolution=10)))
-    a.setup()
-    assert a.run(compiled=True) == "COMPLETED"
-    ckpt = sorted(glob.glob(str(tmp_path / "ll" / "checkpoint_day_*.npz")))[-1]
-    c = _cfg(tmp_path / "sfno", 2)
+def test_sfno_run_drops_saved_face_winds(tmp_path):
+    """A run that does not carry face winds (here SFNO) drops saved ones on
+    entering the run, so its checkpoints never re-save them next to a newer
+    state.  The winds are handed over directly: SFNO restarts refuse lat-lon
+    checkpoints, so no normal load brings saved face winds into this guard."""
+    c = _cfg(tmp_path / "sfno", 1)
     d = ModelDriver(c._replace(
         grid=GridConfig(grid_type="gaussian", resolution=5, nlev=4),
         dycore=c.dycore._replace(discretization="sfno", energy_fixer=False)))
     d.setup()
-    step, day = d.load_checkpoint(ckpt)
+    face = np.zeros((4, 10, 20))
+    d._carry_aux = {"other": np.ones(1)}
+    for k in ModelDriver._FACE_WIND_KEYS:
+        d._carry_aux[k] = face
+        d._carry_aux[k + "_sha256"] = np.asarray("0" * 64)
     d._enter_persistent_cgrid()
-    d.save_checkpoint(step, day)
-    new = sorted(glob.glob(str(tmp_path / "sfno" / "checkpoint_day_*.npz")))[-1]
-    with np.load(new, allow_pickle=True) as z:
-        assert not any("latlon_" in k for k in z.keys())
+    assert not any("latlon_" in k for k in d._carry_aux)
+    assert "other" in d._carry_aux
 
 
 def test_load_then_save_keeps_the_saved_winds(leg1):

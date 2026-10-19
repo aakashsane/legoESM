@@ -197,7 +197,7 @@ def package(
     run_root: Path, control_restart: Path, instrumented_restart: Path,
     preregistration: Path, registration_commit: str, producer_commit: str,
     resolved_namelist: Path, writer_source_manifest: Path,
-    binary: Path,
+    binary: Path, nemo_engine_commit: str,
 ) -> dict[str, object]:
     if len(registration_commit) != 40 or any(
             char not in "0123456789abcdef" for char in registration_commit):
@@ -205,6 +205,10 @@ def package(
     if len(producer_commit) != 40 or any(
             char not in "0123456789abcdef" for char in producer_commit):
         raise ValueError("producer commit must be a lowercase forty-character SHA")
+    if len(nemo_engine_commit) != 40 or any(
+            char not in "0123456789abcdef" for char in nemo_engine_commit):
+        raise ValueError(
+            "NEMO engine commit must be a lowercase forty-character SHA")
     verify_registration(preregistration, registration_commit, producer_commit)
     records = []
     for day in range(FIRST_DAY, LAST_DAY + 1):
@@ -273,6 +277,7 @@ def package(
         "provider": "nemo",
         "status": "complete",
         "producer_commit": producer_commit,
+        "nemo_engine_commit": nemo_engine_commit,
         "deck": "r4_smag",
         "precision_flavour": "vector-math-conda",
         "cadence": {
@@ -332,6 +337,7 @@ def main(argv=None) -> int:
     parser.add_argument("--resolved-namelist", type=Path, required=True)
     parser.add_argument("--writer-source-manifest", type=Path, required=True)
     parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--nemo-engine-commit", required=True)
     args = parser.parse_args(argv)
     try:
         contract = package(
@@ -339,7 +345,7 @@ def main(argv=None) -> int:
             args.instrumented_restart, args.preregistration,
             args.registration_commit, args.producer_commit,
             args.resolved_namelist, args.writer_source_manifest,
-            args.binary)
+            args.binary, args.nemo_engine_commit)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"REFUSE: {exc}", file=sys.stderr)
         return 2

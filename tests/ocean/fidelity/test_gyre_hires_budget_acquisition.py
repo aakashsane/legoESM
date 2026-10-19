@@ -130,6 +130,10 @@ def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
     assert "mpirun -np 1" in run
     assert "--run" in run
     assert "merge-base --is-ancestor" in run
+    assert "REFUSE_NEMO_COMMIT" in run
+    assert "REFUSE_NEMO_BUILD_TREE" in run
+    assert "--untracked-files=all -- src ext mk tools makenemo" in run
+    assert "--nemo-engine-commit" in run
     assert '[[ "$actual_my_src" == "$EXPECTED_MY_SRC" ]]' in run
     assert "REFUSE_MY_SRC_REGISTRY" in run
     assert "unexpected_override.F90" not in run

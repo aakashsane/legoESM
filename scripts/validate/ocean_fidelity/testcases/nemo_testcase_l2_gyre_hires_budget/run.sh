@@ -42,6 +42,7 @@ readonly PACKAGER=$here/package_records.py
 readonly PREREG=$repo/docs/ocean/fidelity/testcases/nemo_testcases_l2_gyre_hires_round14_preregistration.md
 readonly REGISTRATION_COMMIT=3293fd5f49c332038cc61735ed1dc7bbc0f7b798
 readonly REGISTRATION_SHA256=480a45f3d7f5e02bd5c4771316bae668e59ee33aaeab87a73c47a6212edf5174
+readonly EXPECTED_NEMO_COMMIT=dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796
 readonly EVIDENCE=${EVIDENCE:-/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round14/oracle_gyre_r4_smag_budget_180d}
 readonly RANKS=${RANKS:-1}
 readonly PY=/home/dbalwada/legoESM/.venv/bin/python
@@ -62,6 +63,19 @@ readonly COMMIT=$(git -C "$repo" rev-parse HEAD)
 git -C "$repo" merge-base --is-ancestor "$REGISTRATION_COMMIT" "$COMMIT" || {
   printf 'REFUSE_REGISTRATION_ANCESTRY: %s does not descend from %s\n' \
     "$COMMIT" "$REGISTRATION_COMMIT" >&2
+  exit 66
+}
+readonly NEMO_COMMIT=$(git -C "$NEMO_ROOT" rev-parse HEAD)
+[[ "$NEMO_COMMIT" == "$EXPECTED_NEMO_COMMIT" ]] || {
+  printf 'REFUSE_NEMO_COMMIT: got %s, expected %s\n' \
+    "$NEMO_COMMIT" "$EXPECTED_NEMO_COMMIT" >&2
+  exit 66
+}
+nemo_build_changes=$(git -C "$NEMO_ROOT" status --porcelain \
+  --untracked-files=all -- src ext mk tools makenemo)
+[[ -z "$nemo_build_changes" ]] || {
+  printf 'REFUSE_NEMO_BUILD_TREE: executing source/build inputs changed:\n%s\n' \
+    "$nemo_build_changes" >&2
   exit 66
 }
 for path in "$BASE_NAMELIST" "$SMAG_PATCH" "$DURATION_PATCH" \
@@ -368,6 +382,7 @@ done
   --resolved-namelist "$EVIDENCE/instrumented/output.namelist.dyn" \
   --writer-source-manifest "$EVIDENCE/manifest/writer_source.sha256" \
   --binary "$BINARY" \
+  --nemo-engine-commit "$NEMO_COMMIT" \
   >"$EVIDENCE/instrumented/package_records.log"
 (
   cd "$EVIDENCE"

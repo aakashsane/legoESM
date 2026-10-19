@@ -50,6 +50,7 @@ REGISTRATION_COMMIT = "3293fd5f49c332038cc61735ed1dc7bbc0f7b798"
 REGISTRATION_SOURCE_SHA256 = (
     "480a45f3d7f5e02bd5c4771316bae668e59ee33aaeab87a73c47a6212edf5174"
 )
+NEMO_ENGINE_COMMIT = "dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796"
 REPO = Path(__file__).resolve().parents[4]
 LEGO_SOURCE_PATHS = (
     "scripts/run/run_gyre_hires.py",
@@ -218,6 +219,60 @@ def required_legoesm_keys() -> tuple[str, ...]:
         for name in LEGO_FULL_FIELDS
         for key in (name, f"{name}_daily_mean")
     )
+
+
+def audit_nemo_restart_pair(control: Path, instrumented: Path) -> dict:
+    """Independently reopen and compare the two terminal NEMO restarts."""
+    from netCDF4 import Dataset
+
+    with Dataset(control) as left, Dataset(instrumented) as right:
+        left.set_auto_mask(False)
+        right.set_auto_mask(False)
+        left_names = {
+            name for name, variable in left.variables.items()
+            if np.dtype(variable.dtype).kind in "biufc"
+        }
+        right_names = {
+            name for name, variable in right.variables.items()
+            if np.dtype(variable.dtype).kind in "biufc"
+        }
+        if left_names != right_names:
+            raise ValueError(
+                "restart numeric-variable registry changed: "
+                f"only_control={sorted(left_names - right_names)}, "
+                f"only_instrumented={sorted(right_names - left_names)}")
+        missing = sorted(NEMO_REQUIRED_RESTART_VARIABLES - left_names)
+        if missing:
+            raise ValueError(
+                "restart lacks required prognostic providers: "
+                + ", ".join(missing))
+
+        compared_words = 0
+        unequal_words = 0
+        for name in sorted(left_names):
+            a = np.asarray(left.variables[name][:])
+            b = np.asarray(right.variables[name][:])
+            if a.shape != b.shape or a.dtype != b.dtype:
+                raise ValueError(
+                    f"restart variable {name} changed shape or dtype")
+            a_words = np.ascontiguousarray(a).view(np.uint8).reshape(
+                a.size, a.dtype.itemsize)
+            b_words = np.ascontiguousarray(b).view(np.uint8).reshape(
+                b.size, b.dtype.itemsize)
+            unequal_words += int(np.count_nonzero(
+                np.any(a_words != b_words, axis=1)))
+            compared_words += int(a.size)
+
+        kt = np.asarray(left.variables["kt"][:])
+        if kt.size != 1 or float(kt.reshape(-1)[0]) != 4320.0:
+            raise ValueError("restart terminal kt is not exactly 4320")
+        if compared_words <= 0:
+            raise ValueError("restart comparison contains zero numeric words")
+        return {
+            "compared_variables": sorted(left_names),
+            "compared_words": compared_words,
+            "unequal_words": unequal_words,
+        }
 
 
 def audit_legoesm_archive(root: Path) -> dict:
@@ -470,6 +525,9 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                 source_path, provider, producer_commit))
 
         if provider == "nemo":
+            if contract.get("nemo_engine_commit") != NEMO_ENGINE_COMMIT:
+                errors.append(
+                    "NEMO contract does not pin the certified engine commit")
             binary_digest = contract.get("binary_sha256")
             if (not isinstance(binary_digest, str)
                     or re.fullmatch(r"[0-9a-f]{64}", binary_digest) is None):
@@ -606,6 +664,23 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                                     or sha256(restart) != digest):
                                 errors.append(
                                     f"NEMO passive restart artifact differs: {restart}")
+                        if all(restart.is_file() for restart, _ in actual_restarts):
+                            try:
+                                live = audit_nemo_restart_pair(
+                                    actual_restarts[0][0], actual_restarts[1][0])
+                                if live["unequal_words"] != 0:
+                                    errors.append(
+                                        "NEMO passive restarts contain moved words")
+                                if (live["compared_variables"]
+                                        != compared_variables
+                                        or live["compared_words"]
+                                        != passive.get("compared_words")):
+                                    errors.append(
+                                        "NEMO passive summary differs from the "
+                                        "reopened restart pair")
+                            except (OSError, RuntimeError, ValueError) as exc:
+                                errors.append(
+                                    f"cannot verify NEMO restart contents: {exc}")
                 elif (passive.get("window_entry_day") != START_DAY
                       or passive.get("steps") != 24
                       or not isinstance(passive.get("compared_leaves"), int)

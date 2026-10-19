@@ -16,6 +16,15 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(PREFLIGHT)
 
 
+def write_nemo_restart(path: Path, *, kt: float = 4320.0) -> None:
+    from netCDF4 import Dataset
+
+    with Dataset(path, "w") as dataset:
+        for name in sorted(PREFLIGHT.NEMO_REQUIRED_RESTART_VARIABLES):
+            variable = dataset.createVariable(name, "f8")
+            variable.assignValue(kt if name == "kt" else 1.0)
+
+
 def write_archive(root: Path, *, drop: str | None = None, non_finite: str | None = None):
     fields = list(PREFLIGHT.LEGO_FULL_FIELDS)
     manifest = {
@@ -115,8 +124,9 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
             control.mkdir(exist_ok=True)
             (root / "nemo").write_bytes(b"same-binary")
             (control / "nemo").write_bytes(b"same-binary")
-            (root / "instrumented.nc").write_bytes(b"same-restart")
-            (control / "control.nc").write_bytes(b"same-restart")
+            write_nemo_restart(root / "instrumented.nc")
+            (control / "control.nc").write_bytes(
+                (root / "instrumented.nc").read_bytes())
             passive.update({
                 "control_sha256": PREFLIGHT.sha256(control / "control.nc"),
                 "instrumented_sha256": PREFLIGHT.sha256(
@@ -124,6 +134,8 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
                 "control_restart": "control.nc",
                 "instrumented_restart": "instrumented.nc",
                 "compared_variables": sorted(
+                    PREFLIGHT.NEMO_REQUIRED_RESTART_VARIABLES),
+                "compared_words": len(
                     PREFLIGHT.NEMO_REQUIRED_RESTART_VARIABLES),
             })
         else:
@@ -206,6 +218,7 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
             contract["control_binary_sha256"] = binary_digest
             contract["instrumented_binary_sha256"] = binary_digest
             contract["same_binary_control"] = True
+            contract["nemo_engine_commit"] = PREFLIGHT.NEMO_ENGINE_COMMIT
         (root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(contract))
 
     monkeypatch.setattr(
@@ -248,6 +261,7 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
         ("binary_sha256", "not-a-digest"),
         ("control_binary_sha256", "c" * 64),
         ("same_binary_control", False),
+        ("nemo_engine_commit", "0" * 40),
     ):
         planted = dict(nemo_contract)
         planted[key] = bad
@@ -291,6 +305,31 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
     (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(planted))
     assert PREFLIGHT.build_report(
         roots["legoesm"], nemo_root)["verdict"] == "ACQUISITION_NEEDED"
+    (nemo_root / "passive.json").write_text(json.dumps(passive_original))
+    (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(
+        json.dumps(nemo_contract))
+
+    # Matching hashes and a self-consistent JSON claim cannot turn arbitrary
+    # bytes into a valid pair of NEMO restart providers.
+    control_restart = tmp_path / "control" / "control.nc"
+    instrumented_restart = nemo_root / "instrumented.nc"
+    restart_control_original = control_restart.read_bytes()
+    restart_instrumented_original = instrumented_restart.read_bytes()
+    control_restart.write_bytes(b"same-invalid-restart")
+    instrumented_restart.write_bytes(b"same-invalid-restart")
+    planted_passive = dict(passive_original)
+    planted_passive["control_sha256"] = PREFLIGHT.sha256(control_restart)
+    planted_passive["instrumented_sha256"] = PREFLIGHT.sha256(
+        instrumented_restart)
+    (nemo_root / "passive.json").write_text(json.dumps(planted_passive))
+    planted = dict(nemo_contract)
+    planted["passive_identity_sha256"] = PREFLIGHT.sha256(
+        nemo_root / "passive.json")
+    (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(planted))
+    assert PREFLIGHT.build_report(
+        roots["legoesm"], nemo_root)["verdict"] == "ACQUISITION_NEEDED"
+    control_restart.write_bytes(restart_control_original)
+    instrumented_restart.write_bytes(restart_instrumented_original)
     (nemo_root / "passive.json").write_text(json.dumps(passive_original))
     (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(
         json.dumps(nemo_contract))

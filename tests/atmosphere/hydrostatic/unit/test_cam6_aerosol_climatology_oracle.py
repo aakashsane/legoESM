@@ -38,6 +38,54 @@ def _cases():
     return lons, lats, tlat, tlon, fld, ps, np.stack(exp[:nlev]), exp[nlev]
 
 
+def _time_cases():
+    rows = [np.array([float(x) for x in l.split()])
+            for l in (_DIR / "cam6_aerosol_tracer_data_oracle_cases.txt").read_text().splitlines()]
+    nlon, nlat, nlev, nrec, ncol, pver = (int(x) for x in rows[0])
+    times, one_yr, hyam, hybm, p0 = rows[3], rows[4][0], rows[5], rows[6], rows[7][0]
+    ntime = int(rows[12][0])
+    cases = [(rows[13 + 2 * i][0], rows[14 + 2 * i].reshape((ncol, pver), order="F")) for i in range(ntime)]
+    exp = [np.array([float(x) for x in l.split()])
+           for l in (_DIR / "cam6_aerosol_tracer_data_oracle_expected.txt").read_text().splitlines()][nlev + 1:]
+    out = []
+    for i in range(ntime):
+        blk = exp[i * (pver + 1):(i + 1) * (pver + 1)]
+        out.append((int(blk[0][0]) - 1, int(blk[0][1]) - 1, blk[0][2], np.stack(blk[1:]).T))
+    return times, one_yr, hyam, hybm, p0, cases, out
+
+
+# branch exercised by each oracle time (n, np1 1-based): t=0, 10 before first record -> (12, 1) wrap with
+# tp >= t; t=15 at the first record -> (1, 2), fact1 = 1; t=30 interior; t=200 interior; t=349 at the last
+# record -> (12, 1), fact1 = 1; t=359, 364.99 after the last -> (12, 1), tp + one_yr branch.
+def test_time_and_vertical_match_gfortran_oracle():
+    lons, lats, tlat, tlon, fld, ps, _f, _p = _cases()
+    times, one_yr, hyam, hybm, p0, cases, expected = _time_cases()
+    np.testing.assert_array_equal(times, clim.CLIM_RECORD_TIMES)
+    assert one_yr == clim.NOLEAP_ONE_YR
+    lon_w, lat_w = clim.horizontal_weights(lats, lons, tlat, tlon)
+    fcol = cam_lininterp.lininterp_2d(fld, lon_w, lat_w)          # (nrec, nlev, ncol)
+    pscol = cam_lininterp.lininterp_2d(ps, lon_w, lat_w)          # (nrec, ncol)
+    for (t, pmid), (n_exp, np1_exp, f_exp, out_exp) in zip(cases, expected):
+        n, np1 = clim.bracket(clim.CLIM_RECORD_TIMES, t)
+        assert (n, np1) == (n_exp, np1_exp)
+        f1 = clim.time_fact1(times[n], times[np1], t, one_yr)
+        np.testing.assert_allclose(f1, f_exp, rtol=1e-12, atol=1e-30)
+        got = clim.interpolate_to_model(fcol[n].T, fcol[np1].T, pscol[n], pscol[np1], f1, hyam, hybm, p0, pmid)
+        np.testing.assert_allclose(got, out_exp, rtol=1e-12, atol=1e-30)
+
+
+def test_record_dates_are_cam_clim_dates():
+    assert clim.CLIM_RECORD_TIMES == (15.0, 44.0, 74.0, 104.0, 135.0, 165.0, 196.0, 227.0, 257.0, 288.0, 318.0, 349.0)
+
+
+@pytest.mark.skipif(not _REAL, reason="set LEGOESM_CAM6_AEROSOL_DIR to the PPE data folder")
+def test_record_dates_match_the_cam_clim_file():
+    import netCDF4
+    with netCDF4.Dataset(Path(_REAL) / "mam3_1.9x2.5_L30_2000clim_c130319.nc") as d:
+        assert tuple(int(x) for x in d["date"][:]) == clim.CAM_CLIM_DATES
+        assert "datesec" not in d.variables
+
+
 def test_horizontal_mapping_matches_gfortran_oracle():
     lons, lats, tlat, tlon, fld, ps, fcol_exp, ps_exp = _cases()
     lon_w, lat_w = clim.horizontal_weights(lats, lons, tlat, tlon)
@@ -93,7 +141,10 @@ def test_month_by_month_equals_all_at_once_synthetic(tmp_path, monkeypatch):
     _write_synthetic(tmp_path / name, "so4_a1", 5)
     monkeypatch.setitem(clim.PPE_SHA256, name, hashlib.sha256((tmp_path / name).read_bytes()).hexdigest())
     got = clim.read_monthly_climatology(tmp_path, "so4_a1")[0]
-    np.testing.assert_array_equal(got, _all_at_once(tmp_path / name, "so4_a1"))
+    ref = _all_at_once(tmp_path / name, "so4_a1")
+    np.testing.assert_array_equal(got, ref)
+    two = clim.read_monthly_climatology(tmp_path, "so4_a1", months=(11, 0))[0]   # 2b: two held records
+    np.testing.assert_array_equal(two, ref[[11, 0]])
 
 
 def test_sha_mismatch_raises(tmp_path):

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 
 from legoesm.atmosphere.physics.microphysics.cam6_modal_aerosol import (
@@ -65,16 +66,34 @@ PPE_SHA256 = {
     "cc_PPE_250_ensemble_PD.000.h0.soa_a2.nc": "f8235eb34efc402fb4548dd6b75eded65889251a5a5ea8c4a13ce2c1168959c8",
     PPE_RAW_FILE: "0662883d71037df480c86b6a91c28bffdab058cd77ffcdd5d919383ad35994f2",
 }
+# --- record dates: CAM clim-file convention (user decision 1b, 2026-10-16) ---
+# ``date`` of mam3_1.9x2.5_L30_2000clim_c130319.nc (no ``datesec`` -> 0), the
+# m-th month of the PPE mean is stamped with the m-th date; as days since Jan 1
+# 00:00 on the noleap calendar (set_time_float_from_date differences).
+CAM_CLIM_DATES = (20000116, 20000214, 20000316, 20000415, 20000516, 20000615,
+                  20000716, 20000816, 20000915, 20001016, 20001115, 20001216)
+_NOLEAP_MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+NOLEAP_ONE_YR = 365.0  # tracer_data.F90:265-275 one_yr on the noleap calendar
+
+
+def noleap_days_since_jan1(date: int, sec: int = 0) -> float:
+    """Days since Jan 1 00:00 of the date's year (noleap) for YYYYMMDD ``date``."""
+    month, day = (date % 10000) // 100, date % 100
+    return float(sum(_NOLEAP_MONTH_DAYS[:month - 1]) + day - 1) + sec / 86400.0  # coeff-ok: seconds per day
+
+
+CLIM_RECORD_TIMES = tuple(noleap_days_since_jan1(d) for d in CAM_CLIM_DATES)
 # --- record layout: 36 monthly means = 3 years x 12 months (user decision) ---
 _N_MONTHS = 12
 _N_YEARS = 3
 
 
-def read_monthly_climatology(data_dir, var: str):
+def read_monthly_climatology(data_dir, var: str, months=range(12)):
     """Mean over the 3 years of one PPE field, read month by month.
 
     Returns ``(field, lat_deg, lon_deg, lev_hPa)``; ``field`` float64 of shape
-    (12, [lev,] lat, lon).  Month ``m`` is the mean of records m, m+12, m+24,
+    (len(months), [lev,] lat, lon), 0-based ``months`` (CAM holds only the two
+    bracketing records, user decision 2b: pass ``months=(n, np1)``).  Month ``m`` is the mean of records m, m+12, m+24,
     each cast float32 -> float64 (as CAM's pio read into r8), summed in that
     order and divided by 3.  Raw values are read (no netCDF masking, as pio).
     """
@@ -84,10 +103,11 @@ def read_monthly_climatology(data_dir, var: str):
         v = d[var]
         if v.shape[0] != _N_YEARS * _N_MONTHS:
             raise ValueError(f"{path}: {v.shape[0]} records, expected {_N_YEARS * _N_MONTHS}")
-        out = np.empty((_N_MONTHS,) + v.shape[1:], dtype=np.float64)
-        for m in range(_N_MONTHS):
+        months = tuple(months)
+        out = np.empty((len(months),) + v.shape[1:], dtype=np.float64)
+        for i, m in enumerate(months):
             r = [np.asarray(v[m + _N_MONTHS * y], dtype=np.float64) for y in range(_N_YEARS)]
-            out[m] = (r[0] + r[1] + r[2]) / 3.0
+            out[i] = (r[0] + r[1] + r[2]) / 3.0
         coords = tuple(np.asarray(d[c][:], dtype=np.float64) for c in ("lat", "lon"))
         lev = np.asarray(d["lev"][:], dtype=np.float64) if "lev" in d.variables else None
     if not np.all(np.isfinite(out)):
@@ -114,3 +134,55 @@ def horizontal_weights(file_lat_deg, file_lon_deg, lat_rad, lon_rad):
     lat_w = lininterp_init(np.asarray(file_lat_deg, dtype=np.float64) * d2r, lat_rad, 1)
     return lon_w, lat_w
 
+
+
+def bracket(times, t: float):
+    """CAM cyclic ``find_times`` (tracer_data.F90:1070-1077, findplb): 0-based
+    record indices (n, np1) bracketing model time ``t`` [days since Jan 1]."""
+    nx = len(times)
+    if t < times[0] or t >= times[nx - 1]:
+        n = nx - 1
+    else:
+        n = next(i - 1 for i in range(1, nx) if t < times[i])
+    return n, (0 if n == nx - 1 else n + 1)
+
+
+def time_fact1(datatimem, datatimep, t, one_yr):
+    """CAM ``interpolate_trcdata`` fact1 for a cyclical file (:1636-1645)."""
+    deltat = datatimep - datatimem
+    wrap = deltat < 0.0
+    deltat_w = deltat + one_yr
+    f_wrap = jnp.where(datatimep >= t, (datatimep - t) / deltat_w, (datatimep + one_yr - t) / deltat_w)
+    return jnp.where(wrap, f_wrap, (datatimep - t) / deltat)
+
+
+def _time_interp(fact1, a, b):
+    """``fact1*a + fact2*b`` with CAM's ``fact2 == 0`` branch (:1666-1670, :1724-1728)."""
+    fact2 = 1.0 - fact1
+    return jnp.where(fact2 == 0, fact1 * a, fact1 * a + fact2 * b)
+
+
+def vert_interp(pin, pmid, datain):
+    """CAM ``vert_interp`` (tracer_data.F90:2291-2361) on the trailing level axis:
+    ``pin`` (..., levsiz) increasing, ``pmid`` (..., pver), ``datain`` (..., levsiz)."""
+    levsiz = pin.shape[-1]
+    j = jnp.clip(jnp.sum(pin[..., None, :] < pmid[..., :, None], axis=-1) - 1, 0, levsiz - 2)
+    p_lo = jnp.take_along_axis(pin, j, axis=-1)
+    p_hi = jnp.take_along_axis(pin, j + 1, axis=-1)
+    d_lo = jnp.take_along_axis(datain, j, axis=-1)
+    d_hi = jnp.take_along_axis(datain, j + 1, axis=-1)
+    dpu = pmid - p_lo
+    dpl = p_hi - pmid
+    interior = (d_lo * dpl + d_hi * dpu) / (dpl + dpu)
+    above = datain[..., :1] * pmid / pin[..., :1]
+    return jnp.where(pmid < pin[..., :1], above, jnp.where(pmid > pin[..., -1:], datain[..., -1:], interior))
+
+
+def interpolate_to_model(rec_m, rec_p, ps_m, ps_p, fact1, hyam, hybm, p0, pmid):
+    """Time-interpolate the two held records and PS, build the file pressures
+    ``pin = P0*hyam + ps*hybm`` and ``vert_interp`` to ``pmid`` (:1660-1745).
+    ``rec_*`` (ncol, levsiz), ``ps_*`` (ncol,), ``pmid`` (ncol, pver)."""
+    ps = _time_interp(fact1, ps_m, ps_p)
+    datain = _time_interp(fact1, rec_m, rec_p)
+    pin = p0 * hyam + ps[..., None] * hybm
+    return vert_interp(pin, pmid, datain)

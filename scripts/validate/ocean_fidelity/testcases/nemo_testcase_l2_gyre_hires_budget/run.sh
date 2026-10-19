@@ -2,18 +2,24 @@
 set -Eeuo pipefail
 
 # OPERATOR-EXECUTED ACQUISITION ONLY.  The default action is a read-only
-# source/patch/syntax preflight.  --run builds a cloned NEMO configuration and
-# runs the same binary twice, with the WRITE-only budget disabled and enabled.
+# source/patch/syntax preflight.  --run-short verifies the correction at the
+# first registered day; --run performs the corrected 180-day acquisition.
 mode=preflight
-if [[ $# -gt 1 || ( $# -eq 1 && $1 != --run ) ]]; then
-  printf 'REFUSE_USAGE: %s [--run]\n' "$0" >&2
+if [[ $# -gt 1 ]]; then
+  printf 'REFUSE_USAGE: %s [--run-short|--run]\n' "$0" >&2
   exit 64
 fi
-[[ $# -eq 0 ]] || mode=run
+if [[ $# -eq 1 ]]; then
+  case "$1" in
+    --run-short) mode=short ;;
+    --run) mode=full ;;
+    *) printf 'REFUSE_USAGE: %s [--run-short|--run]\n' "$0" >&2; exit 64 ;;
+  esac
+fi
 
 refuse_on_error() {
   local status=$?
-  printf 'REFUSE: round-14 NEMO budget failed at line %s (status %s)\n' \
+  printf 'REFUSE: round-15 NEMO budget failed at line %s (status %s)\n' \
     "${BASH_LINENO[0]:-${LINENO}}" "$status" >&2
   exit "$status"
 }
@@ -26,13 +32,29 @@ repo=$(git -C "$here" rev-parse --show-toplevel 2>/dev/null) || {
 }
 readonly NEMO_ROOT=${NEMO_ROOT:-/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2}
 readonly SOURCE_NAME=GYRE_OMIP_L2_P3
-readonly TARGET_NAME=GYRE_OMIP_L2_P3_R14BUD
+if [[ "$mode" == short ]]; then
+  readonly TARGET_NAME=GYRE_OMIP_L2_P3_R15BUDV
+  readonly LAST_DAY=30
+  readonly LAST_STEP=720
+  readonly RECORD_COUNT=1
+  readonly EXPERIMENT=GYRE_R4_SMAG_R15_VERIFY
+  readonly DURATION_PATCH_NAME=namelist_cfg_r4_smag_30d_verify.patch
+  readonly DEFAULT_EVIDENCE=/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round15/oracle_gyre_r4_smag_budget_verify_day30
+else
+  readonly TARGET_NAME=GYRE_OMIP_L2_P3_R15BUD
+  readonly LAST_DAY=180
+  readonly LAST_STEP=4320
+  readonly RECORD_COUNT=151
+  readonly EXPERIMENT=GYRE_R4_SMAG_R14_BUDGET
+  readonly DURATION_PATCH_NAME=namelist_cfg_r4_smag_180d.patch
+  readonly DEFAULT_EVIDENCE=/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round15/oracle_gyre_r4_smag_budget_180d_corrected
+fi
 readonly SOURCE_ROOT=$NEMO_ROOT/cfgs/$SOURCE_NAME
 readonly TARGET_ROOT=$NEMO_ROOT/cfgs/$TARGET_NAME
 readonly ENGINE_ROOT=$NEMO_ROOT/src/OCE/DYN
 readonly BASE_NAMELIST=$here/../configs/gyre_omip_l2_phase3_namelist_cfg
 readonly SMAG_PATCH=$here/../nemo_testcase_l2_gyre_hires/namelist_cfg_r4_smag_kt10.patch
-readonly DURATION_PATCH=$here/namelist_cfg_r4_smag_180d.patch
+readonly DURATION_PATCH=$here/$DURATION_PATCH_NAME
 readonly DECK_SH=$here/../nemo_testcase_l2_gyre_hires/deck.sh
 readonly STAGE_PATCH=$here/stprk3_stg_round14.patch
 readonly ADV_PATCH=$here/dynadv_round14.patch
@@ -43,13 +65,13 @@ readonly PREREG=$repo/docs/ocean/fidelity/testcases/nemo_testcases_l2_gyre_hires
 readonly REGISTRATION_COMMIT=3293fd5f49c332038cc61735ed1dc7bbc0f7b798
 readonly REGISTRATION_SHA256=480a45f3d7f5e02bd5c4771316bae668e59ee33aaeab87a73c47a6212edf5174
 readonly EXPECTED_NEMO_COMMIT=dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796
-readonly EVIDENCE=${EVIDENCE:-/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round14/oracle_gyre_r4_smag_budget_180d}
+readonly EVIDENCE=${EVIDENCE:-$DEFAULT_EVIDENCE}
 readonly RANKS=${RANKS:-1}
 readonly PY=/home/dbalwada/legoESM/.venv/bin/python
 readonly FC=/home/dbalwada/miniconda3/envs/nemo-build/bin/gfortran
 readonly RECORD_SIZE=$((16 + 9 * 4 + 2 * 8 + 126 * 86 * 9 * 8))
-readonly RECORD_COUNT=151
-readonly RESTART=GYRE_R4_SMAG_R14_BUDGET_00004320_restart.nc
+printf -v restart_step '%08d' "$LAST_STEP"
+readonly RESTART=${EXPERIMENT}_${restart_step}_restart.nc
 
 [[ "$RANKS" == 1 ]] || {
   printf 'REFUSE_RANKS: the writer is lwp-only and not gathered; RANKS must be 1\n' >&2
@@ -85,7 +107,7 @@ for path in "$BASE_NAMELIST" "$SMAG_PATCH" "$DURATION_PATCH" \
   "$SOURCE_ROOT/cpp_$SOURCE_NAME.fcm" "$NEMO_ROOT/arch/arch-conda.fcm"; do
   [[ -f "$path" ]] || { printf 'REFUSE_MISSING_INPUT: %s\n' "$path" >&2; exit 67; }
 done
-[[ "$RECORD_SIZE" -eq 780260 && "$RECORD_COUNT" -eq 151 ]] || {
+[[ "$RECORD_SIZE" -eq 780260 ]] || {
   printf 'REFUSE_LAYOUT: record layout arithmetic changed\n' >&2
   exit 67
 }
@@ -156,7 +178,8 @@ patch -s --fuzz=0 "$dry/namelist_cfg" <"$SMAG_PATCH"
 . "$DECK_SH"
 gyre_hires_verify_deck r4_smag "$dry/namelist_cfg"
 patch -s --fuzz=0 "$dry/namelist_cfg" <"$DURATION_PATCH"
-for pair in 'nn_it000:1' 'nn_itend:4320' 'nn_stock:4320' 'nn_write:24' \
+for pair in "cn_exp:$EXPERIMENT" 'nn_it000:1' "nn_itend:$LAST_STEP" \
+            "nn_stock:$LAST_STEP" 'nn_write:24' \
             'nn_GYRE:4' 'rn_Dt:3600.' 'rn_Ld:25000.' \
             'ln_dynldf_lap:.false.' 'ln_dynldf_blp:.true.' \
             'ln_dynldf_lev:.true.' 'nn_ahm_ijk_t:32' 'rn_csmc:3.5' \
@@ -194,11 +217,14 @@ for needle in 'GYRE_R14_BUDGET' 'jr14_first_step = 697' \
     exit 68
   }
 done
-printf 'PREFLIGHT: deck=r4_smag days=180 window=30:180 ranks=1 '
+printf 'PREFLIGHT: deck=r4_smag days=%s window=30:%s ranks=1 ' \
+  "$LAST_DAY" "$LAST_DAY"
 printf 'record_count=%s record_size=%s evidence=%s commit=%s\n' \
   "$RECORD_COUNT" "$RECORD_SIZE" "$EVIDENCE" "$COMMIT"
 if [[ "$mode" == preflight ]]; then
-  printf 'WOULD_RUN: EVIDENCE=%s RANKS=1 %s --run\n' "$EVIDENCE" "$0"
+  printf 'WOULD_RUN_SHORT: EVIDENCE=%s RANKS=1 %s --run-short\n' \
+    '/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round15/oracle_gyre_r4_smag_budget_verify_day30' "$0"
+  printf 'WOULD_RUN_FULL: EVIDENCE=%s RANKS=1 %s --run\n' "$EVIDENCE" "$0"
   printf 'PREFLIGHT_OK\n'
   exit 0
 fi
@@ -271,7 +297,7 @@ manifest_add "$ADV_PATCH" \
 manifest_add "$ZDF_PATCH" \
   'repo:scripts/validate/ocean_fidelity/testcases/nemo_testcase_l2_gyre_hires_budget/dynzdf_round14.patch'
 manifest_add "$DURATION_PATCH" \
-  'repo:scripts/validate/ocean_fidelity/testcases/nemo_testcase_l2_gyre_hires_budget/namelist_cfg_r4_smag_180d.patch'
+  "repo:${DURATION_PATCH#"$repo/"}"
 manifest_add "$PACKAGER" \
   'repo:scripts/validate/ocean_fidelity/testcases/nemo_testcase_l2_gyre_hires_budget/package_records.py'
 manifest_add "$here/run.sh" \
@@ -356,7 +382,7 @@ record_count=$(find "$EVIDENCE/instrumented" -maxdepth 1 -type f \
     "$record_count" "$RECORD_COUNT" >&2
   exit 73
 }
-for day in $(seq 30 180); do
+for day in $(seq 30 "$LAST_DAY"); do
   path=$(printf '%s/instrumented/oracle_gyre_r14_budget_day%04d.bin' \
     "$EVIDENCE" "$day")
   [[ -f "$path" && "$(stat -c %s "$path")" -eq "$RECORD_SIZE" ]] || {
@@ -372,6 +398,8 @@ for run in control instrumented; do
   }
 done
 
+package_mode=()
+[[ "$mode" != short ]] || package_mode=(--verify-short)
 "$PY" "$PACKAGER" \
   --run-root "$EVIDENCE/instrumented" \
   --control-restart "$EVIDENCE/control/$RESTART" \
@@ -383,11 +411,12 @@ done
   --writer-source-manifest "$EVIDENCE/manifest/writer_source.sha256" \
   --binary "$BINARY" \
   --nemo-engine-commit "$NEMO_COMMIT" \
+  "${package_mode[@]}" \
   >"$EVIDENCE/instrumented/package_records.log"
 (
   cd "$EVIDENCE"
   find manifest control instrumented -maxdepth 2 -type f -print0 | \
     sort -z | xargs -0 sha256sum >operator_manifest.sha256
 )
-printf 'ACQUISITION_DONE: %s (r4_smag, days 30..180, same-binary passive control)\n' \
-  "$EVIDENCE"
+printf 'ACQUISITION_DONE: %s (r4_smag, days 30..%s, same-binary passive control)\n' \
+  "$EVIDENCE" "$LAST_DAY"

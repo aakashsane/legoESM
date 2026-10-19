@@ -48,8 +48,8 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_record(path: Path, *, expected_day: int | None = None) -> dict[str, object]:
-    """Read one fixed-layout Fortran stream and remove the two-cell halo."""
+def decode_record(path: Path, *, expected_day: int | None = None) -> dict[str, object]:
+    """Decode one fixed-layout stream without applying the closure verdict."""
     raw = path.read_bytes()
     header_bytes = 16 + 9 * 4 + 2 * 8
     if len(raw) < header_bytes or raw[:16] != MAGIC:
@@ -83,6 +83,20 @@ def read_record(path: Path, *, expected_day: int | None = None) -> dict[str, obj
         raise ValueError(
             f"{path.name}: unexpected native mask {mask.shape}, "
             f"wet={np.count_nonzero(mask)}")
+    return {
+        "day": day,
+        "step": step,
+        "mask": mask,
+        "terms": terms,
+        "sha256": sha256(path),
+    }
+
+
+def read_record(path: Path, *, expected_day: int | None = None) -> dict[str, object]:
+    """Read one fixed-layout stream and enforce finite, pointwise closure."""
+    record = decode_record(path, expected_day=expected_day)
+    mask = np.asarray(record["mask"])
+    terms = np.asarray(record["terms"])
     if not bool(np.all(np.isfinite(terms))):
         raise ValueError(f"{path.name}: non-finite budget word")
     closure = float(np.max(np.abs(
@@ -91,14 +105,8 @@ def read_record(path: Path, *, expected_day: int | None = None) -> dict[str, obj
         raise ValueError(
             f"{path.name}: closure {closure} exceeds "
             f"{CLOSURE_BAR_ABS_M_S}")
-    return {
-        "day": day,
-        "step": step,
-        "mask": mask,
-        "terms": terms,
-        "closure_max_abs_m_s": closure,
-        "sha256": sha256(path),
-    }
+    record["closure_max_abs_m_s"] = closure
+    return record
 
 
 def compare_restarts(control: Path, instrumented: Path) -> dict[str, object]:
@@ -166,6 +174,37 @@ def compare_restarts(control: Path, instrumented: Path) -> dict[str, object]:
         "control_sha256": sha256(control),
         "instrumented_sha256": sha256(instrumented),
     }
+
+
+def verify_short(
+    run_root: Path, control_restart: Path, instrumented_restart: Path,
+) -> dict[str, object]:
+    """Verify the minimal day-30 rerun before the 180-day acquisition."""
+    path = run_root / "oracle_gyre_r14_budget_day0030.bin"
+    record = read_record(path, expected_day=30)
+    extras = sorted(run_root.glob("oracle_gyre_r14_budget_day*.bin"))
+    if extras != [path]:
+        raise ValueError(
+            f"short verification found {len(extras)} records, expected day 30 only")
+    passive = compare_restarts(control_restart, instrumented_restart)
+    if passive["status"] != "PASS":
+        raise ValueError(
+            f"write-only recorder moved {passive['unequal_words']} restart words")
+    report = {
+        "status": "PASS",
+        "purpose": "round15_day30_closure_verification_only",
+        "day": 30,
+        "step": 720,
+        "record": path.name,
+        "record_sha256": record["sha256"],
+        "closure_bar_abs_m_s": CLOSURE_BAR_ABS_M_S,
+        "closure_max_abs_m_s": record["closure_max_abs_m_s"],
+        "wet_words": int(np.count_nonzero(record["mask"])),
+        "passive_identity": passive,
+    }
+    (run_root / "momentum_budget_short_verification.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n")
+    return report
 
 
 def verify_registration(
@@ -338,14 +377,20 @@ def main(argv=None) -> int:
     parser.add_argument("--writer-source-manifest", type=Path, required=True)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--nemo-engine-commit", required=True)
+    parser.add_argument("--verify-short", action="store_true")
     args = parser.parse_args(argv)
     try:
-        contract = package(
-            args.run_root, args.control_restart,
-            args.instrumented_restart, args.preregistration,
-            args.registration_commit, args.producer_commit,
-            args.resolved_namelist, args.writer_source_manifest,
-            args.binary, args.nemo_engine_commit)
+        if args.verify_short:
+            contract = verify_short(
+                args.run_root, args.control_restart,
+                args.instrumented_restart)
+        else:
+            contract = package(
+                args.run_root, args.control_restart,
+                args.instrumented_restart, args.preregistration,
+                args.registration_commit, args.producer_commit,
+                args.resolved_namelist, args.writer_source_manifest,
+                args.binary, args.nemo_engine_commit)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"REFUSE: {exc}", file=sys.stderr)
         return 2

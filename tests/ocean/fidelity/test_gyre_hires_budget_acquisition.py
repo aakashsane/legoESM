@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import struct
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -22,15 +24,19 @@ SPEC.loader.exec_module(PACKAGER)
 def write_record(path: Path, *, day: int = 30, plant=None) -> None:
     ni, nj = 126, 86
     mask = np.zeros((ni, nj), dtype=np.float64)
-    interior_words = np.zeros(122 * 82, dtype=np.float64)
-    interior_words[:9480] = 1.0
-    interior = interior_words.reshape((122, 82), order="F")
+    interior = np.zeros((122, 82), dtype=np.float64)
+    # Match the r4 GYRE surface-V mask: 120 zonal columns x 79 rows.
+    # Output column 120 is wet and is the last inner column the old companion
+    # recorder failed to populate; output columns 0 and 121 are dry.
+    interior[1:121, 1:80] = 1.0
     mask[2:-2, 2:-2] = interior
     terms = np.zeros((ni, nj, len(PACKAGER.TERMS)), dtype=np.float64)
     if plant == "non_finite":
-        terms[2, 2, 0] = np.nan
+        terms[3, 3, 0] = np.nan
     elif plant == "closure":
-        terms[2, 2, 0] = 1.0e-8
+        terms[3, 3, 0] = 1.0e-8
+    elif plant == "east_closure":
+        terms[PACKAGER.HALO + 120, PACKAGER.HALO + 1, 0] = 1.0e-8
     header = (
         PACKAGER.MAGIC
         + struct.pack(
@@ -63,7 +69,10 @@ def test_record_reader_closes_and_all_active_plants_refuse(tmp_path):
     assert record["closure_max_abs_m_s"] == 0.0
 
     for plant, match in (
-        ("non_finite", "non-finite"), ("closure", "closure")):
+        ("non_finite", "non-finite"),
+        ("closure", "closure"),
+        ("east_closure", "closure"),
+    ):
         path = tmp_path / f"{plant}.bin"
         write_record(path, plant=plant)
         with pytest.raises(ValueError, match=match):
@@ -78,6 +87,22 @@ def test_record_reader_closes_and_all_active_plants_refuse(tmp_path):
     write_record(wrong_day, day=31)
     with pytest.raises(ValueError, match="does not match filename day"):
         PACKAGER.read_record(wrong_day, expected_day=30)
+
+
+def test_refusal_diagnostic_localizes_east_active_word(tmp_path):
+    path = tmp_path / "east.bin"
+    write_record(path, plant="east_closure")
+    result = subprocess.run(
+        [sys.executable, str(TOOL / "diagnose_closure_refusal.py"),
+         "--record", str(path)],
+        check=False, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["failing_words"] == 1
+    assert report["failing_output_columns_zero_based"] == [120]
+    assert report["eastmost_wet_output_column_zero_based"] == 120
+    assert report["all_failing_words_are_eastmost_wet_column"] is True
+    assert report["max_abs_residual_without_eastmost_wet_column_m_s"] == 0.0
 
 
 def test_restart_passivity_is_word_exact_and_signed_zero_plant_refuses(tmp_path):
@@ -99,6 +124,25 @@ def test_restart_passivity_is_word_exact_and_signed_zero_plant_refuses(tmp_path)
     Dataset(empty_instrumented, "w").close()
     with pytest.raises(ValueError, match="required prognostic providers"):
         PACKAGER.compare_restarts(empty_control, empty_instrumented)
+
+
+def test_short_verification_closes_passively_and_refuses_extra_record(tmp_path):
+    run_root = tmp_path / "run"
+    run_root.mkdir()
+    write_record(run_root / "oracle_gyre_r14_budget_day0030.bin")
+    control = tmp_path / "control.nc"
+    instrumented = tmp_path / "instrumented.nc"
+    write_restart(control, 0.0)
+    write_restart(instrumented, 0.0)
+    report = PACKAGER.verify_short(run_root, control, instrumented)
+    assert report["status"] == "PASS"
+    assert report["closure_max_abs_m_s"] == 0.0
+    assert report["wet_words"] == 9480
+    assert (run_root / "momentum_budget_short_verification.json").is_file()
+
+    write_record(run_root / "oracle_gyre_r14_budget_day0031.bin", day=31)
+    with pytest.raises(ValueError, match="expected day 30 only"):
+        PACKAGER.verify_short(run_root, control, instrumented)
 
 
 def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
@@ -129,6 +173,10 @@ def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
     assert "rg " not in run
     assert "mpirun -np 1" in run
     assert "--run" in run
+    assert "--run-short" in run
+    assert "GYRE_OMIP_L2_P3_R15BUDV" in run
+    assert "GYRE_OMIP_L2_P3_R15BUD" in run
+    assert "namelist_cfg_r4_smag_30d_verify.patch" in run
     assert "merge-base --is-ancestor" in run
     assert "REFUSE_NEMO_COMMIT" in run
     assert "REFUSE_NEMO_BUILD_TREE" in run
@@ -155,6 +203,8 @@ def test_nemo_writer_has_independent_total_and_no_stress_companion():
     assert "zr14_entry(:,kj) + prdt" not in module
     assert "zr14_stress(:,kj) = pv_full(:,1) - pv_no_stress(:,1)" in module
     assert "zr14_vnostress" in zdf
+    assert "DIMENSION(jpi,jpkm1)" in zdf
+    assert "DIMENSION(T1Di(0),jpkm1)      ::   zr14_vnostress" not in zdf
     assert "CALL r14_zdf_pre_row( jj, pvv(:,jj,:,Kaa) )" in zdf
     assert "CALL r14_zdf_row( jj, zr14_vnostress" in zdf
     # The control would be vacuous if it reused the already-solved production

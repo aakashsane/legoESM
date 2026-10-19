@@ -259,7 +259,11 @@ def _cape_calculation(T, r, pf, ph, table_vals):
     # kLCL: first level, upward from the surface, with p_full <= pLCL
     n_dry = jnp.sum(jnp.cumprod((pf > pLCL)[::-1].astype(jnp.int32)))
     kLCL = jnp.where(saturated, ks, ks - n_dry)
-    dlogph = jnp.log(ph[1:] / ph[:-1])          # log(p_half(k+1)/p_half(k))
+    # log(p_half(k+1)/p_half(k)); +inf (as the oracle evaluates it) where the
+    # top interface pressure is 0, with no gradient through that constant
+    top_open = ph[:-1] > 0
+    ratio = jnp.where(top_open, ph[1:] / jnp.where(top_open, ph[:-1], 1.0), 1.0)
+    dlogph = jnp.where(top_open, jnp.log(ratio), jnp.inf)
     pf_below = jnp.concatenate([pf[1:], pf[-1:]])
     t_min = jnp.asarray(_T_MIN_K, T.dtype)
 
@@ -423,8 +427,9 @@ def sbm_convection(
     ConvectionOutput
     """
     sharp = config.cloud_mask_sharpness
+    sharp_default = SBMConfig._field_defaults["cloud_mask_sharpness"]
     if (not isinstance(sharp, jax.core.Tracer)
-            and np.any(np.asarray(sharp) != SBMConfig._field_defaults["cloud_mask_sharpness"])):
+            and np.any(np.asarray(sharp) != sharp_default)):
         raise ValueError(
             "SBMConfig.cloud_mask_sharpness belonged to the replaced per-level "
             "T_moist >= T layer mask; the Isca qe_moist_convection port has no such "
@@ -441,6 +446,10 @@ def sbm_convection(
     dT, dq, precip, cape = jax.vmap(
         lambda t, qq, pf, ph, ta, rr: _sbm_column(t, qq, pf, ph, dt, ta, rr, table_vals)
     )(T, q_v, p_full, p_half, tau, rh)
+    if isinstance(sharp, jax.core.Tracer):
+        # traced config (jit argument): the check above cannot raise, so a
+        # non-default value poisons the outputs instead of being ignored
+        cape = jnp.where(jnp.any(sharp != sharp_default), jnp.nan, cape)
     trigger = cape_trigger(cape, config.cape_threshold, config.smooth_trigger_sharpness)
     dT_dt = trigger[:, None] * (dT / dt)
     dq_v_dt = trigger[:, None] * (dq / dt)

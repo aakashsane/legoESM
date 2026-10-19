@@ -328,11 +328,12 @@ class TestSBM:
         assert out.convective_mask.shape == (ncol,)
 
     def test_enthalpy_conservation(self):
-        """Column enthalpy tendency should be approximately conserved.
+        """Column enthalpy tendency should be conserved.
 
-        The linearized enthalpy correction ensures approximate conservation.
-        sum(c_pd * dT_dt + L_v * dq_v_dt) * dp / g should be small
-        relative to the total enthalpy change from temperature alone.
+        Isca qe_moist_convection closes column moist enthalpy in every branch
+        (deep T-shift, deep time-scale change with Pq = Pt, shallower), so
+        sum(c_pd * dT_dt + L_v * dq_v_dt) * dp / g is small relative to the
+        total enthalpy change from temperature alone.
         """
         ncol, nlev = 4, 20
         T, q_v, p_full, p_half = _make_unstable_columns(ncol, nlev)
@@ -395,59 +396,6 @@ class TestSBM:
         assert jnp.all(jnp.isfinite(grad_T))
         assert grad_T.shape == T.shape
 
-    def test_cloud_mask_straight_through_gradient_is_nonzero(self):
-        """SBM cloud_mask uses a straight-through estimator: forward = hard
-        boolean ``(T_moist >= T)``, backward = sigmoid' so that
-        ``jax.grad`` flows through layer-membership transitions.
-
-        This test isolates the cloud_mask gradient path from every other
-        SBM gradient route (T_base, T_ref, CAPE/trigger, (T_ref-T)) by
-        holding T_moist FIXED and constructing a 1-column profile with
-        an interior boundary level (T_moist == T).  Then:
-
-          ∂[cloud_mask]/∂T at boundary
-            = ∂[sigmoid(s·(T_moist - T))]/∂T |_{T_moist=T}
-            = -s/4
-
-        With sharpness s = 5/K, the boundary gradient should be ≈ -1.25.
-        With the legacy hard ``(T_moist >= T).astype(...)`` mask, this
-        derivative is exactly zero almost everywhere — the assertion
-        falsifies the hard-mask implementation by construction.
-
-        The straight-through estimator's forward value is also tested:
-        cloud_mask must equal the hard step, NOT the sigmoid (so the
-        forward integration semantics of the prior implementation are
-        preserved exactly).
-        """
-        sharpness = SBMConfig().cloud_mask_sharpness  # 5.0/K
-        # Interior boundary at level 1 (between levels 0 and 2).
-        T_moist = jnp.array([[260.0, 280.0, 300.0]])
-        T = jnp.array([[265.0, 280.0, 295.0]])  # T_moist == T at level 1
-
-        def cloud_mask_only(T_in):
-            soft = jax.nn.sigmoid(sharpness * (T_moist - T_in))
-            hard = (T_moist >= T_in).astype(T_in.dtype)
-            return soft + jax.lax.stop_gradient(hard - soft)
-
-        # Forward: must equal hard step
-        mask_value = cloud_mask_only(T)
-        expected_hard = jnp.array([[0.0, 1.0, 1.0]])  # T_moist >= T
-        assert jnp.allclose(mask_value, expected_hard), (
-            f"Forward cloud_mask should preserve hard-step semantics, "
-            f"got {mask_value} vs expected {expected_hard}"
-        )
-
-        # Backward: gradient at interior boundary level must be non-zero
-        grad_T = jax.grad(lambda T_in: jnp.sum(cloud_mask_only(T_in)))(T)
-        boundary_grad = float(grad_T[0, 1])
-        # Expected: -sharpness/4 = -1.25
-        expected_grad = -sharpness / 4.0
-        assert abs(boundary_grad - expected_grad) < 0.01, (
-            f"Boundary gradient is {boundary_grad}, expected ≈ "
-            f"{expected_grad} for the straight-through estimator. "
-            f"A hard boolean mask gives 0 (which would fail this check)."
-        )
-
     def test_accepts_columnwise_parameters(self):
         """SBM should support per-column traced control parameters."""
         ncol, nlev = 3, 8
@@ -464,64 +412,6 @@ class TestSBM:
         assert jnp.all(jnp.isfinite(out.dq_v_dt))
         assert out.dT_dt.shape == (ncol, nlev)
         assert float(jnp.max(jnp.abs(out.dT_dt[0]))) >= float(jnp.max(jnp.abs(out.dT_dt[-1])))
-
-    def test_stratosphere_above_lnb_has_zero_adjustment(self):
-        """Regression for #326: SBM must not adjust stably stratified
-        layers above the level of neutral buoyancy.
-
-        The cloud_mask = (T_moist >= T_env) gate restricts the
-        convective relaxation to conditionally unstable levels. Without
-        it, the scheme relaxed the *entire* column — including the
-        stable stratosphere — toward the moist adiabat, producing the
-        spurious ~40 K/h cooling at the model top that drove the upper-
-        atmosphere warm bias documented in #318.
-
-        Here the deep conditionally-unstable profile from
-        ``_make_unstable_columns`` has a warm-moist lower troposphere
-        (moist adiabat warmer than the environment) and a cold upper
-        region where the moist adiabat launched from the surface parcel
-        falls below the environment (stable). The forward cloud_mask is
-        an exact hard step, so the relaxation tendency must be EXACTLY
-        zero in every layer where ``T_moist < T_env``.
-        """
-        ncol, nlev = 2, 20
-        T, q_v, p_full, p_half = _make_unstable_columns(ncol, nlev)
-        config = SBMConfig()
-        out = sbm_convection(T, q_v, p_full, p_half, dt=300.0, config=config)
-
-        # Reconstruct the convective-instability mask the scheme uses:
-        # the moist adiabat is launched from the surface parcel T[:, -1].
-        T_moist = compute_moist_adiabat(T[:, -1], p_full)
-        stable = T_moist < T  # (ncol, nlev) — layers the gate must skip
-
-        # The constructed profile must actually contain both regimes,
-        # else the test is vacuous.
-        assert bool(jnp.any(stable)), "profile has no stable layers"
-        assert bool(jnp.any(~stable)), "profile has no unstable layers"
-
-        dT = out.dT_dt
-        dq = out.dq_v_dt
-        max_stable_dT = float(jnp.max(jnp.abs(jnp.where(stable, dT, 0.0))))
-        max_stable_dq = float(jnp.max(jnp.abs(jnp.where(stable, dq, 0.0))))
-        max_unstable_dT = float(jnp.max(jnp.abs(jnp.where(stable, 0.0, dT))))
-
-        # Troposphere is convectively active …
-        assert max_unstable_dT > 1.0e-6, (
-            "conditionally unstable troposphere produced no adjustment"
-        )
-        # … but stable layers see zero adjustment (exact hard-step mask).
-        assert max_stable_dT < 1.0e-12, (
-            f"stable-layer |dT/dt|={max_stable_dT:.3e} K/s should be 0 — "
-            "cloud_mask stratosphere gate broken (#326)"
-        )
-        assert max_stable_dq < 1.0e-15, (
-            f"stable-layer |dq_v/dt|={max_stable_dq:.3e} should be 0 (#326)"
-        )
-
-
-# ===========================================================================
-# DCA convection tests
-# ===========================================================================
 
 class TestDCA:
     """Tests for Deep Convective Adjustment."""

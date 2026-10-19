@@ -120,6 +120,20 @@ def test_gradients_finite_fp64_and_fp32(fx):
         assert all(bool(jnp.isfinite(x)) and float(x) != 0.0 for x in g), (dtype, g)
 
 
+def test_gradient_finite_with_zero_top_interface_pressure(fx):
+    """Model tops at p = 0: log(p_half(2)/p_half(1)) is +inf as in the oracle,
+    but gradients w.r.t. the state and the pressures stay finite."""
+    T, q, pf, ph = (jnp.asarray(fx[k]) for k in ("T", "q", "p_full", "p_half"))
+    ph = ph.at[:, 0].set(0.0)
+
+    def loss(T, q, ph):
+        o = sbm_convection(T, q, pf, ph, 1800.0, SBMConfig())
+        return jnp.sum(o.dT_dt) + 1.0e3 * jnp.sum(o.dq_c_conv_dt)
+
+    for g in jax.grad(loss, argnums=(0, 1, 2))(T, q, ph):
+        assert bool(jnp.all(jnp.isfinite(g)))
+
+
 def test_eager_jit_parity(fx):
     a = _run(fx, SBMConfig())
     b = _run(fx, SBMConfig(), fn=jax.jit(sbm_convection, static_argnums=(4, 5)))
@@ -131,6 +145,11 @@ def test_eager_jit_parity(fx):
 def test_inert_cloud_mask_sharpness_rejects_non_default(fx):
     with pytest.raises(ValueError, match="cloud_mask_sharpness"):
         _run(fx, SBMConfig(cloud_mask_sharpness=50.0))
+    # a traced config (jit argument) cannot raise: the outputs are NaN instead
+    args = [jnp.asarray(fx[k]) for k in ("T", "q", "p_full", "p_half")]
+    f = jax.jit(lambda c: sbm_convection(*args, 1800.0, c))
+    assert bool(jnp.all(jnp.isnan(f(SBMConfig(cloud_mask_sharpness=jnp.asarray(50.0))).dT_dt)))
+    assert bool(jnp.all(jnp.isfinite(f(SBMConfig(cloud_mask_sharpness=jnp.asarray(5.0))).dT_dt)))
 
 
 def test_column_the_oracle_rejects_is_nan():

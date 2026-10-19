@@ -1001,6 +1001,11 @@ def read_companion_manifest(ref_path, manifest: dict, spec, name: str,
         roots.append((Path(cwd) / out).resolve())
     roots.append(root)
     commit = (manifest.get("legoESM") or {}).get("commit")
+    tag = _runner_tag(manifest)
+    # The record's own place under its output root (coupled/ for run_coupled):
+    # an untagged companion counts only with such a record beside it (a run
+    # written before companions were tagged).
+    rel_dir = Path(ref_path).resolve().parent.relative_to(root)
     expected = recorded(resolved, key)
     reasons = []
     # Under each root the live record, then its archived predecessors (a
@@ -1025,6 +1030,11 @@ def read_companion_manifest(ref_path, manifest: dict, spec, name: str,
             continue
         if (m.get("legoESM") or {}).get("commit") != commit:
             reasons.append(f"{path}: written by other code")
+            continue
+        m_tag = _runner_tag(m)
+        if m_tag != tag and not (
+                not m_tag and (path.parent / rel_dir / name).exists()):
+            reasons.append(f"{path}: not written for a {tag} run")
             continue
         # A nested record carries type tags the top-level one does not
         # (type-only differences are left to the same-commit check above).

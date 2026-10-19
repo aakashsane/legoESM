@@ -659,3 +659,34 @@ def test_companion_with_the_paired_digest_wins(tmp_path, monkeypatch):
         coupled, m, restart.RUNNER_REPLAY_SPECS["run_coupled"],
         restart.RUN_MANIFEST_FILENAME, "atmosphere")
     assert path == archived
+
+
+def test_standalone_atmosphere_record_is_not_a_companion(tmp_path,
+                                                         monkeypatch):
+    """With the original output gone, an untagged atmosphere record of equal
+    configuration beside a copied coupled record, but with no coupled record
+    beside IT, is a standalone run's: refused."""
+    import shutil
+    ref = _reference(monkeypatch, tmp_path)
+    coupled = ref / "coupled" / restart.RUN_MANIFEST_FILENAME
+    m = restart.read_run_manifest(coupled)
+    copy = tmp_path / "archive" / "coupled" / "kept.json"
+    copy.parent.mkdir(parents=True)
+    shutil.copyfile(coupled, copy)
+    shutil.copyfile(ref / restart.RUN_MANIFEST_FILENAME,
+                    tmp_path / "archive" / restart.RUN_MANIFEST_FILENAME)
+    shutil.rmtree(ref)
+    with pytest.raises(ValueError, match="not written for a run_coupled run"):
+        restart.read_companion_manifest(
+            copy, m, restart.RUNNER_REPLAY_SPECS["run_coupled"],
+            restart.RUN_MANIFEST_FILENAME, "atmosphere")
+
+
+def test_pre_tag_coupled_atmosphere_record_continues_too(tmp_path):
+    from legoesm.driver.config import ExperimentConfig
+    cfg = ExperimentConfig()
+    _atm_driver(tmp_path, cfg, tag=None)._write_run_manifest()
+    restart.write_run_manifest(tmp_path / "coupled", {"runner": "run_coupled"},
+                               config_kind="coupled", runner_tag="run_coupled")
+    _atm_driver(tmp_path, cfg._replace(days=cfg.days + 1))._write_run_manifest()
+    assert len(list(tmp_path.glob("run_manifest.prev-*.json"))) == 1

@@ -5805,12 +5805,19 @@ class ModelDriver:
                 f"refusing to start a run without valid run-start provenance. "
                 f"Remove or repair it to continue."
             ) from exc
+        tag = self._manifest_runner_tag or ""
+        old_tag = (existing.get("reproducibility") or {}).get("runner_tag") or ""
+        # An untagged record beside a coupled record is a coupled run's
+        # atmosphere written before the tag existed: still this run.
+        pre_tag_coupled = (tag == "run_coupled" and not old_tag and (
+            self._output_dir / "coupled" / manifest_file.name).exists())
+        same_runner = tag == old_tag or pre_tag_coupled
         if not config_hash_matches(
                 existing["config"]["config_hash"],
                 existing["config"].get("resolved_config") or {},
                 self._input_config):
-            if self._continue_driving_runner(existing, manifest_file,
-                                             manifest_kwargs):
+            if same_runner and self._continue_driving_runner(
+                    existing, manifest_file, manifest_kwargs):
                 return
             raise RuntimeError(
                 f"Output directory {self._output_dir} already holds a run "
@@ -5818,13 +5825,7 @@ class ModelDriver:
                 f"runs' provenance in one directory. Use a fresh output "
                 f"directory, or remove the existing run_manifest.json."
             )
-        tag = self._manifest_runner_tag or ""
-        old_tag = (existing.get("reproducibility") or {}).get("runner_tag") or ""
-        # An untagged record beside a coupled record is a coupled run's
-        # atmosphere written before the tag existed: still this run.
-        pre_tag_coupled = (tag == "run_coupled" and not old_tag and (
-            self._output_dir / "coupled" / manifest_file.name).exists())
-        if tag != old_tag and not pre_tag_coupled:
+        if not same_runner:
             # One output directory holds one run: a record another runner (or
             # a standalone run) wrote is not this run's, even at equal config.
             raise RuntimeError(
@@ -5855,8 +5856,7 @@ class ModelDriver:
         prefix = "atmosphere."
         keys = [k[len(prefix):] for k in (spec.continuation_keys if spec else ())
                 if k.startswith(prefix)]
-        if not keys or (existing.get("reproducibility") or {}).get(
-                "runner_tag") != self._manifest_runner_tag:
+        if not keys:        # (the caller checked the record is this runner's)
             return False
         rows = [r for r in config_drift_rows(
                     existing["config"].get("resolved_config") or {},

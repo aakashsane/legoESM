@@ -318,6 +318,58 @@ def test_ene_default_total_vorticity_path_is_byte_identical_with_override_seam()
         np.testing.assert_array_equal(np.asarray(left), np.asarray(right))
 
 
+def test_ene_formed_q_override_is_one_variable_and_active():
+    """Round 17 replaces q alone and retains the live transport/stencil."""
+    state = _build_test_state(n_lat=8, n_lon=12, partial_cells=False, seed=37)
+    f_vtx = jnp.full(state["h_vtx"].shape[:2], 1.0e-4)
+    zeta = curl_vertex_cgrid(state["u"], state["v"], state["grid"])
+    args = (
+        zeta, state["h_vtx"], state["h_v"], state["v"], state["h_u"],
+        state["u"], state["u_mask_3d"], state["v_mask_3d"],
+        state["vtx_mask"],
+    )
+    du, dv, (q, live_fu, live_fv) = pv_flux_ene(
+        *args, f_vtx=f_vtx, q_boundary="nemo_live", return_operands=True)
+    same_du, same_dv, (same_q, same_fu, same_fv) = pv_flux_ene(
+        *args, f_vtx=f_vtx, q_boundary="nemo_live", return_operands=True,
+        potential_vorticity_override=q)
+    for left, right in ((du, same_du), (dv, same_dv), (q, same_q),
+                        (live_fu, same_fu), (live_fv, same_fv)):
+        np.testing.assert_array_equal(np.asarray(left), np.asarray(right))
+
+    planted_q = q.at[3, 4, 0].add(1.0)
+    planted_du, planted_dv, (_, planted_fu, planted_fv) = pv_flux_ene(
+        *args, f_vtx=f_vtx, q_boundary="nemo_live", return_operands=True,
+        potential_vorticity_override=planted_q)
+    assert (not np.array_equal(np.asarray(dv), np.asarray(planted_dv))
+            or not np.array_equal(np.asarray(du), np.asarray(planted_du)))
+    np.testing.assert_array_equal(np.asarray(live_fu), np.asarray(planted_fu))
+    np.testing.assert_array_equal(np.asarray(live_fv), np.asarray(planted_fv))
+
+
+def test_ene_formed_q_override_refuses_ambiguous_or_wrong_shape_input():
+    """A malformed causal arm RAISES instead of scoring another boundary."""
+    import pytest
+
+    state = _build_test_state(n_lat=4, n_lon=6, partial_cells=False, seed=41)
+    f_vtx = jnp.full(state["h_vtx"].shape[:2], 1.0e-4)
+    zeta = curl_vertex_cgrid(state["u"], state["v"], state["grid"])
+    args = (
+        zeta, state["h_vtx"], state["h_v"], state["v"], state["h_u"],
+        state["u"], state["u_mask_3d"], state["v_mask_3d"],
+        state["vtx_mask"],
+    )
+    with pytest.raises(ValueError, match="cannot be selected together"):
+        pv_flux_ene(
+            *args, f_vtx=f_vtx, q_boundary="nemo_live",
+            total_vorticity_override=zeta + f_vtx[..., None],
+            potential_vorticity_override=zeta)
+    with pytest.raises(ValueError, match="shape differs"):
+        pv_flux_ene(
+            *args, f_vtx=f_vtx, q_boundary="nemo_live",
+            potential_vorticity_override=zeta[:-1])
+
+
 def test_ene_energy_conservation_flat_bottom():
     """Sadourny 1975: the ENE vorticity flux does zero net work on KE.
     On a closed flat-bottom domain ``Σ h·u·F_u·A + h·v·F_v·A`` is round-off

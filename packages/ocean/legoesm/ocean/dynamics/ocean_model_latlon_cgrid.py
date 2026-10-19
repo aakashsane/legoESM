@@ -1222,6 +1222,11 @@ class _NEMOWSRK3TestHooks(NamedTuple):
     # Private operand diagnostic: return the stage-advanced tracer carried by
     # Kmm after stage 1 or 2. Zero leaves the returned tracer untouched.
     expose_tracer_stage: int = 0
+    # Round-17 one-variable discriminator.  Replace only the already formed
+    # ENE q operand in the production stage-3 momentum call; every velocity,
+    # live thickness, metric transport and stencil remains live.  No public
+    # model configuration can select this hook.
+    stage3_vorticity_q_override: object = None
     # WRITE-only source-order diagnostic for the stage-1 tracer accumulator.
     # ``after_advection`` returns ts(Krhs) after tra_adv; ``after_sbc`` returns
     # it after tra_sbc_RK3.  The ordinary compiled step still completes before
@@ -5504,7 +5509,8 @@ class LatLonCGridOceanModel:
                    return_nemo_operator_components=False,
                    nemo_stage_zad_operands=None,
                    nemo_stage_zad_operand_observer=None,
-                   nemo_stage_zad_eta_after_override=None):
+                   nemo_stage_zad_eta_after_override=None,
+                   nemo_vorticity_q_override=None):
         """Compute baroclinic tendencies.
 
         ``momentum_only=True`` skips the (T/S-frozen) tracer-diffusion
@@ -5569,6 +5575,7 @@ class LatLonCGridOceanModel:
             nemo_stage_zad_operand_observer=nemo_stage_zad_operand_observer,
             nemo_stage_zad_eta_after_override=(
                 nemo_stage_zad_eta_after_override),
+            nemo_vorticity_q_override=nemo_vorticity_q_override,
             diagnose_momentum=return_nemo_operator_components,
             return_nemo_operator_components=return_nemo_operator_components,
         )
@@ -6685,6 +6692,10 @@ class LatLonCGridOceanModel:
                                      nemo_stage_zad_operands=stage_zad_operands,
                                      nemo_stage_zad_operand_observer=(
                                          _zad_observers[stage_index - 1]),
+                                     nemo_vorticity_q_override=(
+                                         self._nemo_ws_test_hooks
+                                         .stage3_vorticity_q_override
+                                         if stage_index == 3 else None),
                                      return_nemo_operator_components=(
                                          _return_components))
                 if _return_components:

@@ -4810,6 +4810,7 @@ def pv_flux_ene(
     metric_reciprocals: tuple | None = None,
     total_vorticity_override: jnp.ndarray | None = None,
     direct_thickness_division: bool = False,
+    potential_vorticity_override: jnp.ndarray | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray] | tuple[
     jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
 ]:
@@ -4863,6 +4864,12 @@ def pv_flux_ene(
         NEMO's source-associated total-vorticity statements.  ENS uses it for
         the ``(zwz-ff_f)*fmask+ff_f`` statement; ordinary ENE callers leave it
         unset and retain their historical arithmetic.
+    potential_vorticity_override : array or None
+        Private oracle discriminator for an already formed NEMO ``zwz`` after
+        the live-F-thickness division (``dynvor.f90:555-557``).  This replaces
+        q only; the production mass transports and ENE stencil remain live.
+        Ordinary callers leave it unset.  Supplying both vorticity overrides
+        is refused because they name opposite sides of the division.
     Other parameters : identical to :func:`pv_flux_al81_partial_cell`.
 
     Returns
@@ -4875,21 +4882,34 @@ def pv_flux_ene(
     # f is added BEFORE the /h division (matching NEMO: zwz = ff_f + ζ,
     # then zwz /= e3f) so the planetary term also gets the F-point
     # thickness weighting — the two are one operator, not two.
-    total_vort = (
-        total_vorticity_override
-        if total_vorticity_override is not None
-        else zeta if f_vtx is None else (zeta + f_vtx[..., jnp.newaxis]))
-    # NEMO ENS divides directly by its live F thickness
-    # (compiled dynvor.f90:659-660).  ENE's historical floor remains the
-    # default for every existing caller; only the explicit ENS seam bypasses
-    # it, so no oracle-absent stabiliser enters that arm.
-    denominator = h_vtx if direct_thickness_division else jnp.maximum(h_vtx, eps_h)
-    if metric_widths is None:
-        q = total_vort / denominator
+    if (potential_vorticity_override is not None
+            and total_vorticity_override is not None):
+        raise ValueError(
+            "potential_vorticity_override and total_vorticity_override "
+            "cannot be selected together")
+    if potential_vorticity_override is None:
+        total_vort = (
+            total_vorticity_override
+            if total_vorticity_override is not None
+            else zeta if f_vtx is None else (zeta + f_vtx[..., jnp.newaxis]))
+        # NEMO ENS divides directly by its live F thickness
+        # (compiled dynvor.f90:659-660).  ENE's historical floor remains the
+        # default for every existing caller; only the explicit ENS seam bypasses
+        # it, so no oracle-absent stabiliser enters that arm.
+        denominator = (h_vtx if direct_thickness_division
+                       else jnp.maximum(h_vtx, eps_h))
+        if metric_widths is None:
+            q = total_vort / denominator
+        else:
+            q = nemo_source_round(
+                nemo_source_round(total_vort)
+                / denominator)
     else:
-        q = nemo_source_round(
-            nemo_source_round(total_vort)
-            / denominator)
+        q = jnp.asarray(potential_vorticity_override)
+        if q.shape != zeta.shape:
+            raise ValueError(
+                "potential_vorticity_override shape differs from the live "
+                f"vertex field: {q.shape} versus {zeta.shape}")
     # Neumann-fill only the RELATIVE part's discontinuity at the coast; the
     # planetary f is smooth everywhere, so fill the whole q (idempotent at
     # interior wet vertices).

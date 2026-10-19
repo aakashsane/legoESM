@@ -2611,6 +2611,7 @@ def _bc_pv_flux(
     f_vtx_override=None,
     metric_reciprocals=None,
     ln_dynvor_msk=None,
+    potential_vorticity_override=None,
 ):
     """Stage 7b: vector-invariant potential-vorticity (vorticity) flux
     (Sadourny EC / Arakawa-Lamb-81 triad, or WENO-Z when momentum_advection is
@@ -2639,6 +2640,11 @@ def _bc_pv_flux(
         raise ValueError(
             "ln_dynvor_msk is implemented only for ens_total; "
             f"got vorticity_scheme={vorticity_scheme!r}")
+    if (potential_vorticity_override is not None
+            and vorticity_scheme != "ene_total"):
+        raise ValueError(
+            "potential_vorticity_override is implemented only for "
+            f"ene_total; got vorticity_scheme={vorticity_scheme!r}")
     # Fail-early on an unknown EEN vertex-thickness (e3f) scheme (static
     # config value) — see the h_vtx construction below for the two rules.
     if een_e3f_scheme not in ("min", "nemo_avg", "nemo_avg4"):
@@ -2962,6 +2968,9 @@ def _bc_pv_flux(
                 q_boundary=een_q_boundary,
                 metric_widths=_mw,
                 metric_reciprocals=metric_reciprocals,
+                **({"potential_vorticity_override":
+                    potential_vorticity_override}
+                   if vorticity_scheme == "ene_total" else {}),
                 **({"ln_dynvor_msk": ln_dynvor_msk}
                    if vorticity_scheme == "ens_total" else {}),
             )
@@ -5188,6 +5197,7 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
     nemo_stage_zad_operands=None,
     nemo_stage_zad_operand_observer=None,
     nemo_stage_zad_eta_after_override=None,
+    nemo_vorticity_q_override=None,
 ):
     """Compute 3D baroclinic tendencies on a C-grid lat-lon grid.
 
@@ -5580,6 +5590,7 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
             metric_reciprocals=ene_metric_reciprocals,
             ln_dynvor_msk=getattr(
                 _vorticity_selection, "ln_dynvor_msk", None),
+            potential_vorticity_override=nemo_vorticity_q_override,
         )
 
     # --- Stage 7b': PLANETARY Coriolis as an explicit tendency (Veros-faithful).

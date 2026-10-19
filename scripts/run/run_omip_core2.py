@@ -4661,8 +4661,9 @@ def _source_revision_drift_note(parent_sha, this_sha) -> str | None:
     SHA describes only part of the running code, so equality of two such
     strings is not equality of the code.
 
-    Pure function of the two strings so it is directly testable; ``main`` only
-    prints the result.
+    Pure function of the two strings so it is directly testable; ``main``
+    hands the result to ``_refuse_restart_source_drift``, which refuses the
+    resume on it (a warning with ``LEGOESM_ALLOW_VERSION_DRIFT=1``).
     """
     unknown = {None, "", _SOURCE_REV_UNAVAILABLE}
     if parent_sha in unknown or this_sha in unknown:

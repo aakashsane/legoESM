@@ -463,7 +463,8 @@ emits v2. Old manifests keep loading.
    `run_omip.py` and DINO `run_dino.py`; coupled follows; CORE2 is validated
    only). Replay of `run_omip.py` always sets `--grid` to the manifest's grid
    (`--grid all` writes one manifest per grid); `run_dino.py --timing-jsonl`
-   is pointed at the same file name in the rerun's output. `--diag-every`
+   is pointed at the same file name in the rerun's output (replay refuses when
+   the command line sets it but the manifest does not record it). `--diag-every`
    is not an OMIP continuation control (it also sets the JRA55 forcing block
    size), nor is `--quick` (it changes other defaults). The `run_omip.py` digest covers the
    final sea ice when the run carries it. A runner builds its configuration through script code,

@@ -223,6 +223,12 @@ def cmd_reproduce(args):
         # recording script and verify it resolves to the same record.
         kind = manifest["config"].get("config_kind", "atmosphere")
         tag = (manifest.get("reproducibility") or {}).get("runner_tag", "")
+        if kind == "atmosphere" and tag == "run_coupled":
+            logger.error("Refusing to reproduce: this is the atmosphere record "
+                         "of a coupled run; reproduce that run's coupled "
+                         "record (coupled/run_manifest.json under its output "
+                         "directory) instead.")
+            sys.exit(2)
         if kind == "atmosphere" and tag in RUNNER_REPLAY_SPECS:
             logger.error(f"Refusing to reproduce: an atmosphere manifest "
                          f"recorded by the {tag} runner is ambiguous.")
@@ -265,6 +271,18 @@ def cmd_reproduce(args):
                                  "LEGOESM_ALLOW_VERSION_DRIFT=1).")
                     sys.exit(2)
             sys.exit(_reproduce_runner(args, manifest, allowed))
+
+        # A coupled run's atmosphere manifest sits at its output root, beside
+        # coupled/: rerunning the atmosphere alone would not repeat that run.
+        coupled_beside = (Path(args.manifest).resolve()
+                          if Path(args.manifest).is_dir()
+                          else Path(args.manifest).resolve().parent)
+        coupled_beside = coupled_beside / "coupled" / "run_manifest.json"
+        if coupled_beside.is_file():
+            logger.error(f"Refusing to reproduce: this is the atmosphere record "
+                         f"of a coupled run; reproduce {coupled_beside} "
+                         f"instead.")
+            sys.exit(2)
 
         stored = manifest["config"]["resolved_config"]
         config = experiment_config_from_dict(stored)
@@ -427,6 +445,26 @@ def _reproduce_runner(args, manifest: dict, allow_drift: bool) -> int:
             node = node.get(part) if isinstance(node, dict) else None
         return node
 
+    ref = Path(args.manifest).resolve()
+    if ref.is_dir():
+        ref = ref / R.RUN_MANIFEST_FILENAME
+    ref_root = ref.parent
+    for _ in range(spec.manifest_depth):
+        ref_root = ref_root.parent
+    # Where the rerun writes its manifest: the runner's own file name, not the
+    # reference's (which may be a renamed or archived copy).
+    rel = ref.parent.relative_to(ref_root) / R.RUN_MANIFEST_FILENAME
+    # (relative path under the root, reference manifest) for every manifest
+    # --check compares: this one plus the runner's companions.
+    checked = [(rel, manifest)]
+    for name, key in spec.companion_manifests:
+        try:
+            checked.append((Path(name), R.read_companion_manifest(
+                ref, manifest, spec, name, key)[1]))
+        except ValueError as exc:
+            logger.error(f"Refusing to reproduce: no {name} of this run found "
+                         f"({exc}).")
+            return 2
     no_digest = [k for k in spec.no_digest_keys if recorded(k)]
     if no_digest:   # a plain reproduce needs the rerun's digest too
         logger.error(f"Refusing to reproduce: this run records no final "
@@ -434,7 +472,15 @@ def _reproduce_runner(args, manifest: dict, allow_drift: bool) -> int:
         return 2
     if args.check:
         try:
-            reference = R.recorded_state_digest(manifest)
+            references = [(rel, R.recorded_state_digest(manifest))]
+            # Companions: the digests this record paired with at its end, not
+            # the companion files' (later runs may have updated those).
+            paired = manifest["result"].get("companion_state_digests") or {}
+            for path, _m in checked[1:]:
+                if not paired.get(str(path)):
+                    raise ValueError(f"the record pairs no final digest of "
+                                     f"its {path}")
+                references.append((path, paired[str(path)]))
         except ValueError as exc:
             logger.error(f"Refusing to reproduce --check: {exc}")
             return 2
@@ -445,6 +491,12 @@ def _reproduce_runner(args, manifest: dict, allow_drift: bool) -> int:
             and all(isinstance(a, str) for a in argv)):
         logger.error("Refusing to reproduce: the manifest does not record the "
                      "command line (run.argv), so the run cannot be replayed.")
+        return 2
+    why = R.unreplayable_reasons(manifest, spec)
+    if why:
+        logger.error(f"Refusing to reproduce: the run was launched with "
+                     f"{', '.join(why)}, which cannot be replayed into a fresh "
+                     f"directory.")
         return 2
     if Path(argv[0]).name != spec.script:
         logger.error(f"Refusing to reproduce: the run was launched as "
@@ -477,15 +529,6 @@ def _reproduce_runner(args, manifest: dict, allow_drift: bool) -> int:
                      f"({argv[0]}) differs from the {script} this rerun would "
                      f"run.")
         return 2
-    ref = Path(args.manifest).resolve()
-    if ref.is_dir():
-        ref = ref / R.RUN_MANIFEST_FILENAME
-    ref_root = ref.parent
-    for _ in range(spec.manifest_depth):
-        ref_root = ref_root.parent
-    # Where the rerun writes its manifest: the runner's own file name, not the
-    # reference's (which may be a renamed or archived copy).
-    rel = ref.parent.relative_to(ref_root) / R.RUN_MANIFEST_FILENAME
 
     # The reference run's output: where its manifest sits now, and where the
     # run wrote it (a copied or archived manifest sits elsewhere).
@@ -590,18 +633,33 @@ def _reproduce_runner(args, manifest: dict, allow_drift: bool) -> int:
             return 1
         logger.info(f"  Reproduced; rerun manifest {rerun}")
         return 0
-    try:
-        rerun_digest = R.recorded_state_digest(R.read_run_manifest(rerun))
-    except (ValueError, OSError) as exc:
-        logger.error(f"reproduce --check: the rerun recorded no digest ({exc}).")
-        return 1
-    if rerun_digest == reference:
-        logger.info(f"reproduce --check: MATCH — bit-identical "
-                    f"(state_digest {reference[:16]}...)")
-        return 0
-    logger.error("reproduce --check: MISMATCH — run is NOT bit-reproducible\n"
-                 f"  reference: {reference}\n  rerun:     {rerun_digest}")
-    return 1
+    worst = 0
+    for i, (path, reference) in enumerate(references):
+        try:
+            rerun_record = R.read_run_manifest(new_root / rel)
+            if i == 0:
+                rerun_digest = R.recorded_state_digest(rerun_record)
+            else:
+                # The digest the rerun's record paired, i.e. one this rerun
+                # wrote, not whatever the output directory's file holds.
+                rerun_digest = (rerun_record["result"].get(
+                    "companion_state_digests") or {}).get(str(path))
+                if not rerun_digest:
+                    raise ValueError("its record pairs none")
+        except (OSError, ValueError) as exc:
+            logger.error(f"reproduce --check: the rerun's {path} recorded no "
+                         f"digest ({exc}).")
+            worst = 1
+            continue
+        if rerun_digest == reference:
+            logger.info(f"reproduce --check: MATCH — bit-identical {path} "
+                        f"(state_digest {reference[:16]}...)")
+        else:
+            logger.error(f"reproduce --check: MISMATCH — {path} is NOT "
+                         f"bit-reproducible\n  reference: {reference}\n"
+                         f"  rerun:     {rerun_digest}")
+            worst = 1
+    return worst
 
 
 def cmd_test(args):

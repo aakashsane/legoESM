@@ -219,6 +219,80 @@ def _exchange_halo_cell_fields(halo_ex, fields):
     return tuple(result)
 
 
+def split_land_columns(idx, n_proc, proc):
+    """Split the packed land columns ``idx`` into ``n_proc`` near-equal
+    contiguous shares.  Returns ``(mine, padded)``: this process's columns,
+    and the ``(n_proc, L)`` table of every share padded to one length L by
+    repeating the share's last column (a duplicate write of the same value),
+    so the gather is one fixed-shape collective on every process."""
+    shares = np.array_split(np.asarray(idx), n_proc)
+    if min(s.size for s in shares) == 0:
+        raise ValueError(
+            f"{np.size(idx)} land columns cannot be split over {n_proc} "
+            "processes (a share would be empty)")
+    L = max(s.size for s in shares)
+    padded = np.stack([np.concatenate([s, np.full(L - s.size, s[-1])])
+                       for s in shares])
+    return shares[proc], padded
+
+
+def gather_land_step(run, ncol, padded, proc, allgather):
+    """Run this process's share of the land step and rebuild the full output
+    on every process (shares from ``split_land_columns``).  ``run()`` returns
+    the land step tuple ``(state, 8 per-cell fields, 5 counts, iter max)``;
+    every per-column leaf (leading axis ``ncol``) takes each column from the
+    process that solved it, counts are summed, the iteration max is maxed.
+
+    ``allgather(tree)`` stacks a pytree across processes on a new axis 0 and
+    is a collective: every process calls it twice per land call.  All local
+    work that can fail (the step, the payload) runs BEFORE the first one, a
+    success flag, so a failure on one process raises on every process
+    instead of leaving the others blocked in the payload gather."""
+    err = None
+    try:
+        out = run()
+        mine = jnp.asarray(padded[proc])
+        flat = jnp.asarray(padded.reshape(-1))
+        leaves, tdef = jax.tree_util.tree_flatten(out[:9])
+        # A leaf that is not per column would keep only this process's
+        # share's update and silently differ across processes: refuse it.
+        bad = [np.shape(x) for x in leaves
+               if not (hasattr(x, "shape") and x.ndim >= 1
+                       and x.shape[0] == ncol)]
+        if bad:
+            raise ValueError(
+                f"land step output leaves {bad} are not per-column "
+                f"(ncol={ncol}); the split land solve cannot gather them")
+        # ONE (L, K) float64 buffer for every per-column leaf (exact for the
+        # float/bool/small-int leaves the land carries).
+        rows = [jnp.asarray(x)[mine].reshape(mine.shape[0], -1)
+                for x in leaves]
+        widths = [r.shape[1] for r in rows]
+        payload = jax.block_until_ready(
+            (jnp.concatenate([r.astype(jnp.float64) for r in rows], axis=1),
+             jnp.stack([jnp.asarray(x, jnp.float64) for x in out[9:]])))
+    except Exception as exc:  # noqa: BLE001 - agreed across processes below
+        err = exc
+    flags = allgather(jnp.asarray(0.0 if err is None else 1.0))
+    if err is not None:
+        raise err
+    if float(np.max(np.asarray(flags))) != 0.0:
+        raise RuntimeError("split land solve failed on another process "
+                           "(see its traceback); stopping in lockstep")
+    g_rows, g_cnt = allgather(payload)
+    g_rows = jnp.asarray(g_rows).reshape(flat.shape[0], -1)
+    full, k = [], 0
+    for x, w in zip(leaves, widths):
+        blk = g_rows[:, k:k + w].reshape((-1,) + x.shape[1:])
+        full.append(jnp.asarray(x).at[flat].set(blk.astype(x.dtype)))
+        k += w
+    g_cnt = jnp.asarray(g_cnt)
+    counts = tuple(jnp.sum(g_cnt[:, i]).astype(jnp.asarray(out[9 + i]).dtype)
+                   for i in range(len(out) - 10))
+    return (tuple(jax.tree_util.tree_unflatten(tdef, full)) + counts
+            + (jnp.max(g_cnt[:, -1]).astype(jnp.asarray(out[-1]).dtype),))
+
+
 def _map_flat_column_leaves(tree, n_tile, global_ncol, fn):
     """Apply ``fn(leaf, n_tile)`` to every array leaf of ``tree`` whose leading
     axis equals ``global_ncol`` (a per-column field); leave all other leaves
@@ -1267,6 +1341,13 @@ def _mpas_hard_saturation_poststep(T, q_v, q_c, p_full, dt,
     return T_new, q_v_new, q_c_new, q_i_new, dq
 
 
+# The run loop calls the drain every step outside any jit; eagerly its fixed
+# 30-pass bisection dispatched op by op (~140 ms/step on the lat-lon lane).
+_mpas_hard_saturation_poststep_jit = jax.jit(
+    _mpas_hard_saturation_poststep,
+    static_argnames=("dt", "hard_threshold", "hard_max_heating_K", "ice_curve"))
+
+
 # Air-density floor for the Cooper ice-number/mass conversion, matching
 # Morrison's ``_RHO_FLOOR`` (module_mp_graupel density floor in divisions) so the
 # seed ceiling is Morrison-consistent at low density (without floors the p/(R_dT)
@@ -1626,6 +1707,10 @@ class ModelDriver:
         self.diagnostics = None
         self._phis_data = None
         self._f_land = None
+        # Voronoi MPI: does the GLOBAL mesh hold any land (None = not known,
+        # use this rank's own cells).  Every rank holds the global product,
+        # so the answer is rank-uniform with no collective.
+        self._f_land_global_any = None
         # Prognostic multilayer (Richards) land state, carried in SegmentCarry.land_ml
         # and persisted across segments.  None ⇒ slab-land (scalar T_land) path.
         self._land_ml_state = None
@@ -2691,6 +2776,7 @@ class ModelDriver:
                         "the terrain product cannot be indexed onto it")
                 self._phis_data = jnp.asarray(np.asarray(_phis_g)[_ids])
                 self._f_land = jnp.asarray(np.asarray(_fl_g)[_ids])
+                self._f_land_global_any = bool(np.any(np.asarray(_fl_g) > 0.0))
             elif getattr(self, "_latlon_native_grid", None) is not None:
                 # lat-lon column lane: the product on the NATIVE lat-lon grid
                 # (its own binning + neighbour filter, the lat-lon lane's
@@ -2744,6 +2830,9 @@ class ModelDriver:
             self._f_land = load_land_fraction(
                 self.grid, land_mask_path
             ).astype(_sd)
+            if self._voronoi_layout is not None:
+                self._f_land_global_any = bool(jnp.any(load_land_fraction(
+                    self._grid_global, land_mask_path) > 0.0))
         if land_mask_path:
             logger.info(
                 f"  Land-sea mask: {land_mask_path} "
@@ -3711,9 +3800,15 @@ class ModelDriver:
         if _sso is not None:
             self.physics.subgrid_topo_stddev = _sso
 
+        # Under cell-partition MPI the land setup must be rank-uniform: a rank
+        # whose cells are all ocean still builds the land tile (solving no
+        # columns), or its neighbours' land halo exchanges and checkpoint
+        # gathers have no partner and the run hangs.
         _has_land = (
             self._f_land is not None
-            and bool(jnp.any(self._f_land > 0))
+            and (self._f_land_global_any
+                 if self._f_land_global_any is not None
+                 else bool(jnp.any(self._f_land > 0)))
         )
         self._has_land_anywhere = _has_land
         if _has_land:
@@ -13433,9 +13528,25 @@ class ModelDriver:
             # not repack.
             _land_pack_idx_np = np.nonzero(
                 np.asarray(self._f_land).reshape(-1) > 0.0)[0]
+            # Multi-controller SPMD (the FV3 duo lane): every process holds
+            # the whole globe's land, so each solves only its share of the
+            # land columns and one gather per land call rebuilds the full
+            # copy.  All processes take this branch (config + process count
+            # only), so the gather is reached by every one of them.
+            _land_split = None
+            if (self._is_spmd_multiprocess()
+                    and str(getattr(cfg, "land_surface_scheme", "")) != "clm_ml"
+                    and _land_pack_idx_np.size >= jax.process_count()):
+                _land_pack_idx_np, _land_split = split_land_columns(
+                    _land_pack_idx_np, jax.process_count(),
+                    jax.process_index())
             _land_pack_on = (
                 str(getattr(cfg, "land_surface_scheme", "")) != "clm_ml"
                 and 0 < _land_pack_idx_np.size < _f_land_cols.shape[0])
+            # An all-ocean MPI rank: nothing to solve.  Its outputs are the
+            # packed path's ocean-column fills (zeros, state unchanged), so it
+            # costs nothing instead of solving every ocean column.
+            _land_none = _land_pack_idx_np.size == 0
             _land_ncol_full = int(_f_land_cols.shape[0])
             # Owned (non-halo) columns: under MPAS MPI local cells are owned
             # first, then halo copies, which must not be counted twice.
@@ -13622,7 +13733,19 @@ class ModelDriver:
                         _taumag, _held_f,
                         _n_held, _n_held_land, _n_fb_land, _n_fb_rej,
                         _n_unconv_land, _n_iter_max)
-              return _land_step
+              if not _land_none:
+                  return _land_step
+
+              @jax.jit
+              def _land_step_none(land_state, a2s, doy, lai_doy, lai_year):
+                  # Same output structure and dtypes as the solve (traced
+                  # shape-only, never run), so the land halo exchange packs
+                  # the same message on every rank.
+                  out = jax.eval_shape(
+                      _land_step, land_state, a2s, doy, lai_doy, lai_year)
+                  return (land_state,) + tuple(
+                      jnp.zeros(o.shape, o.dtype) for o in out[1:])
+              return _land_step_none
 
             _land_step_fn = _make_land_step(DT_LAND)
             # Bootstrap variant: one host step's forcing, tile advanced by
@@ -13630,6 +13753,22 @@ class ModelDriver:
             # surface blend never runs land-free for a whole interval.
             _land_step_boot_fn = (
                 _land_step_fn if _LAND_K == 1 else _make_land_step(DT))
+            if _land_split is not None:
+                from jax.experimental import multihost_utils as _mhu
+                _proc = jax.process_index()
+
+                def _with_gather(step):
+                    def _step(*a):
+                        return gather_land_step(
+                            lambda: step(*a), _land_ncol_full, _land_split,
+                            _proc, _mhu.process_allgather)
+                    return _step
+                _land_step_boot_fn = (
+                    _with_gather(_land_step_boot_fn)
+                    if _land_step_boot_fn is not _land_step_fn else None)
+                _land_step_fn = _with_gather(_land_step_fn)
+                if _land_step_boot_fn is None:
+                    _land_step_boot_fn = _land_step_fn
 
             # Phase 2b (#1312): per-cell root-zone beta_soil -> the traced
             # ``forcing["beta_land"]`` the turbulence surface flux consumes.
@@ -15184,7 +15323,7 @@ class ModelDriver:
                 _qc_fld = _trc["q_c"]
                 _qi_fld = _trc.get("q_i") if _hard_sat_ice_curve else None
                 (_T_hs, _qv_hs, _qc_hs, _qi_hs,
-                 _dq_hs) = _mpas_hard_saturation_poststep(
+                 _dq_hs) = _mpas_hard_saturation_poststep_jit(
                     self.state.T.data, _trc["q_v"].data, _qc_fld.data,
                     self.sigma.pressure_at_full(self.state.p_s.data), DT,
                     _hard_sat_threshold, _hard_sat_max_heating,

@@ -598,3 +598,74 @@ def test_kessler_scheme_threads_flag_and_bounds_heating():
         h1 = _C_PD * (T + out.dT_dt * dt) + _L_V * (q_v + out.dq_v_dt * dt)
         np.testing.assert_allclose(np.asarray(h1), np.asarray(h0),
                                    rtol=1e-9, atol=1e-3)
+
+
+@pytest.mark.parametrize("ice_curve", [False, True])
+def test_mpas_poststep_hook_jit_matches_eager_and_compiles_once(ice_curve):
+    """The run loop calls the COMPILED drain every step (eagerly it dispatched
+    the 30-pass bisection op by op, ~140 ms/step on the lat-lon lane).  It must
+    give the eager answer -- on capped AND uncapped (bisection-limited) cells --
+    conserve energy and water, compile once, and be what the loop runs."""
+    import inspect
+    from jax import monitoring
+    from legoesm.atmosphere.physics.microphysics._warm_rain import (
+        mixed_phase_l_over_cp,
+    )
+    from legoesm.driver.model_driver import (
+        ModelDriver,
+        _mpas_hard_saturation_poststep,
+        _mpas_hard_saturation_poststep_jit,
+    )
+    cap = 5.0
+    p = jnp.array([65400.0, 100000.0, 90000.0])[:, None] * jnp.linspace(
+        0.95, 0.2, 5)[None, :]
+    T = jnp.array([[200.0, 237.0, 260.0, 290.0, 312.8],
+                   [280.0, 285.0, 290.0, 295.0, 300.0],
+                   [245.0, 250.0, 255.0, 262.0, 270.0]])
+    # row 2: mildly super-saturated (RH 1.2), drained below the heating cap
+    q_v = jnp.concatenate([
+        jnp.array([[0.067, 0.067, 0.067, 0.02, 0.067],
+                   [0.001, 0.002, 0.003, 0.004, 0.005]]),
+        1.2 * saturation_specific_humidity(T[2:], p[2:])])
+    q_c = jnp.zeros_like(T)
+    q_i = jnp.zeros_like(T) if ice_curve else None
+    args = (T, q_v, q_c, p, 100.0, 1.1, cap)
+    eager = _mpas_hard_saturation_poststep(*args, ice_curve=ice_curve, q_i=q_i)
+    jitted = _mpas_hard_saturation_poststep_jit(*args, ice_curve=ice_curve, q_i=q_i)
+    for e, j in zip(eager, jitted):
+        if e is None:
+            assert j is None
+            continue
+        np.testing.assert_allclose(np.asarray(j), np.asarray(e), rtol=1e-12, atol=1e-15)
+    T_new, q_v_new, q_c_new, q_i_new, dq = jitted
+    dT = np.asarray(T_new - T)
+    assert np.any((np.asarray(dq) > 0) & (dT < cap - 0.5)), "no uncapped drain exercised"
+    assert np.any(dT > cap - 1e-6), "no capped drain exercised"
+    water = q_v_new + q_c_new + (q_i_new if q_i_new is not None else 0.0)
+    np.testing.assert_allclose(np.asarray(water), np.asarray(q_v + q_c),
+                               rtol=1e-12, atol=1e-15)
+    l_cp = mixed_phase_l_over_cp(T) if ice_curve else _L_V / _C_PD
+    np.testing.assert_allclose(np.asarray(T_new + l_cp * q_v_new),
+                               np.asarray(T + l_cp * q_v), rtol=1e-12, atol=1e-9)
+
+    assert hasattr(_mpas_hard_saturation_poststep_jit, "lower"), "not a jitted callable"
+    T2 = T + 0.5
+    T2.block_until_ready()
+    compiles = []
+
+    def _listen(event, duration, **kw):
+        if event == "/jax/core/compile/backend_compile_duration":
+            compiles.append(event)
+
+    monitoring.register_event_duration_secs_listener(_listen)
+    try:
+        jax.jit(lambda x: x * 3.0)(T2).block_until_ready()
+        assert compiles, "compile monitoring never fired: the check below is blind"
+        compiles.clear()
+        _mpas_hard_saturation_poststep_jit(
+            T2, *args[1:], ice_curve=ice_curve, q_i=q_i)[0].block_until_ready()
+    finally:
+        monitoring.unregister_event_duration_listener(_listen)
+    assert not compiles, f"{len(compiles)} compiles on a repeated call"
+    assert "_dq_hs) = _mpas_hard_saturation_poststep_jit(" in inspect.getsource(
+        ModelDriver._run_column)

@@ -178,7 +178,7 @@ patch -s --fuzz=0 "$dry/namelist_cfg" <"$SMAG_PATCH"
 . "$DECK_SH"
 gyre_hires_verify_deck r4_smag "$dry/namelist_cfg"
 patch -s --fuzz=0 "$dry/namelist_cfg" <"$DURATION_PATCH"
-for pair in "cn_exp:$EXPERIMENT" 'nn_it000:1' "nn_itend:$LAST_STEP" \
+for pair in "cn_exp:\"$EXPERIMENT\"" 'nn_it000:1' "nn_itend:$LAST_STEP" \
             "nn_stock:$LAST_STEP" 'nn_write:24' \
             'nn_GYRE:4' 'rn_Dt:3600.' 'rn_Ld:25000.' \
             'ln_dynldf_lap:.false.' 'ln_dynldf_blp:.true.' \

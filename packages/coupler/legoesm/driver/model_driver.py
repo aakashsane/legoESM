@@ -38,6 +38,7 @@ from legoesm.driver.physics_pipeline import (
     gwd_config_for,
     mean_grid_spacing_m,
     moisture_registry_for,
+    registry_scheme_config,
     turbulence_config_for,
     validate_microphysics_tracer_slots,
 )
@@ -1589,11 +1590,12 @@ class ModelDriver:
         self._persistent_cgrid = False
         self.tracers: dict[str, jax.Array] = {}
         self.tracer_registry: TracerRegistry = moisture_registry_for(
-            config.microphysics)
+            config.microphysics, registry_scheme_config(config))
         validate_microphysics_tracer_slots(
             config.microphysics,
             self.tracer_registry.n_tracers,
             context="ModelDriver tracer registry",
+            scheme_config=registry_scheme_config(config),
         )
         self.get_sst_sic = None
         # Seasonal insolation offset (days): align model day 0 to
@@ -2239,6 +2241,7 @@ class ModelDriver:
             self.config.microphysics,
             have_slots,
             context=context,
+            scheme_config=registry_scheme_config(self.config),
         )
 
     def _preflight_land_inputs(self) -> None:
@@ -8644,7 +8647,7 @@ class ModelDriver:
                                   jnp.asarray(d[f"trc_{_k}"]), part, "cell")
                               if _mpi else jnp.asarray(d[f"trc_{_k}"])),
                         name=_k, dims=("nCells", "nlev"),
-                        units=("1/kg" if _k in ("N_c", "N_r", "N_i")
+                        units=("1/kg" if _k in ("N_c", "N_r", "N_i", "N_s")
                                else "kg/kg"))
                     for _k in _names
                 })

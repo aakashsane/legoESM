@@ -4110,16 +4110,32 @@ def required_microphysics_tracer_slots(
 def moisture_registry_for(scheme_name: str, scheme_config=None):
     """The driver's tracer registry for a microphysics scheme: the
     warm-rain trio unless the scheme needs the ice/number slots, then the
-    full nine.  ONE selector for the MPAS lane's driver and the fv3_duo
+    full nine (ten, + the snow number N_s, for Morrison's CAM6 MG2 mode --
+    pass the run's ``scheme_config``, :func:`registry_scheme_config`).  ONE
+    selector for the MPAS lane's driver and the fv3_duo
     column model's slot list, so both carry the same names in the same
     order (the duo's q_<i> is a slot index)."""
     from legoesm.core.tracers import (
         make_full_moisture_registry, make_moisture_registry)
     warm = make_moisture_registry()
-    if required_microphysics_tracer_slots(scheme_name, scheme_config) \
-            > warm.n_tracers:
-        return make_full_moisture_registry()
+    need = required_microphysics_tracer_slots(scheme_name, scheme_config)
+    if need > warm.n_tracers:
+        return make_full_moisture_registry(
+            snow_number=need > make_full_moisture_registry().n_tracers)
     return warm
+
+
+def registry_scheme_config(config):
+    """The run's resolved scheme config leaf for ``config.microphysics`` (the
+    flat ``morrison_*`` rows threaded in, as every lane builds it), i.e. what
+    :func:`moisture_registry_for` keys the optional slots on (Morrison's CAM6
+    MG2 mode carries the snow number).  ``None`` for ``microphysics='none'``."""
+    from legoesm.atmosphere.physics.microphysics.config import MicrophysicsConfig
+    leaf = getattr(MicrophysicsConfig(scheme=config.microphysics),
+                   config.microphysics, None)
+    if leaf is None:
+        return None
+    return thread_morrison_scalars(config, config.microphysics, leaf)
 
 
 def validate_microphysics_tracer_slots(

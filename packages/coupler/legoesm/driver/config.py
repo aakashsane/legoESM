@@ -1504,7 +1504,7 @@ class ExperimentConfig(NamedTuple):
     # obs because small-crystal cirrus defeats both ice sinks while hom
     # nucleation keeps seeding number — these three knobs bracket the loop).
     morrison_fall_a_i: float = 700.0            # MorrisonConfig.fall_a_i [m^(1-b)/s]
-    morrison_ice_snow_d_auto: float = 250.0e-6  # MorrisonConfig.ice_snow_d_auto [m]
+    morrison_ice_snow_d_auto: float = 500.0e-6  # MorrisonConfig.ice_snow_d_auto [m] (CAM6 MG2 micro_mg_dcs)
     morrison_hom_ice_nuc_N: float = 1.0e6       # MorrisonConfig.hom_ice_nuc_N [1/m^3]
                                                 # (consumed only inside the
                                                 # homogeneous_ice_nucleation

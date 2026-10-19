@@ -162,6 +162,11 @@ def _min_tracer_slots_for_config(scheme_name: str, scheme_config=None) -> int:
         # reconstructed-box coalescence path writes rain mass and cloud/rain
         # number tendencies, so slot 7 must exist.
         return 8
+    if (scheme_name == "morrison"
+            and getattr(scheme_config, "warm_rain_incloud", False)):
+        # CAM6 MG2 mode: two-moment snow, so slot [9] = N_s (per-mass)
+        # carries MG2's prognostic snow number (micro_mg2_0.F90 nsn/nstend).
+        return 10
     return _PLANE_MIN_TRACER_SLOTS[scheme_name]
 
 
@@ -364,6 +369,11 @@ def _make_hydrostatic_microphysics(
             N_c=number_per_mass_to_per_volume(_get_tracer("N_c"), rho),
             N_r=number_per_mass_to_per_volume(_get_tracer("N_r"), rho),
             N_i=_get_tracer("N_i"),
+            # Prognostic snow number [1/kg] when the state carries it (the
+            # CAM6 MG2 mode's two-moment snow); absent => None => single-
+            # moment snow.
+            N_s=(_get_tracer("N_s") if state.tracers is not None
+                 and "N_s" in state.tracers else None),
         )
 
         # Aerosol-CCN specified-Nc fill.  Override the (dead-zeros, never
@@ -489,9 +499,11 @@ def _make_hydrostatic_microphysics(
             "N_r": (number_per_volume_to_per_mass(micro_out.dN_r_dt, rho),
                     "1/(kg s)"),
             "N_i": (micro_out.dN_i_dt, "1/(kg s)"),
+            "N_s": (micro_out.dN_s_dt, "1/(kg s)"),
         }
         for _nname, (_ntend, _nunits) in _num_tends.items():
-            if state.tracers is not None and _nname in state.tracers:
+            if (state.tracers is not None and _nname in state.tracers
+                    and _ntend is not None):
                 tracer_tends[_nname] = Field(
                     data=_ntend.reshape(shape_3d),
                     name=f"d{_nname}_dt_micro", dims=dims_3d, units=_nunits,

@@ -3,6 +3,7 @@
 import functools
 import os
 import resource
+import sys
 from pathlib import Path
 
 #: Cap the CPU affinity mask BEFORE JAX is imported (below).  XLA sizes its
@@ -248,8 +249,8 @@ def _undo_mpas_gc_freeze():
     heap nor skip the freeze path."""
     import gc
     yield
-    import legoesm.driver.model_driver as md
-    if md._GC_FROZEN[0]:
+    md = sys.modules.get("legoesm.driver.model_driver")
+    if md is not None and md._GC_FROZEN[0]:
         gc.unfreeze()
         md._GC_FROZEN[0] = False
 

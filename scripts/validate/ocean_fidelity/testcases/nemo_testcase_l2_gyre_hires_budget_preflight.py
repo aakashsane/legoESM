@@ -109,6 +109,10 @@ NEMO_EXTERNAL_SOURCE_HASHES = {
     "oracle:arch/arch-conda.fcm":
         "64cf1b90f611936bbb92a7514800f8a8e9c8365be7b3cf9a9963f1615c5c836a",
 }
+NEMO_SCALARMATH_ARCH = {
+    "oracle:arch/arch-conda-scalarmath.fcm":
+        "132f7a0500c4f0e86d8d3bf7864974a82e1dea5d83166dcfdfaf409e2ca04561",
+}
 NEMO_REQUIRED_RESTART_VARIABLES = {
     "kt", "sshn", "un", "vn", "tn", "sn", "en", "avt_k", "avm_k"}
 BUDGET_CONTRACT_REQUIREMENTS = {
@@ -148,6 +152,22 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def resolved_namelist_number(text: str, name: str) -> float | None:
+    """Read one scalar numeric assignment from NEMO's resolved-name dump."""
+    match = re.search(
+        rf"\b{re.escape(name)}\s*=\s*"
+        r"([-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[de][-+]?\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    try:
+        return float(match.group(1).replace("d", "e").replace("D", "E"))
+    except ValueError:
+        return None
+
+
 def producer_descends_from_registration(producer_commit: str) -> bool:
     """Return true only for a local commit containing the preregistration."""
     if re.fullmatch(r"[0-9a-f]{40}", producer_commit) is None:
@@ -169,6 +189,7 @@ def git_blob_sha256(commit: str, path: str) -> str | None:
 
 def audit_source_manifest(
     path: Path, provider: str, producer_commit: str,
+    nemo_precision_flavour: str = "vector-math-conda",
 ) -> list[str]:
     """Bind the declared source set to producer blobs or pinned oracle files."""
     errors: list[str] = []
@@ -191,16 +212,20 @@ def audit_source_manifest(
             for name in LEGO_SOURCE_PATHS
         }
     else:
+        external = dict(NEMO_EXTERNAL_SOURCE_HASHES)
+        if nemo_precision_flavour == "scalar-math-conda":
+            external.pop("oracle:arch/arch-conda.fcm")
+            external.update(NEMO_SCALARMATH_ARCH)
         expected_names = {
             *(f"repo:{name}" for name in NEMO_TRACKED_SOURCE_PATHS),
-            *NEMO_EXTERNAL_SOURCE_HASHES,
+            *external,
         }
         expected = {
             **{
                 f"repo:{name}": git_blob_sha256(producer_commit, name)
                 for name in NEMO_TRACKED_SOURCE_PATHS
             },
-            **NEMO_EXTERNAL_SOURCE_HASHES,
+            **external,
         }
     if set(rows) != expected_names:
         errors.append(
@@ -419,8 +444,16 @@ def nonlinear_daily_mean_control() -> dict:
     }
 
 
-def audit_budget_contract(root: Path, provider: str) -> dict:
+def audit_budget_contract(
+    root: Path,
+    provider: str,
+    nemo_precision_flavour: str = "vector-math-conda",
+) -> dict:
     """Require an online-production contract, not merely daily state means."""
+    if nemo_precision_flavour not in (
+            "vector-math-conda", "scalar-math-conda"):
+        raise ValueError(
+            f"unsupported NEMO precision flavour {nemo_precision_flavour!r}")
     path = root / BUDGET_CONTRACT
     errors: list[str] = []
     contract = None
@@ -446,7 +479,7 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
             errors.append("contract deck is not r4_smag")
         expected_flavour = {
             "legoesm": "native-fp64-gpu",
-            "nemo": "vector-math-conda",
+            "nemo": nemo_precision_flavour,
         }[provider]
         if contract.get("precision_flavour") != expected_flavour:
             errors.append(
@@ -522,7 +555,8 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
         source_path = verified_artifacts.get("writer_source_manifest_artifact")
         if source_path is not None:
             errors.extend(audit_source_manifest(
-                source_path, provider, producer_commit))
+                source_path, provider, producer_commit,
+                nemo_precision_flavour))
 
         if provider == "nemo":
             if contract.get("nemo_engine_commit") != NEMO_ENGINE_COMMIT:
@@ -564,20 +598,27 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                     text = artifact.read_text(errors="replace")
                     for expression in (
                         r"\bnn_GYRE\s*=\s*4\b",
-                        r"\brn_Dt\s*=\s*3600\.",
-                        r"\brn_Ld\s*=\s*25000\.",
                         r"\bln_dynldf_lap\s*=\s*(?:\.false\.|F)(?:\s|,)",
                         r"\bln_dynldf_blp\s*=\s*(?:\.true\.|T)(?:\s|,)",
                         r"\bln_dynldf_lev\s*=\s*(?:\.true\.|T)(?:\s|,)",
                         r"\bnn_ahm_ijk_t\s*=\s*32\b",
-                        r"\brn_csmc\s*=\s*3\.5\b",
-                        r"\brn_minfac\s*=\s*1\.0\b",
-                        r"\brn_maxfac\s*=\s*1\.0\b",
                     ):
                         if re.search(expression, text, re.IGNORECASE) is None:
                             errors.append(
                                 "resolved namelist lacks registered expression "
                                 f"{expression}")
+                    for name, expected in (
+                        ("rn_Dt", 3600.0),
+                        ("rn_Ld", 25000.0),
+                        ("rn_csmc", 3.5),
+                        ("rn_minfac", 1.0),
+                        ("rn_maxfac", 1.0),
+                    ):
+                        actual = resolved_namelist_number(text, name)
+                        if actual != expected:
+                            errors.append(
+                                "resolved namelist scalar "
+                                f"{name} is {actual!r}, expected {expected!r}")
 
         data_path = verified_artifacts.get("data_artifact")
         if data_path is not None:

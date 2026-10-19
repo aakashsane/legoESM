@@ -237,6 +237,7 @@ def package(
     preregistration: Path, registration_commit: str, producer_commit: str,
     resolved_namelist: Path, writer_source_manifest: Path,
     binary: Path, nemo_engine_commit: str,
+    precision_flavour: str = "vector-math-conda",
 ) -> dict[str, object]:
     if len(registration_commit) != 40 or any(
             char not in "0123456789abcdef" for char in registration_commit):
@@ -248,6 +249,9 @@ def package(
             char not in "0123456789abcdef" for char in nemo_engine_commit):
         raise ValueError(
             "NEMO engine commit must be a lowercase forty-character SHA")
+    if precision_flavour not in ("vector-math-conda", "scalar-math-conda"):
+        raise ValueError(
+            f"unsupported NEMO precision flavour {precision_flavour!r}")
     verify_registration(preregistration, registration_commit, producer_commit)
     records = []
     for day in range(FIRST_DAY, LAST_DAY + 1):
@@ -318,7 +322,7 @@ def package(
         "producer_commit": producer_commit,
         "nemo_engine_commit": nemo_engine_commit,
         "deck": "r4_smag",
-        "precision_flavour": "vector-math-conda",
+        "precision_flavour": precision_flavour,
         "cadence": {
             "dt_s": 3600.0,
             "steps_per_day": STEPS_PER_DAY,
@@ -377,6 +381,11 @@ def main(argv=None) -> int:
     parser.add_argument("--writer-source-manifest", type=Path, required=True)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--nemo-engine-commit", required=True)
+    parser.add_argument(
+        "--precision-flavour",
+        choices=("vector-math-conda", "scalar-math-conda"),
+        default="vector-math-conda",
+    )
     parser.add_argument("--verify-short", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -390,7 +399,8 @@ def main(argv=None) -> int:
                 args.instrumented_restart, args.preregistration,
                 args.registration_commit, args.producer_commit,
                 args.resolved_namelist, args.writer_source_manifest,
-                args.binary, args.nemo_engine_commit)
+                args.binary, args.nemo_engine_commit,
+                args.precision_flavour)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"REFUSE: {exc}", file=sys.stderr)
         return 2

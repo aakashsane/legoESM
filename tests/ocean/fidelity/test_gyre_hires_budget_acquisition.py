@@ -192,8 +192,9 @@ def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
     run = (TOOL / "run.sh").read_text()
     assert "RANKS must be 1" in run
     assert "-d 'OCE'" in run
-    assert "-m conda" in run
-    assert "conda-scalarmath" not in run
+    assert '-m "$ARCH"' in run
+    assert "conda-scalarmath" in run
+    assert "scalar-math-conda" in run
     assert "export GYRE_R14_BUDGET=$enabled" in run
     assert "run_nemo control 0" in run
     assert "run_nemo instrumented 1" in run
@@ -201,8 +202,11 @@ def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
     assert "mpirun -np 1" in run
     assert "--run" in run
     assert "--run-short" in run
+    assert "--preflight-scalar" in run
+    assert "--run-scalar" in run
     assert "GYRE_OMIP_L2_P3_R15BUDV" in run
     assert "GYRE_OMIP_L2_P3_R15BUD" in run
+    assert "GYRE_OMIP_L2_P3_R16BUDSM" in run
     assert "namelist_cfg_r4_smag_30d_verify.patch" in run
     assert "merge-base --is-ancestor" in run
     assert "REFUSE_NEMO_COMMIT" in run
@@ -219,6 +223,15 @@ def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
     assert "output.namelist.dyn" in run
     assert subprocess.run(
         ["bash", "-n", str(TOOL / "run.sh")], check=False).returncode == 0
+
+
+def test_packager_refuses_an_unregistered_precision_flavour(tmp_path):
+    with pytest.raises(ValueError, match="unsupported NEMO precision flavour"):
+        PACKAGER.package(
+            tmp_path, tmp_path / "control.nc", tmp_path / "instrumented.nc",
+            tmp_path / "prereg.md", "a" * 40, "b" * 40,
+            tmp_path / "namelist", tmp_path / "sources",
+            tmp_path / "nemo", "c" * 40, "invented-math")
 
 
 def test_nemo_writer_has_independent_total_and_no_stress_companion():

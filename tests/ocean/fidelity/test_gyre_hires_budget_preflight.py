@@ -207,10 +207,13 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
         else:
             namelist = root / "resolved_namelist_lines.txt"
             namelist.write_text(
-                "nn_GYRE = 4\nrn_Dt = 3600.\nrn_Ld = 25000.\n"
+                "nn_GYRE = 4\nrn_Dt =  3600.0000000000000,\n"
+                "rn_Ld =  25000.000000000000,\n"
                 "ln_dynldf_lap = .false.\nln_dynldf_blp = .true.\n"
                 "ln_dynldf_lev = .true.\nnn_ahm_ijk_t = 32\n"
-                "rn_csmc = 3.5\nrn_minfac = 1.0\nrn_maxfac = 1.0\n")
+                "rn_csmc =  3.5000000000000000,\n"
+                "rn_minfac =  1.0000000000000000,\n"
+                "rn_maxfac =  1.0000000000000000,\n")
             contract["resolved_namelist_artifact"] = namelist.name
             contract["resolved_namelist_sha256"] = PREFLIGHT.sha256(namelist)
             binary_digest = PREFLIGHT.sha256(root / "nemo")
@@ -230,9 +233,37 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
         lambda root: {"root": str(root), "status": "PASS", "errors": []},
     )
     assert PREFLIGHT.build_report(roots["legoesm"], roots["nemo"])["verdict"] == "PASS"
-
     nemo_contract = json.loads(
         (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).read_text())
+
+    # The scalar twin is explicit: its source manifest must replace (not add
+    # to) the vector arch row, and the caller must request that flavour.
+    nemo_source = roots["nemo"] / "source.sha256"
+    vector_source = nemo_source.read_text()
+    scalar_source = vector_source.replace(
+        PREFLIGHT.NEMO_EXTERNAL_SOURCE_HASHES[
+            "oracle:arch/arch-conda.fcm"]
+        + "  oracle:arch/arch-conda.fcm",
+        PREFLIGHT.NEMO_SCALARMATH_ARCH[
+            "oracle:arch/arch-conda-scalarmath.fcm"]
+        + "  oracle:arch/arch-conda-scalarmath.fcm",
+    )
+    assert scalar_source != vector_source
+    nemo_source.write_text(scalar_source)
+    scalar_contract = dict(nemo_contract)
+    scalar_contract["precision_flavour"] = "scalar-math-conda"
+    scalar_contract["writer_source_manifest_sha256"] = PREFLIGHT.sha256(
+        nemo_source)
+    (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
+        json.dumps(scalar_contract))
+    assert PREFLIGHT.audit_budget_contract(
+        roots["nemo"], "nemo", "scalar-math-conda")["status"] == "PASS"
+    assert PREFLIGHT.audit_budget_contract(
+        roots["nemo"], "nemo")["status"] == "REFUSE"
+    nemo_source.write_text(vector_source)
+    (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
+        json.dumps(nemo_contract))
+
     for key in (
         "status", "window_days", "terms", "production_online",
         "external_mode_included",
@@ -269,6 +300,23 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
             json.dumps(planted))
         assert PREFLIGHT.build_report(
             roots["legoesm"], roots["nemo"])["verdict"] == "ACQUISITION_NEEDED"
+    (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
+        json.dumps(nemo_contract))
+
+    # The resolved artifact is a value gate, not a spelling gate: padded
+    # list-directed output must pass, while a self-consistently rehashed
+    # changed value must still refuse.
+    namelist_path = roots["nemo"] / "resolved_namelist_lines.txt"
+    good_namelist = namelist_path.read_text()
+    namelist_path.write_text(good_namelist.replace(
+        "3.5000000000000000", "3.6000000000000000"))
+    planted = dict(nemo_contract)
+    planted["resolved_namelist_sha256"] = PREFLIGHT.sha256(namelist_path)
+    (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
+        json.dumps(planted))
+    assert PREFLIGHT.build_report(
+        roots["legoesm"], roots["nemo"])["verdict"] == "ACQUISITION_NEEDED"
+    namelist_path.write_text(good_namelist)
     (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
         json.dumps(nemo_contract))
 

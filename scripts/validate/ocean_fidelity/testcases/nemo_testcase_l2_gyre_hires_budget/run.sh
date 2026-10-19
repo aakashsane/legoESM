@@ -3,17 +3,20 @@ set -Eeuo pipefail
 
 # OPERATOR-EXECUTED ACQUISITION ONLY.  The default action is a read-only
 # source/patch/syntax preflight.  --run-short verifies the correction at the
-# first registered day; --run performs the corrected 180-day acquisition.
+# first registered day; --run performs the corrected vector-math 180-day
+# acquisition; --run-scalar repeats that acquisition for the arithmetic twin.
 mode=preflight
 if [[ $# -gt 1 ]]; then
-  printf 'REFUSE_USAGE: %s [--run-short|--run]\n' "$0" >&2
+  printf 'REFUSE_USAGE: %s [--run-short|--run|--preflight-scalar|--run-scalar]\n' "$0" >&2
   exit 64
 fi
 if [[ $# -eq 1 ]]; then
   case "$1" in
     --run-short) mode=short ;;
     --run) mode=full ;;
-    *) printf 'REFUSE_USAGE: %s [--run-short|--run]\n' "$0" >&2; exit 64 ;;
+    --preflight-scalar) mode=scalar_preflight ;;
+    --run-scalar) mode=scalar ;;
+    *) printf 'REFUSE_USAGE: %s [--run-short|--run|--preflight-scalar|--run-scalar]\n' "$0" >&2; exit 64 ;;
   esac
 fi
 
@@ -40,6 +43,14 @@ if [[ "$mode" == short ]]; then
   readonly EXPERIMENT=GYRE_R4_SMAG_R15_VERIFY
   readonly DURATION_PATCH_NAME=namelist_cfg_r4_smag_30d_verify.patch
   readonly DEFAULT_EVIDENCE=/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round15/oracle_gyre_r4_smag_budget_verify_day30
+elif [[ "$mode" == scalar || "$mode" == scalar_preflight ]]; then
+  readonly TARGET_NAME=GYRE_OMIP_L2_P3_R16BUDSM
+  readonly LAST_DAY=180
+  readonly LAST_STEP=4320
+  readonly RECORD_COUNT=151
+  readonly EXPERIMENT=GYRE_R4_SMAG_R14_BUDGET
+  readonly DURATION_PATCH_NAME=namelist_cfg_r4_smag_180d.patch
+  readonly DEFAULT_EVIDENCE=/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round16/oracle_gyre_r4_smag_budget_180d_scalar
 else
   readonly TARGET_NAME=GYRE_OMIP_L2_P3_R15BUD
   readonly LAST_DAY=180
@@ -48,6 +59,15 @@ else
   readonly EXPERIMENT=GYRE_R4_SMAG_R14_BUDGET
   readonly DURATION_PATCH_NAME=namelist_cfg_r4_smag_180d.patch
   readonly DEFAULT_EVIDENCE=/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round15/oracle_gyre_r4_smag_budget_180d_corrected
+fi
+if [[ "$mode" == scalar || "$mode" == scalar_preflight ]]; then
+  readonly ARCH=conda-scalarmath
+  readonly PRECISION_FLAVOUR=scalar-math-conda
+  readonly ARCH_SHA256=132f7a0500c4f0e86d8d3bf7864974a82e1dea5d83166dcfdfaf409e2ca04561
+else
+  readonly ARCH=conda
+  readonly PRECISION_FLAVOUR=vector-math-conda
+  readonly ARCH_SHA256=64cf1b90f611936bbb92a7514800f8a8e9c8365be7b3cf9a9963f1615c5c836a
 fi
 readonly SOURCE_ROOT=$NEMO_ROOT/cfgs/$SOURCE_NAME
 readonly TARGET_ROOT=$NEMO_ROOT/cfgs/$TARGET_NAME
@@ -104,7 +124,7 @@ for path in "$BASE_NAMELIST" "$SMAG_PATCH" "$DURATION_PATCH" \
   "$STAGE_PATCH" "$ADV_PATCH" "$ZDF_PATCH" "$MODULE" "$PACKAGER" \
   "$PREREG" "$SOURCE_ROOT/MY_SRC/stprk3_stg.F90" \
   "$ENGINE_ROOT/dynadv.F90" "$ENGINE_ROOT/dynzdf.F90" \
-  "$SOURCE_ROOT/cpp_$SOURCE_NAME.fcm" "$NEMO_ROOT/arch/arch-conda.fcm"; do
+  "$SOURCE_ROOT/cpp_$SOURCE_NAME.fcm" "$NEMO_ROOT/arch/arch-$ARCH.fcm"; do
   [[ -f "$path" ]] || { printf 'REFUSE_MISSING_INPUT: %s\n' "$path" >&2; exit 67; }
 done
 [[ "$RECORD_SIZE" -eq 780260 ]] || {
@@ -145,8 +165,7 @@ check_hash "$BASE_NAMELIST" \
   85d0f2b0655d7d89dbe676e1d1a0dd1b73ab387b76111dfabc1627d4ab81271d
 check_hash "$SOURCE_ROOT/cpp_$SOURCE_NAME.fcm" \
   54bd2cead92cee1eaa8cb257c7f7cdea8fe39cc9fb0f47c7c0d5853b909b34b7
-check_hash "$NEMO_ROOT/arch/arch-conda.fcm" \
-  64cf1b90f611936bbb92a7514800f8a8e9c8365be7b3cf9a9963f1615c5c836a
+check_hash "$NEMO_ROOT/arch/arch-$ARCH.fcm" "$ARCH_SHA256"
 check_hash "$PREREG" "$REGISTRATION_SHA256"
 readonly EXPECTED_MY_SRC='dynhpg.F90
 dynspg_ts.F90
@@ -219,12 +238,16 @@ for needle in 'GYRE_R14_BUDGET' 'jr14_first_step = 697' \
 done
 printf 'PREFLIGHT: deck=r4_smag days=%s window=30:%s ranks=1 ' \
   "$LAST_DAY" "$LAST_DAY"
-printf 'record_count=%s record_size=%s evidence=%s commit=%s\n' \
-  "$RECORD_COUNT" "$RECORD_SIZE" "$EVIDENCE" "$COMMIT"
-if [[ "$mode" == preflight ]]; then
-  printf 'WOULD_RUN_SHORT: EVIDENCE=%s RANKS=1 %s --run-short\n' \
-    '/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round15/oracle_gyre_r4_smag_budget_verify_day30' "$0"
-  printf 'WOULD_RUN_FULL: EVIDENCE=%s RANKS=1 %s --run\n' "$EVIDENCE" "$0"
+printf 'record_count=%s record_size=%s precision=%s evidence=%s commit=%s\n' \
+  "$RECORD_COUNT" "$RECORD_SIZE" "$PRECISION_FLAVOUR" "$EVIDENCE" "$COMMIT"
+if [[ "$mode" == preflight || "$mode" == scalar_preflight ]]; then
+  if [[ "$mode" == preflight ]]; then
+    printf 'WOULD_RUN_SHORT: EVIDENCE=%s RANKS=1 %s --run-short\n' \
+      '/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round15/oracle_gyre_r4_smag_budget_verify_day30' "$0"
+    printf 'WOULD_RUN_FULL: EVIDENCE=%s RANKS=1 %s --run\n' "$EVIDENCE" "$0"
+  fi
+  printf 'WOULD_RUN_SCALAR: EVIDENCE=%s RANKS=1 %s --run-scalar\n' \
+    '/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round16/oracle_gyre_r4_smag_budget_180d_scalar' "$0"
   printf 'PREFLIGHT_OK\n'
   exit 0
 fi
@@ -243,7 +266,7 @@ done
 
 export PATH=/home/dbalwada/legoESM/.venv/bin:/home/dbalwada/miniconda3/envs/nemo-build/bin:$PATH
 cd "$NEMO_ROOT"
-./makenemo -r "$SOURCE_NAME" -n "$TARGET_NAME" -d 'OCE' -m conda -j 0
+./makenemo -r "$SOURCE_NAME" -n "$TARGET_NAME" -d 'OCE' -m "$ARCH" -j 0
 [[ -d "$TARGET_ROOT/MY_SRC" && -d "$TARGET_ROOT/EXP00" ]] || {
   printf 'REFUSE_BUILD_CLONE: makenemo did not create the target configuration\n' >&2
   exit 70
@@ -267,7 +290,7 @@ for unit in stprk3_stg dynadv dynzdf gyre_r14_budget; do
   }
 done
 touch "$TARGET_ROOT/MY_SRC/"*.F90
-./makenemo -n "$TARGET_NAME" -m conda -j 8
+./makenemo -n "$TARGET_NAME" -m "$ARCH" -j 8
 readonly BINARY=$TARGET_ROOT/BLD/bin/nemo.exe
 [[ -x "$BINARY" ]] || { printf 'REFUSE_BUILD_BINARY: missing %s\n' "$BINARY" >&2; exit 70; }
 for compiled in gyre_r14_budget dynadv dynzdf stprk3_stg; do
@@ -321,7 +344,7 @@ manifest_add "$SOURCE_ROOT/cpp_$SOURCE_NAME.fcm" \
   'oracle:cfgs/GYRE_OMIP_L2_P3/cpp_GYRE_OMIP_L2_P3.fcm'
 manifest_add "$ENGINE_ROOT/dynadv.F90" 'oracle:src/OCE/DYN/dynadv.F90'
 manifest_add "$ENGINE_ROOT/dynzdf.F90" 'oracle:src/OCE/DYN/dynzdf.F90'
-manifest_add "$NEMO_ROOT/arch/arch-conda.fcm" 'oracle:arch/arch-conda.fcm'
+manifest_add "$NEMO_ROOT/arch/arch-$ARCH.fcm" "oracle:arch/arch-$ARCH.fcm"
 
 readonly PREPARED='namelist_ref namelist_top_cfg namelist_top_ref namelist_pisces_cfg namelist_pisces_ref context_nemo.xml file_def_nemo.xml iodef.xml axis_def_nemo.xml domain_def_nemo.xml grid_def_nemo.xml field_def_nemo-oce.xml field_def_nemo-pisces.xml'
 for run in control instrumented; do
@@ -411,6 +434,7 @@ package_mode=()
   --writer-source-manifest "$EVIDENCE/manifest/writer_source.sha256" \
   --binary "$BINARY" \
   --nemo-engine-commit "$NEMO_COMMIT" \
+  --precision-flavour "$PRECISION_FLAVOUR" \
   "${package_mode[@]}" \
   >"$EVIDENCE/instrumented/package_records.log"
 (
@@ -418,5 +442,5 @@ package_mode=()
   find manifest control instrumented -maxdepth 2 -type f -print0 | \
     sort -z | xargs -0 sha256sum >operator_manifest.sha256
 )
-printf 'ACQUISITION_DONE: %s (r4_smag, days 30..%s, same-binary passive control)\n' \
-  "$EVIDENCE" "$LAST_DAY"
+printf 'ACQUISITION_DONE: %s (r4_smag, %s, days 30..%s, same-binary passive control)\n' \
+  "$EVIDENCE" "$PRECISION_FLAVOUR" "$LAST_DAY"

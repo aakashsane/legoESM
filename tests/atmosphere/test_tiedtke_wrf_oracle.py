@@ -65,7 +65,7 @@ def test_tiedtke_matches_wrf_v480(fix, fk):
     ldcum = o("ldcum") > 0
     assert ldcum.sum() >= 10  # the fixture exercises active convection
     np.testing.assert_array_equal(np.asarray(out.ldcum), ldcum)
-    np.testing.assert_array_equal(np.asarray(out.ktype)[ldcum], o("ktype")[ldcum])
+    np.testing.assert_array_equal(np.asarray(out.ktype), o("ktype"))
     np.testing.assert_array_equal(np.asarray(out.kcbot)[ldcum] + 1, o("kcbot")[ldcum])
     np.testing.assert_array_equal(np.asarray(out.kctop)[ldcum] + 1, o("kctop")[ldcum])
     errs = {k: _err(getattr(out, k), o(ref)) for k, ref in _FIELDS.items()}
@@ -75,9 +75,11 @@ def test_tiedtke_matches_wrf_v480(fix, fk):
     assert not bad, f"{fk}: fields above {_TOL}: {bad}"
 
 
-def test_fixture_covers_every_cloud_type_and_downdrafts(fix):
-    """Deep, shallow and midlevel clouds and a non-zero downdraft are in the
-    oracle data, so each branch of the port is compared somewhere."""
+def test_fixture_has_each_cloud_type_and_a_downdraft(fix):
+    """Deep, shallow and midlevel labels and a non-zero downdraft occur in the
+    oracle data.  Coverage limit: the fixture has omega = 0, so midlevel
+    clouds carry only the cmfcmin floor mass flux; the omega-driven midlevel
+    closure is not exercised with a material mass flux."""
     kt = np.concatenate([fix[f"{fk}/out/ktype"][fix[f"{fk}/out/ldcum"] > 0]
                          for fk in ("F1", "F2")])
     assert {1, 2, 3} <= set(kt.astype(int).tolist())

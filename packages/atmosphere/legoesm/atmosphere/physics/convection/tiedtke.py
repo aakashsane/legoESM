@@ -746,8 +746,10 @@ class TiedtkeWRFOutput(NamedTuple):
     precipitation), mfu / mfd [kg/m2/s] (final up/downdraft mass flux on the
     TOP interface of each level), mfub [kg/m2/s, (ncol,)] (final cloud-base
     flux, 0 where not convecting), ldcum [bool, (ncol,)], ktype [int,
-    (ncol,); 1 deep, 2 shallow, 3 midlevel, 0 none], kcbot / kctop [int,
-    (ncol,); 0-based level index, top = 0].
+    (ncol,); 1 deep, 2 shallow, 3 midlevel, 0 none; where the first ascent
+    finds no cloud the oracle returns early and keeps that ascent's type],
+    kcbot / kctop [int, (ncol,); 0-based level index, top = 0; meaningful
+    only where ldcum].
     """
     dT_dt: jax.Array
     dq_v_dt: jax.Array
@@ -1509,7 +1511,7 @@ def _wrf_column(pten, pqen, puen, pven, pverv, pap, paph, pgeo, pqvf, pqvbl,
         dq_c_dt=z(dqc), dq_i_dt=z(dqi), detrained_condensate=z(pcte),
         precip=z(prfl + psfl), mfu=z(pmfu), mfd=z(pmfd),
         mfub=jnp.where(k1 & ldcum, zmfub, 0.0), ldcum=k1 & ldcum,
-        ktype=jnp.where(k1, ktype, 0), kcbot=kcbot - 1, kctop=kctop - 1)
+        ktype=jnp.where(k1, ktype, a1["ktype"]), kcbot=kcbot - 1, kctop=kctop - 1)
 
 
 def tiedtke_wrf(T, q_v, u, v, p_full, p_half, geopotential, omega,

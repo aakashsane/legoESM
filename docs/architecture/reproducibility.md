@@ -483,10 +483,11 @@ emits v2. Old manifests keep loading.
    output directory overlapping the reference run's or already holding a
    manifest.
    Runner manifests without replay support are validated only, as before. It reruns
-   with only the output flag rewritten and with `LEGOESM_REPRODUCE_REFERENCE`
+   with only the output flag rewritten (plus the runner's own rewrites:
+   `run_omip.py`'s `--grid`, `run_dino.py`'s `--timing-jsonl`, below) and with `LEGOESM_REPRODUCE_REFERENCE`
    / `LEGOESM_REPRODUCE_OUTPUT` set; the rerun's manifest writer then refuses
    before stepping unless the rerun resolves to the reference record
-   (resolved configuration minus the output path, applied `--params`, resolved
+   (resolved configuration minus the rewritten keys, applied `--params`, resolved
    physics, and each input's path and size). `--check` compares final digests;
    without it, a rerun that records no final digest did not complete and
    fails. Without `--output` the rerun goes to a new temporary directory,

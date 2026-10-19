@@ -4674,8 +4674,9 @@ def _source_revision_drift_note(parent_sha, this_sha) -> str | None:
         return (f"[warn] --restart-from was written at source revision "
                 f"{parent_sha[:20]} but this leg is running {this_sha[:20]}: "
                 "the model code changed between legs.  The state and "
-                "configuration still validated, so the resume proceeds — but "
-                "attribute results to BOTH revisions.")
+                "configuration validated, but the resume is refused unless "
+                "LEGOESM_ALLOW_VERSION_DRIFT=1; if allowed, attribute results "
+                "to BOTH revisions.")
     why = _revision_ambiguity(this_sha)
     if why:
         return (f"[warn] both legs report {this_sha}, but that string does not "

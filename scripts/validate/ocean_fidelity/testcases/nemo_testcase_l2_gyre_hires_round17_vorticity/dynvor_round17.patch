@@ -50,14 +50,10 @@
           !
           !                                   !==  compute and add the vorticity term trend  =!
           DO_2D( 0, 0, 0, 0 )
-@@ -550,6 +568,10 @@
-          CLOSE(l2_unit)
-          WRITE(numout,*) 'L2_RK_STAGE2_ENE_OPERAND_DUMP ', kt, Kmm, TRIM(l2_filename)
-       ENDIF
+@@ -548,2 +566,6 @@
+       !                                                ! ===============
 +      IF( r17_write .AND. lwp .AND. kt == nit000 .AND. kvor == np_CRV ) THEN
 +         CLOSE(r17_unit)
 +         WRITE(numout,*) 'GYRE_R17_ENE_OPERAND_DUMP ', kt, Kmm, TRIM(r17_filename)
 +      ENDIF
-    END SUBROUTINE vor_ene
- 
- 
+       IF( lwp .AND. kt == nit000 .AND. Kmm == 3 .AND. kvor == np_CRV ) THEN

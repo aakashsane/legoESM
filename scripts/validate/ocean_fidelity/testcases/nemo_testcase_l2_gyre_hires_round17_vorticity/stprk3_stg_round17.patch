@@ -15,9 +15,7 @@
        REAL(wp) ::   ze3Tb, ze3Tr, z1_e3t     ! local scalars
        REAL(wp) ::   ze3Sb, ze3Sr             !   -      -
  #if ! defined key_PSYCLONE_2p5p0
-@@ -104,6 +110,8 @@
-       !! ---------------------------------------------------------------------
- 
+@@ -106,4 +112,6 @@
        IF( ln_timing )   CALL timing_start('stp_RK3_stg')
 +      CALL get_environment_variable('GYRE_R17_WRITE', r17_env, status=r17_env_status)
 +      r17_write = r17_env_status == 0 .AND. TRIM(r17_env) == '1'

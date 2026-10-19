@@ -288,10 +288,17 @@ clubb_c_k10: 0.5
 # So no non-orographic member here (the Sundqvist/L36 deck carries the
 # e3sm_cam
 # background source; that row is dropped on purpose).
-gravity_wave_drag: mcfarlane            # orographic member: McFarlane (decision
-                                        # pending: CAM6 gw_oro port via e3sm_cam
-                                        # 'orographic', effgw_oro 0.125,
-                                        # gw_polar_taper true on fv, lndscl_sgh)
+gravity_wave_drag: mcfarlane            # orographic member = CAM6 gw_oro port
+                                        # (cam_cesm2_1_rel_60, oracle-matched;
+                                        # user decision 2026-10-19): effgw_oro
+                                        # 0.125 x landfrac, sgh/sqrt(landfrac),
+                                        # interface N with n2min 5e-5, no launch
+                                        # clip, tndmax 400 m/s/day, limiter
+                                        # remainder carried down, gw eddy
+                                        # diffusion of dse + tracers.  These are
+                                        # the McFarlaneConfig code defaults (no
+                                        # deck rows exist for them); the fv3duo
+                                        # deck inherits this row.
 hines_launch_p: 70000.0                 # inert (hines not selected); kept equal
                                         # to the Sundqvist/L36 deck.  The e3sm_cam_*
                                         # rows

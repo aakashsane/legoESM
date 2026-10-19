@@ -140,7 +140,7 @@ the half-sum `r3f`, at
 The executed call order is HPG, vorticity/Coriolis, then advection at
 `GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/stprk3_stg.f90:399-410`.
 The configured total-vorticity ENE dispatch calls `vor_ene(...,ntot,...)` at
-`GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynvor.f90:230-238`.
+`GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynvor.f90:235`.
 That routine forms total vorticity, divides by live F thickness, forms metric
 transports, and applies the signed two-point V stencil at
 `GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynvor.f90:536-573`.

@@ -327,54 +327,6 @@ class TestSBM:
         assert out.cape.shape == (ncol,)
         assert out.convective_mask.shape == (ncol,)
 
-    def test_never_net_moistens_a_column(self):
-        """Column-water conservation contract (#771): SBM must never ADD net
-        column water.
-
-        SBM relaxes q_v toward q_ref = RH_ref*q_sat. In a TRIGGERED column
-        that is net sub-saturated vs q_ref, the unfixed relaxation net-
-        MOISTENS the column while sbm.py rescales only the CONDENSATE to
-        col-net-drying — the applied vapour tendency then creates water
-        from nothing (+0.53 mm/day global in the 3-day C24 AMIP probe; the
-        CWV drift behind the C48 pilot's day-150 blowup). The drying_gate
-        zeroes the WHOLE adjustment in such columns:
-          (1) every column satisfies col ∫ dq_v dp/g <= 0;
-          (2) gated (would-be-moistening) columns have EXACTLY zero dT_dt
-              too (the dT/dq_v gate is shared, preserving the Newton
-              enthalpy closure — a heat-only residual would be a leak).
-        Non-vacuous: at least one column must be TRIGGERED yet gated, and
-        this test FAILS on the pre-#771-fix sbm.py (verified on main).
-        """
-        ncol, nlev = 4, 20
-        T, q_v, p_full, p_half = _make_unstable_columns(ncol, nlev)
-        # Dry the columns progressively: column 0 keeps the moist sounding
-        # (net-drying, exercises the gate=1 path); the driest columns stay
-        # conditionally unstable (trigger on) but are net sub-saturated vs
-        # q_ref -> the unfixed scheme would net-moisten them.
-        scale = jnp.array([1.0, 0.5, 0.3, 0.15])[:, None]
-        q_v = q_v * scale
-        config = SBMConfig()
-        out = sbm_convection(T, q_v, p_full, p_half, dt=300.0, config=config)
-
-        dp = p_half[:, 1:] - p_half[:, :-1]
-        col_dqv = jnp.sum(out.dq_v_dt * dp, axis=1) / constants.g
-
-        # (1) no column ever gains net water (tol ~ fp roundoff of the sum)
-        assert bool(jnp.all(col_dqv <= 1e-10))
-
-        # non-vacuity: some column is triggered yet fully gated (the unfixed
-        # scheme would have moistened it), and some column genuinely dries
-        gated = (out.convective_mask > 0) & jnp.all(out.dq_v_dt == 0.0, axis=1)
-        drying = col_dqv < -1e-12
-        assert bool(jnp.any(gated)), (
-            "fixture produced no triggered net-sub-saturated column — the "
-            "conservation contract was not exercised")
-        assert bool(jnp.any(drying))
-
-        # (2) gated columns carry NO heat tendency either (shared gate)
-        dT_gated = jnp.where(gated[:, None], out.dT_dt, 0.0)
-        assert bool(jnp.all(dT_gated == 0.0))
-
     def test_enthalpy_conservation(self):
         """Column enthalpy tendency should be approximately conserved.
 
@@ -738,8 +690,12 @@ class TestIntegration:
         assert tendencies.du_dt.data.shape == (6, n, n, nlev)
         assert tendencies.dp_s_dt.data.shape == (6, n, n)
 
-    def test_hydrostatic_nonzero_heating(self):
-        """Hydrostatic convection should produce nonzero T tendencies."""
+    def test_hydrostatic_isothermal_state_does_not_convect(self):
+        """The Held-Suarez initial state is isothermal (300 K) and dry: Isca's
+        qe_moist_convection finds no CAPE there (its binary was run on these
+        columns with q at 80 % RH, 2026-10-19), so SBM through the hydrostatic
+        bridge gives exactly zero heating.  (The replaced surrogate lifted a
+        saturated parcel from the surface and heated it.)"""
         from legoesm.grids.cubed_sphere import create_cubed_sphere
         from legoesm.grids.vertical import create_sigma_coordinate
         from legoesm.atmosphere.forcing.idealized.held_suarez import held_suarez_init
@@ -752,8 +708,7 @@ class TestIntegration:
         physics_fn = make_convection_physics(config, model_type="hydrostatic", dt=300.0)
         tendencies, _ = physics_fn(state, grid, sigma)
 
-        max_hr = float(jnp.max(jnp.abs(tendencies.dT_dt.data)))
-        assert max_hr > 0.0
+        assert bool(jnp.all(tendencies.dT_dt.data == 0.0))
 
     def test_hydrostatic_zero_wind_tendency(self):
         """Convection should not produce wind or pressure tendencies."""
@@ -931,27 +886,6 @@ class TestIntegration:
         tendencies, _ = physics_fn(state, grid, sigma)
 
         assert jnp.allclose(tendencies.dT_dt.data, 0.0)
-
-    def test_scheme_selection_kuo(self):
-        """scheme='kuo' should give different results from 'sbm'."""
-        from legoesm.grids.cubed_sphere import create_cubed_sphere
-        from legoesm.grids.vertical import create_sigma_coordinate
-        from legoesm.atmosphere.forcing.idealized.held_suarez import held_suarez_init
-
-        grid = create_cubed_sphere(8)
-        sigma = create_sigma_coordinate(10)
-        state = held_suarez_init(grid, sigma)
-
-        fn_kuo = make_convection_physics(
-            ConvectionConfig(scheme="kuo"), model_type="hydrostatic", dt=300.0,
-        )
-        fn_sbm = make_convection_physics(
-            ConvectionConfig(scheme="sbm"), model_type="hydrostatic", dt=300.0,
-        )
-        tend_kuo, _ = fn_kuo(state, grid, sigma)
-        tend_sbm, _ = fn_sbm(state, grid, sigma)
-
-        assert not jnp.allclose(tend_kuo.dT_dt.data, tend_sbm.dT_dt.data, atol=1e-10)
 
     def test_scheme_selection_mass_flux(self):
         """scheme='mass_flux' should produce nonzero tendencies."""

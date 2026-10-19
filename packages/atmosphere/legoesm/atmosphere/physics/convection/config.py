@@ -279,7 +279,7 @@ __param_spec__ = {
     "SBMConfig": {
         "scheme_key": "atm.conv.SBMConfig",
         "excluded": {
-            "cloud_mask_sharpness": "numerics: sigmoid sharpness on the cloud-layer (T_moist - T) mask",
+            "cloud_mask_sharpness": "inert: belonged to the replaced T_moist >= T layer mask; the Isca qe_moist_convection port has no such mask and raises on a non-default value",
             "smooth_trigger_sharpness": "numerics: sigmoid sharpness on the smooth CAPE trigger",
         },
         "params": {
@@ -360,9 +360,10 @@ class SBMConfig(NamedTuple):
     rh_ref : float
         Reference relative humidity for moisture profile (default 0.7).
     cape_threshold : float
-        Minimum CAPE [J/kg] to trigger convection (default 70.0).
+        Minimum CAPE [J/kg] to trigger convection (default 70.0).  The Isca
+        oracle convects whenever CAPE > 0 (threshold 0).
     smooth_trigger_sharpness : float
-        Sigmoid sharpness for smooth trigger [1/(J/kg)] (default 0.01).
+        Sigmoid sharpness for smooth trigger [1/(J/kg)] (default 0.1).
     """
     tau_c: float = 7200.0
     rh_ref: float = 0.7
@@ -372,12 +373,10 @@ class SBMConfig(NamedTuple):
     # — gating leaks).  0.1 gives ``sigmoid(-7) ≈ 9e-4`` (effectively 0)
     # while preserving smoothness near the threshold.
     smooth_trigger_sharpness: float = 0.1
-    # Sigmoid sharpness for the cloud-layer mask (T_moist - T) [1/K].
-    # Hard ``T_moist >= T`` boolean masks kill ``jax.grad`` through layer
-    # top/bottom transitions; the smoothed sigmoid keeps gradients alive.
-    # 5/K gives ~0.5 at T_moist == T and ~0.01 at T_moist - T = -1 K, which
-    # is sharp enough to behave like a hard mask in forward integration but
-    # differentiable for training.
+    # INERT since the Isca qe_moist_convection port (2026-10-19): this was the
+    # sigmoid sharpness of the replaced per-level ``T_moist >= T`` layer mask.
+    # The oracle's convecting layer is kLZB..surface; sbm_convection raises
+    # if this is set to anything but its default.
     cloud_mask_sharpness: float = 5.0
 
 

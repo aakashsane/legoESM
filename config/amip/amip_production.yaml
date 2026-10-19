@@ -241,7 +241,6 @@ convection: zhang_mcfarlane # CAM6: faithful zm_conv port (f09 mg2+clubb namelis
                             # and reaches the MPAS winds (mpas_cmt resolves True;
                             # the Sundqvist/L36 deck's Bechtold runs CMT
                             # off, lane default)
-convective_precip_efficiency: 0.8
 convective_rain_to_surface: true
 convective_cloud: false     # refused by cam6_clubb (deepcu is CAM6's version)
 # ZM tunables written explicitly (values = the scheme defaults = the CAM6 f09

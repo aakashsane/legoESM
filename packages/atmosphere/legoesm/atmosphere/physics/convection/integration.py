@@ -118,6 +118,7 @@ from legoesm.atmosphere.physics.convection.mass_flux import (
     mass_flux_convection,
 )
 from legoesm.atmosphere.physics.convection.zhang_mcfarlane import (
+    CONVTRAN1_TRACERS,
     zhang_mcfarlane_convection,
 )
 from legoesm.atmosphere.physics.convection.kain_fritsch import (
@@ -137,6 +138,19 @@ from legoesm.atmosphere.physics.thermodynamics import (
     reconstruct_half_level_pressure_hydrostatic,
     sanitize_theta_rho,
 )
+
+
+def _convtran1_columns(tracers, ncol, nlev):
+    """``{name: (ncol, nlev)}`` of the CAM6 convtran1 tracers the state
+    carries (``CONVTRAN1_TRACERS``), or ``None`` when it carries none."""
+    if not tracers:
+        return None
+    cols = {}
+    for name in CONVTRAN1_TRACERS:
+        if name in tracers:
+            a = tracers[name]
+            cols[name] = (a.data if hasattr(a, "data") else a).reshape(ncol, nlev)
+    return cols or None
 
 
 def _get_convection_fn(config: ConvectionConfig):
@@ -732,7 +746,9 @@ def _make_hydrostatic_convection(
                     # fraction feeds the rain-evaporation (1 - cldfrc); the
                     # carried PBL height (CAM pbuf pblh, written by the
                     # previous step's turbulence) bounds the launch-level
-                    # search (convect_deep.F90:266 -> zm_conv.F90:738-741).
+                    # search (convect_deep.F90:266 -> zm_conv.F90:738-741);
+                    # the carried CAM6 convtran1 tracers are transported
+                    # (zm_conv_intr.F90:829-846).
                     _cf = (phys_state.cloud_fraction
                            if phys_state is not None
                            and getattr(phys_state, "cloud_fraction", None) is not None
@@ -752,6 +768,7 @@ def _make_hydrostatic_convection(
                         pblh=None if _pblh is None else _pblh.reshape(ncol),
                         pref_edge=sigma_coord.pressure_at_half(
                             jnp.asarray(constants.p_ref, dtype=T_col.dtype)),
+                        tracers=_convtran1_columns(state.tracers, ncol, nlev),
                     )
                 conv_prog_out = prog_new_profile
             elif is_w_grid_consumer:
@@ -868,6 +885,17 @@ def _make_hydrostatic_convection(
                     data=_dq_r_conv.reshape(shape_3d), name="dq_r_conv_dt",
                     dims=dims_3d, units="kg/kg/s",
                 )
+            # Convective transport of carried tracers (ZM convtran): signed,
+            # column-conserving, ADDED to any other tendency of that tracer.
+            for _nm, _dtr in (getattr(conv_out, "tracer_transport", None) or {}).items():
+                _dtr = _dtr.reshape(shape_3d)
+                if _nm in tracer_tends:
+                    tracer_tends[_nm] = tracer_tends[_nm].replace(
+                        data=tracer_tends[_nm].data + _dtr)
+                else:
+                    tracer_tends[_nm] = Field(
+                        data=_dtr, name=f"d{_nm}_dt_convtran", dims=dims_3d,
+                        units="1/s")
             # Convective-activity diagnostic for the Slingo-1987-inspired surrogate cumulus
             # cloud fraction on this standalone path: the column-integrated
             # in-updraft RAIN PRODUCTION rate [kg/m^2/s],

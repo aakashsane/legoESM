@@ -2441,7 +2441,9 @@ def test_config_yaml_round_trips_authoritative_values():
     # (deepcu is CAM6's own deep-convective cloud term), so it stays pinned.
     assert cfg.convective_cloud is False
     assert cfg.surface_gustiness_zi == 300.0
-    assert cfg.convective_precip_efficiency == pytest.approx(0.8)
+    # No convective_precip_efficiency row: ZM has no precip-efficiency field,
+    # so the 0.8 the deck carried was read by nothing (oracle audit 2026-10-18).
+    assert cfg.convective_precip_efficiency is None
     # User table 2026-09-24, "production now, matches CAM6", three rows set
     # EXPLICITLY so nothing rests on a code default (the defaults are the
     # opposite of all three): the closure's liquid handed to cloud water; the

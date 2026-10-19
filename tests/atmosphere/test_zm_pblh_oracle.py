@@ -1,4 +1,5 @@
-"""CAM6 Zhang-McFarlane with the host PBL height vs the CAM Fortran oracle.
+"""CAM6 Zhang-McFarlane (host PBL height, mixed-phase rain-evaporation qsat,
+convective transport of the carried MG2 tracers) vs the CAM Fortran oracle.
 
 CAM passes the PBL height ``pblh`` (pbuf, written by the previous step's
 CLUBB call, clubb_intr.F90:2616) to ``zm_convr`` (convect_deep.F90:266), whose
@@ -13,6 +14,13 @@ zm_conv.F90, run by ``sbatch --wait scripts/validate/oracle/zm_pblh/build.sh``
 (legoESM constants and saturation curve, ientropy tightened to 1e-11 K; see
 make_fixture.py).  Column ``nocturnal_elevated`` (pblh 150 m) does not convect
 in CAM; with the old 700 hPa launch bound it did.
+
+``zm_conv_evap`` compares against CAM's ``qsat`` (zm_conv.F90:1484): the
+``svp_trans`` vapour-pressure blend to ice between 0 and -20 degC
+(wv_sat_methods.F90:326-361), run in the oracle by CAM's own svp_trans on the
+legoESM curves.  ``convtran`` transports CLDLIQ, CLDICE, NUMLIQ, NUMICE,
+RAINQM, SNOWQM, NUMRAI (zm_conv_intr.F90:829-846, micro_mg_cam.F90:416-435) =
+legoESM ``q_c, q_i, N_c, N_i, q_r, q_s, N_r``.
 
 Tolerance: max relative error <= 1e-10 in fp64 (user decision 2026-10-19).
 ZM has no smoothing fields, so this hard-limit is also the production setting.
@@ -34,7 +42,10 @@ from legoesm import constants  # noqa: E402
 from legoesm.atmosphere.physics.combined import PhysicsConfig  # noqa: E402
 from legoesm.atmosphere.physics.convection.config import ConvectionConfig, ZhangMcFarlaneConfig  # noqa: E402
 from legoesm.atmosphere.physics.convection.integration import make_convection_physics  # noqa: E402
-from legoesm.atmosphere.physics.convection.zhang_mcfarlane import zhang_mcfarlane_convection  # noqa: E402
+from legoesm.atmosphere.physics.convection.zhang_mcfarlane import (  # noqa: E402
+    CONVTRAN1_TRACERS,
+    zhang_mcfarlane_convection,
+)
 from legoesm.atmosphere.physics.physics_state import init_physics_state, update_physics_state  # noqa: E402
 from legoesm.core.field import Field  # noqa: E402
 from legoesm.core.state import HydrostaticState  # noqa: E402
@@ -42,6 +53,11 @@ from legoesm.grids.vertical import make_cam6_l32_levels  # noqa: E402
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "oracle_fixtures", "zm_pblh_cam.npz")
 TOL = 1e-10
+# fixture key -> legoESM tracer name -> oracle convtran output (make_fixture.TRACERS)
+TRACERS = (("qc", "q_c", "dqc_convtran"), ("qi", "q_i", "dqi_convtran"),
+           ("nc", "N_c", "dnc_convtran"), ("ni", "N_i", "dni_convtran"),
+           ("qr", "q_r", "dqr_convtran"), ("qs", "q_s", "dqs_convtran"),
+           ("nr", "N_r", "dnr_convtran"))
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -93,21 +109,69 @@ def test_fixture_exercises_the_pbl_launch_bound(fx):
     assert "a03b84b7c4e34f965b115686f22a043b85739e56" in str(fx["meta"])
 
 
-def test_wrapper_with_pblh_matches_cam_oracle(fx):
-    out, prog = zhang_mcfarlane_convection(
+def _wrapper(fx, tracers=True):
+    return zhang_mcfarlane_convection(
         jnp.asarray(fx["T"]), jnp.asarray(fx["q"]), jnp.asarray(fx["p_full"]),
         jnp.asarray(fx["p_half"]), jnp.asarray(fx["u"]), jnp.asarray(fx["v"]),
         jnp.zeros_like(jnp.asarray(fx["T"])), float(fx["dt"]), ZhangMcFarlaneConfig(),
         land_frac=jnp.asarray(fx["land"]), cld_frac=jnp.asarray(fx["cld"]),
-        pblh=jnp.asarray(fx["pblh"]), pref_edge=jnp.asarray(fx["pref_edge"]))
+        pblh=jnp.asarray(fx["pblh"]), pref_edge=jnp.asarray(fx["pref_edge"]),
+        tracers=({nm: jnp.asarray(fx[key]) for key, nm, _ in TRACERS} if tracers else None))
+
+
+def test_wrapper_with_pblh_matches_cam_oracle(fx):
+    out, prog = _wrapper(fx)
     o = _oracle_tendencies(fx)
     ours = {"dT_dt": out.dT_dt, "dq_v_dt": out.dq_v_dt, "dq_c": out.dq_c_conv_dt,
             "dq_r": out.dq_r_conv_dt, "du": out.du_dt_conv, "dv": out.dv_dt_conv,
             "mass_flux_up": out.mass_flux_up, "icwmr": out.icwmr,
             "snow": out.precip_frozen_sfc, "cape": out.cape, "mb": prog[:, -1]}
+    ours.update({nm: out.tracer_transport[nm] for _, nm, _ in TRACERS})
+    o.update({nm: fx[f"oracle_{key}"] for _, nm, key in TRACERS})
     np.testing.assert_array_equal(np.asarray(out.convective_mask).astype(bool), fx["oracle_ideep"])
     errs = {k: _rel(ours[k], o[k]) for k in o}
     assert max(errs.values()) <= TOL, errs
+
+
+def test_convtran_covers_the_cam6_convtran1_set_and_conserves_columns(fx):
+    """The bridge transports exactly the MG2 convtran1 constituents legoESM
+    carries; each transport is zero outside deep columns and conserves its
+    column (flux form, convtran's netflux round-off guard aside; checked at
+    the oracle-match tolerance)."""
+    assert CONVTRAN1_TRACERS == tuple(nm for _, nm, _ in TRACERS)
+    out, _ = _wrapper(fx)
+    dp = np.diff(fx["p_half"], axis=1)
+    deep = fx["oracle_ideep"]
+    for key, nm, _ in TRACERS:
+        d = np.asarray(out.tracer_transport[nm])
+        assert np.all(d[~deep] == 0.0), nm
+        col = np.abs(np.sum(d * dp, axis=1)) / np.max(np.abs(d) * dp)
+        assert np.max(col) <= TOL, (nm, np.max(col))
+        assert np.max(np.abs(d[deep])) > 0.0, nm
+    no_tr, _ = _wrapper(fx, tracers=False)
+    assert no_tr.tracer_transport is None
+
+
+def test_evaporation_saturation_is_the_cam_trans_curve():
+    """thermo.saturation_specific_humidity_trans = CAM svp_trans: water curve at
+    and above T_freeze, ice curve at or below T_freeze - 20 K, the vapour-
+    pressure blend (T_freeze - T)/20 in between."""
+    from legoesm.thermo import (saturation_specific_humidity, saturation_specific_humidity_ice,
+                                saturation_vapor_pressure, saturation_vapor_pressure_ice,
+                                saturation_vapor_pressure_trans,
+                                saturation_specific_humidity_trans)
+    t0, p = constants.T_freeze, jnp.asarray(6.0e4)
+    warm = jnp.asarray([t0, t0 + 5.0, 300.0])
+    cold = jnp.asarray([t0 - 20.0, t0 - 35.0, 200.0])
+    np.testing.assert_array_equal(saturation_specific_humidity_trans(warm, p),
+                                  saturation_specific_humidity(warm, p))
+    np.testing.assert_array_equal(saturation_specific_humidity_trans(cold, p),
+                                  saturation_specific_humidity_ice(cold, p))
+    t = jnp.asarray(t0 - 7.0)
+    w = 7.0 / 20.0
+    np.testing.assert_allclose(saturation_vapor_pressure_trans(t),
+                               w * saturation_vapor_pressure_ice(t)
+                               + (1.0 - w) * saturation_vapor_pressure(t), rtol=TOL)
 
 
 def _bridge(fx, pblh):
@@ -116,10 +180,12 @@ def _bridge(fx, pblh):
     coord = make_cam6_l32_levels()
     np.testing.assert_allclose(np.asarray(coord.pressure_at_full(jnp.asarray(fx["p_s"]))),
                                fx["p_full"], rtol=0, atol=0)
+    tracers = {"q_v": Field(jnp.asarray(fx["q"]))}
+    tracers.update({nm: Field(jnp.asarray(fx[key])) for key, nm, _ in TRACERS})
     state = HydrostaticState(
         u=Field(jnp.asarray(fx["u"])), v=Field(jnp.asarray(fx["v"])),
         T=Field(jnp.asarray(fx["T"])), p_s=Field(jnp.asarray(fx["p_s"])),
-        phis=Field(jnp.zeros((ncol,))), tracers={"q_v": Field(jnp.asarray(fx["q"]))})
+        phis=Field(jnp.zeros((ncol,))), tracers=tracers)
     zm = ZhangMcFarlaneConfig()
     ps = update_physics_state(init_physics_state(ncol, nlev, PhysicsConfig()),
                               {"cloud_fraction": jnp.asarray(fx["cld"]), "pblh": pblh})
@@ -141,6 +207,12 @@ def test_mpas_bridge_passes_the_carried_pblh_and_matches_cam(fx):
             "precip": tend.precip.data}
     o_cmp = {k: o[k] for k in ours if k != "precip"}
     o_cmp["precip"] = np.maximum(np.sum(o["dq_r"] * dp, axis=1), 0.0) / constants.g
+    # every carried convtran1 tracer: its transport, plus the detrained
+    # condensate dlf for q_c (CAM books dlf as cloud water in clubb_intr)
+    o_cmp["dq_c"] = o["dq_c"] + fx["oracle_dqc_convtran"]
+    for _, nm, key in TRACERS[1:]:
+        ours[nm] = tend.tracer_tendencies[nm].data
+        o_cmp[nm] = fx[f"oracle_{key}"]
     errs = {k: _rel(ours[k], o_cmp[k]) for k in ours}
     assert max(errs.values()) <= TOL, errs
 
@@ -151,6 +223,17 @@ def test_zm_gradient_is_finite_with_carried_pblh(fx):
         return jnp.sum(tend.dT_dt.data ** 2)
     grad = jax.grad(loss)(jnp.asarray(fx["T"]))
     assert np.all(np.isfinite(np.asarray(grad))) and float(jnp.max(jnp.abs(grad))) > 0.0
+
+    def loss_tr(T, qi):
+        tend, _ = _bridge(dict(fx, T=T, qi=qi), jnp.asarray(fx["pblh"]))
+        return jnp.sum(tend.tracer_tendencies["q_i"].data ** 2) + jnp.sum(
+            tend.tracer_tendencies["q_v"].data ** 2)
+    g_t, g_qi = jax.grad(loss_tr, argnums=(0, 1))(jnp.asarray(fx["T"]), jnp.asarray(fx["qi"]))
+    for g in (g_t, g_qi):
+        assert np.all(np.isfinite(np.asarray(g))) and float(jnp.max(jnp.abs(g))) > 0.0
+    # an ice-free column (q_i exactly 0, as above the freezing level in a run)
+    g0 = jax.grad(loss_tr, argnums=1)(jnp.asarray(fx["T"]), jnp.zeros_like(jnp.asarray(fx["qi"])))
+    assert np.all(np.isfinite(np.asarray(g0)))
 
 
 def test_physics_state_seeds_pblh_at_zero_and_carries_updates():
@@ -200,7 +283,8 @@ def test_fixture_inputs_are_what_the_generator_builds(fx, tmp_path):
     mf = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mf)
     c = mf.build_columns()
-    for k in ("T", "q", "p_s", "p_full", "p_half", "u", "v", "cld", "land", "pblh", "pref_edge"):
+    for k in ("T", "q", "p_s", "p_full", "p_half", "u", "v", "cld", "land", "pblh", "pref_edge",
+              "qc", "qi", "nc", "ni", "qr", "qs", "nr"):
         np.testing.assert_array_equal(c[k], fx[k], err_msg=k)
     p = tmp_path / "o.txt"
     p.write_text("DIMS 2 3 1\nLIMCNV 6\nF1 cape 2\n1.5\n0.0\nI1 ideep 2\n2\n0\n"

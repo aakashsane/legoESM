@@ -27,6 +27,11 @@ Departures from the oracle (all documented, measured where numeric):
   ``legoesm.thermo.saturation_specific_humidity`` (same expression over the
   shared Tetens curve, smooth cap) per CLAUDE.md.  The curve difference is
   measured in ``tests/atmosphere/hydrostatic/unit/test_zm_cam6_oracle.py``.
+  ``zm_conv_evap`` uses CAM's mixed-phase ``qsat`` form: the ``svp_trans``
+  vapour-pressure blend to ice between 0 and -20 degC
+  (``legoesm.thermo.saturation_specific_humidity_trans``, over the shared
+  Tetens / Clausius-Clapeyron curves; CAM's 1-K table interpolation is not
+  reproduced).
 * Constants come from ``legoesm.constants`` (CAM's liquid/vapour heat
   capacities, dry gas constant, epsilon and vapour gas constant differ in
   the third or fourth significant figure).
@@ -59,7 +64,11 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
-from legoesm.thermo import saturation_specific_humidity, saturation_vapor_pressure
+from legoesm.thermo import (
+    saturation_specific_humidity,
+    saturation_specific_humidity_trans,
+    saturation_vapor_pressure,
+)
 from legoesm.atmosphere.physics.convection._zm_dilute import (
     invert_entropy,
     moist_entropy,
@@ -1048,7 +1057,9 @@ def zm_conv_evap(t, pmid, pdel, q, prdprec, cldfrc, deltat, prec, *, ke):
     ncol, nlev = t.shape
     dtype = t.dtype
     g, latvap, latice, tmelt = constants.g, constants.L_v, constants.L_f, constants.T_freeze
-    qs = saturation_specific_humidity(t, pmid)
+    # CAM ``call qsat(t, pmid, es, qs)`` (zm_conv.F90:1484): the svp_trans
+    # liquid->ice blended curve, not the water-only qsat_water of the plume.
+    qs = saturation_specific_humidity_trans(t, pmid)
     _, fsnow_conv = cldfrc_fice(t)
 
     def body(carry, xk):

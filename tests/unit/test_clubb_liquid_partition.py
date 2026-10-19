@@ -223,18 +223,23 @@ def test_moist_static_energy_round_trip_is_exact_without_cloud():
 
 
 def test_latent_heat_accompanies_the_condensate():
-    """Condensing liquid must warm the column by ``L_v/c_pd`` times its mass.
+    """Condensing liquid warms the column by ``L_v/c_pd`` times its mass.
 
     The temperature and water halves of the partition are a single
-    transformation; this pins the coefficient, so a sign flip or a stray
-    ``exner`` on the latent term fails here rather than as a slow climate drift.
+    transformation.  CAM's host map (clubb_intr.F90:2048-2051) puts the
+    latent heat through the Exner function, ``T = exner*(thlm + L_v/c_pd
+    rcm)``, so locally the warming is ``exner*L_v/c_pd*rcm``; the column
+    energy fixer returns the ``(1 - exner)`` share uniformly per unit mass
+    (CAM 2138-2150), so the column total is exactly ``L_v*rcm``.  This pins
+    both, so a sign flip, a missing or doubled ``exner`` fails here rather than
+    as a slow climate drift.
     """
     col = _column(q_c_amp=0.0)
     dt = 300.0
     out_off, packed_off = _run(_OFF, col, dt=dt)
     out_on, packed_on = _run(_ON, col, dt=dt)
     from legoesm.atmosphere.physics.turbulence.clubb import (
-        flip_vertical, unpack_clubb_moments,
+        exner_function, flip_vertical, unpack_clubb_moments,
     )
     # Same seeding (q_c == 0), so the advanced moments are identical and the ONLY
     # difference between the two outputs is the outbound split.
@@ -247,8 +252,15 @@ def test_latent_heat_accompanies_the_condensate():
     dT = np.asarray(out_on.dT_dt - out_off.dT_dt) * dt
     dq = np.asarray(out_on.dq_v_dt - out_off.dq_v_dt) * dt
     np.testing.assert_allclose(dq, -rcm, rtol=1e-12, atol=1e-18)
-    np.testing.assert_allclose(
-        dT, (constants.L_v / constants.c_pd) * rcm, rtol=1e-12, atol=1e-12)
+    exner = np.asarray(exner_function(col["p_full"]))
+    # Fixer share: the same heating at every level (equal-dp column here).
+    fix = dT - exner * (constants.L_v / constants.c_pd) * rcm
+    np.testing.assert_allclose(fix, fix[:, :1] * np.ones_like(fix),
+                               rtol=1e-12, atol=1e-12)
+    dp = np.diff(np.asarray(col["p_half"]), axis=1)
+    np.testing.assert_allclose(np.sum(dp * constants.c_pd * dT, axis=1),
+                               np.sum(dp * constants.L_v * rcm, axis=1),
+                               rtol=1e-12)
 
 
 def test_sub_cycle_carries_the_liquid_between_steps():

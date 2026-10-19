@@ -302,7 +302,8 @@ hines_launch_p: 70000.0                 # inert (hines not selected); kept equal
 
 # ---- surface ------------------------------------------------------------------
 surface_bulk_scheme: large_yeager_cesm  # CAM6/CESM shr_flux_atmOcn (LY04)
-surface_gustiness_zi: 300.0
+# (surface_gustiness_zi: 300 removed, user 2026-10-19: inert on this scheme --
+# CESM2.1 runs gust_fac = 0, and the large_yeager_cesm law never reads it.)
 surface_tiled: false
 surface_z0_land: 0.1
 mpas_land_lapse_K_per_km: 6.5
@@ -356,6 +357,10 @@ mpas_land_beta_soil: true
 # the ocean bulk law (user 2026-10-03: "a major default"; Dec 2001 45-70N land:
 # the boundary layer received 0.04 Pa vs land model 0.23 vs ERA5 0.26).
 mpas_land_stress_from_land: true
+# Coastal cells: the non-land fraction's bulk fluxes on the ocean/ice surface,
+# not on the land-blended T_sfc/q_sfc (#1320; CESM computes atm-ocn fluxes on
+# ocean points only).  User 2026-10-19.
+ocean_flux_on_ocean_surface: true
 mpas_land_params_refresh: true  # seasonal LAI / canopy height / wet-soil
                                 # albedo rebuilt every land step, as the
                                 # offline calibration runs the tables (user

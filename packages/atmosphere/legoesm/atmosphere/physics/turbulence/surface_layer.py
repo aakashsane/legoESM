@@ -115,10 +115,11 @@ def surface_fluxes_at_lowest_level(u, v, T, q_v, T_sfc, q_sfc, rho, config,
     if (not getattr(config, "z_ref_model_level", False)
             or z_low is None
             or config.bulk_scheme not in _STABILITY_SCHEMES):
-        return compute_surface_fluxes(u, v, T, q_v, T_sfc, q_sfc, rho, config)
+        return compute_surface_fluxes(u, v, T, q_v, T_sfc, q_sfc, rho, config,
+                                      t_bot=T)
     T_ref, z_ref = surface_reference_state(T, config.z_ref, z_low)
     return compute_surface_fluxes(
-        u, v, T_ref, q_v, T_sfc, q_sfc, rho, config, z_ref=z_ref)
+        u, v, T_ref, q_v, T_sfc, q_sfc, rho, config, z_ref=z_ref, t_bot=T)
 
 
 def compute_surface_fluxes(
@@ -131,6 +132,7 @@ def compute_surface_fluxes(
     rho: jax.Array,
     config: SurfaceLayerConfig,
     z_ref=None,
+    t_bot=None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """Compute bulk aerodynamic surface fluxes.
 
@@ -159,6 +161,11 @@ def compute_surface_fluxes(
     z_ref : array or None
         Per-column reference height [m] overriding ``config.z_ref`` (MOST
         schemes only; the constant-coefficient path ignores it).
+    t_bot : array or None
+        Lowest-level ABSOLUTE air temperature [K] (``T`` before any
+        reference-height adjustment).  Required by ``large_yeager_cesm``
+        (CESM's cold-air-outbreak wind enhancement reads it); unused by the
+        other schemes.
 
     Returns
     -------
@@ -188,7 +195,7 @@ def compute_surface_fluxes(
         tau_x, tau_y, shflx, lhflx, ustar = compute_sam_oceflx_fluxes(
             u, v, T, q_v, T_sfc, q_sfc, rho,
             z_bot=(config.z_ref if z_ref is None else z_ref),
-            variant="cesm",
+            variant="cesm", t_bot=t_bot,
         )
         return _apply_prescribed_scalar_fluxes(
             config, tau_x, tau_y, shflx, lhflx, ustar, rho)
@@ -586,6 +593,7 @@ def _single_tile_flux(
     rho: jax.Array,
     config: SurfaceLayerConfig,
     z_ref=None,
+    t_bot=None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array, jax.Array]:
     """Single-tile surface flux with correct fixed-roughness MOST routing.
 
@@ -602,7 +610,7 @@ def _single_tile_flux(
         return compute_sam_oceflx_fluxes(
             u, v, T, q_v, T_sfc, q_sfc, rho,
             z_bot=(config.z_ref if z_ref is None else z_ref),
-            variant="cesm",
+            variant="cesm", t_bot=t_bot,
         )
     if config.bulk_scheme in ("most", "coare3", "large_yeager"):
         return compute_most_fluxes(
@@ -698,10 +706,10 @@ def compute_tiled_surface_fluxes(
                 or not getattr(cfg, "z_ref_model_level", False)
                 or cfg.bulk_scheme not in _STABILITY_SCHEMES):
             return _single_tile_flux(u, v, T, q_v, T_sfc_tile, q_sfc_tile,
-                                     rho, cfg)
+                                     rho, cfg, t_bot=T)
         return _single_tile_flux(
             u, v, T + (constants.g / constants.c_pd) * z_low, q_v,
-            T_sfc_tile, q_sfc_tile, rho, cfg, z_ref=z_low)
+            T_sfc_tile, q_sfc_tile, rho, cfg, z_ref=z_low, t_bot=T)
 
     f_ocean = _tile(tiles.T_ocean, tiles.q_sfc_ocean, config_ocean)
     f_ice = _tile(tiles.T_ice, tiles.q_sfc_ice, config_ice)

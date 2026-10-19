@@ -982,8 +982,11 @@ def read_companion_manifest(ref_path, manifest: dict, spec, name: str,
     the output root the record's location implies (a copy of the whole run);
     in each, the live record and then its archived predecessors.
     A candidate counts only when it was written by the same code (commit) and
-    its resolved configuration is the record's ``resolved_config[key]``.
-    ``ValueError`` when no candidate does."""
+    its resolved configuration is the record's ``resolved_config[key]``, and
+    it belongs to the record's runner: tagged with it, or untagged with a
+    record of that runner beside it (written before the tag existed).  Among
+    those, the one carrying the digest the record paired wins.
+    ``ValueError`` when no candidate counts."""
     def recorded(tree, dotted):
         for part in dotted.split("."):
             tree = tree.get(part) if isinstance(tree, dict) else None

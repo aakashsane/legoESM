@@ -690,3 +690,16 @@ def test_pre_tag_coupled_atmosphere_record_continues_too(tmp_path):
                                config_kind="coupled", runner_tag="run_coupled")
     _atm_driver(tmp_path, cfg._replace(days=cfg.days + 1))._write_run_manifest()
     assert len(list(tmp_path.glob("run_manifest.prev-*.json"))) == 1
+
+
+def test_standalone_run_does_not_adopt_a_pre_tag_coupled_record(tmp_path):
+    """An untagged atmosphere record beside a coupled record is the coupled
+    run's: a standalone run at equal config may not adopt it."""
+    import pytest
+    from legoesm.driver.config import ExperimentConfig
+    cfg = ExperimentConfig()
+    _atm_driver(tmp_path, cfg, tag=None)._write_run_manifest()
+    restart.write_run_manifest(tmp_path / "coupled", {"runner": "run_coupled"},
+                               config_kind="coupled", runner_tag="run_coupled")
+    with pytest.raises(RuntimeError, match="'run_coupled' runner"):
+        _atm_driver(tmp_path, cfg, tag=None)._write_run_manifest()

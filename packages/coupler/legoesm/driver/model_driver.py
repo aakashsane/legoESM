@@ -5809,9 +5809,11 @@ class ModelDriver:
         old_tag = (existing.get("reproducibility") or {}).get("runner_tag") or ""
         # An untagged record beside a coupled record is a coupled run's
         # atmosphere written before the tag existed: still this run.
-        pre_tag_coupled = (tag == "run_coupled" and not old_tag and (
-            self._output_dir / "coupled" / manifest_file.name).exists())
-        same_runner = tag == old_tag or pre_tag_coupled
+        # It belongs to run_coupled, so it is not a standalone run's either.
+        coupled_beside = not old_tag and (
+            self._output_dir / "coupled" / manifest_file.name).exists()
+        owner = "run_coupled" if coupled_beside else old_tag
+        same_runner = tag == owner
         if not config_hash_matches(
                 existing["config"]["config_hash"],
                 existing["config"].get("resolved_config") or {},
@@ -5829,7 +5831,7 @@ class ModelDriver:
             # One output directory holds one run: a record another runner (or
             # a standalone run) wrote is not this run's, even at equal config.
             raise RuntimeError(
-                f"{manifest_file} was written by the {old_tag or 'standalone'!r} "
+                f"{manifest_file} was written by the {owner or 'standalone'!r} "
                 f"runner, this run is {tag or 'standalone'!r}; one output "
                 f"directory holds one run. Use a fresh output directory.")
         logger.info(

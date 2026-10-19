@@ -100,6 +100,8 @@ Focused seam/reader/writer controls: `21 passed`.  The high-resolution split:
 ladders, Smagorinsky, phase-3 stage operators, full-state driver, climate,
 movie, divergence, budget, passivity, active-word, manifest, and dispatch
 controls.  Both arithmetic-flavour preflights end in `PREFLIGHT_OK`.
+The receipt citation gate passes all four compiled-source citations with zero
+unmapped, failing, or stale map entries; its shifted-line plant refuses.
 
 Review status is **UNREVIEWED**.  The required read-only Claude reviewer was
 invoked but returned no verdict before its stalled session was terminated.

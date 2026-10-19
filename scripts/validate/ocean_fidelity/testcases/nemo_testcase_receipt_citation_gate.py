@@ -1662,7 +1662,7 @@ CITATION_MAP = {
     'GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynvor.f90:235': (
         'CALL vor_ene( kt, Kmm, ntot, puu(:,:,:,Kmm)', 1),
     'GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynvor.f90:536-573': [
-        'CASE ( np_CRV )',
+        ('CASE ( np_CRV )', 2),
         'pv_rhs(ji,jj,jk) = pv_rhs(ji,jj,jk) - r1_4 * r1_e2v', 38],
     # --- GYRE high-resolution round 14: RK3 HPG starts (not adds) RHS ---
     'dynhpg.F90:276-295': [

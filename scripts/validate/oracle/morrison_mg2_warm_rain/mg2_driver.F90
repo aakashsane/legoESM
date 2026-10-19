@@ -6,7 +6,9 @@
 ! (micro_mg_cam.F90:668-672), do_sb_physics=.false., berg_eff=1, dcs=500e-6
 ! (mg2, :1244), do_cldice=.true., use_hetfrz_classnuc=.true. (frzimm/cnt/dep=0),
 ! microp_uniform from argv(3).  Constants = legoESM's (constants.py).
-! usage: mg2_driver in.txt out.txt [microp_uniform T|F]
+! usage: mg2_driver in.txt out.txt [microp_uniform T|F] [P]
+! A 4th argument P = prognostic droplet number: nccons_in=.false. (ncic = max(nc/lcldm, 0)) and a 19th input
+! column per level, npccn [1/kg/s]; without it the input has 18 columns and nccons_in=.true. as before.
 program mg2_driver
   use micro_mg_utils, only: r8
   use micro_mg2_0, only: micro_mg_init, micro_mg_tend
@@ -17,8 +19,9 @@ program mg2_driver
   real(r8), parameter :: latvap = 2.501e6_r8, latice = 3.337e5_r8
   integer :: ncol, nlev, ic, k, m
   real(r8) :: dt, ncnst
-  character(len=512) :: fin, fout, aflag
-  logical :: uni
+  character(len=512) :: fin, fout, aflag, pflag
+  logical :: uni, prog
+  integer :: ninp
   character(128) :: err
   character(len=16) :: pfm = 'in_cloud'
   real(r8), allocatable :: inp(:,:)
@@ -40,16 +43,20 @@ program mg2_driver
   call get_command_argument(2, fout)
   call get_command_argument(3, aflag)
   uni = (trim(aflag) == 'T')
+  call get_command_argument(4, pflag)
+  prog = (trim(pflag) == 'P')
+  ninp = 18
+  if (prog) ninp = 19
   call wv_sat_methods_init(r8, tmelt, 273.16_r8, 373.16_r8, 20._r8, rair/rh2o, err)
   open(10, file=trim(fin), status='old')
   read(10, *) ncol, nlev, dt
-  allocate(inp(nlev, 18), allout(ncol, nlev, 15), allprect(ncol))
+  allocate(inp(nlev, ninp), allout(ncol, nlev, 15), allprect(ncol))
   call alloc2(nlev)
   allocate(rndst(1,nlev,4), nacon(1,nlev,4)); rndst = 1.e-6_r8; nacon = 0._r8
   do ic = 1, ncol
      read(10, *) ncnst
      do k = 1, nlev
-        read(10, *) (inp(k, m), m = 1, 18)
+        read(10, *) (inp(k, m), m = 1, ninp)
      end do
      t(1,:)=inp(:,1); q(1,:)=inp(:,2); qc(1,:)=inp(:,3); qi(1,:)=inp(:,4)
      nc(1,:)=inp(:,5); ni(1,:)=inp(:,6); qr(1,:)=inp(:,7); qs(1,:)=inp(:,8)
@@ -57,6 +64,7 @@ program mg2_driver
      p(1,:)=inp(:,13); pdel(1,:)=inp(:,14); cldn(1,:)=inp(:,15); liqcldf(1,:)=inp(:,16)
      icecldf(1,:)=inp(:,17); qsatfac(1,:)=inp(:,18)
      naai = 0._r8; npccn = 0._r8
+     if (prog) npccn(1,:) = inp(:,19)
      tnd_qsnow = 0._r8; tnd_nsnow = 0._r8; re_ice = 0._r8
      frzimm = 0._r8; frzcnt = 0._r8; frzdep = 0._r8
      call micro_mg_init(kind=r8, gravit=g, rair=rair, rh2o=rh2o, cpair=cpair, &
@@ -64,7 +72,7 @@ program mg2_driver
           micro_mg_dcs=500.e-6_r8, microp_uniform_in=uni, do_cldice_in=.true., &
           use_hetfrz_classnuc_in=.true., micro_mg_precip_frac_method_in=pfm, &
           micro_mg_berg_eff_factor_in=1._r8, allow_sed_supersat_in=.false., &
-          do_sb_physics_in=.false., nccons_in=.true., nicons_in=.false., &
+          do_sb_physics_in=.false., nccons_in=.not. prog, nicons_in=.false., &
           ncnst_in=ncnst, ninst_in=0._r8, errstring=err)
      if (len_trim(err) > 0) then
         print *, 'INIT ERROR: ', trim(err); stop 2

@@ -294,7 +294,8 @@ def morrison_microphysics(
     relvar
         Per-cell CAM6 relative cloud-water variance ``(ncol, nlev)`` from CLUBB
         (``clubb_intr.F90:2425``), read only by ``warm_rain_scheme="kk2000_cam6"``;
-        ``None`` uses the constant ``config.kk2000_cam6_relvar``.
+        ``None`` uses the constant ``config.kk2000_cam6_relvar``.  Required under
+        ``config.prognostic_droplet_number``.
 
     Returns
     -------
@@ -304,6 +305,21 @@ def morrison_microphysics(
     # on the config string — no traced control flow).
     config = resolve_morrison_flavor(config)
     ncol, nlev = T.shape
+    _prog_nc = bool(getattr(config, "prognostic_droplet_number", False))
+    if _prog_nc:
+        # Start-up guards (static config; user decisions 2026-10-19 2a, Q-I/10a,
+        # Q-B 3a, 18a): CAM6 MG2 droplet number lives only on the MG2 warm-rain
+        # path and replaces both other droplet-number modes.
+        _bad = [msg for ok, msg in (
+            (config.warm_rain_incloud, "warm_rain_incloud=True"),
+            (config.warm_rain_scheme == "kk2000_cam6", 'warm_rain_scheme="kk2000_cam6"'),
+            (not getattr(config, "predict_Nc", False), "predict_Nc=False"),
+            (not getattr(config, "nc_from_aerosol", False), "nc_from_aerosol=False"),
+            (relvar is not None, "CLUBB's relvar passed as relvar="),
+        ) if not ok]
+        if _bad:
+            raise ValueError("MorrisonConfig.prognostic_droplet_number=True needs "
+                             + ", ".join(_bad) + ".")
     q_c = hydrometeors.q_c
     q_r = hydrometeors.q_r
     q_i = hydrometeors.q_i
@@ -361,11 +377,16 @@ def morrison_microphysics(
         qsat_water_fn = _saturation_specific_humidity
         qsat_ice_fn = _saturation_specific_humidity_ice
 
-    N_c_eff = effective_Nc(
-        N_c, config.Nc_0,
-        predict_Nc=getattr(config, "predict_Nc", False),
-        nc_specified_field=getattr(config, "nc_from_aerosol", False),
-    )
+    if _prog_nc:
+        # MG2 ncic = max(nc/lcldm, 0) (micro_mg2_0.F90:1224-1236): the raw
+        # prognostic number, no Nc_0 fallback.
+        N_c_eff = jnp.maximum(N_c, 0.0)
+    else:
+        N_c_eff = effective_Nc(
+            N_c, config.Nc_0,
+            predict_Nc=getattr(config, "predict_Nc", False),
+            nc_specified_field=getattr(config, "nc_from_aerosol", False),
+        )
 
     # === WARM RAIN (shared Seifert-Beheng helpers) ===
     # Pass ``q_c`` so the evaporation branch (negative ``condensation``)
@@ -421,7 +442,7 @@ def morrison_microphysics(
         precip_frac = mg2_precip_frac(cloud_fraction, q_c, q_i)
         q_c_ic, q_r_ic, N_c_ic, cf_eff = mg2_incloud_warm_rain_inputs(
             q_c, q_r, N_c_eff, cloud_fraction,
-            rescale_nc=getattr(config, "predict_Nc", False),
+            rescale_nc=getattr(config, "predict_Nc", False) or _prog_nc,
             precip_frac=precip_frac)
     elif getattr(config, "subgrid_autoconversion", False):
         RH = q_v / jnp.maximum(q_sat, 1.0e-10)
@@ -467,9 +488,10 @@ def morrison_microphysics(
         # (micro_mg2_0.F90:1226) times MG2's sub-grid variance factor
         # accre_enhan*var_coef(relvar, 1.15) (accrete_cloud_water_rain,
         # micro_mg_utils.F90:1316-1328).
+        # Under prognostic_droplet_number: no 1 m^-3 number floor (exact CAM6, Q-I).
         dq_c_au, dN_r_au, x_c = autoconversion_kk2000_cam6(
             q_c_ic, N_c_ic, rho, _relvar,
-            fact=config.autocon_fact)
+            fact=config.autocon_fact, nc_floor=not _prog_nc)
         dq_c_au = dq_c_au * cf_eff
         dN_r_au = dN_r_au * cf_eff
         dq_c_ac = accretion_kk2000(

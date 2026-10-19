@@ -14,6 +14,12 @@ Two parts, written to one ``.npz``:
   * ``pt_*``: a point grid through the warm-rain kernels
     (``mg2_procs_driver.F90``).
 
+``--prognostic-nc`` instead writes the prognostic-droplet-number fixture
+(``mg2_prognostic_nc.npz``): the same columns run with ``nccons_in=.false.``
+(per-level grid-mean nc incl. a cloudy cell with nc = 0, per-level relvar
+spanning [0.001, 10], npccn = 0) plus a point set at low density, where MG2's
+size reset leaves ncic*rho below 1 m^-3.
+
 Usage (CPU node; needs gfortran and the CAM checkout)::
 
     python scripts/validate/oracle/morrison_mg2_warm_rain/make_fixture.py \\
@@ -187,6 +193,56 @@ def build_points():
     return np.array(pts)
 
 
+PROG_RELVARS = (0.001, 0.3, 1.0, 2.5, 10.0)
+
+
+def build_prognostic_columns(cols):
+    """Per-level grid-mean nc [1/kg] and relvar for the --prognostic-nc fixture.
+
+    nc = N_c/rho * lcldm where there is cloud water (the specified columns'
+    in-cloud number made grid-mean), scaled by 0.5..2 along the column; the
+    edge column's fully cloudy level (q_c = 4e-4, cf = 1) gets nc = 0.
+    relvar cycles through PROG_RELVARS by level."""
+    out = []
+    for c in cols:
+        nlev = len(c["T"])
+        lcl = np.maximum(c["cf"], 1e-4)
+        scale = np.linspace(0.5, 2.0, nlev)
+        nc = np.where(c["q_c"] > 0, c["N_c"] / c["rho"] * lcl * scale, 0.0)
+        if c["name"] == "edge":
+            nc[nlev - 7] = 0.0
+        relvar = np.array([PROG_RELVARS[k % len(PROG_RELVARS)] for k in range(nlev)])
+        out.append(dict(c, nc_kg=nc, relvar=relvar))
+    return out
+
+
+def build_prognostic_points():
+    """Kernel points at rho 1.0 and 0.005 kg/m^3, ncic 0 .. 3e7 /kg (PT_IN columns)."""
+    T, p = 285.0, 85000.0
+    pts = []
+    for rho in (1.0, 0.005):
+        for qcic in (1e-8, 2e-8, 1e-6, 1e-4):
+            for ncic in (0.0, 1.0e-3, 1.0, 3.0e7):
+                for relvar in (0.001, 1.0, 10.0):
+                    pts.append((qcic, ncic, rho, relvar, 0.0, 0.0, T, p, 0.7, 1.0, 1.0, 0.0))
+    return np.array(pts)
+
+
+def write_prognostic_column_inputs(cols, path):
+    nlev = len(cols[0]["T"])
+    with open(path, "w") as f:
+        f.write(f"{len(cols)} {nlev} {DT!r}\n")
+        for c in cols:
+            f.write(f"{0.0:.17e}\n")       # ncnst: unused with nccons_in=.false.
+            pdel = np.diff(c["p_half"])
+            for k in range(nlev):
+                row = [c["T"][k], c["q_v"][k], c["q_c"][k], 0.0, c["nc_kg"][k], 0.0,
+                       c["q_r"][k], 0.0, c["N_r"][k] / c["rho"][k], 0.0,
+                       c["relvar"][k], 1.0, c["p_full"][k], pdel[k],
+                       c["cf"][k], c["cf"][k], c["cf"][k], 1.0, 0.0]
+                f.write(" ".join(f"{x:.17e}" for x in row) + "\n")
+
+
 def write_column_inputs(cols, path, relvar):
     """``relvar``: a scalar, or a per-level ``(nlev,)`` profile."""
     nlev = len(cols[0]["T"])
@@ -219,8 +275,50 @@ def load_column_outputs(path, ncol, nlev):
 
 
 def _git(path, *args):
-    return subprocess.run(["git", "-C", str(path), *args], capture_output=True,
-                          text=True, check=True).stdout.strip()
+    return subprocess.run(["git", "-c", "safe.directory=*", "-C", str(path), *args],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
+def _meta(a):
+    return dict(
+        oracle="ESCOMP/CAM", tag="cam_cesm2_1_rel_60", sha=_git(a.cam, "rev-parse", "HEAD"),
+        files=["src/physics/cam/micro_mg2_0.F90", "src/physics/cam/micro_mg_utils.F90",
+               "src/physics/cam/wv_sat_methods.F90"],
+        gfortran=subprocess.run(["gfortran", "--version"], capture_output=True,
+                                text=True).stdout.split("\n")[0],
+        legoesm_sha=_git(HERE, "rev-parse", "HEAD"),
+        generator=("python scripts/validate/oracle/morrison_mg2_warm_rain/"
+                   f"make_fixture.py --cam <CAM> --build <dir> --out {a.out.name}"
+                   + (" --prognostic-nc" if a.prognostic_nc else "")))
+
+
+def main_prognostic(a):
+    cols = build_prognostic_columns(build_columns())
+    ncol, nlev = len(cols), len(cols[0]["T"])
+    fx = {f"col_{k}": np.stack([c[k] for c in cols]) for k in COL_FIELDS + ("nc_kg", "relvar")}
+    fx["col_names"] = np.array([c["name"] for c in cols])
+    fx["dt"] = np.array(DT)
+    fin, fout = a.build / "prog_col_in.txt", a.build / "prog_col_out.txt"
+    write_prognostic_column_inputs(cols, fin)
+    subprocess.run([str(a.build / "mg2_driver"), str(fin), str(fout), "F", "P"], check=True)
+    o = load_column_outputs(fout, ncol, nlev)
+    for k in ORACLE_COLS:
+        fx[f"ora_{k}"] = o[k]
+    fx["ora_rain_sfc_flux"] = o["rflx_bot"][:, -1]
+    pts = build_prognostic_points()
+    pin, pout = a.build / "prog_pt_in.txt", a.build / "prog_pt_out.txt"
+    np.savetxt(pin, pts, fmt="%.17e", header=str(len(pts)), comments="")
+    subprocess.run([str(a.build / "mg2_procs"), str(pin), str(pout)], check=True)
+    po = np.loadtxt(pout)
+    for i, k in enumerate(PT_IN):
+        fx[f"pt_in_{k}"] = pts[:, i]
+    for i, k in enumerate(PT_OUT):
+        fx[f"pt_out_{k}"] = po[:, i]
+    meta = _meta(a)
+    fx["meta"] = np.array(json.dumps(meta))
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(a.out, **fx)
+    print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
 
 
 def main(argv=None):
@@ -228,9 +326,12 @@ def main(argv=None):
     ap.add_argument("--cam", required=True, type=Path)
     ap.add_argument("--build", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--prognostic-nc", action="store_true")
     a = ap.parse_args(argv)
     subprocess.run(["bash", str(HERE / "build.sh"), str(a.cam), str(a.build)],
                    check=True)
+    if a.prognostic_nc:
+        return main_prognostic(a)
     cols = build_columns()
     ncol, nlev = len(cols), len(cols[0]["T"])
     fx = {f"col_{k}": np.stack([c[k] for c in cols]) for k in COL_FIELDS}
@@ -258,15 +359,7 @@ def main(argv=None):
         fx[f"pt_in_{k}"] = pts[:, i]
     for i, k in enumerate(PT_OUT):
         fx[f"pt_out_{k}"] = po[:, i]
-    meta = dict(
-        oracle="ESCOMP/CAM", tag="cam_cesm2_1_rel_60", sha=_git(a.cam, "rev-parse", "HEAD"),
-        files=["src/physics/cam/micro_mg2_0.F90", "src/physics/cam/micro_mg_utils.F90",
-               "src/physics/cam/wv_sat_methods.F90"],
-        gfortran=subprocess.run(["gfortran", "--version"], capture_output=True,
-                                text=True).stdout.split("\n")[0],
-        legoesm_sha=_git(HERE, "rev-parse", "HEAD"),
-        generator=("python scripts/validate/oracle/morrison_mg2_warm_rain/"
-                   f"make_fixture.py --cam <CAM> --build <dir> --out {a.out.name}"))
+    meta = _meta(a)
     fx["meta"] = np.array(json.dumps(meta))
     a.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(a.out, **fx)

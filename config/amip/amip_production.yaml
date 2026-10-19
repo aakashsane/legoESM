@@ -144,6 +144,13 @@ cloud_cam6_rhmaxi: 1.0      # cldfrc2m_rhmini/rhmaxi/rhminis/rhmaxis under
 cloud_cam6_rhminis: 1.0     # clubb_sgs (namelist_defaults_cam.xml:1521-1533);
 cloud_cam6_rhmaxis: 1.0     # = the code defaults, now recorded (user 2026-09-30)
 microphysics: morrison      # mg flavour (MG2 port = run 2)
+morrison_flavor: mg         # NAMED, equals the code default.  Resolves the
+                            # MG rows (resolve_morrison_flavor), incl. since
+                            # 2026-10-19 (oracle audit, user decision) CAM6
+                            # MG2 rain: slope bounds 1/[500, 20] um (was
+                            # 1/[2800, 20] um) and Beheng self-collection
+                            # -8*nric*qric*rho on in-precip rain (was SAM
+                            # SB2001 with breakup).
 morrison_do_graupel: true   # NAMED, equals the code default: this deck's
                             # measured behaviour.  CAM6's MG2 has NO graupel
                             # (eight constituents, micro_mg_cam.F90:139); our
@@ -167,11 +174,18 @@ morrison_warm_rain_incloud: true   # CAM6 MG2 in-cloud warm rain (user decision
                                    # 1810), times lcldm (micro_mg2_0.F90:878,
                                    # :1224-1322).  Grid-mean arm:
                                    # --no-morrison-warm-rain-incloud.
+                                   # Since 2026-10-19 (oracle audit, user
+                                   # decision) it is the whole CAM6 MG2 rain
+                                   # mode: in_cloud precip_frac, rain
+                                   # evaporation only in the precipitating
+                                   # clear air, rain sedimenting the post-
+                                   # source state, two-sided number re-adjust.
 morrison_sed_cfl_substeps: true  # MG2 micro_mg2_0.F90 sedimentation loop:
                                  # nstep = 1 + int(max V dt/dz) per column,
                                  # so precipitation crosses >1 layer per 600 s.
-                                 # DEPARTURE: Morrison sediments the PRE-source
-                                 # pools (MG2 sediments post-source, :2204).
+                                 # Rain sediments the POST-source state as MG2
+                                 # (:2204, via warm_rain_incloud); ice/snow/
+                                 # graupel still sediment PRE-source pools.
 morrison_sed_cfl_substeps_strict: false # the abort path is an equinox error_if,
                                         # i.e. a host callback, and the GPU lane
                                         # runs JAX_PLATFORMS=cuda with no CPU
@@ -259,7 +273,9 @@ clubb_prognostic: true
 clubb_liquid_partition: true       # CAM6 clubb_intr: the closure's diagnosed
                                    # cloud liquid is handed to the host as a
                                    # tendency, and the Morrison saturation
-                                   # adjustment stops condensing (MG2
+                                   # adjustment is switched off, both
+                                   # condensation and (since 2026-10-19, user
+                                   # decision) cloud-water evaporation (MG2
                                    # allow_sed_supersat = .false. under CLUBB,
                                    # micro_mg_cam.F90:668-672).  One flag,
                                    # both halves.  User table row 1.

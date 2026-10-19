@@ -34,6 +34,9 @@ KNOWN, DELIBERATE departures (documented where they occur)
   sediments the POST-source hydrometeors.  This is Morrison's inherited
   operator split; the MG2-style CFL sub-stepping
   (``MorrisonConfig.sed_cfl_substeps``) ports only the loop, not this order.
+  EXCEPTION: under ``warm_rain_incloud`` (the CAM6 MG2 mode) RAIN mass and
+  number sediment the post-source state as MG2 does; ice, snow and graupel
+  keep the pre-source order.
 - Default (no prognostic N_s/N_g): bulk q-power snow fall speed and the
   fixed-N0G Marshall-Palmer graupel closure — outside the SAM oracle
   scope, which is inherently two-moment (departure #5 of the fall-speed
@@ -65,7 +68,14 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     autoconversion_kk2000,
     autoconversion_kk2000_cam6,
     KK2000_CAM6_QC_MAX,
+    MG2_QRIC_MAX,
+    MG2_QSMALL,
     mg2_incloud_warm_rain_inputs,
+    mg2_inprecip_rain,
+    mg2_precip_frac,
+    mg2_var_coef,
+    self_collection_rain_mg2,
+    rain_evaporation_mg2,
     accretion,
     accretion_sb2001,
     accretion_kk2000,
@@ -145,6 +155,8 @@ _NUC_T_THRESHOLD_K = 265.15      # heterogeneous ice-nucleation T threshold [K]
 _NUC_RH_ICE_THRESHOLD = 1.08     # ice-nucleation RH_ice gate
 _NUC_RH_LIQ_THRESHOLD = 0.999    # liquid-nucleation RH_liq gate
 _FERRIER_ICE_NUMBER_DENOM = 1080.0  # Ferrier ice-number diagnostic denominator
+_MG2_OMSM = 1.0 - 1.0e-5           # MG2 limiter round-off margin omsm, micro_mg_utils.F90:117
+_MG2_ACCRETION_VARCOEF_EXP = 1.15  # MG2 accrete_cloud_water_rain var_coef(relvar, 1.15), micro_mg_utils.F90:1317
 
 def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     """Resolve ``morrison_flavor`` into the concrete parameter set.
@@ -161,18 +173,31 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     ``rho_snow``           100 kg/m³     250      (rhosn)
     ``fall_b_i``           0.865         1.0      (bi)
     ``ice_to_snow_scheme`` m2005_autoconv mg_ferrier (180-s Ferrier prci)
+    ``lamr_min``           1/2800 µm     1/500 µm (lam_bnd_rain, :169)
+    ``rain_selfcoll_scheme`` sb2001      mg2      (Beheng -8 nr qr rho, :1359;
+                                                  only replaces the sb2001
+                                                  default, see below)
     =====================  ============  =============
 
-    Warm rain (``kk2000``) and ice deposition (``m2005``) are already MG-faithful
-    and unchanged. Validated against the E3SM MG reference (codex audit).
+    The rain rows are CAM6 MG2 (cam_cesm2_1_rel_60 micro_mg_utils.F90).
+    ``warm_rain_scheme`` is NOT resolved here: ``kk2000`` is the SAM/E3SM law,
+    ``kk2000_cam6`` the CAM6 MG2 law (select it explicitly).  Ice deposition
+    (``m2005``) is unchanged.
     """
     if config.morrison_flavor == "mg":
+        # Self-collection: the mg set replaces the SAM DEFAULT ("sb2001") by
+        # MG2's Beheng form; any other selection ("legacy", "mg2", or a typo
+        # that the dispatcher must reject) is left as the caller set it.
+        selfcoll = ("mg2" if config.rain_selfcoll_scheme == "sb2001"
+                    else config.rain_selfcoll_scheme)
         return config._replace(
             lami_max=1.0 / 10.0e-6,  # coeff-ok: max ice slope (1/10um)
             snow_aggregation_eii=0.5,
             rho_snow=250.0,  # coeff-ok: snow bulk density default [kg/m^3]
             fall_b_i=1.0,
             ice_to_snow_scheme="mg_ferrier",
+            lamr_min=1.0 / 500.0e-6,  # coeff-ok: MG2 lam_bnd_rain(1), micro_mg_utils.F90:169
+            rain_selfcoll_scheme=selfcoll,
         )
     elif config.morrison_flavor == "sam":
         return config
@@ -290,25 +315,26 @@ def morrison_microphysics(
         hard_max_heating_K=config.hard_sat_max_heating_K,
     )
     # CAM6 arrangement: when the turbulence closure already diagnosed this
-    # layer's cloud liquid and handed it to the host, MG2 carries no
-    # vapour-to-liquid CONDENSATION (micro_mg_cam.F90:668-672 switches the
-    # residual block at micro_mg2_0.F90:2688-2730 off under CLUBB).
-    #
-    # POSITIVE BRANCH ONLY.  An earlier version of this gate zeroed the signed
-    # rate, which was wrong twice over.  CAM's residual block is guarded by
-    # ``qtmp > qvn`` at micro_mg2_0.F90:2700, i.e. it fires only on positive
-    # supersaturation and has no evaporation branch to switch off in the first
-    # place.  And our default ``wbf_scheme="emergent"`` has NO explicit
-    # Bergeron rate (see the WBF section below): the mixed-phase cloud-water
-    # sink IS the negative branch here, evaporating liquid as ice deposition
-    # draws vapour below liquid saturation.  Zeroing it deleted that sink
-    # outright on any ice-supersaturated, liquid-subsaturated cell.
+    # layer's cloud liquid and handed it to the host, MG2 carries NO
+    # vapour<->liquid saturation adjustment at all: the only qctend writes in
+    # micro_mg2_0.F90 are the process sinks, droplet sedimentation, ice melt
+    # (:2634), homogeneous freezing (:2680) and the residual supersaturation
+    # removal (:2688-2730), which micro_mg_cam.F90:668-672 switches off under
+    # CLUBB (allow_sed_supersat=.false.).  So BOTH branches go: the positive
+    # (condensation) branch and the negative (cloud-water evaporation) branch
+    # (user decision 2026-10-19, oracle audit tier 1).  The negative branch
+    # existed only through the smoothing tail (exactly 0 at the hard limit)
+    # and, at the production saturation_sharpness, removed up to 29 % of q_c
+    # per 600 s step.  NOTE: with ``wbf_scheme="emergent"`` that branch was
+    # also this scheme's only in-microphysics WBF liquid sink; under
+    # liquid_from_closure the liquid response to ice deposition now comes only
+    # from the closure's next liquid diagnosis (or an explicit wbf_scheme).
     #
     # ``q_sat`` is untouched -- rain evaporation, the sub-grid cloud-fraction
     # closure and the ice branch all still read it.  Static Python gate on a
     # config bool, the documented feature-gating exception to ``jnp.where``.
     if config.liquid_from_closure:
-        condensation = jnp.minimum(condensation, 0.0)
+        condensation = jnp.zeros_like(condensation)
     # Sub-grid in-cloud closure (Morrison & Gettelman 2008): evaluate the
     # warm-rain rates on the IN-CLOUD water q_c/cf and scale back by cf, so the
     # non-linear KK2000/SB rates see the (higher) in-cloud concentration rather
@@ -327,9 +353,12 @@ def morrison_microphysics(
             raise ValueError(
                 "warm_rain_incloud and subgrid_autoconversion are two cloud-"
                 "fraction sources for the same in-cloud closure; enable one.")
+        # MG2 precipitation fraction ('in_cloud' method under CLUBB).
+        precip_frac = mg2_precip_frac(cloud_fraction, q_c, q_i)
         q_c_ic, q_r_ic, N_c_ic, cf_eff = mg2_incloud_warm_rain_inputs(
             q_c, q_r, N_c_eff, cloud_fraction,
-            rescale_nc=getattr(config, "predict_Nc", False))
+            rescale_nc=getattr(config, "predict_Nc", False),
+            precip_frac=precip_frac)
     elif getattr(config, "subgrid_autoconversion", False):
         RH = q_v / jnp.maximum(q_sat, 1.0e-10)
         arg = (1.0 - RH) / max(1.0 - config.subgrid_rh_crit, 1.0e-6)
@@ -342,6 +371,10 @@ def morrison_microphysics(
         cf_eff = jnp.ones_like(q_c)
         q_c_ic = q_c / cf_eff
         q_r_ic = q_r / cf_eff
+    if not config.warm_rain_incloud:
+        # No cloud fraction on these paths: MG2's in-precip quantities reduce
+        # to the grid mean (precip_frac = cldm = 1).
+        precip_frac = jnp.ones_like(q_c)
     # Warm-rain autoconversion + accretion. KK2000 (default) is the SAM
     # M2005 oracle scheme; Seifert-Beheng retained for back-compat.
     if config.warm_rain_scheme == "kk2000":
@@ -354,8 +387,9 @@ def morrison_microphysics(
     elif config.warm_rain_scheme == "kk2000_cam6":
         # CAM6 MG2 autoconversion law.  Accretion is KK2000 on the same
         # 5e-3-capped in-cloud water CAM6 uses for every liquid process
-        # (micro_mg2_0.F90:1226); CAM6's var_coef(relvar, 1.15) accretion
-        # factor (~1.01 at relvar=10) is dropped.
+        # (micro_mg2_0.F90:1226) times MG2's sub-grid variance factor
+        # accre_enhan*var_coef(relvar, 1.15) (accrete_cloud_water_rain,
+        # micro_mg_utils.F90:1316-1328).
         dq_c_au, dN_r_au, x_c = autoconversion_kk2000_cam6(
             q_c_ic, N_c_ic, rho, config.kk2000_cam6_relvar,
             fact=config.autocon_fact)
@@ -363,7 +397,9 @@ def morrison_microphysics(
         dN_r_au = dN_r_au * cf_eff
         dq_c_ac = accretion_kk2000(
             jnp.minimum(q_c_ic, KK2000_CAM6_QC_MAX), q_r_ic,
-            fact=config.accre_enhan_fact) * cf_eff
+            fact=config.accre_enhan_fact * mg2_var_coef(
+                config.kk2000_cam6_relvar, _MG2_ACCRETION_VARCOEF_EXP,
+                q_c.dtype)) * cf_eff
     elif config.warm_rain_scheme == "seifert_beheng":
         dq_c_au, dN_r_au, x_c = autoconversion_sb(
             q_c_ic, N_c_ic, rho, config.k_au, config.x_star,
@@ -402,7 +438,15 @@ def morrison_microphysics(
     # Rain self-collection + breakup. "sb2001" (SAM NRAGG) self-collects
     # ~5580× faster than the legacy k_sc=1e-3 sigmoid form, so rain coalesces
     # to the SB equilibrium drop size (feeds the PSD fall speed + evaporation).
-    if config.rain_selfcoll_scheme == "sb2001":
+    # CAM6 MG2 in-precip rain (qric, size-adjusted nric, lamr, n0r): feeds the
+    # MG2 self-collection and, under warm_rain_incloud, the MG2 evaporation.
+    q_ric, N_ric, lamr_ic, n0r_ic = mg2_inprecip_rain(
+        q_r, N_r, rho, precip_frac, config.lamr_min, config.lamr_max)
+    if config.rain_selfcoll_scheme == "mg2":
+        # Beheng (1994) on in-precip values, times precip_frac (MG2; the
+        # morrison_flavor="mg" default).
+        dN_r_selfcoll = self_collection_rain_mg2(q_ric, N_ric, rho, precip_frac)
+    elif config.rain_selfcoll_scheme == "sb2001":
         dN_r_selfcoll = self_collection_breakup_sb2001(
             N_r, q_r, rho, config, dt=dt)
     elif config.rain_selfcoll_scheme == "legacy":
@@ -413,9 +457,20 @@ def morrison_microphysics(
     else:
         raise ValueError(
             f"Unknown rain_selfcoll_scheme: {config.rain_selfcoll_scheme!r}. "
-            f"Expected 'sb2001' (SAM NRAGG, default) or 'legacy'."
+            f"Expected 'mg2' (CAM6 MG2 Beheng, the mg-flavour default), "
+            f"'sb2001' (SAM NRAGG) or 'legacy'."
         )
-    if config.rain_evap_scheme == "m2005":
+    if config.rain_evap_scheme == "m2005" and config.warm_rain_incloud:
+        # CAM6 MG2: the same diffusion+ventilation core, but rain evaporates
+        # only in the precipitating CLEAR air (precip_frac - lcldm) against
+        # the clear-air humidity, on the in-precip PSD
+        # (evaporate_sublimate_precip, micro_mg_utils.F90:1422-1536).
+        q_iic = jnp.where(q_i >= MG2_QSMALL,
+                          jnp.minimum(q_i / cf_eff, KK2000_CAM6_QC_MAX), 0.0)
+        evaporation = rain_evaporation_mg2(
+            q_v, q_sat, T, p_full, rho, q_ric, lamr_ic, n0r_ic, cf_eff,
+            precip_frac, q_c_ic, q_iic, config)
+    elif config.rain_evap_scheme == "m2005":
         evaporation = rain_evaporation_m2005(
             q_v, q_r, N_r, q_sat, T, p_full, rho, config, dt=dt)
     elif config.rain_evap_scheme == "bulk":
@@ -890,29 +945,17 @@ def morrison_microphysics(
     # by a common factor so the combined non-sed removal ≤ q_r/dt; sedimentation
     # then accounts for the scaled sum via its extra_sink. Mass is conserved
     # (the matching q_v / q_s / q_g sources scale too).
-    rain_nonsed_sink = evaporation + freeze_rain + pracg
-    rain_scale = donor_clamp_scale(jnp.clip(q_r, 0.0), rain_nonsed_sink, dt)
-    evaporation = evaporation * rain_scale
-    freeze_rain = freeze_rain * rain_scale
-    freeze_N_r = freeze_N_r * rain_scale
-    pracg = pracg * rain_scale
-
-    # Route the Bigg-frozen rain by category: to GRAUPEL (SAM-faithful — dense
-    # frozen drops) when do_graupel, else to SNOW (legacy). The L_f release is
-    # identical either way (it stays in dT below); only the destination differs.
-    # NUMBER routing: freeze_N_r always leaves the rain number; it arrives as
-    # snow number on the legacy path (freeze_N_to_snow) and as GRAUPEL number
-    # on the do_graupel path when a prognostic N_g is carried
-    # (freeze_N_to_graupel in the graupel budget below, SAM NNUCCR).  Only
-    # single-moment graupel — no N_g state — drops the frozen-drop number.
-    if config.do_graupel:
-        freeze_to_graupel = freeze_rain
-        freeze_to_snow = jnp.zeros_like(freeze_rain)
-        freeze_N_to_snow = jnp.zeros_like(freeze_N_r)
-    else:
-        freeze_to_graupel = jnp.zeros_like(freeze_rain)
-        freeze_to_snow = freeze_rain
-        freeze_N_to_snow = freeze_N_r
+    # CAM6 MG2 mode (warm_rain_incloud) replaces this with MG2's own rain
+    # mass/number limiters below (after the q_c clamp, crediting the same-step
+    # autoconversion+accretion source, with MG2's omsm factor).
+    if not config.warm_rain_incloud:
+        rain_nonsed_sink = evaporation + freeze_rain + pracg
+        rain_scale = donor_clamp_scale(jnp.clip(q_r, 0.0), rain_nonsed_sink,
+                                       dt)
+        evaporation = evaporation * rain_scale
+        freeze_rain = freeze_rain * rain_scale
+        freeze_N_r = freeze_N_r * rain_scale
+        pracg = pracg * rain_scale
 
     # === DONOR CLAMP for q_i sinks ===
     # q_i sinks sharing this explicit-Euler step: aggregation, melt_ice
@@ -1054,7 +1097,16 @@ def morrison_microphysics(
     qc_sink_total = (dq_c_au + dq_c_ac + bergeron + riming_i + riming_s
                      + riming_g + cond_evap_sink + homo_freeze_c)
     qc_avail = jnp.clip(q_c, 0.0)
-    qc_scale = donor_clamp_scale(qc_avail, qc_sink_total, dt)
+    if config.warm_rain_incloud:
+        # CAM6 MG2 q_c limiter form (micro_mg2_0.F90:1566-1590): only where
+        # the sinks would overdraw q_c, ratio = qc/dt/sinks x omsm.
+        _qclim = qc_sink_total * dt > qc_avail
+        qc_scale = jnp.where(
+            _qclim,
+            qc_avail / dt / jnp.where(_qclim, qc_sink_total, 1.0) * _MG2_OMSM,
+            1.0)
+    else:
+        qc_scale = donor_clamp_scale(qc_avail, qc_sink_total, dt)
     homo_freeze_c = homo_freeze_c * qc_scale
     homo_freeze_N = homo_freeze_N * qc_scale
     dq_c_au = dq_c_au * qc_scale
@@ -1092,8 +1144,29 @@ def morrison_microphysics(
     condensation = jnp.where(
         condensation < 0.0, condensation * qc_scale, condensation,
     )
-    # Number tendency for autoconverted droplets must scale identically.
-    dN_r_au = dN_r_au * qc_scale
+    # Number tendency for autoconverted droplets must scale identically --
+    # except in the CAM6 MG2 mode: MG2's q_c limiter scales prc but NOT the
+    # rain-number source nprc (micro_mg2_0.F90:1575-1585).
+    if not config.warm_rain_incloud:
+        dN_r_au = dN_r_au * qc_scale
+
+    if config.warm_rain_incloud:
+        # CAM6 MG2 rain-MASS limiter (micro_mg2_0.F90:1660-1680), after the q_c
+        # limiter: the in-precip rain sinks (evaporation, freezing, collection
+        # by graupel here) may consume q_r PLUS this step's autoconversion +
+        # accretion source, scaled by omsm = 1 - 1e-5 when they would
+        # overdraw; only where the in-precip sink is >= qsmall.
+        _rsrc = dq_c_au + dq_c_ac
+        _rsink = evaporation + freeze_rain + pracg
+        _rlim = (((_rsink - _rsrc) * dt > jnp.clip(q_r, 0.0))
+                 & (_rsink / precip_frac >= MG2_QSMALL))
+        _rscale = jnp.where(
+            _rlim,
+            (jnp.clip(q_r, 0.0) / dt + _rsrc)
+            / jnp.where(_rlim, _rsink, 1.0) * _MG2_OMSM, 1.0)
+        evaporation = evaporation * _rscale
+        freeze_rain = freeze_rain * _rscale
+        pracg = pracg * _rscale
 
     # === DONOR CLAMP for q_v sinks ===
     # The vapor budget in this scheme is ``dq_v_dt = -condensation +
@@ -1184,6 +1257,52 @@ def morrison_microphysics(
     dq_i_nuc = dq_i_nuc * qv_scale
     dN_i_nuc = dN_i_nuc * qv_scale
 
+    # Number sinks/sources that share the step with rain/ice sedimentation,
+    # defined here (before it) so the MG2 post-source rain state below can
+    # include them.  melt_ice / dq_i_dep / evaporation are FINAL here.
+    _qi_floor = jnp.clip(q_i, 1.0e-15)
+    _ni_pos = jnp.clip(N_i, 0.0)
+    dN_i_melt = melt_ice * _ni_pos / _qi_floor
+    # Rain-number loss during evaporation (SAM NSUBR, module_mp_graupel.f90:
+    # 2177-2181): NSUBR = (PRE·dt/q_r)·N_r/dt = −evap·N_r/q_r — the same
+    # fraction of number removed as mass, so the mean drop size is preserved
+    # and N_r does not go stale as rain evaporates. evap is already donor-
+    # clamped to q_r/dt, so the removed fraction ≤ 1 (SAM's MAX(-1,DUM)).
+    if config.warm_rain_incloud:
+        # CAM6 MG2 nsubr = pre*nr/qr on the ACTUAL qr (micro_mg2_0.F90:1688):
+        # no 1e-15 floor (it under-removed number where q_r < 1e-15); only
+        # where rain evaporates (MG2 'if pre < 0', :1687), which also keeps
+        # the 1/q_r out of cells where q_r is tiny and nothing evaporates.
+        _qr_pos = (evaporation > 0.0) & (q_r > 0.0)
+        dN_r_evap = jnp.where(
+            _qr_pos,
+            evaporation * jnp.clip(N_r, 0.0) / jnp.where(_qr_pos, q_r, 1.0),
+            0.0)
+    else:
+        dN_r_evap = evaporation * jnp.clip(N_r, 0.0) / jnp.clip(q_r, 1e-15)
+    # NSMLTR / NGMLTR (SAM module_mp_graupel.f90:2189-2203, applied at :2211
+    # NR3DTEN += (NSUBR - NSMLTR - NGMLTR)): every melted snow flake / graupel
+    # particle becomes a RAIN drop — number is conserved across the phase
+    # change, at the same fractional rate as the melted mass.  These are also
+    # the NSMLTS/NGMLTG sinks of the snow/graupel number budgets below (single
+    # owner: defined once here, reused there).  melt_snow / melt_graupel are
+    # FINAL at this point (joint fusion-heat scale + donor clamps applied
+    # above).  N_s/N_g are per-mass [1/kg] while N_r is per-volume [1/m^3],
+    # hence the *rho on the rain-side source.  Without this the melted number
+    # simply vanished: rain in melting layers under-counted drops -> too-large
+    # mean size -> too-fast fallout / too-little evaporation.
+    melt_N_to_rain = jnp.zeros_like(q_r)
+    # NMLTR from cloud ice: melted crystals become rain drops (the Morrison
+    # reference transfers this number; snow/graupel below already did — the
+    # cloud-ice channel was missing, codex 2026-07-28).  dN_i_melt is
+    # per-mass; *rho converts to the per-volume rain number.
+    melt_N_to_rain = melt_N_to_rain + dN_i_melt * rho
+    if snow_double_moment:
+        dN_s_melt = melt_snow * jnp.clip(N_s, 0.0) / jnp.clip(q_s, 1e-15)
+        melt_N_to_rain = melt_N_to_rain + dN_s_melt * rho
+    if graupel_double_moment:
+        dN_g_melt = melt_graupel * jnp.clip(N_g, 0.0) / jnp.clip(q_g, 1e-15)
+        melt_N_to_rain = melt_N_to_rain + dN_g_melt * rho
     # === SEDIMENTATION ===
     # Faithfulness: the m2005_psd mass-/number-weighted fall speeds are pinned to
     # the gSAM MICRO_M2005 Fortran oracle to round-off (rel 1e-12) in
@@ -1325,6 +1444,61 @@ def morrison_microphysics(
         V_t_g = jnp.zeros_like(jnp.clip(q_g, 0.0))
         V_n_g = V_t_g
 
+    # Rain sedimentation ORDER.  Default: the PRE-source pools with the
+    # same-step non-sedimentation sinks reserved in the flux cap (Morrison's
+    # inherited split, see the module docstring).  CAM6 MG2
+    # (warm_rain_incloud): rain sediments the POST-source state
+    # dumr = qr + qrtend*dt, dumnr = max(nr + nrtend*dt, 0) (0 where
+    # dumr < qsmall), with fall speeds re-diagnosed from it on the in-precip
+    # PSD (micro_mg2_0.F90:2067-2068, :2185-2215), and no reservation (the
+    # sources and sinks are already in dumr).
+    if config.warm_rain_incloud:
+        dq_r_src = (dq_c_au + dq_c_ac - evaporation + melt_ice + melt_snow
+                    + melt_graupel - freeze_rain - pracg)
+        # CAM6 MG2 rain-NUMBER limiter (micro_mg2_0.F90:1683-1709): the
+        # number sinks (evaporation nsubr, freezing, self-collection nragg)
+        # may consume N_r plus this step's autoconversion source, x omsm.
+        _nsink = dN_r_evap + freeze_N_r - dN_r_selfcoll
+        _nlim = (_nsink - dN_r_au) * dt > jnp.clip(N_r, 0.0)
+        _nscale = jnp.where(
+            _nlim,
+            (jnp.clip(N_r, 0.0) / dt + dN_r_au)
+            / jnp.where(_nlim, _nsink, 1.0) * _MG2_OMSM, 1.0)
+        dN_r_evap = dN_r_evap * _nscale
+        freeze_N_r = freeze_N_r * _nscale
+        dN_r_selfcoll = dN_r_selfcoll * _nscale
+        dN_r_src = (dN_r_au + dN_r_selfcoll - dN_r_evap - freeze_N_r
+                    + melt_N_to_rain)
+        q_r_sed = q_r + dq_r_src * dt
+        N_r_sed = jnp.where(q_r_sed < MG2_QSMALL, 0.0,
+                            jnp.maximum(N_r + dN_r_src * dt, 0.0))
+        if config.fall_speed_scheme == "m2005_psd":
+            # MG2 size_dist_param_basic on the in-precip (dumr, dumnr) and
+            # umr/unr = min(arn Gamma(4+br)/6 | Gamma(1+br) lamr^-br,
+            # 9.1 rhof) where lamr >= qsmall (:2185-2200).  N/q is unchanged
+            # by the precip_frac division, so the slope uses the grid ratio.
+            _in_p = q_r_sed / precip_frac > MG2_QSMALL
+            _den = jnp.where(_in_p, rho * q_r_sed, 1.0)
+            _lamr_s = jnp.clip(
+                safe_pow(jnp.pi * constants.rho_water * N_r_sed / _den,
+                         1.0 / 3.0),
+                config.lamr_min, config.lamr_max)
+            V_t_r = jnp.where(_in_p, jnp.minimum(
+                config.fall_a_r * cons4 * safe_pow(_lamr_s, -config.fall_b_r)
+                * dum, _VT_CAP_RAIN * dum), 0.0)
+            V_n_r = jnp.where(_in_p, jnp.minimum(
+                config.fall_a_r * cons6 * safe_pow(_lamr_s, -config.fall_b_r)
+                * dum, _VT_CAP_RAIN * dum), 0.0)
+        else:
+            V_t_r = config.a_v_r * safe_pow(
+                jnp.clip(q_r_sed, 0.0) * rho_ratio, config.b_v_r)
+            V_t_r = jnp.clip(V_t_r, 0.0, _VT_CLIP_RAIN)
+            V_n_r = V_t_r
+        rain_sed_reserve = None
+    else:
+        q_r_sed = q_r
+        N_r_sed = N_r
+        rain_sed_reserve = evaporation + freeze_rain + pracg
     # Joint donor caps: each `extra_sink` is the in-column sink that
     # shares the same explicit-Euler step as sedimentation.
     # Without these, the post-donor-clamp in-column sinks (aggregation +
@@ -1349,9 +1523,9 @@ def morrison_microphysics(
     _nsub_max = int(config.sed_cfl_substeps_max)
     _nsub = (_nsub_max if config.sed_cfl_substeps else 1)
     sed_r, precip_r, _req_r = sedimentation_tendency(
-        q_r, rho, V_t_r, dz, dt=dt,
+        q_r_sed, rho, V_t_r, dz, dt=dt,
         return_surface_flux=True,
-        extra_sink=evaporation + freeze_rain + pracg,
+        extra_sink=rain_sed_reserve,
         n_substeps_max=_nsub, cfl_speed=V_n_r, return_substeps=True,
     )
     sed_i, precip_i, _req_i = sedimentation_tendency(
@@ -1417,7 +1591,7 @@ def morrison_microphysics(
     # dN_r/dt and the per-volume flux divergence is exact.
     rho_eff = jnp.maximum(rho, _RHO_FLOOR)
     sed_N_r = rho_eff * sedimentation_tendency(
-        jnp.clip(N_r, 0.0) / rho_eff, rho_eff, V_n_r, dz, dt=dt,
+        jnp.clip(N_r_sed, 0.0) / rho_eff, rho_eff, V_n_r, dz, dt=dt,
         n_substeps_max=_nsub, cfl_speed=V_t_r)
     # Ice-NUMBER sinks sharing this step with number sedimentation — melt,
     # sublimation (both mass-proportional; melt_ice / dq_i_dep are FINAL
@@ -1428,9 +1602,6 @@ def morrison_microphysics(
     # would clamp, and the post-step LAMI lower bound would then RECREATE
     # number to match surviving q_i — an artificial ice-number source with
     # no phase-transfer counterpart (codex 2026-07-28 round 2).
-    _qi_floor = jnp.clip(q_i, 1.0e-15)
-    _ni_pos = jnp.clip(N_i, 0.0)
-    dN_i_melt = melt_ice * _ni_pos / _qi_floor
     dN_i_subl = jnp.maximum(-dq_i_dep, 0.0) * _ni_pos / _qi_floor
     if config.ice_to_snow_scheme in ("m2005_autoconv", "mg_ferrier"):
         _cons22 = (
@@ -1457,6 +1628,24 @@ def morrison_microphysics(
         sed_N_g = sedimentation_tendency(
             jnp.clip(N_g, 0.0), rho, V_n_g, dz, dt=dt,
             n_substeps_max=_nsub, cfl_speed=V_t_g)
+
+    # (Routed here, after every rain limiter has acted on freeze_rain /
+    # freeze_N_r.)  Route the Bigg-frozen rain by category: to GRAUPEL (SAM-faithful — dense
+    # frozen drops) when do_graupel, else to SNOW (legacy). The L_f release is
+    # identical either way (it stays in dT below); only the destination differs.
+    # NUMBER routing: freeze_N_r always leaves the rain number; it arrives as
+    # snow number on the legacy path (freeze_N_to_snow) and as GRAUPEL number
+    # on the do_graupel path when a prognostic N_g is carried
+    # (freeze_N_to_graupel in the graupel budget below, SAM NNUCCR).  Only
+    # single-moment graupel — no N_g state — drops the frozen-drop number.
+    if config.do_graupel:
+        freeze_to_graupel = freeze_rain
+        freeze_to_snow = jnp.zeros_like(freeze_rain)
+        freeze_N_to_snow = jnp.zeros_like(freeze_N_r)
+    else:
+        freeze_to_graupel = jnp.zeros_like(freeze_rain)
+        freeze_to_snow = freeze_rain
+        freeze_N_to_snow = freeze_N_r
 
     # === LATENT HEATING ===
     L_v = constants.L_v
@@ -1546,35 +1735,6 @@ def morrison_microphysics(
         # (used via N_c_eff); the prognostic field is NOT evolved, so no sink can
         # drive it negative.
         dN_c_dt = jnp.zeros_like(q_c)
-    # Rain-number loss during evaporation (SAM NSUBR, module_mp_graupel.f90:
-    # 2177-2181): NSUBR = (PRE·dt/q_r)·N_r/dt = −evap·N_r/q_r — the same
-    # fraction of number removed as mass, so the mean drop size is preserved
-    # and N_r does not go stale as rain evaporates. evap is already donor-
-    # clamped to q_r/dt, so the removed fraction ≤ 1 (SAM's MAX(-1,DUM)).
-    dN_r_evap = evaporation * jnp.clip(N_r, 0.0) / jnp.clip(q_r, 1e-15)
-    # NSMLTR / NGMLTR (SAM module_mp_graupel.f90:2189-2203, applied at :2211
-    # NR3DTEN += (NSUBR - NSMLTR - NGMLTR)): every melted snow flake / graupel
-    # particle becomes a RAIN drop — number is conserved across the phase
-    # change, at the same fractional rate as the melted mass.  These are also
-    # the NSMLTS/NGMLTG sinks of the snow/graupel number budgets below (single
-    # owner: defined once here, reused there).  melt_snow / melt_graupel are
-    # FINAL at this point (joint fusion-heat scale + donor clamps applied
-    # above).  N_s/N_g are per-mass [1/kg] while N_r is per-volume [1/m^3],
-    # hence the *rho on the rain-side source.  Without this the melted number
-    # simply vanished: rain in melting layers under-counted drops -> too-large
-    # mean size -> too-fast fallout / too-little evaporation.
-    melt_N_to_rain = jnp.zeros_like(q_r)
-    # NMLTR from cloud ice: melted crystals become rain drops (the Morrison
-    # reference transfers this number; snow/graupel below already did — the
-    # cloud-ice channel was missing, codex 2026-07-28).  dN_i_melt is
-    # per-mass; *rho converts to the per-volume rain number.
-    melt_N_to_rain = melt_N_to_rain + dN_i_melt * rho
-    if snow_double_moment:
-        dN_s_melt = melt_snow * jnp.clip(N_s, 0.0) / jnp.clip(q_s, 1e-15)
-        melt_N_to_rain = melt_N_to_rain + dN_s_melt * rho
-    if graupel_double_moment:
-        dN_g_melt = melt_graupel * jnp.clip(N_g, 0.0) / jnp.clip(q_g, 1e-15)
-        melt_N_to_rain = melt_N_to_rain + dN_g_melt * rho
     # Bigg freezing removes the frozen rain drops from the rain number.
     dN_r_dt = (dN_r_au + dN_r_selfcoll - dN_r_evap - freeze_N_r + sed_N_r
                + melt_N_to_rain)
@@ -1629,6 +1789,9 @@ def morrison_microphysics(
     # (+-115 K/step) whose Bigg freeze removes mass 4.2e6x faster
     # (fractionally) than number (the orphan-number ratchet), ending in the
     # day-540 NaN.
+    # (The warm_rain_incloud branch above is the CAM6 MG2 re-adjustment and
+    # applies BOTH bounds -- user decision 2026-10-19; the paragraph below
+    # describes the default branch.)
     # DELIBERATELY CEILING-ONLY: the SAM check also RAISES N_r to the
     # lamr_min (big-drop) floor, but on the failing campaign state 66% of
     # cell-levels sit BELOW the window (measured, _probe_cell9576_i_healthy),
@@ -1643,7 +1806,19 @@ def morrison_microphysics(
     # recomputed) where it previously passed through.
     q_r_new = jnp.maximum(jnp.clip(q_r, 0.0) + dq_r_dt * dt, 0.0)
     _cr_psd = jnp.pi * constants.rho_water
-    n_r_hi = config.lamr_max ** 3 * rho * q_r_new / _cr_psd
+    if config.warm_rain_incloud:
+        # CAM6 MG2 'final' rain re-adjustment (micro_mg2_0.F90:2746-2747,
+        # :2765, :2873-2889, :2913): on the in-precip post-step state
+        # dumr = min(max(qr+qrtend*dt,0)/precip_frac, 0.01), BOTH slope
+        # bounds re-adjust the number (nrtend = (dumnr*precip_frac-nr)/dt),
+        # and the number is cleared where qr+qrtend*dt < qsmall.
+        _q_ip = jnp.minimum(q_r_new / precip_frac, MG2_QRIC_MAX)
+        n_r_hi = (config.lamr_max ** 3 * rho * _q_ip / _cr_psd) * precip_frac
+        n_r_lo = jnp.where(
+            _q_ip > MG2_QSMALL,
+            (config.lamr_min ** 3 * rho * _q_ip / _cr_psd) * precip_frac, 0.0)
+    else:
+        n_r_hi = config.lamr_max ** 3 * rho * q_r_new / _cr_psd
     n_r_post = jnp.clip(N_r, 0.0) + dN_r_dt * dt
     # AIM 4*eps BELOW THE CEILING, RELATIVE TO max(N_r, ceiling) (codex
     # adversarial review, 2026-08-04).  "4*eps of the SCALE", not "4 ulp":
@@ -1707,7 +1882,11 @@ def morrison_microphysics(
     _n_cap = jnp.maximum(
         n_r_hi - jnp.where(jnp.isfinite(n_r_hi), _n_margin, 0.0), 0.0)
     n_r_new = jnp.minimum(n_r_post, _n_cap)
-    n_r_new = jnp.where(q_r_new > 1.0e-14, n_r_new, 0.0)
+    if config.warm_rain_incloud:
+        n_r_new = jnp.maximum(n_r_new, n_r_lo)
+        n_r_new = jnp.where(q_r_new >= MG2_QSMALL, n_r_new, 0.0)
+    else:
+        n_r_new = jnp.where(q_r_new > 1.0e-14, n_r_new, 0.0)
     dN_r_dt = jnp.where(
         n_r_new == n_r_post, dN_r_dt,
         (n_r_new - jnp.clip(N_r, 0.0)) / jnp.maximum(dt, 1.0e-10))

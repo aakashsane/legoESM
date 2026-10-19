@@ -797,19 +797,17 @@ def test_helper_sets_AND_clears_the_flag():
         ).liquid_from_closure is True
 
 
-def test_mixed_phase_liquid_sink_survives_the_gate():
-    """The WBF sink is the NEGATIVE branch, and it must not be switched off.
+def test_closure_gate_removes_the_evaporation_branch_too():
+    """Under the closure the saturation adjustment is off for BOTH signs.
 
-    ``wbf_scheme="emergent"`` (the default) has no explicit Bergeron rate: the
-    mixed-phase cloud-water sink IS the evaporative branch of the saturation
-    adjustment, firing as ice deposition draws vapour below liquid saturation.
-    CAM's residual block is guarded by ``qtmp > qvn``
-    (micro_mg2_0.F90:2700), i.e. positive supersaturation only, so it has no
-    evaporation branch to switch off either.  An earlier version of the gate
-    zeroed the signed rate and deleted this sink outright.
+    MG2 under CLUBB has no cloud-water condensation or evaporation term
+    (every qctend write in micro_mg2_0.F90 is a process sink, droplet
+    sedimentation, melt, homogeneous freezing or the CLUBB-disabled residual;
+    measured: MG2 qctend = -prc - pra + qcsedten to 1e-22 on the oracle-audit
+    columns).  User decision 2026-10-19 (oracle audit): the negative branch,
+    previously kept as the ``wbf_scheme="emergent"`` mixed-phase sink, goes.
 
-    NON-VACUITY: the sink must be LARGE here, so a gate that removed it would
-    change the number rather than leave it near zero.
+    NON-VACUITY: the branch is LARGE in the control here.
     """
     import jax.numpy as jnp
     from legoesm import constants
@@ -839,18 +837,15 @@ def test_mixed_phase_liquid_sink_survives_the_gate():
     def _run(cfg):
         return morrison_microphysics(
             one(T), one(q_v), hm, one(p), jnp.full((1, 2), p), one(rho),
-            one(260.0), dt, cfg)
+            one(260.0), dt, cfg._replace(publish_qc_budget=True))
 
     off = _run(MorrisonConfig())
     on = _run(MorrisonConfig(liquid_from_closure=True))
-
-    # The sink is large on the unmodified scheme...
-    assert float(off.dq_c_dt[0, 0]) < -1.0e-8, (
-        "no mixed-phase liquid sink in the control, so this test could not "
-        "detect one being deleted")
-    # ...and the gate must not have touched it: no positive supersaturation
-    # here, so there is nothing for the gate to remove.
-    assert float(on.dq_c_dt[0, 0]) == float(off.dq_c_dt[0, 0])
+    assert float(off.qc_budget["condensation"][0, 0]) < -1.0e-8, (
+        "no evaporation branch in the control, so this test could not detect "
+        "it being removed")
+    assert float(on.qc_budget["condensation"][0, 0]) == 0.0
+    assert float(on.dq_c_dt[0, 0]) > float(off.dq_c_dt[0, 0])
 
 
 def test_gate_removes_the_latent_heating_with_the_water():

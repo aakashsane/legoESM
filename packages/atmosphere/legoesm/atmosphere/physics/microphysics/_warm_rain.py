@@ -798,11 +798,27 @@ _KK2000_CAM6_RELVAR_MAX = 10.0     # relvarmax, non-CLUBB deep scheme (:2418)
 # warm-rain consumers here precip_frac therefore equals lcldm (cldm = lcldm
 # with CLUBB's fraction as both).
 _MG2_MINCLD = 1.0e-4       # micro_mg_utils.F90:123 mincld [-]
-_MG2_QSMALL = 1.0e-18      # micro_mg_utils.F90 qsmall [kg/kg]
-_MG2_QRIC_MAX = 0.01       # micro_mg2_0.F90:1316 in-precip rain cap [kg/kg]
+MG2_QSMALL = 1.0e-18      # micro_mg_utils.F90 qsmall [kg/kg]
+MG2_QRIC_MAX = 0.01       # micro_mg2_0.F90:1316 in-precip rain cap [kg/kg]
+
+# --- CAM6 MG2 cloud-droplet size distribution (size_dist_param_liq,
+# micro_mg_utils.F90:376-422 + size_dist_param_basic :481-516) ---
+# pgam = 1/(1 - 0.7 exp(-0.008e-6 * ncic*rho))^2 - 1, floored at 2 (Martin et
+# al. 1994 fit, :395-397); lambda bounded so the mean diameter stays in
+# [2, 50] um (:409-410); ncic <= qcic/min_mean_mass_liq (:173, :493-494).
+_MG2_PGAM_A = 0.7
+_MG2_PGAM_B = 0.008e-6     # [cm^3 -> m^3 conversion folded in] per (#/m^3)
+_MG2_PGAM_MIN = 2.0
+_MG2_DROP_DIAM_MAX = 50.0e-6   # [m] -> lambda lower bound (pgam+1)/50 um
+_MG2_DROP_DIAM_MIN = 2.0e-6    # [m] -> lambda upper bound (pgam+1)/2 um
+_MG2_MIN_MEAN_MASS_LIQ = 1.0e-20   # [kg]
+# --- CAM6 MG2 rain processes (micro_mg_utils.F90) ---
+_MG2_BEHENG_SELFCOLL = 8.0     # self_collection_rain nragg = -8 nric qric rho (:1359, Beheng 1994)
+_MG2_EVAP_CLOUD_QMIN = 1.0e-6  # evaporate_sublimate_precip: dum=0 if qcic+qiic < 1e-6 (:1468)
 
 
-def mg2_incloud_warm_rain_inputs(q_c, q_r, N_c, cloud_fraction, rescale_nc):
+def mg2_incloud_warm_rain_inputs(q_c, q_r, N_c, cloud_fraction, rescale_nc,
+                                 precip_frac):
     """CAM6 MG2 in-cloud warm-rain inputs ``(q_c_ic, q_r_ic, N_c_ic, lcldm)``.
 
     ``cloud_fraction`` is MG2's ``liqcldf`` (= ``cldn`` = CAM6 ``ast`` =
@@ -812,18 +828,158 @@ def mg2_incloud_warm_rain_inputs(q_c, q_r, N_c, cloud_fraction, rescale_nc):
     ``rescale_nc`` divides ``N_c`` by ``lcldm`` (a grid-mean prognostic
     number); a SPECIFIED droplet number is already the in-cloud value (MG2
     ``nccons``: ``ncic = ncnst/rho``), so it passes through.  ``q_r_ic`` is
-    valid only where ``q_c_ic > 0`` (see the precip_frac note above).
+    MG2's in-precip ``qric = min(qr/precip_frac, 0.01)`` (0 below qsmall,
+    :1312-1322) with ``precip_frac`` from :func:`mg2_precip_frac`.
     """
     lcldm = jnp.maximum(cloud_fraction, _MG2_MINCLD)
-    has_qc = q_c >= _MG2_QSMALL
+    has_qc = q_c >= MG2_QSMALL
     q_c_ic = jnp.where(has_qc, jnp.minimum(q_c / lcldm, KK2000_CAM6_QC_MAX),
                        0.0)
     N_c_ic = N_c
     if rescale_nc:
         N_c_ic = jnp.where(has_qc, jnp.maximum(N_c / lcldm, 0.0), 0.0)
-    q_r_ic = jnp.minimum(q_r / lcldm, _MG2_QRIC_MAX)
-    q_r_ic = jnp.where(q_r_ic < _MG2_QSMALL, 0.0, q_r_ic)
+    q_r_ic = jnp.minimum(q_r / precip_frac, MG2_QRIC_MAX)
+    q_r_ic = jnp.where(q_r_ic < MG2_QSMALL, 0.0, q_r_ic)
     return q_c_ic, q_r_ic, N_c_ic, lcldm
+
+
+def mg2_precip_frac(cloud_fraction, q_c, q_i):
+    """CAM6 MG2 precipitation fraction, ``micro_mg_precip_frac_method =
+    'in_cloud'`` (the CAM6 + CLUBB namelist default; micro_mg2_0.F90:1256-1266).
+
+    ``precip_frac = cldm = max(cloud_fraction, mincld)``; walking DOWN from the
+    model top, a level with ``qc < qsmall`` AND ``qi < qsmall`` inherits the
+    level above's value.  Level 0 = model top (this module's convention, the
+    same as CAM's k=1).  Shape ``(ncol, nlev)``.
+    """
+    cldm = jnp.maximum(cloud_fraction, _MG2_MINCLD)
+    clear = (q_c < MG2_QSMALL) & (q_i < MG2_QSMALL)
+
+    def _down(prev, xs):
+        c, clr = xs
+        pf = jnp.where(clr, prev, c)
+        return pf, pf
+
+    top = cldm[:, 0]
+    _, below = jax.lax.scan(_down, top, (cldm[:, 1:].T, clear[:, 1:].T))
+    return jnp.concatenate([top[:, None], below.T], axis=1)
+
+
+def mg2_var_coef(relvar, a, dtype):
+    """MG2 sub-grid variance coefficient ``var_coef(relvar, a) =
+    Gamma(relvar+a)/(Gamma(relvar) relvar^a)`` (micro_mg_utils.F90:574-583),
+    with relvar clipped to CAM6's [0.001, relvarmax=10] (clubb_intr.F90:2425).
+    """
+    r = jnp.clip(jnp.asarray(relvar, dtype=dtype),
+                 _KK2000_CAM6_RELVAR_MIN, _KK2000_CAM6_RELVAR_MAX)
+    return jnp.exp(jax.scipy.special.gammaln(r + a)
+                   - jax.scipy.special.gammaln(r)) / r ** a
+
+
+def mg2_size_bounded_nc(q_c_ic, N_c_ic, rho):
+    """MG2 ``size_dist_param_liq`` droplet-number reset (micro_mg_utils.F90:
+    376-422 -> size_dist_param_basic :481-516), per-VOLUME here.
+
+    Where ``qcic > qsmall``: ``pgam = max(1/(1-0.7 exp(-0.008e-6 N))^2 - 1, 2)``
+    (``N = ncic*rho`` [#/m^3]), ``ncic <= qcic/1e-20``, and ``ncic`` is reset
+    so ``lambda = (pi/6 rho_w (pgam+1)(pgam+2)(pgam+3) ncic/qcic)^(1/3)`` stays
+    in ``(pgam+1)/[50 um, 2 um]``.  Elsewhere ``N_c_ic`` is returned unchanged.
+    """
+    active = q_c_ic > MG2_QSMALL
+    q_safe = jnp.where(active, q_c_ic, 1.0)
+    pgam = 1.0 - _MG2_PGAM_A * jnp.exp(-_MG2_PGAM_B * N_c_ic)
+    pgam = jnp.maximum(1.0 / pgam ** 2 - 1.0, _MG2_PGAM_MIN)
+    shape = (jnp.pi / 6.0 * constants.rho_water
+             * (pgam + 1.0) * (pgam + 2.0) * (pgam + 3.0))
+    lam_lo = (pgam + 1.0) / _MG2_DROP_DIAM_MAX
+    lam_hi = (pgam + 1.0) / _MG2_DROP_DIAM_MIN
+    nc_kg = jnp.minimum(N_c_ic / rho, q_safe / _MG2_MIN_MEAN_MASS_LIQ)
+    lam = safe_pow(shape * nc_kg / q_safe, 1.0 / 3.0)
+    nc_kg = jnp.where(lam < lam_lo, lam_lo ** 3 * q_safe / shape,
+                      jnp.where(lam > lam_hi, lam_hi ** 3 * q_safe / shape,
+                                nc_kg))
+    return jnp.where(active, nc_kg * rho, N_c_ic)
+
+
+def mg2_inprecip_rain(q_r, N_r, rho, precip_frac, lamr_min, lamr_max):
+    """CAM6 MG2 in-precip rain state ``(q_ric, N_ric, lamr, n0r)``.
+
+    ``qric = min(qr/precip_frac, 0.01)``, ``nric = max(nr/precip_frac, 0)``,
+    both 0 where ``qric < qsmall`` (micro_mg2_0.F90:1312-1328), then
+    ``size_dist_param_basic(mg_rain_props, ...)`` (micro_mg_utils.F90:481-516):
+    where ``qric > qsmall``, ``lamr = (pi rho_w nric/qric)^(1/3)`` and, if it
+    leaves ``[lamr_min, lamr_max]``, it is set to the bound and ``nric`` is
+    re-adjusted to match; ``n0r = nric*lamr``; ``lamr = 0`` elsewhere.
+    ``N_r``/``N_ric``/``n0r`` are per-VOLUME (this module's rain convention:
+    MG2's per-kg value times rho).
+    """
+    q_ric = jnp.minimum(q_r / precip_frac, MG2_QRIC_MAX)
+    small = q_ric < MG2_QSMALL
+    q_ric = jnp.where(small, 0.0, q_ric)
+    N_ric = jnp.where(small, 0.0, jnp.maximum(N_r / precip_frac, 0.0))
+    active = q_ric > MG2_QSMALL
+    cr = jnp.pi * constants.rho_water
+    den = jnp.where(active, rho * q_ric, 1.0)
+    lam_raw = safe_pow(cr * N_ric / den, 1.0 / 3.0)
+    lam = jnp.clip(lam_raw, lamr_min, lamr_max)
+    N_adj = jnp.where((lam_raw < lamr_min) | (lam_raw > lamr_max),
+                      lam ** 3 * den / cr, N_ric)
+    N_ric = jnp.where(active, N_adj, N_ric)
+    lamr = jnp.where(active, lam, 0.0)
+    return q_ric, N_ric, lamr, N_ric * lamr
+
+
+def self_collection_rain_mg2(q_ric, N_ric, rho, precip_frac):
+    """CAM6 MG2 rain self-collection (Beheng 1994; ``self_collection_rain``,
+    micro_mg_utils.F90:1343-1364), grid-mean per-VOLUME number rate [1/m^3/s].
+
+    In-precip ``nragg = -8 nric qric rho`` [1/kg/s] where ``qric >= qsmall``
+    (``nric`` the size-adjusted in-precip number of :func:`mg2_inprecip_rain`),
+    times ``precip_frac`` for the grid mean (micro_mg2_0.F90:1965-1967), times
+    rho for this module's per-volume rain number.
+    """
+    nragg = jnp.where(q_ric >= MG2_QSMALL,
+                      -_MG2_BEHENG_SELFCOLL * (N_ric / rho) * q_ric * rho, 0.0)
+    return nragg * precip_frac * rho
+
+
+def rain_evaporation_mg2(q_v, q_sat, T, p, rho, q_ric, lamr, n0r, lcldm,
+                         precip_frac, q_cic, q_iic, config):
+    """CAM6 MG2 rain evaporation, grid mean, returned POSITIVE (a q_r sink /
+    q_v source) [kg/kg/s] (``evaporate_sublimate_precip``,
+    micro_mg_utils.F90:1422-1536; grid = ``-pre*precip_frac``,
+    micro_mg2_0.F90:1977).
+
+    Rain evaporates only in the precipitating CLEAR air: ``dum = lcldm``
+    unless ``qcic + qiic < 1e-6`` (then 0); where ``precip_frac > dum`` and
+    ``qric >= qsmall``, ``am_evp_st = precip_frac - dum`` and the clear-air
+    humidity is ``qclr = (q - dum*qvl)/(1 - dum)``; ``pre = eps (qclr-qvl)/ab``
+    with the M2005 diffusion+ventilation ``eps`` (same core as
+    :func:`rain_evaporation_m2005`) on the in-precip slope ``lamr`` and
+    intercept ``n0r`` of :func:`mg2_inprecip_rain`, and the grid rate is
+    ``min(pre*am_evp_st, 0)``.  ``q_cic``/``q_iic`` are MG2's in-cloud liquid /
+    ice (``qcic``/``qiic``); ``q_sat`` is MG2's ``qvl``.
+    """
+    dum = jnp.where(q_cic + q_iic < _MG2_EVAP_CLOUD_QMIN, 0.0, lcldm)
+    active = (precip_frac > dum) & (q_ric >= MG2_QSMALL)
+    am_evp_st = precip_frac - dum
+    one_m_dum = jnp.where(active, 1.0 - dum, 1.0)
+    qclr = (q_v - dum * q_sat) / one_m_dum
+    lam = jnp.where(active, lamr, 1.0)
+    dv, mu, sc = _air_transport_props(T, p, rho)
+    arn = config.fall_a_r * safe_pow(
+        config.rho_su / jnp.clip(rho, _RHO_FLOOR), _FALL_RHO_EXPONENT)
+    cons34 = _VENT_CONS_OFFSET + config.fall_b_r / 2.0
+    cons9 = math.gamma(cons34)
+    dqsdt = constants.L_v * q_sat / (constants.R_v * T ** 2)  # latent-ok: MG2 oracle constant (calc_ab, xxlv)
+    ab = 1.0 + dqsdt * constants.L_v / constants.c_pd  # latent-ok: MG2 oracle constant (calc_ab, xxlv)
+    eps = (2.0 * jnp.pi * n0r * dv
+           * (config.rain_vent_f1 / (lam * lam)
+              + config.rain_vent_f2 * cons9
+              * safe_pow(arn * rho / mu, 0.5) * safe_pow(sc, 1.0 / 3.0)
+              * safe_pow(lam, -cons34)))
+    pre = jnp.minimum(eps * (qclr - q_sat) / ab * am_evp_st, 0.0)
+    return jnp.where(active, -pre, 0.0)
 
 # --- Seifert & Beheng (2001) warm-rain UNIVERSAL FUNCTIONS ---
 # Faithful transcription of the gSAM M2005 IRAIN=1 path
@@ -948,7 +1104,10 @@ def autoconversion_kk2000_cam6(q_c, N_c_eff, rho, relvar, fact=1.0):
     INVERSE relative variance (gamma shape ν = mean²/variance,
     clubb_intr.F90:2425 ``rcm**2/qclvar``), so large relvar = uniform cloud
     (factor → 1) and small relvar = strong enhancement.  Ported guards: ``q_c >= 1e-8``
-    gate (``icsmall``) and the 5e-3 kg/kg in-cloud cap.  Rain-number source =
+    gate (``icsmall``), the 5e-3 kg/kg in-cloud cap, and MG2's droplet-number
+    reset to the [2, 50] um mean-size window (:func:`mg2_size_bounded_nc`,
+    size_dist_param_liq, applied to ``N_c_eff`` before the law and before
+    ``x_c``).  Rain-number source =
     ``PRC·rho / m(25 µm)`` (CAM6 ``nprc``, per-volume here); the cloud-number
     sink is the caller's ``-PRC·rho/x_c`` = CAM6 ``nprc1`` (``x_c`` from the
     capped water).  ``N_c_eff`` must be the IN-CLOUD number, as CAM6's
@@ -962,13 +1121,12 @@ def autoconversion_kk2000_cam6(q_c, N_c_eff, rho, relvar, fact=1.0):
     """
     q_c_pos = jnp.clip(q_c, 0.0)
     q_c_ic = jnp.minimum(q_c_pos, KK2000_CAM6_QC_MAX)
+    # MG2 resets ncic to the [2, 50] um mean-size window before the law
+    # (size_dist_param_liq, called at micro_mg2_0.F90:1296 before :1306).
+    N_c_eff = mg2_size_bounded_nc(q_c_ic, N_c_eff, rho)
     n_c_cm3 = jnp.clip(N_c_eff, 1.0) / 1.0e6        # #/cm³
-    # CAM6 clips relvar to [0.001, relvarmax=10] (clubb_intr.F90:2425).
-    r = jnp.clip(jnp.asarray(relvar, dtype=q_c_pos.dtype),
-                 _KK2000_CAM6_RELVAR_MIN, _KK2000_CAM6_RELVAR_MAX)
     a = _KK2000_AUTOCONV_QC_EXPONENT
-    var_coef = jnp.exp(jax.scipy.special.gammaln(r + a)
-                       - jax.scipy.special.gammaln(r)) / r ** a
+    var_coef = mg2_var_coef(relvar, a, q_c_pos.dtype)
     prc = jnp.where(
         q_c_ic >= _KK2000_CAM6_QC_MIN,
         (fact * _KK2000_CAM6_PREFACTOR) * var_coef

@@ -603,6 +603,12 @@ class MorrisonConfig(NamedTuple):
     #     for larger drops (→ active breakup as dum<0). Uses the prognostic N_r.
     #     (legoESM's legacy k_sc=1e-3 self-collected ~5580× too WEAKLY.)
     #   "legacy" = the sigmoid-breakup form (k_sc, breakup_sharpness, D_eq).
+    #   "mg2" = CAM6 MG2 Beheng (1994) self-collection, nragg = -8 nric qric
+    #     rho on the in-precip rain (micro_mg_utils.F90:1343-1364), times
+    #     precip_frac.  morrison_flavor="mg" (the global default) RESOLVES the
+    #     "sb2001" default to it in ``resolve_morrison_flavor`` (an explicit
+    #     "legacy"/"mg2" is kept); SB2001 itself is selected with
+    #     morrison_flavor="sam".
     rain_selfcoll_scheme: str = "sb2001"
     rain_selfcoll_k: float = 5.78        # SAM/SB2001 self-collection coeff
     rain_breakup_d0: float = 300.0e-6    # SB2001 breakup onset mean size [m]
@@ -804,7 +810,7 @@ class MorrisonConfig(NamedTuple):
     # Standard air density at 850 mb (SAM RHOSU = 85000/(R_d·273.15)); the
     # (ρ_su/ρ)^0.54 factor accelerates fall speeds in thin upper-trop air.
     rho_su: float = 8.5e4 / (constants.R_d * constants.T_freeze)
-    lamr_min: float = 1.0 / 2800.0e-6   # SAM LAMMINR (slope floor) [1/m]
+    lamr_min: float = 1.0 / 2800.0e-6   # SAM LAMMINR (slope floor) [1/m]; morrison_flavor="mg" resolves 1/500 um (MG2)
     lamr_max: float = 1.0 / 20.0e-6     # SAM LAMMAXR (slope cap) [1/m]
     lami_min: float = 1.0 / 600.0e-6    # SAM LAMMINI=1/(2·DCS+100µm), DCS=250µm
     lami_max: float = 1.0 / 1.0e-6      # SAM LAMMAXI [1/m]
@@ -961,6 +967,11 @@ class MorrisonConfig(NamedTuple):
     # aist ice-stratus fraction) (micro_mg2_0.F90:878, :1224-1322;
     # micro_mg_cam.F90:1809-1810; clubb_intr.F90:2575).  Needs that cloud
     # fraction at the call (``cloud_fraction=``); raises without it.
+    # It is the CAM6 MG2 warm-rain mode, so it also selects (oracle audit
+    # 2026-10-19): MG2's 'in_cloud' precip_frac for the in-precip rain; rain
+    # evaporation only in the precipitating clear air (precip_frac - lcldm,
+    # with rain_evap_scheme="m2005"); rain mass+number sedimenting the
+    # POST-source state; and MG2's two-sided rain-number re-adjustment.
     # False = rates on the grid-mean state (the pre-existing behaviour).
     warm_rain_incloud: bool = False
 
@@ -982,14 +993,17 @@ class MorrisonConfig(NamedTuple):
     # :2718 the gated residual) leaves MG2 with NO vapour-to-liquid
     # condensation at all in a CLUBB configuration.
     #
-    # POSITIVE BRANCH ONLY.  An earlier version said "both signs"; that was
-    # wrong twice.  CAM's block is guarded by ``qtmp > qvn``
-    # (micro_mg2_0.F90:2700), so it fires on positive supersaturation and has
-    # no evaporation branch to switch off.  And our default
-    # ``wbf_scheme="emergent"`` has no explicit Bergeron rate: the mixed-phase
-    # cloud-water sink IS that negative branch.  Every genuine sink
-    # (autoconversion, accretion, the emergent WBF, riming, sedimentation) is
-    # untouched.
+    # BOTH SIGNS (user decision 2026-10-19, oracle audit tier 1).  An
+    # intermediate version kept the negative (cloud-water evaporation) branch
+    # as the emergent WBF sink; MG2 under CLUBB has no such term (every qctend
+    # write in micro_mg2_0.F90 is a process sink, droplet sedimentation, melt,
+    # homogeneous freezing or the CLUBB-disabled residual), and that branch
+    # existed only through the smoothing tail (0 at the hard limit), removing
+    # up to 29 % of q_c per 600 s step at the production sharpness.  With
+    # ``wbf_scheme="emergent"`` this scheme therefore has no in-microphysics
+    # WBF liquid sink under this flag (the closure's next liquid diagnosis
+    # still sees the vapour that ice deposition removed).  Every other sink (autoconversion, accretion, riming,
+    # sedimentation) is untouched.
     #
     # WHY IT MATTERS: the adjustment removes the whole supersaturation on every
     # call, so running microphysics N times inside one physics step adjusts N

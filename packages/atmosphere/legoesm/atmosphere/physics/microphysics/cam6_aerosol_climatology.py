@@ -78,7 +78,7 @@ NOLEAP_ONE_YR = 365.0  # tracer_data.F90:265-275 one_yr on the noleap calendar
 
 def noleap_days_since_jan1(date: int, sec: int = 0) -> float:
     """Days since Jan 1 00:00 of the date's year (noleap) for YYYYMMDD ``date``."""
-    month, day = (date % 10000) // 100, date % 100
+    month, day = (date % 10000) // 100, date % 100  # coeff-ok: YYYYMMDD digit split (open_trc_datafile)
     return float(sum(_NOLEAP_MONTH_DAYS[:month - 1]) + day - 1) + sec / 86400.0  # coeff-ok: seconds per day
 
 

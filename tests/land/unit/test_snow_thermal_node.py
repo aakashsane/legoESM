@@ -73,7 +73,7 @@ def test_snow_free_columns_bit_identical_to_soil_solve(ft, n_sub):
     ref = solve_soil_thermal(T, theta, _GRID, _HYD, th, G, 1800.0, n_substeps=n_sub)
     Ts, Tn = solve_snow_node_soil_thermal(T[:, 0] + 3.0, jnp.zeros(200), T, theta,
                                           _GRID, _HYD, th, G, 1800.0,
-                                          n_substeps=n_sub, snow_cover=jnp.zeros(200))
+                                          n_substeps=n_sub, snow_cover=jnp.zeros(200), empty_cover_swe=0.0)
     np.testing.assert_array_equal(np.asarray(Tn), np.asarray(ref))
     np.testing.assert_array_equal(np.asarray(Ts), np.asarray(ref[:, 0]))
 
@@ -84,31 +84,35 @@ def test_semi_implicit_surface_is_refused():
         solve_snow_node_soil_thermal(T[:, 0], jnp.ones(3), T, theta, _GRID, _HYD,
                                 _TH, jnp.zeros(3), 1800.0,
                                 surface_conductance=jnp.ones(3),
-                                snow_cover=jnp.ones(3))
+                                snow_cover=jnp.ones(3), empty_cover_swe=0.0)
 
 
-def test_snow_node_flux_balance_uses_whole_pack_resistance():
-    """C_s (T_s' - T_s)/dt = G - g (T_s' - T_0') with g = 1/(R_s + dz0/(2 k0)),
-    R_s = (swe/rho)/k_Jordan -- computed here independently of the solver."""
+@pytest.mark.parametrize("partial", [False, True])
+def test_snow_node_flux_balance_uses_whole_pack_resistance(partial):
+    """C_s (T_s' - T_s)/dt = f G - f g (T_s' - T_0') with
+    g = 1/(R_s + dz0/(2 k0)), R_s = (swe/f/rho)/k_Jordan (the pack is swe/f
+    thick on the covered area) -- computed here independently of the solver."""
     T, theta = _column()
     swe = jnp.array([1.0, 20.0, 60.0])
+    f = jnp.array([0.05, 0.3, 0.8]) if partial else jnp.ones(3)
     T_s0 = jnp.array([260.0, 255.0, 250.0])
     G = jnp.array([-20.0, -35.0, 10.0])
     dt = 1800.0
     Ts, Tn = solve_snow_node_soil_thermal(T_s0, swe, T, theta, _GRID, _HYD, _TH, G, dt,
-                                          snow_cover=jnp.ones_like(swe))
+                                          snow_cover=f, empty_cover_swe=0.0)
     rho = _TH.snow_bulk_density_kg_m3
-    R = swe / rho / snow_thermal_conductivity(rho)
+    R = swe / f / rho / snow_thermal_conductivity(rho)
     k0 = compute_thermal_conductivity(theta, _HYD, _TH)[:, 0]
     g = 1.0 / (R + 0.5 * _GRID.dz[0] / k0)
     lhs = constants.c_pi * swe * (Ts - T_s0) / dt
-    rhs = G - g * (Ts - Tn[:, 0])
+    rhs = f * G - f * g * (Ts - Tn[:, 0])
     np.testing.assert_allclose(np.asarray(lhs), np.asarray(rhs), atol=1e-8)
 
 
-@pytest.mark.parametrize("n_sub,ft,src", [(1, False, False), (4, False, False),
-                                         (1, True, False), (4, False, True)])
-def test_column_enthalpy_ledger(n_sub, ft, src):
+@pytest.mark.parametrize("n_sub,ft,src,partial", [
+    (1, False, False, False), (4, False, False, False), (1, True, False, False),
+    (4, False, True, False), (1, False, False, True), (4, True, True, True)])
+def test_column_enthalpy_ledger(n_sub, ft, src, partial):
     """dE = (G + Q_geo + sum(layer_source)) dt + (swe' - swe) c_ice (T_s - Tf)."""
     T, theta = _column()
     swe_old = jnp.array([10.0, 40.0, 0.0])       # col 2: pack created this step
@@ -121,7 +125,9 @@ def test_column_enthalpy_ledger(n_sub, ft, src):
     S = (jnp.linspace(-4.0, 6.0, 10)[None, :] * jnp.ones((3, 1))) if src else None
     Ts, Tn = solve_snow_node_soil_thermal(T_s0, swe_new, T, theta, _GRID, _HYD, th,
                                           G, dt, layer_source=S, n_substeps=n_sub,
-                                          snow_cover=jnp.ones_like(swe_new))
+                                          snow_cover=(jnp.array([0.2, 0.6, 0.05]) if partial
+                                                      else jnp.ones_like(swe_new)),
+                                          empty_cover_swe=50.0 if partial else 0.0)
     flux = G + _TH.Q_geothermal + (jnp.sum(S, axis=-1) if src else 0.0)
     if ft:
         # Freeze/thaw: the solver's identity is in the linearised metric (the
@@ -152,7 +158,7 @@ def test_deep_snow_insulates_warm_soil():
         Ts, T = carry
         return solve_snow_node_soil_thermal(
             Ts, swe, T, theta, _GRID, _HYD, _TH, lam * (T_air - Ts), 1800.0,
-            snow_cover=jnp.ones_like(swe))
+            snow_cover=jnp.ones_like(swe), empty_cover_swe=0.0)
 
     T0 = jnp.full((2, 10), 272.0)
     Ts, T = jax.jit(lambda c: jax.lax.fori_loop(0, 30 * 48, body, c))(
@@ -263,7 +269,7 @@ def test_solver_gradient_matches_finite_difference():
         Ts, Tn = solve_snow_node_soil_thermal(jnp.array([258.0, 258.0]), swe, T,
                                          theta, _GRID, _HYD, _TH,
                                          jnp.array([-30.0, -30.0]), 1800.0,
-                                         n_substeps=2, snow_cover=jnp.ones_like(swe))
+                                         n_substeps=2, snow_cover=jnp.ones_like(swe), empty_cover_swe=0.0)
         return jnp.sum(Tn[:, 1]) + jnp.sum(Ts)
 
     swe = jnp.array([15.0, 40.0])
@@ -466,11 +472,11 @@ def test_substeps_equal_repeated_single_steps_with_freeze_thaw():
     n, dt = 6, 1800.0
     Ts6, Tn6 = solve_snow_node_soil_thermal(T_s0, swe, T, theta, _GRID, _HYD, th,
                                        G, dt, n_substeps=n,
-                                       snow_cover=jnp.ones_like(swe))
+                                       snow_cover=jnp.ones_like(swe), empty_cover_swe=0.0)
     Ts, Tn = T_s0, T
     for _ in range(n):
         Ts, Tn = solve_snow_node_soil_thermal(Ts, swe, Tn, theta, _GRID, _HYD, th,
-                                         G, dt / n, snow_cover=jnp.ones_like(swe))
+                                         G, dt / n, snow_cover=jnp.ones_like(swe), empty_cover_swe=0.0)
     np.testing.assert_allclose(np.asarray(Tn6), np.asarray(Tn), rtol=1e-13)
     np.testing.assert_allclose(np.asarray(Ts6), np.asarray(Ts), rtol=1e-13)
 

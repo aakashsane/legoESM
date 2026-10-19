@@ -836,7 +836,8 @@ def _step_multilayer_land_impl(
                 # (taken from the node's enthalpy at the next step start).
                 _Ts, _Tg = solve_snow_node_soil_thermal(
                     T_snow0, snow, T_soil, theta, grid,
-                    config.hydraulics, config.thermal, G, dt_, snow_cover=f_snow)
+                    config.hydraulics, config.thermal, G, dt_, snow_cover=f_snow,
+                    empty_cover_swe=config.land_albedo.snow_depth_crit)
                 return _node_skin(_Ts, _Tg[:, 0], f_snow)
             T_tent = solve_soil_thermal(
                 T_soil, theta, grid,
@@ -1699,9 +1700,10 @@ def _step_multilayer_land_impl(
                 _T_start, snow_new, T_soil, richards_out.theta_new, grid,
                 config.hydraulics, config.thermal,
                 G_surface + _store_heat / dt, dt,
-                snow_cover=snow_cover_fraction(jnp.maximum(snow_new, 0.0),
-                                               config.land_albedo),
-                **_thermal_kw)
+                # Same cover as the canopy closure that produced G (as the
+                # layered pack's final solve); the exported skin re-evaluates it.
+                snow_cover=f_snow,
+                empty_cover_swe=config.land_albedo.snow_depth_crit, **_thermal_kw)
         else:
             T_soil_new = solve_soil_thermal(
                 T_soil, richards_out.theta_new, grid,
@@ -1781,10 +1783,10 @@ def _step_multilayer_land_impl(
     # --- Post-step surface state for coupler ---
     T_surface_new = T_soil_new[:, 0]
     # Radiative / humidity skin: the snow-blended surface on the layered branch
-    # (post-step cover), the top soil layer otherwise.  The carbon cycle keeps
-    # the soil-top temperature.
-    # Snow thermal node: the snow surface, at most freezing (a pack's heat
-    # above T_freeze is melt, released at the next step start).
+    # and with the snow thermal node (post-step cover; the node enters at most
+    # at freezing, a pack's heat above T_freeze is melt released at the next
+    # step start), the top soil layer otherwise.  The carbon cycle keeps the
+    # soil-top temperature.
     if layered:
         T_skin_new = _snow_skin(pack, T_surface_new,
                                 snow_cover_fraction(snow_new, config.land_albedo))
@@ -1916,7 +1918,7 @@ def _step_multilayer_land_impl(
         beta_effective_new = jnp.where(has_snow_new, 1.0, beta_new)
         q_sfc_new = (forcing.q_lowest
                      + beta_effective_new * (q_sat_sfc_new - forcing.q_lowest))
-    if layered and surface_out.q_surface is not None:
+    if _partial_cover and surface_out.q_surface is not None:
         # Fractional cover: export the humidity the scheme solved its flux with
         # (SimpleSEB's is already f-blended), never the binary ice override,
         # so the exported humidity and the realised flux agree in sign.

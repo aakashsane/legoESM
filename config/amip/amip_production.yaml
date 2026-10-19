@@ -271,7 +271,9 @@ cloud_q_c_diagnostic: 0.0
 conv_cloud_condensate: 0.0
 clubb_trop_cloud_top_press: 15000.0
 # CLUBB tunables written explicitly (values = the port's CLUBBParams defaults,
-# the CAM6 clubb namelist).  clubb_c_K10h has no consumer in this port.
+# the CAM6 clubb namelist).  clubb_c_K10h (0.3) is read by the eddy-scalar
+# rtm/thlm diffusion (CAM l_do_expldiff_rtm_thlm) but has no deck key, so the
+# CLUBBParams default applies.
 clubb_c14: 2.2
 clubb_c8: 4.2
 clubb_c11: 0.7

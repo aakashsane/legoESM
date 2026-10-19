@@ -172,7 +172,7 @@ def test_liquid_is_replaced_not_accumulated():
         wet["u"], wet["v"], wet["T"], wet["q_v"], moments,
         wet["p_full"], wet["p_half"], wet["z_full"], wet["z_half"],
         wet["T_sfc"], wet["q_sfc"], wet["rho"], dt, _ON, q_c=wet["q_c"])
-    rcm = np.asarray(flip_vertical(diags["rcm_grid"]))
+    rcm = np.asarray(flip_vertical(diags["rcm"]))
     # 1 ULP, not exact: the host applies a TENDENCY, so the value round-trips
     # through q_c + dt*(rcm - q_c)/dt rather than being assigned.
     np.testing.assert_allclose(q_c_final, rcm, rtol=1e-15, atol=1e-20)
@@ -191,7 +191,8 @@ def test_liquid_is_replaced_not_accumulated():
 
 
 def test_vapour_stays_non_negative():
-    """``q_v = rt - rcm`` is safe because the closure clips rcm against rt."""
+    """``q_v = rt - rcm`` on this column stays non-negative.  Not guaranteed in
+    general: the in-layer rcm CAM hands over is not clipped against rt."""
     col = _column(q_c_amp=3.0e-4)
     dt = 300.0
     out, _ = _run(_ON, col, dt=dt)
@@ -372,16 +373,14 @@ def test_a_non_clubb_scheme_refuses_the_lever():
             model_type="mpas", cld_macmic_num_steps=3)
 
 
-def test_partition_uses_the_grid_mean_liquid_not_the_in_cloud_one():
-    """The tracer written back must be GRID-MEAN water, not in-cloud water.
+def test_partition_hands_the_host_the_in_layer_liquid_as_cam_does():
+    """The tracer written back is CLUBB's rcm AFTER the cloud-cover overwrite.
 
-    ``compute_cloud_cover`` converts the closure's grid-mean ``rcm`` into the
-    IN-LAYER value by dividing by a vertical cloud fraction <= 1 (the reference
-    keeps the two as separate outputs; this port overwrites one with the other).
-    The in-cloud value is therefore the LARGER number and is no longer bounded
-    by total water the way ``clip_rcm`` bounded the grid mean, so writing it into
-    a grid-mean host tracer would both overstate the liquid and let ``q_v = rt -
-    rcm`` go negative.  This pins the right key.
+    With ``l_use_cloud_cover = .true.`` the reference overwrites rcm with
+    ``rcm_in_layer`` (pdf_closure_module.F90:4340-4348) and CAM writes that rcm
+    into the host liquid (clubb_intr.F90 cesm2_1_rel 1991, 2159-2160; user
+    decision 2026-10-19).  The in-layer value is the grid mean divided by a
+    vertical cloud fraction <= 1 at cloud edges, so the two keys differ there.
     """
     from legoesm.atmosphere.physics.turbulence.clubb import (
         clubb_step, flip_vertical,
@@ -398,7 +397,7 @@ def test_partition_uses_the_grid_mean_liquid_not_the_in_cloud_one():
     in_cloud = np.asarray(flip_vertical(diags["rcm"]))
     applied = np.asarray(col["q_c"] + dt * out.dq_c_dt)
     # 1 ULP for the same reason as above: this is a tendency round trip.
-    np.testing.assert_allclose(applied, grid, rtol=1e-15, atol=1e-20)
+    np.testing.assert_allclose(applied, in_cloud, rtol=1e-15, atol=1e-20)
     # And the two really are different, or this test proves nothing.  They agree
     # in the cloud INTERIOR by construction -- compute_cloud_cover rewrites only
     # the levels at a cloud top, a cloud base or an isolated cloudy layer -- so

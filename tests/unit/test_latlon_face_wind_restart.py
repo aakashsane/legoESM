@@ -177,7 +177,7 @@ def test_sfno_run_drops_saved_face_winds(tmp_path):
     """A run that does not carry face winds (here SFNO) drops saved ones on
     entering the run, so its checkpoints never re-save them next to a newer
     state.  The winds are handed over directly: SFNO restarts refuse lat-lon
-    checkpoints, so no real load reaches this guard."""
+    checkpoints, so no normal load brings saved face winds into this guard."""
     c = _cfg(tmp_path / "sfno", 1)
     d = ModelDriver(c._replace(
         grid=GridConfig(grid_type="gaussian", resolution=5, nlev=4),

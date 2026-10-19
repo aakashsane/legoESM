@@ -240,6 +240,20 @@ def _isolate_corner_fill_process_state():
     halo._corner_fill_traced.update(saved[2])
 
 
+
+@pytest.fixture(autouse=True)
+def _undo_mpas_gc_freeze():
+    """An MPAS run past its first hour freezes the process heap once per
+    process.  Undo it after each test, so later tests neither inherit a frozen
+    heap nor skip the freeze path."""
+    import gc
+    yield
+    import legoesm.driver.model_driver as md
+    if md._GC_FROZEN[0]:
+        gc.unfreeze()
+        md._GC_FROZEN[0] = False
+
+
 @functools.cache
 def _tree_is_dirty() -> bool:
     from legoesm.io.git_provenance import git_provenance

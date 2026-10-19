@@ -118,7 +118,7 @@ def _shared_tmp_root():
     raise RuntimeError("no writable shared temp directory found")
 
 
-def _land_mask_path():
+def _land_mask_path(polar_cap=False):
     """A deterministic, spatially varying land mask, written once by rank 0.
 
     Every rank must read the SAME file, so rank 0 writes it into a shared
@@ -135,7 +135,8 @@ def _land_mask_path():
         lat = np.arange(-89.0, 90.0, 2.0)
         lon = np.arange(0.0, 360.0, 2.0)
         lon2d, lat2d = np.meshgrid(lon, lat)
-        lsm = np.clip(0.5 * (1.0 + np.sin(np.deg2rad(3.0 * lon2d))
+        lsm = (lat2d > 60.0).astype(float) if polar_cap else np.clip(
+            0.5 * (1.0 + np.sin(np.deg2rad(3.0 * lon2d))
                              * np.cos(np.deg2rad(2.0 * lat2d))), 0.0, 1.0)
         xr.Dataset({"lsm": (("lat", "lon"), lsm)},
                    coords={"lat": lat, "lon": lon}).to_netcdf(path)
@@ -174,7 +175,8 @@ def _surfdata_or_none():
 
 
 def _build(distributed, mask_path, output_dir=None, fix_mass=True,
-           land_surface_scheme="simple_seb", land_ic=""):
+           land_surface_scheme="simple_seb", land_ic="",
+           turbulence="none", **extra):
     cfg = ExperimentConfig(
         grid=GridConfig(grid_type="mpas", resolution=RES, nlev=NLEV,
                         vertical_coord="sigma"),
@@ -182,7 +184,7 @@ def _build(distributed, mask_path, output_dir=None, fix_mass=True,
                             fix_mass=fix_mass),
         output=OutputConfig(output_dir="", diag_days=0),
         days=DAYS, dataset="analytical", radiation="gray",
-        convection="none", turbulence="none", precision="fp64",
+        convection="none", turbulence=turbulence, precision="fp64",
         land_mask_path=mask_path, use_multilayer_land=True,
         surfdata_path=SURFDATA,
         multilayer_n_layers=N_SOIL, multilayer_soil_depth=2.5,
@@ -203,6 +205,7 @@ def _build(distributed, mask_path, output_dir=None, fix_mass=True,
         land_params_refresh=(land_surface_scheme == "two_leaf"),
         land_ic_path=land_ic,
         distributed=distributed,
+        **extra,
     )
     d = ModelDriver(cfg, output_dir=output_dir or tempfile.mkdtemp())
     d.setup()
@@ -646,6 +649,37 @@ def test_spun_up_land_ic_scatters_to_the_same_columns_the_serial_run_gets():
     if MPI.COMM_WORLD.Get_rank() == 0:
         print(f"\n[land IC] {len(ref_cols)} per-column leaves scattered "
               f"exactly, {len(varying)} of them spatially varying")
+
+
+def test_rank_with_no_land_runs_and_checkpoints_with_its_neighbours():
+    """A rank whose cells are all ocean must take the same land path as its
+    land-holding neighbours: their land halo exchange and checkpoint gathers
+    are point-to-point/collective, so a rank that skips them leaves the others
+    blocked (8-node AMIP, 2026-10-18: 4 of 128 ranks had no land).  Land only
+    north of 60N, so at np>=4 some rank owns none; the land-flux handoff and
+    land stress are on, so the exchange carries every land field."""
+    comm = MPI.COMM_WORLD
+    if comm.Get_size() < 4:
+        pytest.skip("needs mpirun -n >= 4 for a rank without land")
+    mask = _land_mask_path(polar_cap=True)
+    out = _shared_tmpdir("noland_")
+    kw = dict(turbulence="louis", land_beta_soil=True,
+              land_stress_from_land=True)
+    d = _build(True, mask, output_dir=out, **kw)
+    has = comm.allgather(bool(np.any(np.asarray(d._f_land) > 0.0)))
+    assert not all(has), (
+        f"every rank holds land ({has}): the case under test never happens")
+    assert any(has), f"no rank holds land ({has})"
+    assert d.run() == "COMPLETED"
+    assert np.isfinite(np.asarray(d.state.u.data)).all()
+    d.save_checkpoint(step=int(DAYS * 86400 / DT), day=float(DAYS))
+    comm.Barrier()
+    ckpt = os.path.join(out, f"checkpoint_day_{int(round(float(DAYS))):04d}.npz")
+    d2 = _build(True, mask, output_dir=out, **kw)
+    d2.load_checkpoint(ckpt)
+    n_owned = d._voronoi_layout.partition.n_owned_cells
+    assert _bitwise_equal(np.asarray(d2._land_ml_state.T_soil)[:n_owned],
+                          np.asarray(d._land_ml_state.T_soil)[:n_owned])
 
 
 if __name__ == "__main__":

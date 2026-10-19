@@ -92,9 +92,15 @@ def test_record_reader_closes_and_all_active_plants_refuse(tmp_path):
 def test_refusal_diagnostic_localizes_east_active_word(tmp_path):
     path = tmp_path / "east.bin"
     write_record(path, plant="east_closure")
+    control = tmp_path / "control.nc"
+    instrumented = tmp_path / "instrumented.nc"
+    write_restart(control, 0.0)
+    write_restart(instrumented, 0.0)
     result = subprocess.run(
         [sys.executable, str(TOOL / "diagnose_closure_refusal.py"),
-         "--record", str(path)],
+         "--record", str(path),
+         "--control-restart", str(control),
+         "--instrumented-restart", str(instrumented)],
         check=False, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
@@ -103,6 +109,8 @@ def test_refusal_diagnostic_localizes_east_active_word(tmp_path):
     assert report["eastmost_wet_output_column_zero_based"] == 120
     assert report["all_failing_words_are_eastmost_wet_column"] is True
     assert report["max_abs_residual_without_eastmost_wet_column_m_s"] == 0.0
+    assert report["existing_recorder_passive_identity"]["status"] == "PASS"
+    assert report["existing_recorder_passive_identity"]["unequal_words"] == 0
 
 
 def test_restart_passivity_is_word_exact_and_signed_zero_plant_refuses(tmp_path):
@@ -161,6 +169,25 @@ def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
             text=True, capture_output=True, check=False)
         assert result.returncode == 0, result.stderr
         assert "r14_" in target.read_text()
+
+    namelist = tmp_path / "namelist_cfg"
+    namelist.write_bytes((
+        TOOL.parent / "configs/gyre_omip_l2_phase3_namelist_cfg"
+    ).read_bytes())
+    for patch in (
+        TOOL.parent / "nemo_testcase_l2_gyre_hires/"
+        "namelist_cfg_r4_smag_kt10.patch",
+        TOOL / "namelist_cfg_r4_smag_30d_verify.patch",
+    ):
+        result = subprocess.run(
+            ["patch", "-s", "--fuzz=0", str(namelist)],
+            input=patch.read_text(), text=True, capture_output=True, check=False)
+        assert result.returncode == 0, result.stderr
+    resolved = namelist.read_text()
+    assert 'cn_exp      =  "GYRE_R4_SMAG_R15_VERIFY"' in resolved
+    assert "nn_itend    =     720" in resolved
+    assert "nn_stock    =     720" in resolved
+    assert "nn_write    =      24" in resolved
 
     run = (TOOL / "run.sh").read_text()
     assert "RANKS must be 1" in run

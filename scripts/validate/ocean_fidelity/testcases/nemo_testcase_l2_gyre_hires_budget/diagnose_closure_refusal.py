@@ -15,12 +15,17 @@ from package_records import (
     CLOSURE_BAR_ABS_M_S,
     HALO,
     TERMS,
+    compare_restarts,
     decode_record,
     sha256,
 )
 
 
-def diagnose(path: Path) -> dict[str, object]:
+def diagnose(
+    path: Path,
+    control_restart: Path | None = None,
+    instrumented_restart: Path | None = None,
+) -> dict[str, object]:
     """Report the exact support of a pointwise closure refusal."""
     record = decode_record(path)
     mask = np.asarray(record["mask"], dtype=bool)
@@ -45,7 +50,7 @@ def diagnose(path: Path) -> dict[str, object]:
         ["git", "-C", str(Path(__file__).resolve().parents[5]),
          "rev-parse", "HEAD"],
         check=True, capture_output=True, text=True).stdout.strip()
-    return {
+    report = {
         "status": "REFUSE",
         "record": str(path.resolve()),
         "record_sha256": sha256(path),
@@ -72,15 +77,25 @@ def diagnose(path: Path) -> dict[str, object]:
         "all_failing_words_are_eastmost_wet_column": bool(
             fail_i.size and np.all(fail_i == eastmost)),
     }
+    if control_restart is not None and instrumented_restart is not None:
+        report["existing_recorder_passive_identity"] = compare_restarts(
+            control_restart, instrumented_restart)
+    return report
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record", type=Path, required=True)
+    parser.add_argument("--control-restart", type=Path)
+    parser.add_argument("--instrumented-restart", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
-        report = diagnose(args.record)
+        if (args.control_restart is None) != (args.instrumented_restart is None):
+            raise ValueError(
+                "control and instrumented restarts must be supplied together")
+        report = diagnose(
+            args.record, args.control_restart, args.instrumented_restart)
         payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
         if args.output is not None:
             args.output.parent.mkdir(parents=True, exist_ok=True)

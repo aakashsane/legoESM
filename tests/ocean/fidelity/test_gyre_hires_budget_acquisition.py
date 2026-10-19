@@ -224,14 +224,26 @@ def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
 def test_nemo_writer_has_independent_total_and_no_stress_companion():
     module = (TOOL / "gyre_r14_budget.F90").read_text()
     zdf = (TOOL / "dynzdf_round14.patch").read_text()
+
+    def require_aligned_companion(source: str) -> None:
+        assert "DIMENSION(jpi,jpkm1)" in source
+        assert "DIMENSION(T1Di(0),jpkm1)      ::   zr14_vnostress" not in source
+
     assert "pv_final(:,:) - zr14_entry(:,:)" in module
     assert "pv_no_stress(:,1) - zr14_pre_zdf(:,kj)" in module
     assert "r14_zdf_pre_row" in module
     assert "zr14_entry(:,kj) + prdt" not in module
     assert "zr14_stress(:,kj) = pv_full(:,1) - pv_no_stress(:,1)" in module
     assert "zr14_vnostress" in zdf
-    assert "DIMENSION(jpi,jpkm1)" in zdf
-    assert "DIMENSION(T1Di(0),jpkm1)      ::   zr14_vnostress" not in zdf
+    require_aligned_companion(zdf)
+    pre_fix = subprocess.run(
+        ["git", "-C", str(ROOT), "show",
+         "c708a7d2e83232d008cce19df2f42802f15c6f54:"
+         "scripts/validate/ocean_fidelity/testcases/"
+         "nemo_testcase_l2_gyre_hires_budget/dynzdf_round14.patch"],
+        check=True, capture_output=True, text=True).stdout
+    with pytest.raises(AssertionError):
+        require_aligned_companion(pre_fix)
     assert "CALL r14_zdf_pre_row( jj, pvv(:,jj,:,Kaa) )" in zdf
     assert "CALL r14_zdf_row( jj, zr14_vnostress" in zdf
     # The control would be vacuous if it reused the already-solved production

@@ -129,10 +129,14 @@ OPEN, in order:
 
 ## Tests
 
-The focused writer/admission battery reports `13 passed`; the acquisition
-module alone reports `6 passed`.  The clean-tree NEMO preflight ends in
-`PREFLIGHT_OK`.  The broader lane battery and citation-gate totals are recorded
-in the landed commit after this receipt is citation-checked.
+The broader CPU/x64 lane battery reports `240 passed, 5 deselected` in
+561.65 seconds; the five exclusions are inherited slow controls.  The focused
+writer/admission subset is 13 of those passes, with 6 acquisition tests.  The
+source guard explicitly applies its condition to the incoming pre-fix blob and
+proves that exact reversion fails.  The clean-tree NEMO preflight ends in
+`PREFLIGHT_OK`.  The citation gate passes both mapped citations with no
+unmapped or failing entries; shifting the first citation by two lines produces
+the expected nonzero exit and `SYMBOL-NOT-AT-LINE` refusal.
 
 ## Compiled-source citations
 

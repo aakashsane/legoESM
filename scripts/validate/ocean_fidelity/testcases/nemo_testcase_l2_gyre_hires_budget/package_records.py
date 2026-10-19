@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,6 +29,15 @@ STEPS_PER_DAY = 24
 CLOSURE_BAR_ABS_M_S = 1.0e-12
 MAGIC = b"NEMO_R14_GYRBUD "
 HALO = 2
+REGISTRATION_SOURCE_SHA256 = (
+    "480a45f3d7f5e02bd5c4771316bae668e59ee33aaeab87a73c47a6212edf5174"
+)
+PREREGISTRATION_REPO_PATH = (
+    "docs/ocean/fidelity/testcases/"
+    "nemo_testcases_l2_gyre_hires_round14_preregistration.md"
+)
+REQUIRED_RESTART_VARIABLES = frozenset(
+    {"kt", "sshn", "un", "vn", "tn", "sn", "en", "avt_k", "avm_k"})
 
 
 def sha256(path: Path) -> str:
@@ -38,7 +48,7 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def read_record(path: Path) -> dict[str, object]:
+def read_record(path: Path, *, expected_day: int | None = None) -> dict[str, object]:
     """Read one fixed-layout Fortran stream and remove the two-cell halo."""
     raw = path.read_bytes()
     header_bytes = 16 + 9 * 4 + 2 * 8
@@ -51,6 +61,10 @@ def read_record(path: Path) -> dict[str, object]:
         raise ValueError(f"{path.name}: unsupported header {values}")
     if step != day * STEPS_PER_DAY or dt_s != 3600.0:
         raise ValueError(f"{path.name}: day/step/dt cadence is inconsistent")
+    if expected_day is not None and day != expected_day:
+        raise ValueError(
+            f"{path.name}: header day {day} does not match filename day "
+            f"{expected_day}")
     if closure_bar != CLOSURE_BAR_ABS_M_S:
         raise ValueError(f"{path.name}: closure bar changed to {closure_bar}")
     words = np.frombuffer(raw, dtype="<f8", offset=header_bytes)
@@ -108,6 +122,11 @@ def compare_restarts(control: Path, instrumented: Path) -> dict[str, object]:
                 "restart numeric-variable registry changed: "
                 f"only_control={sorted(left_names - right_names)}, "
                 f"only_instrumented={sorted(right_names - left_names)}")
+        missing = sorted(REQUIRED_RESTART_VARIABLES - left_names)
+        if missing:
+            raise ValueError(
+                "restart lacks required prognostic providers: "
+                + ", ".join(missing))
         for name in sorted(left_names):
             a = np.asarray(left.variables[name][:])
             b = np.asarray(right.variables[name][:])
@@ -133,17 +152,45 @@ def compare_restarts(control: Path, instrumented: Path) -> dict[str, object]:
                     "unequal_words": unequal,
                     "max_abs": maximum,
                 })
+    if compared_words <= 0:
+        raise ValueError("restart passivity compared zero numeric words")
     return {
         "provider": "nemo",
         "status": "PASS" if unequal_words == 0 else "REFUSE",
         "unequal_words": unequal_words,
         "compared_words": compared_words,
+        "compared_variables": sorted(left_names),
         "moved_variables": moved_variables,
         "control_restart": control.name,
         "instrumented_restart": instrumented.name,
         "control_sha256": sha256(control),
         "instrumented_sha256": sha256(instrumented),
     }
+
+
+def verify_registration(
+    preregistration: Path, registration_commit: str, producer_commit: str,
+) -> None:
+    """Require exact registered content and a producer descended from it."""
+    if sha256(preregistration) != REGISTRATION_SOURCE_SHA256:
+        raise ValueError("preregistration content differs from its registered hash")
+    repo = Path(__file__).resolve().parents[5]
+    ancestor = subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor",
+         registration_commit, producer_commit],
+        check=False, capture_output=True)
+    if ancestor.returncode != 0:
+        raise ValueError(
+            f"producer {producer_commit} does not descend from registration "
+            f"{registration_commit}")
+    registered_result = subprocess.run(
+        ["git", "-C", str(repo), "show",
+         f"{registration_commit}:{PREREGISTRATION_REPO_PATH}"],
+        check=False, capture_output=True)
+    if (registered_result.returncode != 0
+            or hashlib.sha256(registered_result.stdout).hexdigest()
+            != REGISTRATION_SOURCE_SHA256):
+        raise ValueError("registration commit does not contain the pinned document")
 
 
 def package(
@@ -158,12 +205,13 @@ def package(
     if len(producer_commit) != 40 or any(
             char not in "0123456789abcdef" for char in producer_commit):
         raise ValueError("producer commit must be a lowercase forty-character SHA")
+    verify_registration(preregistration, registration_commit, producer_commit)
     records = []
     for day in range(FIRST_DAY, LAST_DAY + 1):
         path = run_root / f"oracle_gyre_r14_budget_day{day:04d}.bin"
         if not path.is_file():
             raise ValueError(f"missing {path.name}")
-        records.append(read_record(path))
+        records.append(read_record(path, expected_day=day))
     extras = sorted(run_root.glob("oracle_gyre_r14_budget_day*.bin"))
     if len(extras) != len(records):
         raise ValueError(
@@ -180,6 +228,15 @@ def package(
     (run_root / passive_name).write_text(
         json.dumps(passive, indent=2, sort_keys=True) + "\n")
 
+    control_binary = control_restart.parent / "nemo"
+    instrumented_binary = instrumented_restart.parent / "nemo"
+    control_binary_sha256 = sha256(control_binary)
+    instrumented_binary_sha256 = sha256(instrumented_binary)
+    binary_sha256 = sha256(binary)
+    if not (control_binary_sha256 == instrumented_binary_sha256
+            == binary_sha256):
+        raise ValueError("control and instrumented runs did not use one binary")
+
     prereg = {
         "terms": list(TERMS),
         "closure_bar_abs_m_s": CLOSURE_BAR_ABS_M_S,
@@ -192,9 +249,10 @@ def package(
     (run_root / prereg_name).write_text(
         json.dumps(prereg, indent=2, sort_keys=True) + "\n")
 
-    namelist_name = "resolved_namelist_lines.txt"
+    namelist_name = "resolved_output.namelist.dyn"
     source_name = "writer_source.sha256"
-    (run_root / namelist_name).write_bytes(resolved_namelist.read_bytes())
+    namelist_bytes = resolved_namelist.read_bytes()
+    (run_root / namelist_name).write_bytes(namelist_bytes)
     (run_root / source_name).write_bytes(writer_source_manifest.read_bytes())
 
     data_name = "momentum_budget_terms.npz"
@@ -207,7 +265,7 @@ def package(
     with (run_root / data_name).open("wb") as stream:
         np.savez_compressed(
             stream,
-            day=np.arange(FIRST_DAY, LAST_DAY + 1, dtype=np.int64),
+            day=np.asarray([record["day"] for record in records], dtype=np.int64),
             surface_v_wet_mask=mask,
             **arrays)
 
@@ -231,7 +289,9 @@ def package(
         "resolved_namelist_sha256": sha256(run_root / namelist_name),
         "writer_source_manifest_artifact": source_name,
         "writer_source_manifest_sha256": sha256(run_root / source_name),
-        "binary_sha256": sha256(binary),
+        "binary_sha256": binary_sha256,
+        "control_binary_sha256": control_binary_sha256,
+        "instrumented_binary_sha256": instrumented_binary_sha256,
         "same_binary_control": True,
         "activation_environment": "GYRE_R14_BUDGET=1",
         "control_environment": "GYRE_R14_BUDGET=0",

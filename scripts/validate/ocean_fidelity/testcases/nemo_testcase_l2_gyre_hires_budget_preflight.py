@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -46,6 +47,69 @@ BUDGET_MASK_KEY = "surface_v_wet_mask"
 BUDGET_CONTRACT = "momentum_budget_manifest.json"
 REGISTERED_CLOSURE_BAR_ABS_M_S = 1.0e-12
 REGISTRATION_COMMIT = "3293fd5f49c332038cc61735ed1dc7bbc0f7b798"
+REGISTRATION_SOURCE_SHA256 = (
+    "480a45f3d7f5e02bd5c4771316bae668e59ee33aaeab87a73c47a6212edf5174"
+)
+REPO = Path(__file__).resolve().parents[4]
+LEGO_SOURCE_PATHS = (
+    "scripts/run/run_gyre_hires.py",
+    "packages/ocean/legoesm/ocean/dynamics/ocean_model_latlon_cgrid.py",
+    "scripts/run/run_gyre_hires_budget_gpu.sh",
+    "docs/ocean/fidelity/testcases/"
+    "nemo_testcases_l2_gyre_hires_round14_preregistration.md",
+)
+NEMO_TRACKED_SOURCE_PATHS = (
+    "scripts/validate/ocean_fidelity/testcases/"
+    "nemo_testcase_l2_gyre_hires_budget/gyre_r14_budget.F90",
+    "scripts/validate/ocean_fidelity/testcases/"
+    "nemo_testcase_l2_gyre_hires_budget/stprk3_stg_round14.patch",
+    "scripts/validate/ocean_fidelity/testcases/"
+    "nemo_testcase_l2_gyre_hires_budget/dynadv_round14.patch",
+    "scripts/validate/ocean_fidelity/testcases/"
+    "nemo_testcase_l2_gyre_hires_budget/dynzdf_round14.patch",
+    "scripts/validate/ocean_fidelity/testcases/"
+    "nemo_testcase_l2_gyre_hires_budget/namelist_cfg_r4_smag_180d.patch",
+    "scripts/validate/ocean_fidelity/testcases/"
+    "nemo_testcase_l2_gyre_hires_budget/package_records.py",
+    "scripts/validate/ocean_fidelity/testcases/"
+    "nemo_testcase_l2_gyre_hires_budget/run.sh",
+    "scripts/validate/ocean_fidelity/testcases/"
+    "nemo_testcase_l2_gyre_hires/namelist_cfg_r4_smag_kt10.patch",
+    "scripts/validate/ocean_fidelity/testcases/"
+    "nemo_testcase_l2_gyre_hires/deck.sh",
+    "scripts/validate/ocean_fidelity/testcases/configs/"
+    "gyre_omip_l2_phase3_namelist_cfg",
+    "docs/ocean/fidelity/testcases/"
+    "nemo_testcases_l2_gyre_hires_round14_preregistration.md",
+)
+NEMO_EXTERNAL_SOURCE_HASHES = {
+    "oracle:cfgs/GYRE_OMIP_L2_P3/MY_SRC/dynhpg.F90":
+        "6c15901bfcb58e768523ef1afab7f8365085afe6a8e86be810a7ee2078e4bd73",
+    "oracle:cfgs/GYRE_OMIP_L2_P3/MY_SRC/dynspg_ts.F90":
+        "c50912ba02772fe11eb8a164b05b05077a993ca88058e5ed01aad1d16d6b8b82",
+    "oracle:cfgs/GYRE_OMIP_L2_P3/MY_SRC/dynvor.F90":
+        "06b1fd76c44e62d926e896e53006153ace4ec87d759b7d17765ad37462c6b8de",
+    "oracle:cfgs/GYRE_OMIP_L2_P3/MY_SRC/eosbn2.F90":
+        "8ffe1b56ce90b8924ecebc37c618c6be67a521aa190c102d48e136533fcf5067",
+    "oracle:cfgs/GYRE_OMIP_L2_P3/MY_SRC/stprk3.F90":
+        "11c6a66407eda69f3c8ceb57a37ed5f6565cefe4d8e32c0dee453ad021906fee",
+    "oracle:cfgs/GYRE_OMIP_L2_P3/MY_SRC/stprk3_stg.F90":
+        "4d3493de0e837654e961a30ac4684801d87b4226ed9e8c226922db780d699afe",
+    "oracle:cfgs/GYRE_OMIP_L2_P3/MY_SRC/traadv.F90":
+        "4807fa59ce15237ac04ef8e84f39c77b3da4080aa9ad1effa517fb79e1a6968d",
+    "oracle:cfgs/GYRE_OMIP_L2_P3/EXP00/namelist_ref":
+        "b04f2ce4d12aa247ae3b707483d25cf2d38d0b3cf8817d71d33e66918fd81cfd",
+    "oracle:cfgs/GYRE_OMIP_L2_P3/cpp_GYRE_OMIP_L2_P3.fcm":
+        "54bd2cead92cee1eaa8cb257c7f7cdea8fe39cc9fb0f47c7c0d5853b909b34b7",
+    "oracle:src/OCE/DYN/dynadv.F90":
+        "d6802c22ce6a3b0307b556cbb20326f04f916711e2288f68e7a67dc7beb94a6a",
+    "oracle:src/OCE/DYN/dynzdf.F90":
+        "4489773bb4cafe46123cfd658b1561188215c9ce0db11f6859fb27cb019bb174",
+    "oracle:arch/arch-conda.fcm":
+        "64cf1b90f611936bbb92a7514800f8a8e9c8365be7b3cf9a9963f1615c5c836a",
+}
+NEMO_REQUIRED_RESTART_VARIABLES = {
+    "kt", "sshn", "un", "vn", "tn", "sn", "en", "avt_k", "avm_k"}
 BUDGET_CONTRACT_REQUIREMENTS = {
     "status": "complete",
     "window_days": [START_DAY, END_DAY],
@@ -81,6 +145,71 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def producer_descends_from_registration(producer_commit: str) -> bool:
+    """Return true only for a local commit containing the preregistration."""
+    if re.fullmatch(r"[0-9a-f]{40}", producer_commit) is None:
+        return False
+    return subprocess.run(
+        ["git", "-C", str(REPO), "merge-base", "--is-ancestor",
+         REGISTRATION_COMMIT, producer_commit],
+        check=False, capture_output=True).returncode == 0
+
+
+def git_blob_sha256(commit: str, path: str) -> str | None:
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "show", f"{commit}:{path}"],
+        check=False, capture_output=True)
+    if result.returncode != 0:
+        return None
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
+def audit_source_manifest(
+    path: Path, provider: str, producer_commit: str,
+) -> list[str]:
+    """Bind the declared source set to producer blobs or pinned oracle files."""
+    errors: list[str] = []
+    rows: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+        if match is None:
+            errors.append("writer source manifest has a malformed row")
+            continue
+        digest, name = match.groups()
+        if name in rows:
+            errors.append(f"writer source manifest repeats {name}")
+        rows[name] = digest
+    if provider == "legoesm":
+        expected_names = set(LEGO_SOURCE_PATHS)
+        expected = {
+            name: git_blob_sha256(producer_commit, name)
+            for name in LEGO_SOURCE_PATHS
+        }
+    else:
+        expected_names = {
+            *(f"repo:{name}" for name in NEMO_TRACKED_SOURCE_PATHS),
+            *NEMO_EXTERNAL_SOURCE_HASHES,
+        }
+        expected = {
+            **{
+                f"repo:{name}": git_blob_sha256(producer_commit, name)
+                for name in NEMO_TRACKED_SOURCE_PATHS
+            },
+            **NEMO_EXTERNAL_SOURCE_HASHES,
+        }
+    if set(rows) != expected_names:
+        errors.append(
+            "writer source manifest registry differs: "
+            f"missing={sorted(expected_names - set(rows))}, "
+            f"extra={sorted(set(rows) - expected_names)}")
+    for name in sorted(expected_names & set(rows)):
+        if expected[name] is None or rows[name] != expected[name]:
+            errors.append(f"writer source manifest digest differs for {name}")
+    return errors
 
 
 def required_legoesm_keys() -> tuple[str, ...]:
@@ -254,6 +383,10 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
         if (not isinstance(producer_commit, str)
                 or re.fullmatch(r"[0-9a-f]{40}", producer_commit) is None):
             errors.append("contract producer_commit is not a lowercase Git SHA")
+        elif not producer_descends_from_registration(producer_commit):
+            errors.append(
+                "contract producer_commit does not descend from the "
+                "preregistration commit")
         if contract.get("deck") != "r4_smag":
             errors.append("contract deck is not r4_smag")
         expected_flavour = {
@@ -314,6 +447,8 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
             ("data_artifact", "data_sha256"),
             ("passive_identity_artifact", "passive_identity_sha256"),
             ("preregistration_artifact", "preregistration_sha256"),
+            ("writer_source_manifest_artifact",
+             "writer_source_manifest_sha256"),
         ):
             name = contract.get(name_key)
             digest = contract.get(digest_key)
@@ -329,7 +464,32 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
             else:
                 verified_artifacts[name_key] = artifact
 
+        source_path = verified_artifacts.get("writer_source_manifest_artifact")
+        if source_path is not None:
+            errors.extend(audit_source_manifest(
+                source_path, provider, producer_commit))
+
         if provider == "nemo":
+            binary_digest = contract.get("binary_sha256")
+            if (not isinstance(binary_digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", binary_digest) is None):
+                errors.append("NEMO contract lacks a binary SHA-256")
+            elif (contract.get("control_binary_sha256") != binary_digest
+                  or contract.get("instrumented_binary_sha256")
+                  != binary_digest):
+                errors.append(
+                    "NEMO control and instrumented binary hashes differ")
+            if contract.get("same_binary_control") is not True:
+                errors.append("NEMO contract does not prove a same-binary control")
+            instrumented_binary = root / "nemo"
+            control_binary = root.parent / "control" / "nemo"
+            for label, binary in (
+                    ("instrumented", instrumented_binary),
+                    ("control", control_binary)):
+                if not binary.is_file():
+                    errors.append(f"NEMO {label} binary artifact is missing")
+                elif sha256(binary) != binary_digest:
+                    errors.append(f"NEMO {label} binary artifact hash differs")
             name = contract.get("resolved_namelist_artifact")
             digest = contract.get("resolved_namelist_sha256")
             if (not isinstance(name, str) or not name
@@ -348,9 +508,9 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                         r"\bnn_GYRE\s*=\s*4\b",
                         r"\brn_Dt\s*=\s*3600\.",
                         r"\brn_Ld\s*=\s*25000\.",
-                        r"\bln_dynldf_lap\s*=\s*\.false\.",
-                        r"\bln_dynldf_blp\s*=\s*\.true\.",
-                        r"\bln_dynldf_lev\s*=\s*\.true\.",
+                        r"\bln_dynldf_lap\s*=\s*(?:\.false\.|F)(?:\s|,)",
+                        r"\bln_dynldf_blp\s*=\s*(?:\.true\.|T)(?:\s|,)",
+                        r"\bln_dynldf_lev\s*=\s*(?:\.true\.|T)(?:\s|,)",
                         r"\bnn_ahm_ijk_t\s*=\s*32\b",
                         r"\brn_csmc\s*=\s*3\.5\b",
                         r"\brn_minfac\s*=\s*1\.0\b",
@@ -410,8 +570,48 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                 passive = json.loads(passive_path.read_text())
                 if (passive.get("provider") != provider
                         or passive.get("status") != "PASS"
-                        or passive.get("unequal_words") != 0):
+                        or passive.get("unequal_words") != 0
+                        or not isinstance(passive.get("compared_words"), int)
+                        or passive.get("compared_words") <= 0):
                     errors.append("passive identity artifact does not prove zero moved words")
+                if provider == "nemo":
+                    control_digest = passive.get("control_sha256")
+                    instrumented_digest = passive.get("instrumented_sha256")
+                    if (not isinstance(control_digest, str)
+                            or re.fullmatch(r"[0-9a-f]{64}", control_digest) is None
+                            or control_digest != instrumented_digest):
+                        errors.append(
+                            "NEMO passive artifact does not hash identical restarts")
+                    compared_variables = passive.get("compared_variables")
+                    if (not isinstance(compared_variables, list)
+                            or not NEMO_REQUIRED_RESTART_VARIABLES.issubset(
+                                compared_variables)):
+                        errors.append(
+                            "NEMO passive artifact lacks the required provider registry")
+                    control_name = passive.get("control_restart")
+                    instrumented_name = passive.get("instrumented_restart")
+                    if (not isinstance(control_name, str)
+                            or Path(control_name).name != control_name
+                            or not isinstance(instrumented_name, str)
+                            or Path(instrumented_name).name != instrumented_name):
+                        errors.append("NEMO passive restart names are unsafe")
+                    else:
+                        actual_restarts = (
+                            (root.parent / "control" / control_name,
+                             control_digest),
+                            (root / instrumented_name, instrumented_digest),
+                        )
+                        for restart, digest in actual_restarts:
+                            if (not restart.is_file()
+                                    or sha256(restart) != digest):
+                                errors.append(
+                                    f"NEMO passive restart artifact differs: {restart}")
+                elif (passive.get("window_entry_day") != START_DAY
+                      or passive.get("steps") != 24
+                      or not isinstance(passive.get("compared_leaves"), int)
+                      or passive.get("compared_leaves") <= 0):
+                    errors.append(
+                        "legoesm passive artifact does not cover day 30 for 24 steps")
             except (OSError, ValueError) as exc:
                 errors.append(f"cannot read passive identity artifact: {exc}")
 
@@ -423,7 +623,9 @@ def audit_budget_contract(root: Path, provider: str) -> dict:
                 if (prereg.get("terms") != list(REGISTERED_TERMS)
                         or prereg.get("closure_bar_abs_m_s") != closure_bar
                         or prereg.get("registered_before_data") is not True
-                        or commit != REGISTRATION_COMMIT):
+                        or commit != REGISTRATION_COMMIT
+                        or prereg.get("source_sha256")
+                        != REGISTRATION_SOURCE_SHA256):
                     errors.append(
                         "preregistration artifact does not pin terms, bar, "
                         "and prior commit")

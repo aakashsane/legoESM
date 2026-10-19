@@ -13436,8 +13436,11 @@ class LatLonCGridOceanModel:
             if self._nemo_ws_test_hooks.momentum_budget_trace:
                 # The recorder's extra return graph is diagnostic only.  Its
                 # prognostic carry comes from the same independently compiled
-                # ordinary step used by the live-operand gate, which makes the
-                # recorder passive by construction and by the identity test.
+                # ordinary step used by the live-operand gate.  The independent
+                # total must come from that ordinary graph too: otherwise the
+                # rows and the total could close inside a diagnostic graph whose
+                # last-bit trajectory differs from production, while the
+                # substituted public state made the passivity control vacuous.
                 state_after = self._step_live_operand_reference_jitted(
                     state, dt, freshwater, surface_forcing, sponge,
                     grid=grid, vertex_mask=vertex_mask, t_seconds=t_seconds,
@@ -13446,7 +13449,11 @@ class LatLonCGridOceanModel:
                     _vertical_K_test_override=_vertical_K_test_override,
                     _nemo_stage1_zad_eta_after_override=(
                         _nemo_stage1_zad_eta_after_override))
-                return result._replace(state_after=state_after)
+                production_total = (
+                    state_after.v.data[1:, :, 0] - state.v.data[1:, :, 0])
+                return result._replace(
+                    state_after=state_after,
+                    total_increment=production_total)
             if (self._nemo_ws_test_hooks.tracer_process_trace is not None
                     or self._nemo_ws_test_hooks.tracer_ldf_diagnostics is not None):
                 # As with the live stage operands, returning extra arrays can

@@ -4,7 +4,7 @@
     USE zdf_oce        ! ocean vertical physics variables
     USE zdfdrg         ! vertical physics: top/bottom drag coef.
     USE dynadv    ,ONLY: ln_dynadv_vec    ! dynamics: advection form
-+   USE gyre_r14_budget, ONLY : r14_is_active, r14_zdf_row
++   USE gyre_r14_budget, ONLY : r14_is_active, r14_zdf_pre_row, r14_zdf_row
     USE dynldf_iso,ONLY: akzu, akzv       ! dynamics: vertical component of rotated lateral mixing
     USE ldfdyn         ! lateral diffusion: eddy viscosity coef. and type of operator
     USE trd_oce        ! trends: ocean variables
@@ -16,7 +16,15 @@
        REAL(wp), DIMENSION(:,:,:), ALLOCATABLE ::   ztrdu, ztrdv   !  -      -
        !!---------------------------------------------------------------------
        !
-@@ -493,6 +495,11 @@
+@@ -140,6 +142,7 @@
+ #endif
+             END_2D
+          ENDIF
++         IF( r14_is_active() ) CALL r14_zdf_pre_row( jj, pvv(:,jj,:,Kaa) )
+          !                    ! add top/bottom friction
+          !     With split-explicit free surface, barotropic stress is treated explicitly Update velocities at the bottom.
+          !     J. Chanut: The bottom stress is computed considering after barotropic velocities, which does
+@@ -493,6 +496,11 @@
           !   The solution (after velocity) is in 2d array va
           !-----------------------------------------------------------------------
           !
@@ -28,7 +36,7 @@
           DO_2Dik( 0, 0,    2, jpkm1, 1 )   !==  First recurrence : Dk = Dk - Lk * Uk-1 / Dk-1   (increasing k)  ==
              zwd(ji,jk) = zwd(ji,jk) - zwi(ji,jk) * zws(ji,jk-1) / zwd(ji,jk-1)
           END_2D
-@@ -518,6 +523,20 @@
+@@ -518,6 +526,20 @@
           DO_2Dik( 0, 0,   jpk-2, 1, -1 )
              pvv(ji,jj,jk,Kaa) = ( pvv(ji,jj,jk,Kaa) - zws(ji,jk) * pvv(ji,jj,jk+1,Kaa) ) / zwd(ji,jk)
           END_2D
@@ -44,7 +52,7 @@
 +               zr14_vnostress(ji,jk) = ( zr14_vnostress(ji,jk) - &
 +                  & zws(ji,jk) * zr14_vnostress(ji,jk+1) ) / zwd(ji,jk)
 +            END_2D
-+            CALL r14_zdf_row( jj, rDt, zr14_vnostress, pvv(:,jj,:,Kaa) )
++            CALL r14_zdf_row( jj, zr14_vnostress, pvv(:,jj,:,Kaa) )
 +         ENDIF
           !
           !                                            ! ================= !

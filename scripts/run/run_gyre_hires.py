@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -42,6 +43,9 @@ BUDGET_TERMS = (
 )
 BUDGET_CLOSURE_BAR_ABS_M_S = 1.0e-12
 BUDGET_REGISTRATION_COMMIT = "3293fd5f49c332038cc61735ed1dc7bbc0f7b798"
+BUDGET_REGISTRATION_SHA256 = (
+    "480a45f3d7f5e02bd5c4771316bae668e59ee33aaeab87a73c47a6212edf5174"
+)
 BUDGET_PREREGISTRATION = (
     "docs/ocean/fidelity/testcases/"
     "nemo_testcases_l2_gyre_hires_round14_preregistration.md"
@@ -69,8 +73,60 @@ def validate_physical_gpu(mode: str, physical_gpu: int | None, environ=None) -> 
 
 def _write_json_atomic(path: Path, payload: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    temporary.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n")
     temporary.replace(path)
+
+
+def validate_budget_registration(repo: Path, producer_commit: str) -> Path:
+    """Prove the producer descends from the exact pre-data registration."""
+    preregistration = repo / BUDGET_PREREGISTRATION
+    if not preregistration.is_file():
+        raise RuntimeError(f"missing budget preregistration {preregistration}")
+    digest = hashlib.sha256(preregistration.read_bytes()).hexdigest()
+    if digest != BUDGET_REGISTRATION_SHA256:
+        raise RuntimeError(
+            "budget preregistration content moved after registration: "
+            f"{digest} != {BUDGET_REGISTRATION_SHA256}")
+    if subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor",
+             BUDGET_REGISTRATION_COMMIT, producer_commit],
+            check=False, capture_output=True).returncode != 0:
+        raise RuntimeError(
+            f"producer {producer_commit} does not descend from budget "
+            f"registration {BUDGET_REGISTRATION_COMMIT}")
+    registered = subprocess.run(
+        ["git", "-C", str(repo), "show",
+         f"{BUDGET_REGISTRATION_COMMIT}:{BUDGET_PREREGISTRATION}"],
+        check=True, capture_output=True).stdout
+    if hashlib.sha256(registered).hexdigest() != BUDGET_REGISTRATION_SHA256:
+        raise RuntimeError("registered budget document does not match its pinned hash")
+    return preregistration
+
+
+def validate_budget_day(
+    values: tuple[np.ndarray, ...], wet_mask: np.ndarray,
+) -> float:
+    """Refuse non-finite active words and return registered closure."""
+    if len(values) != len(BUDGET_TERMS):
+        raise RuntimeError(
+            f"momentum budget has {len(values)} rows, expected {len(BUDGET_TERMS)}")
+    mask = np.asarray(wet_mask, dtype=bool)
+    if mask.ndim != 2 or not bool(np.any(mask)):
+        raise RuntimeError("momentum budget wet mask is empty or not 2-D")
+    stacked = np.stack(values)
+    if stacked.shape[1:] != mask.shape:
+        raise RuntimeError(
+            f"momentum budget shape {stacked.shape[1:]} does not match mask {mask.shape}")
+    if not bool(np.all(np.isfinite(stacked[:, mask]))):
+        raise RuntimeError("momentum budget contains a non-finite active word")
+    components = np.sum(stacked[:-1], axis=0)
+    closure = float(np.max(np.abs(components[mask] - stacked[-1][mask])))
+    if not np.isfinite(closure) or closure > BUDGET_CLOSURE_BAR_ABS_M_S:
+        raise RuntimeError(
+            f"momentum budget closure {closure} exceeds "
+            f"{BUDGET_CLOSURE_BAR_ABS_M_S}")
+    return closure
 
 
 def _write_hashes_atomic(path: Path, hashes: dict[str, str]) -> None:
@@ -372,6 +428,7 @@ def state_bitwise_identity(left, right) -> dict[str, object]:
         "status": "PASS" if unequal_words == 0 else "REFUSE",
         "unequal_words": unequal_words,
         "compared_words": compared_words,
+        "compared_leaves": len(left_leaves),
         "moved_leaves": moved_leaves,
     }
 
@@ -790,13 +847,7 @@ def run_long(
             budget_tuple = tuple(
                 np.asarray(value, dtype=np.float64)
                 for value in budget_means)
-            components = np.sum(np.stack(budget_tuple[:-1]), axis=0)
-            closure = float(np.max(np.abs(
-                components[budget_mask] - budget_tuple[-1][budget_mask])))
-            if closure > BUDGET_CLOSURE_BAR_ABS_M_S:
-                raise RuntimeError(
-                    f"momentum budget day {day} closure {closure} exceeds "
-                    f"{BUDGET_CLOSURE_BAR_ABS_M_S}")
+            closure = validate_budget_day(budget_tuple, budget_mask)
             budget_closures.append(closure)
             budget_records.append(budget_tuple)
         elif (full_state_window is not None
@@ -855,9 +906,8 @@ def run_long(
         if (budget_mask is None or passive_identity is None
                 or len(budget_records) != 151):
             raise RuntimeError("momentum budget did not produce all 151 days")
-        prereg_path = Path(__file__).resolve().parents[2] / BUDGET_PREREGISTRATION
-        if not prereg_path.is_file():
-            raise RuntimeError(f"missing budget preregistration {prereg_path}")
+        repo = Path(__file__).resolve().parents[2]
+        prereg_path = validate_budget_registration(repo, commit)
         preregistration = {
             "terms": list(BUDGET_TERMS),
             "closure_bar_abs_m_s": BUDGET_CLOSURE_BAR_ABS_M_S,
@@ -922,6 +972,24 @@ def run_long(
             "preregistration_sha256": hashlib.sha256(
                 (output / prereg_name).read_bytes()).hexdigest(),
         }
+        source_name = "momentum_budget_source.sha256"
+        source_paths = (
+            Path(__file__),
+            repo / "packages/ocean/legoesm/ocean/dynamics/"
+            "ocean_model_latlon_cgrid.py",
+            repo / "scripts/run/run_gyre_hires_budget_gpu.sh",
+            prereg_path,
+        )
+        source_hashes = {
+            str(path.relative_to(repo)): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in source_paths
+        }
+        _write_hashes_atomic(output / source_name, source_hashes)
+        budget_contract.update({
+            "writer_source_manifest_artifact": source_name,
+            "writer_source_manifest_sha256": hashlib.sha256(
+                (output / source_name).read_bytes()).hexdigest(),
+        })
         _write_json_atomic(
             output / "momentum_budget_manifest.json", budget_contract)
     completed = manifest | {
@@ -973,6 +1041,9 @@ def main(argv=None) -> int:
             args.full_state_window, days=args.days)
         momentum_budget_window = parse_day_window(
             args.momentum_budget_window, days=args.days)
+        if momentum_budget_window is not None:
+            validate_budget_registration(
+                Path(__file__).resolve().parents[2], git_sha())
         manifest = run_long(
             namelist, args.output, deck=args.deck, days=args.days,
             mode=args.mode,

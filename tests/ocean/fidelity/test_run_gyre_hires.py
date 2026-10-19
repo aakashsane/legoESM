@@ -64,6 +64,33 @@ def test_budget_request_refuses_every_unregistered_variant():
             DRIVER.validate_momentum_budget_request(**planted)
 
 
+def test_budget_registration_is_exact_and_prior_to_producer():
+    producer = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    path = DRIVER.validate_budget_registration(ROOT, producer)
+    assert DRIVER.hashlib.sha256(path.read_bytes()).hexdigest() == (
+        DRIVER.BUDGET_REGISTRATION_SHA256)
+    with pytest.raises(RuntimeError, match="does not descend"):
+        DRIVER.validate_budget_registration(ROOT, "0" * 40)
+
+
+def test_budget_day_refuses_nonfinite_and_nonclosing_active_words():
+    mask = np.ones((2, 3), dtype=bool)
+    values = tuple(np.zeros(mask.shape) for _ in DRIVER.BUDGET_TERMS)
+    assert DRIVER.validate_budget_day(values, mask) == 0.0
+    nonfinite = list(values)
+    nonfinite[0] = nonfinite[0].copy()
+    nonfinite[0][0, 0] = np.nan
+    with pytest.raises(RuntimeError, match="non-finite active"):
+        DRIVER.validate_budget_day(tuple(nonfinite), mask)
+    nonclosing = list(values)
+    nonclosing[0] = nonclosing[0].copy()
+    nonclosing[0][0, 0] = 1.0e-8
+    with pytest.raises(RuntimeError, match="closure"):
+        DRIVER.validate_budget_day(tuple(nonclosing), mask)
+
+
 def test_bitwise_identity_detects_signed_zero_word():
     positive = (np.asarray([0.0, 1.0], dtype=np.float64),)
     negative = (np.asarray([-0.0, 1.0], dtype=np.float64),)
@@ -335,6 +362,10 @@ def test_real_r4_smag_budget_trace_is_passive_and_closes():
     mask = np.asarray(record.wet_mask, dtype=bool)
     assert terms[0].shape == mask.shape
     assert int(np.count_nonzero(mask)) == 9480
+    expected_total = (
+        np.asarray(expected.v.data)[1:, :, 0]
+        - np.asarray(entry.v.data)[1:, :, 0])
+    np.testing.assert_array_equal(terms[-1], expected_total)
     closure = np.sum(np.stack(terms[:-1]), axis=0) - terms[-1]
     assert float(np.max(np.abs(closure[mask]))) <= (
         DRIVER.BUDGET_CLOSURE_BAR_ABS_M_S)

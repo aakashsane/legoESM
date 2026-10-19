@@ -47,8 +47,10 @@ def write_restart(path: Path, value: float) -> None:
 
     with Dataset(path, "w") as dataset:
         dataset.createDimension("x", 2)
-        variable = dataset.createVariable("v", "f8", ("x",))
-        variable[:] = np.asarray([value, 1.0], dtype=np.float64)
+        for name in sorted(PACKAGER.REQUIRED_RESTART_VARIABLES):
+            variable = dataset.createVariable(name, "f8", ("x",))
+            first = value if name == "vn" else 1.0
+            variable[:] = np.asarray([first, 1.0], dtype=np.float64)
 
 
 def test_record_reader_closes_and_all_active_plants_refuse(tmp_path):
@@ -72,6 +74,11 @@ def test_record_reader_closes_and_all_active_plants_refuse(tmp_path):
     with pytest.raises(ValueError, match="magic"):
         PACKAGER.read_record(bad_magic)
 
+    wrong_day = tmp_path / "oracle_gyre_r14_budget_day0030.bin"
+    write_record(wrong_day, day=31)
+    with pytest.raises(ValueError, match="does not match filename day"):
+        PACKAGER.read_record(wrong_day, expected_day=30)
+
 
 def test_restart_passivity_is_word_exact_and_signed_zero_plant_refuses(tmp_path):
     control = tmp_path / "control.nc"
@@ -84,6 +91,14 @@ def test_restart_passivity_is_word_exact_and_signed_zero_plant_refuses(tmp_path)
     planted = PACKAGER.compare_restarts(control, moved)
     assert planted["status"] == "REFUSE"
     assert planted["unequal_words"] == 1
+
+    empty_control = tmp_path / "empty-control.nc"
+    empty_instrumented = tmp_path / "empty-instrumented.nc"
+    from netCDF4 import Dataset
+    Dataset(empty_control, "w").close()
+    Dataset(empty_instrumented, "w").close()
+    with pytest.raises(ValueError, match="required prognostic providers"):
+        PACKAGER.compare_restarts(empty_control, empty_instrumented)
 
 
 def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
@@ -114,6 +129,15 @@ def test_nemo_patches_apply_exactly_and_scripts_fail_closed(tmp_path):
     assert "rg " not in run
     assert "mpirun -np 1" in run
     assert "--run" in run
+    assert "merge-base --is-ancestor" in run
+    assert '[[ "$actual_my_src" == "$EXPECTED_MY_SRC" ]]' in run
+    assert "REFUSE_MY_SRC_REGISTRY" in run
+    assert "unexpected_override.F90" not in run
+    for override in (
+            "dynhpg.F90", "dynspg_ts.F90", "dynvor.F90", "eosbn2.F90",
+            "stprk3.F90", "stprk3_stg.F90", "traadv.F90", "namelist_ref"):
+        assert f'check_hash "$SOURCE_ROOT/{"EXP00" if override == "namelist_ref" else "MY_SRC"}/{override}"' in run
+    assert "output.namelist.dyn" in run
     assert subprocess.run(
         ["bash", "-n", str(TOOL / "run.sh")], check=False).returncode == 0
 
@@ -122,10 +146,13 @@ def test_nemo_writer_has_independent_total_and_no_stress_companion():
     module = (TOOL / "gyre_r14_budget.F90").read_text()
     zdf = (TOOL / "dynzdf_round14.patch").read_text()
     assert "pv_final(:,:) - zr14_entry(:,:)" in module
-    assert "pv_no_stress(:,1) - ( zr14_entry(:,kj) + prdt" in module
+    assert "pv_no_stress(:,1) - zr14_pre_zdf(:,kj)" in module
+    assert "r14_zdf_pre_row" in module
+    assert "zr14_entry(:,kj) + prdt" not in module
     assert "zr14_stress(:,kj) = pv_full(:,1) - pv_no_stress(:,1)" in module
     assert "zr14_vnostress" in zdf
-    assert "CALL r14_zdf_row( jj, rDt" in zdf
+    assert "CALL r14_zdf_pre_row( jj, pvv(:,jj,:,Kaa) )" in zdf
+    assert "CALL r14_zdf_row( jj, zr14_vnostress" in zdf
     # The control would be vacuous if it reused the already-solved production
     # V field; it must run a second forward/back substitution from the saved
     # pre-stress RHS.

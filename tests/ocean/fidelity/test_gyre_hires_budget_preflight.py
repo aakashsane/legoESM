@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -90,6 +91,9 @@ def test_complete_state_archives_do_not_admit_unobserved_production_terms(
 
 def test_online_contract_can_pass_and_each_semantic_plant_refuses(
         tmp_path, monkeypatch):
+    producer_commit = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True).stdout.strip()
     roots = {provider: tmp_path / provider for provider in ("legoesm", "nemo")}
     for provider, root in roots.items():
         root.mkdir()
@@ -102,19 +106,60 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
             surface_v_wet_mask=np.ones((1, 1), dtype=bool),
             **terms,
         )
-        (root / "passive.json").write_text(json.dumps({
+        passive = {
             "provider": provider, "status": "PASS", "unequal_words": 0,
-        }))
+            "compared_words": 10,
+        }
+        if provider == "nemo":
+            control = tmp_path / "control"
+            control.mkdir(exist_ok=True)
+            (root / "nemo").write_bytes(b"same-binary")
+            (control / "nemo").write_bytes(b"same-binary")
+            (root / "instrumented.nc").write_bytes(b"same-restart")
+            (control / "control.nc").write_bytes(b"same-restart")
+            passive.update({
+                "control_sha256": PREFLIGHT.sha256(control / "control.nc"),
+                "instrumented_sha256": PREFLIGHT.sha256(
+                    root / "instrumented.nc"),
+                "control_restart": "control.nc",
+                "instrumented_restart": "instrumented.nc",
+                "compared_variables": sorted(
+                    PREFLIGHT.NEMO_REQUIRED_RESTART_VARIABLES),
+            })
+        else:
+            passive.update({
+                "window_entry_day": 30, "steps": 24,
+                "compared_leaves": 3,
+            })
+        (root / "passive.json").write_text(json.dumps(passive))
         (root / "preregistration.json").write_text(json.dumps({
             "terms": list(PREFLIGHT.REGISTERED_TERMS),
             "closure_bar_abs_m_s": PREFLIGHT.REGISTERED_CLOSURE_BAR_ABS_M_S,
             "registered_before_data": True,
             "registration_commit": PREFLIGHT.REGISTRATION_COMMIT,
+            "source_sha256": PREFLIGHT.REGISTRATION_SOURCE_SHA256,
         }))
+        if provider == "legoesm":
+            source_rows = {
+                path: PREFLIGHT.git_blob_sha256(producer_commit, path)
+                for path in PREFLIGHT.LEGO_SOURCE_PATHS
+            }
+        else:
+            source_rows = {
+                **{
+                    f"repo:{path}": PREFLIGHT.git_blob_sha256(
+                        producer_commit, path)
+                    for path in PREFLIGHT.NEMO_TRACKED_SOURCE_PATHS
+                },
+                **PREFLIGHT.NEMO_EXTERNAL_SOURCE_HASHES,
+            }
+        assert all(source_rows.values())
+        (root / "source.sha256").write_text("".join(
+            f"{digest}  {name}\n" for name, digest in source_rows.items()))
         contract = {
             "provider": provider,
             **PREFLIGHT.BUDGET_CONTRACT_REQUIREMENTS,
-            "producer_commit": "b" * 40,
+            "producer_commit": producer_commit,
             "deck": "r4_smag",
             "precision_flavour": (
                 "native-fp64-gpu" if provider == "legoesm"
@@ -129,6 +174,9 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
             "preregistration_artifact": "preregistration.json",
             "preregistration_sha256": PREFLIGHT.sha256(
                 root / "preregistration.json"),
+            "writer_source_manifest_artifact": "source.sha256",
+            "writer_source_manifest_sha256": PREFLIGHT.sha256(
+                root / "source.sha256"),
         }
         if provider == "legoesm":
             contract["physical_gpu_index"] = 0
@@ -153,6 +201,11 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
                 "rn_csmc = 3.5\nrn_minfac = 1.0\nrn_maxfac = 1.0\n")
             contract["resolved_namelist_artifact"] = namelist.name
             contract["resolved_namelist_sha256"] = PREFLIGHT.sha256(namelist)
+            binary_digest = PREFLIGHT.sha256(root / "nemo")
+            contract["binary_sha256"] = binary_digest
+            contract["control_binary_sha256"] = binary_digest
+            contract["instrumented_binary_sha256"] = binary_digest
+            contract["same_binary_control"] = True
         (root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(contract))
 
     monkeypatch.setattr(
@@ -190,6 +243,11 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
         ("data_sha256", "0" * 64),
         ("passive_identity_sha256", "0" * 64),
         ("preregistration_sha256", "0" * 64),
+        ("writer_source_manifest_sha256", "0" * 64),
+        ("producer_commit", "0" * 40),
+        ("binary_sha256", "not-a-digest"),
+        ("control_binary_sha256", "c" * 64),
+        ("same_binary_control", False),
     ):
         planted = dict(nemo_contract)
         planted[key] = bad
@@ -200,8 +258,44 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
     (roots["nemo"] / PREFLIGHT.BUDGET_CONTRACT).write_text(
         json.dumps(nemo_contract))
 
-    # A correctly hashed but non-closing active term must still refuse.
+    # Self-consistent invented source and binary digests used to pass because
+    # only their syntax was checked.  Bind both to admitted artifacts/blobs.
     nemo_root = roots["nemo"]
+    source_original = (nemo_root / "source.sha256").read_bytes()
+    (nemo_root / "source.sha256").write_text(f"{'a' * 64}  writer.py\n")
+    planted = dict(nemo_contract)
+    planted["writer_source_manifest_sha256"] = PREFLIGHT.sha256(
+        nemo_root / "source.sha256")
+    (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(planted))
+    assert PREFLIGHT.build_report(
+        roots["legoesm"], nemo_root)["verdict"] == "ACQUISITION_NEEDED"
+    (nemo_root / "source.sha256").write_bytes(source_original)
+
+    planted = dict(nemo_contract)
+    for key in ("binary_sha256", "control_binary_sha256",
+                "instrumented_binary_sha256"):
+        planted[key] = "c" * 64
+    (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(planted))
+    assert PREFLIGHT.build_report(
+        roots["legoesm"], nemo_root)["verdict"] == "ACQUISITION_NEEDED"
+
+    passive_original = json.loads((nemo_root / "passive.json").read_text())
+    planted_passive = dict(passive_original)
+    planted_passive["control_sha256"] = planted_passive[
+        "instrumented_sha256"] = "c" * 64
+    planted_passive["compared_variables"] = []
+    (nemo_root / "passive.json").write_text(json.dumps(planted_passive))
+    planted = dict(nemo_contract)
+    planted["passive_identity_sha256"] = PREFLIGHT.sha256(
+        nemo_root / "passive.json")
+    (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(planted))
+    assert PREFLIGHT.build_report(
+        roots["legoesm"], nemo_root)["verdict"] == "ACQUISITION_NEEDED"
+    (nemo_root / "passive.json").write_text(json.dumps(passive_original))
+    (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(
+        json.dumps(nemo_contract))
+
+    # A correctly hashed but non-closing active term must still refuse.
     arrays = {
         key: np.zeros((151, 1, 1)) for key in PREFLIGHT.BUDGET_TERM_KEYS}
     arrays[PREFLIGHT.BUDGET_TERM_KEYS[0]][0, 0, 0] = 1.0
@@ -210,6 +304,24 @@ def test_online_contract_can_pass_and_each_semantic_plant_refuses(
         surface_v_wet_mask=np.ones((1, 1), dtype=bool), **arrays)
     planted = dict(nemo_contract)
     planted["data_sha256"] = PREFLIGHT.sha256(nemo_root / "terms.npz")
+    (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(planted))
+    assert PREFLIGHT.build_report(
+        roots["legoesm"], nemo_root)["verdict"] == "ACQUISITION_NEEDED"
+
+    # A correctly hashed passive artifact with zero compared state words is
+    # still vacuous and must refuse.
+    np.savez(
+        nemo_root / "terms.npz", day=np.arange(30, 181),
+        surface_v_wet_mask=np.ones((1, 1), dtype=bool),
+        **{key: np.zeros((151, 1, 1))
+           for key in PREFLIGHT.BUDGET_TERM_KEYS})
+    empty_passive = json.loads((nemo_root / "passive.json").read_text())
+    empty_passive["compared_words"] = 0
+    (nemo_root / "passive.json").write_text(json.dumps(empty_passive))
+    planted = dict(nemo_contract)
+    planted["data_sha256"] = PREFLIGHT.sha256(nemo_root / "terms.npz")
+    planted["passive_identity_sha256"] = PREFLIGHT.sha256(
+        nemo_root / "passive.json")
     (nemo_root / PREFLIGHT.BUDGET_CONTRACT).write_text(json.dumps(planted))
     assert PREFLIGHT.build_report(
         roots["legoesm"], nemo_root)["verdict"] == "ACQUISITION_NEEDED"

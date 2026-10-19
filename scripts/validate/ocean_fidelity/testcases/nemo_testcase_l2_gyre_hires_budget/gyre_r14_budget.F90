@@ -24,12 +24,13 @@ MODULE gyre_r14_budget
    REAL(wp), ALLOCATABLE, SAVE :: zr14_hpg(:,:), zr14_vor(:,:)
    REAL(wp), ALLOCATABLE, SAVE :: zr14_keg(:,:), zr14_zad(:,:)
    REAL(wp), ALLOCATABLE, SAVE :: zr14_ldf(:,:), zr14_vertical(:,:)
+   REAL(wp), ALLOCATABLE, SAVE :: zr14_pre_zdf(:,:)
    REAL(wp), ALLOCATABLE, SAVE :: zr14_stress(:,:), zr14_after_zdf(:,:)
    REAL(wp), ALLOCATABLE, SAVE :: zr14_sum(:,:,:)
 
    PUBLIC :: r14_begin, r14_after_hpg, r14_after_vor
    PUBLIC :: r14_after_keg, r14_after_zad, r14_after_ldf
-   PUBLIC :: r14_is_active, r14_zdf_row, r14_finish
+   PUBLIC :: r14_is_active, r14_zdf_pre_row, r14_zdf_row, r14_finish
 
 CONTAINS
 
@@ -60,7 +61,8 @@ CONTAINS
             &      zr14_hpg(jpi,jpj), zr14_vor(jpi,jpj),       &
             &      zr14_keg(jpi,jpj), zr14_zad(jpi,jpj),       &
             &      zr14_ldf(jpi,jpj), zr14_vertical(jpi,jpj),  &
-            &      zr14_stress(jpi,jpj), zr14_after_zdf(jpi,jpj), &
+            &      zr14_pre_zdf(jpi,jpj), zr14_stress(jpi,jpj),   &
+            &      zr14_after_zdf(jpi,jpj), &
             &      zr14_sum(jpi,jpj,jr14_terms) )
          zr14_sum(:,:,:) = 0._wp
       ENDIF
@@ -82,6 +84,7 @@ CONTAINS
          zr14_zad(:,:) = 0._wp
          zr14_ldf(:,:) = 0._wp
          zr14_vertical(:,:) = 0._wp
+         zr14_pre_zdf(:,:) = 0._wp
          zr14_stress(:,:) = 0._wp
          zr14_after_zdf(:,:) = 0._wp
       ENDIF
@@ -130,19 +133,21 @@ CONTAINS
       IF( lr14_active ) CALL r14_take_boundary( pv_now, zr14_ldf )
    END SUBROUTINE r14_after_ldf
 
-   SUBROUTINE r14_zdf_row( kj, prdt, pv_no_stress, pv_full )
+   SUBROUTINE r14_zdf_pre_row( kj, pv_pre_zdf )
       INTEGER, INTENT(in) :: kj
-      REAL(wp), INTENT(in) :: prdt
+      REAL(wp), DIMENSION(:,:), INTENT(in) :: pv_pre_zdf
+      IF( lr14_active ) zr14_pre_zdf(:,kj) = pv_pre_zdf(:,1)
+   END SUBROUTINE r14_zdf_pre_row
+
+   SUBROUTINE r14_zdf_row( kj, pv_no_stress, pv_full )
+      INTEGER, INTENT(in) :: kj
       REAL(wp), DIMENSION(:,:), INTENT(in) :: pv_no_stress, pv_full
       IF( lr14_active ) THEN
-         ! Own every no-stress effect inside dyn_zdf: its entry time update,
-         ! barotropic removal/bottom-drag RHS, and the implicit solve.  The
-         ! independently recorded explicit RHS is the only valid upstream
-         ! boundary; a snapshot taken just before the solve is already after
-         ! barotropic operations and would make the budget fail to close.
-         zr14_vertical(:,kj) = pv_no_stress(:,1) - ( zr14_entry(:,kj) + prdt * &
-            & ( zr14_hpg(:,kj) + zr14_vor(:,kj) + zr14_keg(:,kj) + &
-            &   zr14_zad(:,kj) + zr14_ldf(:,kj) ) )
+         ! The vertical row is a measured source boundary, never the closure
+         ! remainder: the independently captured post-explicit/pre-ZDF state
+         ! is subtracted from the no-surface-stress implicit solution.  Thus an
+         ! omitted explicit contributor cannot telescope into this row.
+         zr14_vertical(:,kj) = pv_no_stress(:,1) - zr14_pre_zdf(:,kj)
          zr14_stress(:,kj) = pv_full(:,1) - pv_no_stress(:,1)
          zr14_after_zdf(:,kj) = pv_full(:,1)
       ENDIF

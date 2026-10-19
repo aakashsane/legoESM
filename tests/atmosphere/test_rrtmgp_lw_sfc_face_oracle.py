@@ -12,6 +12,12 @@ clear-sky columns, overhead layer, halos); outputs come from RUNNING
 RTE+RRTMGP v1.8 (rte-rrtmgp 41c5fcd950fed09b8afe186dede266824eca7fd3,
 rrtmgp-data v1.8.2 34967d68703e682305ec4da72ee22bbe1f11b198) via
 scripts/validate/oracle/rrtmgp_lw_sfc_face/{build.sh,make_fixture.py}.
+
+Scope: the UNCOMBINED surface source pfrac(layer 1) * B(T at face 1).  The
+solver reads the combined source ``lw_combine_sources``, which at the surface
+face is sqrt(pfrac(halo) * pfrac(layer 1)) * B(T_sfc) instead of the oracle's
+pfrac(layer 1) * B(tlev(1)); that halo-pfrac gap is a separate audit finding
+and is NOT covered here.
 """
 
 from __future__ import annotations

@@ -1627,13 +1627,13 @@ CITATION_MAP = {
     'GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/stprk3_stg.f90:504,532,534': [
         'CALL dyn_zdf( kstp, Kbb, Kmm, Krhs, uu, vv, Kaa  )',
         'vv(ji,jj,jk,Kaa) = vv(ji,jj,jk,Kaa) + zvb',
-        'CALL r14_finish( kstp, rDt, vv(:,:,1,Kaa) )'],
+        'CALL r14_finish( kstp, rDt, vv(:,:,1,Kaa) )', 3],
     'GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90:161-184': [
         'zr14_vertical(:,kj) = pv_no_stress(:,1) - zr14_pre_zdf(:,kj)',
         'zr14_sum(:,:,8) = zr14_sum(:,:,8) + pv_final(:,:) - zr14_entry(:,:)',
         24],
     'ocean_model_latlon_cgrid.py:13050-13058': [
-        'if _zdf_baroclinic_only:',
+        ('if _zdf_baroclinic_only:', 3),
         'v_no_stress = v_no_stress + _v_bt_mean', 9],
     'ocean_model_latlon_cgrid.py:10425-10442': [
         'return _NEMOWSMomentumBudgetTrace(',

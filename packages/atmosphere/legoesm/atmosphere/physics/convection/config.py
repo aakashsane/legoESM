@@ -331,7 +331,7 @@ __param_spec__ = {
         "scheme_key": "atm.conv.ZhangMcFarlaneConfig",
         "excluded": {
             "limcnv_p_pa": "numerics/domain: convection top cap (40 hPa reference interface), not a closure knob",
-            "pbl_top_pa": "measurement convention: launch-search bound standing in for the host's missing pblh",
+            "pbl_top_pa": "measurement convention: launch-search bound for callers with no pblh carry",
             "parcel_tpert": "default 0 = disabled/off (PBL temperature perturbation; CAM6 CLUBB path has none)",
         },
         "params": {
@@ -723,10 +723,11 @@ class ZhangMcFarlaneConfig(NamedTuple):
         Convection is capped at the interface where the reference pressure
         crosses this value [Pa] (40 hPa, zm_conv_intr.F90:334).
     pbl_top_pa : float
-        DEPARTURE: the host does not carry the PBL height ``pblh`` that the
-        oracle's ``pblt`` launch-level bound needs, so the max-MSE launch
-        search is restricted to levels with ``p >= pbl_top_pa`` [Pa] unless
-        ``pblh`` is passed explicitly.
+        Fallback for callers that pass no PBL height ``pblh`` (no
+        ``PhysicsState.pblh`` carry): the max-MSE launch search is then
+        restricted to levels with ``p >= pbl_top_pa`` [Pa] instead of the
+        oracle's ``pblt``.  The hydrostatic/MPAS bridge passes the carried
+        ``pblh``, so this bound is not used there.
     parcel_tpert : float
         PBL temperature perturbation ``tpert`` [K] added to the parcel; 0 on
         the CAM6 CLUBB path (no scheme writes ``tpert`` there).

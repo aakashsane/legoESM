@@ -75,8 +75,17 @@ def main(argv=None):
     keys = [k for k in rc if k.startswith(("clubb_", "surface_"))] + [
         "turbulence", "cld_macmic_num_steps", "physics_update_steps", "precision"]
     bad = {k: (rc[k], rebuilt.get(k)) for k in keys if rc[k] != rebuilt.get(k)}
-    if cfg.dycore.dt != rc["dycore"]["dt"]:
-        bad["dycore.dt"] = (rc["dycore"]["dt"], cfg.dycore.dt)
+    for k in ("dt", "discretization", "column_lane"):
+        if getattr(cfg.dycore, k) != rc["dycore"].get(k, getattr(cfg.dycore, k)):
+            bad[f"dycore.{k}"] = (rc["dycore"][k], getattr(cfg.dycore, k))
+    if cfg.grid.grid_type != rc["grid"]["grid_type"]:
+        bad["grid.grid_type"] = (rc["grid"]["grid_type"], cfg.grid.grid_type)
+    # An override replaces the whole turbulence config and is not serialised.
+    if cfg.turbulence_override is not None:
+        bad["turbulence_override"] = ("unserialised", "set")
+    # The probe always hands CLUBB the host liquid (production MPAS lane).
+    if not cfg.clubb_liquid_partition:
+        bad["clubb_liquid_partition"] = (rc["clubb_liquid_partition"], False)
     if bad:
         raise SystemExit(f"rebuilt config differs from the run's: {bad}")
     ccfg = materialize_sub_config(turbulence_config_for(cfg)).clubb

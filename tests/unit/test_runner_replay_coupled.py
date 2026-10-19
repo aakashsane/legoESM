@@ -587,3 +587,8 @@ def test_coupled_atmosphere_record_continues_with_its_controls(tmp_path):
         _atm_driver(tmp_path, cfg, tag=None)._write_run_manifest()
     assert live.read_bytes() == now
     assert len(list(tmp_path.glob("run_manifest.prev-*.json"))) == 1
+    # a record some other driver wrote (no run_coupled tag) is not continued
+    other = tmp_path / "plain"
+    _atm_driver(other, cfg, tag=None)._write_run_manifest()
+    with pytest.raises(RuntimeError, match="DIFFERENT config"):
+        _atm_driver(other, longer)._write_run_manifest()

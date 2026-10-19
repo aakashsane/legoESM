@@ -193,7 +193,11 @@ untouched incoming tip.  Both tips first differ in SSH at model step 3, keep
 the seasonal forcing clock and phase bit-equal, and produce the same maximum
 surface-temperature residue, `1.652047387779021e-10 K`; the registered
 `1e-12 K` control bar still fails.  The classification therefore remains
-`COMPOSITION`, and round 14 did not move this inherited debt.
+`COMPOSITION`, and round 14 did not move this inherited debt.  After the
+incoming-tip control established that attribution, the repinned current-tip
+test passed in 424.96 seconds.  Across the seven groups and the two explicitly
+selected slow controls, the final battery is `248 passed, 3 inherited slow
+tests not selected`.
 
 Both required independent reviews finish `PASS`.  The legoESM review first
 held because the recorded total came from the same diagnostic graph, source

@@ -699,13 +699,17 @@ def solve_snow_node_soil_thermal(
     surface_conductance: jnp.ndarray | None = None,
     layer_source: jnp.ndarray | None = None,
     n_substeps: int = 1,
+    *,
+    snow_cover: jnp.ndarray,
 ) -> tuple[jnp.ndarray, jnp.ndarray]:
     """Soil heat diffusion with ONE snow thermal node over the BULK snowpack.
 
     The bulk pack (``snow_swe`` [kg/m2], one SWE reservoir) becomes a single
     node stacked on the soil and solved in the same implicit system
-    (:func:`solve_snow_soil_thermal` with one layer and whole-cell cover, as
-    CLM5 solves its snow and soil together):
+    (:func:`solve_snow_soil_thermal` with one layer on the snow-covered
+    fraction ``snow_cover`` [0-1], as CLM5 solves its snow and soil together:
+    ``f*G`` enters the node, ``(1-f)*G`` the soil top, the interface
+    conductance is f-weighted):
 
     * ``T_snow`` [K] is the SNOW-SURFACE temperature; the ground heat flux
       ``G_surface`` acts on it (explicit; a semi-implicit
@@ -747,7 +751,7 @@ def solve_snow_node_soil_thermal(
     C_snow = constants.c_pi * swe                                  # [J/m2/K]
     T_snow_cov, T_soil_cov = solve_snow_soil_thermal(
         T_snow[:, None], C_snow[:, None], jnp.zeros_like(T_soil[:, :0]),
-        R_snow, jnp.ones_like(swe), T_soil, theta, grid, hydro_config,
+        R_snow, snow_cover, T_soil, theta, grid, hydro_config,
         thermal_config, G_surface, dt, layer_source=layer_source,
         n_substeps=n_substeps)
     covered = swe > 0.0

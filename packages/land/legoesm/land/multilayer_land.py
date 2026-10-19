@@ -579,8 +579,8 @@ def _step_multilayer_land_impl(
     theta_wp_plant = resolve_plant_wilting_point(lp, config)
 
     # Start-of-step skin temperature = top soil layer, or -- with the snow
-    # thermal node on -- the snow-surface node (which mirrors the top soil
-    # wherever there is no snow).
+    # thermal node on -- the snow-cover blend of the snow-surface node and the
+    # top soil (the top soil wherever there is no snow).
     _snow_node = bool(config.thermal.snow_insulation)
     if _snow_node:
         if state.T_snow is None:
@@ -609,7 +609,12 @@ def _step_multilayer_land_impl(
             snow, state.T_snow)
         # A pack melted away entirely leaves the skin to the top soil.
         T_snow0 = jnp.where(snow > 0.0, T_snow0, T_soil[:, 0])
-        T_surface = T_snow0
+        # PHYSICAL snow cover (unscaled, as the layered pack): the node covers
+        # f of the cell; the surface sees the cover-blended skin.  Whole-cell
+        # cover of a trace pack pinned the canopy's ground at T_freeze and
+        # overheated the soil (snow-node runaway, 2026-10).
+        f_snow = snow_cover_fraction(jnp.maximum(snow, 0.0), config.land_albedo)
+        T_surface = _node_skin(T_snow0, T_soil[:, 0], f_snow)
     else:
         T_surface = T_soil[:, 0]
     ncol = T_surface.shape[0]
@@ -739,7 +744,8 @@ def _step_multilayer_land_impl(
         (fresh_snow_mass > 1e-6) & (T_surface < constants.T_freeze)
     )
     has_snow = has_existing_snow | has_surviving_fresh_snow
-    _w_ground_snow = f_snow if layered else has_snow.astype(T_surface.dtype)
+    _partial_cover = layered or _snow_node     # snow weight = cover f, not binary
+    _w_ground_snow = f_snow if _partial_cover else has_snow.astype(T_surface.dtype)
     _L_s_T = latent_heat_sublimation(T_surface)
 
     # --- Root distribution and per-layer moisture stress (shared) ---
@@ -824,15 +830,14 @@ def _step_multilayer_land_impl(
                     config.hydraulics, config.thermal, G, dt_)
                 return _snow_skin(pack._replace(T=T_s), T_g[:, 0], f_snow)
             if _snow_node:
-                # Ground node = snow surface (start-of-step snow mass).  A pack
-                # cannot be warmer than freezing: heat that would lift it above
-                # T_freeze is melt (taken from the node's enthalpy at the next
-                # step start), so the canopy sees a melting surface at T_freeze.
-                _Ts = solve_snow_node_soil_thermal(
+                # Ground = cover-blended skin of the tentative node + soil solve
+                # (start-of-step snow mass and cover).  A pack cannot be warmer
+                # than freezing: heat that would lift it above T_freeze is melt
+                # (taken from the node's enthalpy at the next step start).
+                _Ts, _Tg = solve_snow_node_soil_thermal(
                     T_snow0, snow, T_soil, theta, grid,
-                    config.hydraulics, config.thermal, G, dt_)[0]
-                return jnp.where(snow > 0.0,
-                                 jnp.minimum(_Ts, constants.T_freeze), _Ts)
+                    config.hydraulics, config.thermal, G, dt_, snow_cover=f_snow)
+                return _node_skin(_Ts, _Tg[:, 0], f_snow)
             T_tent = solve_soil_thermal(
                 T_soil, theta, grid,
                 config.hydraulics, config.thermal,
@@ -1282,7 +1287,7 @@ def _step_multilayer_land_impl(
                 "charged it (SurfaceFluxOutput.L_soil)")
         else:
             _E_ground = lhflx_ground / surface_out.L_soil
-        if layered:
+        if _partial_cover:
             _E_snow_ground = f_snow * _E_ground
             _dew_to_snow = f_snow * jnp.where(lhflx_transp < 0.0, lhflx_transp, 0.0)
         else:
@@ -1434,7 +1439,7 @@ def _step_multilayer_land_impl(
     # snow).  SimpleSEB over snow leaves soil_flux == 0, so the branch is a no-op
     # for it.
     f_veg = jnp.clip(w_frac_rz, 0.0, 1.0)
-    if layered:
+    if _partial_cover:
         # The soil stream is transpiration plus the snow-FREE share of the ground
         # latent, split like any snow-free cell.
         # (energy of the ground's snow-free water: LE_soil less the snow share
@@ -1693,7 +1698,10 @@ def _step_multilayer_land_impl(
             T_snow_new, T_soil_new = solve_snow_node_soil_thermal(
                 _T_start, snow_new, T_soil, richards_out.theta_new, grid,
                 config.hydraulics, config.thermal,
-                G_surface + _store_heat / dt, dt, **_thermal_kw)
+                G_surface + _store_heat / dt, dt,
+                snow_cover=snow_cover_fraction(jnp.maximum(snow_new, 0.0),
+                                               config.land_albedo),
+                **_thermal_kw)
         else:
             T_soil_new = solve_soil_thermal(
                 T_soil, richards_out.theta_new, grid,
@@ -1781,9 +1789,9 @@ def _step_multilayer_land_impl(
         T_skin_new = _snow_skin(pack, T_surface_new,
                                 snow_cover_fraction(snow_new, config.land_albedo))
     elif _snow_node:
-        T_skin_new = jnp.where(snow_new > 0.0,
-                               jnp.minimum(T_snow_new, constants.T_freeze),
-                               T_snow_new)
+        T_skin_new = _node_skin(
+            T_snow_new, T_surface_new,
+            snow_cover_fraction(jnp.maximum(snow_new, 0.0), config.land_albedo))
     else:
         T_skin_new = T_surface_new
     # Re-brighten the snow-free base with the END-of-step top-layer moisture so the albedo
@@ -2040,6 +2048,13 @@ def drainage_heat_to_soil(drain_sensible, runoff_surface, water_in):
     return accepted * drain_sensible
 
 
+def _node_skin(T_snow, T_soil_top, f_snow):
+    """Snow-node skin ``f*min(T_snow, T_freeze) + (1-f)*T_soil_top`` (a pack's
+    heat above freezing is melt); ``f = 0`` (no snow) gives the top soil."""
+    return (f_snow * jnp.minimum(T_snow, constants.T_freeze)
+            + (1.0 - f_snow) * T_soil_top)
+
+
 def _snow_skin(pack, T_soil_top, f_snow):
     """Snow-blended skin ``f*T_pack_top + (1-f)*T_soil_top``.  A pack top that
     still holds ice cannot be warmer than T_freeze at its surface (the excess is
@@ -2230,7 +2245,7 @@ def _hold_unsolved_columns(state, new_state, response, surface_out, forcing,
            for name in new_state._fields})
 
     # Inert-surface response for a reverted column.
-    T_prev = land_skin_temperature(state)
+    T_prev = land_skin_temperature(state, config)
     eps = jnp.full(ncol, config.emissivity_land)
     inert = dict(
         T_sfc=T_prev, T_rad=T_prev,
@@ -2398,16 +2413,17 @@ def init_multilayer_land_state(
     return state
 
 
-def land_skin_temperature(state: MultiLayerLandState) -> jnp.ndarray:
-    """Ground skin temperature [K], (ncol,): the snow-node temperature when the
-    state carries one (snow surface under snow, capped at T_freeze since a
-    pack's heat above freezing is melt; top soil elsewhere), else the top soil
-    layer."""
+def land_skin_temperature(state: MultiLayerLandState,
+                          config: MultiLayerLandConfig) -> jnp.ndarray:
+    """Ground skin temperature [K], (ncol,): with a snow-node temperature in the
+    state, the snow-cover blend of the node (capped at T_freeze, a pack's heat
+    above freezing is melt) and the top soil -- the skin the step exports;
+    else the top soil layer."""
     if state.T_snow is None:
         return state.T_soil[:, 0]
-    return jnp.where(state.snow_depth > 0.0,
-                     jnp.minimum(state.T_snow, constants.T_freeze),
-                     state.T_soil[:, 0])
+    return _node_skin(state.T_snow, state.T_soil[:, 0],
+                      snow_cover_fraction(jnp.maximum(state.snow_depth, 0.0),
+                                          config.land_albedo))
 
 
 def init_snow_temperature(state: MultiLayerLandState) -> MultiLayerLandState:

@@ -2,7 +2,9 @@
 
 Oracle: RTE+RRTMGP v1.8 (compute_Planck_source in mo_gas_optics_rrtmgp_kernels.F90),
 given tlev from the CAM6 host convention (rrtmg_state.F90: log-p interpolation between
-layer midpoints, surface interface = surface temperature, lid = top-layer temperature).
+layer midpoints, lid = top-layer temperature).  The surface interface is set to T_sfc;
+CAM6 uses (lwup/stebol)**0.25, which equals T_sfc only for a unit-emissivity surface
+(for the emissivity-0.98 RFMIP columns T_b - T_sfc = -0.2..-0.6 K).
 The fixture holds the arrays legoESM's production entry ``RRTMGP.solve_columns``
 actually hands to the LW solver (pressure/temperature/vmr incl. overhead layer and
 halos, captured by a pass-through wrapper of ``two_stream.solve_lw``) and the oracle's
@@ -142,7 +144,8 @@ for gname in (str(x) for x in opt.gas_optics_lw.idx_gases):
         continue  # gas absent in legoESM (vmr 0)
     glist.append(gname)
     vlist.append(v)
-# CAM6 host tint (rrtmg_state.F90:113-119), TOA-first then flipped to surface-first
+# CAM6 host tint (rrtmg_state.F90:113-119) with the surface level = T_sfc (not
+# (lwup/stebol)**0.25), TOA-first then flipped to surface-first
 pl, pv, tl = play[:, ::-1], plev[:, ::-1], tlay[:, ::-1]
 tint = np.empty_like(pv)
 tint[:, 0] = tl[:, 0]

@@ -1,8 +1,9 @@
 """Oracle match: longwave surface-interface temperature and level source.
 
 The surface interface (lowest face, the wall) must carry the surface
-temperature, as in the CAM6 host (rrtmg_state.F90: tint(pverp)) and as the
-docstring of ``optics_base.reconstruct_face_values`` states.  RRTMGP's level
+temperature, as the docstring of ``optics_base.reconstruct_face_values``
+states.  The CAM6 host sets it to (lwup/stebol)**0.25 (rrtmg_state.F90:
+tint(pverp)), which equals T_sfc for a unit-emissivity surface.  RRTMGP's level
 source there is ``lev_source(:,1,:) = pfrac(:,1,:) * B(tlev(:,1))``
 (mo_gas_optics_rrtmgp_kernels.F90, compute_Planck_source).
 

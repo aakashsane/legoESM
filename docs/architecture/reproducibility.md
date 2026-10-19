@@ -483,7 +483,11 @@ emits v2. Old manifests keep loading.
    atmosphere record (tagged `run_coupled`) follows the same continuation
    controls: a change of run length, checkpoint frequency or wallclock budget
    archives the old atmosphere record by a hard link and writes the new one;
-   any other change is refused, as for every atmosphere record. The
+   any other change is refused, as for every atmosphere record. A coupled
+   run does not take over a standalone atmosphere record of equal
+   configuration, nor the reverse (an untagged record beside a
+   `coupled/run_manifest.json`, written before the tag, still counts as the
+   coupled run's). The
    atmosphere record is written during setup, before the coupled record is
    checked, so a continuation the coupled record then refuses leaves the
    atmosphere record replaced (its predecessor archived beside it, where

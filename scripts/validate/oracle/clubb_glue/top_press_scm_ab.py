@@ -67,6 +67,18 @@ def main(argv=None):
     parser.set_defaults(_config_keys=frozenset(keys))
     cfg = run_amip.build_config_from_args(run_amip._postprocess_args(
         parser.parse_args(argv), parser))
+    # The rebuilt run must be the recorded one wherever CLUBB can see it.
+    rc = man["config"]["resolved_config"]
+    if man["config"]["params_applied"]:
+        raise SystemExit("run applied --params overrides; not reconstructed here")
+    rebuilt = cfg._asdict()
+    keys = [k for k in rc if k.startswith(("clubb_", "surface_"))] + [
+        "turbulence", "cld_macmic_num_steps", "physics_update_steps", "precision"]
+    bad = {k: (rc[k], rebuilt.get(k)) for k in keys if rc[k] != rebuilt.get(k)}
+    if cfg.dycore.dt != rc["dycore"]["dt"]:
+        bad["dycore.dt"] = (rc["dycore"]["dt"], cfg.dycore.dt)
+    if bad:
+        raise SystemExit(f"rebuilt config differs from the run's: {bad}")
     ccfg = materialize_sub_config(turbulence_config_for(cfg)).clubb
     if not ccfg.prognostic or float(ccfg.trop_cloud_top_press) != _P_CUT:
         raise SystemExit(f"deck CLUBB is not the production one: {ccfg.prognostic=}, "
@@ -128,8 +140,7 @@ def main(argv=None):
         for n in range(a.steps):
             *s, dT, cf = step(*s)
             dT, cf, T = np.asarray(dT), np.asarray(cf), np.asarray(s[2])
-            if not (np.all(np.isfinite(dT)) and np.all(np.isfinite(T))
-                    and np.all(np.isfinite(np.asarray(s[5])))):
+            if not all(np.all(np.isfinite(np.asarray(x))) for x in (*s, dT, cf)):
                 r["first_nonfinite_call"] = n
                 break
             r["max_abs_dTdt_K_day"] = max(r["max_abs_dTdt_K_day"],

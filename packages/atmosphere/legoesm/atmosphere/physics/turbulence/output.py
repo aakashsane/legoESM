@@ -78,10 +78,19 @@ class TurbulenceOutput(NamedTuple):
         Heat eddy diffusivity [m^2/s] on ALL ``nlev+1`` interfaces, top-first,
         shape (ncol, nlev+1): the interface values the scheme itself used in its
         vertical-diffusion solve, with zero at the model-top and surface
-        interfaces (CAM6's ``kvh`` convention for non-CLUBB schemes).  ``None``
-        for schemes that compute their diffusivity on full levels only (tke, edmf,
-        clubb_lite) and, for now, for prognostic CLUBB.  Not
-        read by any tendency; it is the input CAM6 droplet activation needs.
+        interfaces (CAM6's ``kvh`` convention for non-CLUBB schemes).  Prognostic
+        CLUBB exports its ``Kh_zm`` of the final sub-step on every interface,
+        surface included (CAM6 clubb_intr ``khzm``); CAM's zeroing above
+        ``top_lev`` is left to the consumer.  ``None`` for schemes that compute
+        their diffusivity on full levels only (tke, edmf, clubb_lite) and for
+        diagnostic CLUBB.  Not read by any tendency; it is the input CAM6 droplet
+        activation needs.
+    wp2_iface : jax.Array or None
+        Vertical-velocity variance ``w'^2`` [m^2/s^2] on the ``nlev+1``
+        interfaces, top-first, shape (ncol, nlev+1): prognostic CLUBB's moments at
+        the end of the final sub-step (what CAM6 leaves in ``WP2_nadv`` for
+        ``microp_aero``).  ``None`` for every other scheme.  Not read by any
+        tendency.
     """
     du_dt: jax.Array
     dv_dt: jax.Array
@@ -102,3 +111,4 @@ class TurbulenceOutput(NamedTuple):
     evap_sfc: jax.Array | None = None
     relvar: jax.Array | None = None
     Kh_iface: jax.Array | None = None
+    wp2_iface: jax.Array | None = None

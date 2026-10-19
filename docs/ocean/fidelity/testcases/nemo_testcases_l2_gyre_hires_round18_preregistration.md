@@ -24,11 +24,18 @@ residual is in `zwx` formation or in the completed V stencil.
 
 ## Registered substitutions and verdicts
 
-The precision, common restart, step (`kt=4321`), stage (`Kmm=2`), deck,
-western-boundary wet-span mask, native surface-V signed mean, and scalar/vector
-NEMO envelope remain exactly those of round 17.  Each arm runs the same
-production-jitted legoESM step and changes only the named already formed
-operand:
+The precision, common restart, step (`kt=4321`), stage (`Kmm=2`), deck, and
+western-boundary wet-span mask remain exactly those of round 17.  The round-17
+signed-mean comparison of a pure legoESM term against NEMO's post-hoc
+`after-before` subtraction remains reported as context, but it is not the
+round-18 causal bar: NEMO executes an in-place accumulator statement.  The
+source-associated comparison is therefore `NEMO_before + legoESM_term` against
+`NEMO_after`, with that addition performed once in float64.  The primary exact
+bar is zero unequal words on the registered native surface-V row.  This
+composition correction is committed before any transport/stencil arm is run.
+
+Each arm runs the same production-jitted legoESM step and changes only the
+named already formed operand:
 
 1. `q_only`: scalar-NEMO `zwz`, live legoESM `zwx` (the measured round-17 arm).
 2. `Fu_only`: live legoESM q, scalar-NEMO `zwx`.
@@ -40,13 +47,14 @@ final stencil remain live.  HPG and advection must be bitwise unchanged in
 every arm.  `Fv_control` must leave the complete surface-V array bitwise
 unchanged because NEMO's V statement does not read `zwy`.
 
-- **TRANSPORT FORMATION:** `q_plus_Fu` enters the scalar/vector envelope.  The
-  smallest exact subset among `q_only`, `Fu_only`, and `q_plus_Fu` names the
-  required input set.  A joint-only result is recorded as a coupled input
-  boundary, not assigned to either operand.
-- **COMPLETED STENCIL:** `q_plus_Fu` remains outside the envelope while the
-  recorded scalar NEMO before/after difference is finite and non-zero.  The
-  next walk is the final two-point arithmetic; no input-formation fix follows.
+- **TRANSPORT FORMATION:** `q_plus_Fu` makes
+  `NEMO_before + legoESM_term` bit-identical to `NEMO_after` on the registered
+  row.  The smallest exact subset among `q_only`, `Fu_only`, and `q_plus_Fu`
+  names the required input set.  A joint-only result is recorded as a coupled
+  input boundary, not assigned to either operand.
+- **COMPLETED STENCIL:** `q_plus_Fu` leaves any unequal registered word while
+  the recorded scalar NEMO before/after arrays are finite.  The next walk is
+  the final two-point arithmetic; no input-formation fix follows.
 - **INVALID:** any manifest/passivity/provider check fails, an untouched row
   moves, `Fv_control` moves V, or the recorded completed term cannot be formed
   from its before/after arrays.

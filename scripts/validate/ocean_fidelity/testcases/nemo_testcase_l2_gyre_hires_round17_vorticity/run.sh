@@ -7,14 +7,16 @@ set -Eeuo pipefail
 # differs.
 mode=preflight
 if [[ $# -gt 1 ]]; then
-  printf 'REFUSE_USAGE: %s [--run-vector|--run-scalar]\n' "$0" >&2
+  printf 'REFUSE_USAGE: %s [--preflight-vector|--preflight-scalar|--run-vector|--run-scalar]\n' "$0" >&2
   exit 64
 fi
 if [[ $# -eq 1 ]]; then
   case "$1" in
+    --preflight-vector) mode=preflight ;;
+    --preflight-scalar) mode=preflight-scalar ;;
     --run-vector) mode=vector ;;
     --run-scalar) mode=scalar ;;
-    *) printf 'REFUSE_USAGE: %s [--run-vector|--run-scalar]\n' "$0" >&2; exit 64 ;;
+    *) printf 'REFUSE_USAGE: %s [--preflight-vector|--preflight-scalar|--run-vector|--run-scalar]\n' "$0" >&2; exit 64 ;;
   esac
 fi
 
@@ -53,7 +55,7 @@ readonly EXPECTED_NEMO_COMMIT=dcc7fb8c1779fa8409e41e4ce3ab7d45b9ceb796
 readonly STAGE_RECORD_SIZE=10749372
 readonly Q_RECORD_SIZE=7801968
 
-if [[ "$mode" == scalar ]]; then
+if [[ "$mode" == scalar || "$mode" == preflight-scalar ]]; then
   readonly ARCH=conda-scalarmath
   readonly ARCH_SHA256=132f7a0500c4f0e86d8d3bf7864974a82e1dea5d83166dcfdfaf409e2ca04561
   readonly TARGET_NAME=GYRE_OMIP_L2_P3_R17VORS
@@ -159,7 +161,7 @@ for needle in GYRE_R17_WRITE NEMO_L2_R17VOR1 NEMO_L2_R17Q__1; do
 done
 printf 'PREFLIGHT: deck=r4_smag step=%s ranks=1 precision=%s restart_sha256=%s evidence=%s commit=%s\n' \
   "$STEP" "$FLAVOUR" "$COMMON_RESTART_SHA256" "$EVIDENCE" "$COMMIT"
-if [[ "$mode" == preflight ]]; then
+if [[ "$mode" == preflight || "$mode" == preflight-scalar ]]; then
   printf 'WOULD_RUN_VECTOR: EVIDENCE=%s RANKS=1 %s --run-vector\n' \
     '/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/round17/oracle_gyre_r4_smag_stage3_vorticity_vector' "$0"
   printf 'WOULD_RUN_SCALAR: EVIDENCE=%s RANKS=1 %s --run-scalar\n' \

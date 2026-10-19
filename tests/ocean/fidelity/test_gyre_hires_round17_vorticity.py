@@ -183,7 +183,8 @@ def test_model_tendency_q_override_moves_only_vorticity_component():
 def test_operator_script_pins_common_restart_and_same_binary_control():
     source = RUN.read_text(encoding="utf-8")
     for needle in (
-        "--run-vector", "--run-scalar", "-d 'OCE'", "RANKS must be 1",
+        "--preflight-vector", "--preflight-scalar", "--run-vector",
+        "--run-scalar", "-d 'OCE'", "RANKS must be 1",
         "COMMON_RESTART_SHA256=a8e33a3d22e4483bac777839f6cdc9bdf8c2e348c3a1d638adeafa114fff1c12",
         "run_nemo control 0", "run_nemo instrumented 1",
         "REFUSE_WRITER_MOVED_TRAJECTORY", "GYRE_R17_WRITE",

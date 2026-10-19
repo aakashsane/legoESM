@@ -178,9 +178,15 @@ def _manifest_contract(root: Path, flavour: str) -> dict[str, object]:
 
 def _native_v_term(record: dict[str, object]) -> np.ndarray:
     """Map NEMO's accumulated stage-3 V increment onto legoESM V faces."""
+    return _native_v_field(record, "after_v") - _native_v_field(
+        record, "before_v")
+
+
+def _native_v_field(record: dict[str, object], name: str) -> np.ndarray:
+    """Map one native NEMO V field onto legoESM's owned north faces."""
     from legoesm.ocean.fidelity.nemo_state_bridge import _v_north_to_face
 
-    native = np.asarray(record["after_v"] - record["before_v"])
+    native = np.asarray(record[name])
     owned = native[2:-2, 2:-2, :ACTIVE_LEVELS]
     return np.asarray(_v_north_to_face(owned))
 
@@ -192,6 +198,63 @@ def _q_to_legoesm(operands: dict[str, object]) -> np.ndarray:
     require(mapped.shape == (83, 123, ACTIVE_LEVELS),
             f"mapped q has wrong shape {mapped.shape}")
     return mapped
+
+
+def _transports_to_legoesm(
+    operands: dict[str, object],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Map NEMO's consumed ``zwx``/``zwy`` ranges to legoESM faces."""
+    fu = np.asarray(operands["Fu"])[2:-2, 1:-2, :]
+    fv = np.asarray(operands["Fv"])[1:-2, 2:-2, :]
+    nx, ny, _ = NATIVE_DIMS
+    require(fu.shape == (ny - 4, nx - 3, ACTIVE_LEVELS),
+            f"mapped F_u has wrong shape {fu.shape}")
+    require(fv.shape == (ny - 3, nx - 4, ACTIVE_LEVELS),
+            f"mapped F_v has wrong shape {fv.shape}")
+    return fu, fv
+
+
+def source_accumulator_result(
+    candidate_term: np.ndarray,
+    oracle_record: dict[str, object],
+    selection: np.ndarray,
+) -> dict[str, object]:
+    """Score NEMO's executed ``rhs = rhs + term`` statement directly."""
+    before = _native_v_field(oracle_record, "before_v")
+    after = _native_v_field(oracle_record, "after_v")
+    candidate_after = np.asarray(before + candidate_term, dtype=np.float64)
+    require(candidate_after.shape == after.shape == selection.shape,
+            "source-accumulator provider shapes differ")
+    require(np.all(np.isfinite(candidate_after[selection]))
+            and np.all(np.isfinite(after[selection])),
+            "source-accumulator row has non-finite active values")
+    left = np.ascontiguousarray(candidate_after[selection])
+    right = np.ascontiguousarray(after[selection])
+    unequal = left.view(np.uint64) != right.view(np.uint64)
+    residual = left - right
+    return {
+        "registered_unequal_words": int(np.count_nonzero(unequal)),
+        "registered_max_abs_m_s2": float(np.max(np.abs(residual))),
+        "registered_signed_mean_m_s2": float(np.mean(
+            residual, dtype=np.float64)),
+        "bit_exact": bool(not np.any(unequal)),
+    }
+
+
+def classify_operand_boundary(
+    arm_results: dict[str, dict[str, object]],
+) -> tuple[list[str], str]:
+    """Classify the preregistered q/F_u subsets at the exact source bar."""
+    names = ("q_only", "Fu_only", "q_plus_Fu")
+    exact = [
+        name for name in names
+        if arm_results[name]["source_accumulator"]["bit_exact"]
+    ]
+    boundary = (
+        "TRANSPORT_FORMATION" if "q_plus_Fu" in exact
+        else "COMPLETED_STENCIL"
+    )
+    return exact, boundary
 
 
 def signed_row(candidate: np.ndarray, reference: np.ndarray,
@@ -289,7 +352,13 @@ def _common_card():
         "GYRE-zco", namelist=GYRE_R4_SMAG_NAMELIST)
 
 
-def run(vector_root: Path, scalar_root: Path, *, plant_q: bool = False) -> dict:
+def run(
+    vector_root: Path,
+    scalar_root: Path,
+    *,
+    plant_q: bool = False,
+    plant_fu: bool = False,
+) -> dict:
     import jax
     import jax.numpy as jnp
     from legoesm.core.precision import PrecisionPolicy, get_policy, set_policy
@@ -301,14 +370,16 @@ def run(vector_root: Path, scalar_root: Path, *, plant_q: bool = False) -> dict:
     from legoesm.ocean.fidelity.provenance import worktree_stamp
 
     set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
-    require(jax.default_backend() == "cpu", "round-17 gate requires CPU")
+    require(jax.default_backend() == "cpu", "round-18 gate requires CPU")
     require(bool(jax.config.jax_enable_x64), "JAX x64 is disabled")
     require(not bool(jax.config.jax_disable_jit),
             "production JIT is required")
     require(get_policy() == PrecisionPolicy.fp64(transcendentals="libm"),
-            "round-17 policy is not certified fp64/libm")
+            "round-18 policy is not certified fp64/libm")
     require(sha256(COMMON_RESTART) == COMMON_RESTART_SHA256,
             "common developed restart moved")
+    require(not (plant_q and plant_fu),
+            "q and F_u plants must be run separately")
 
     vector_contract = _manifest_contract(vector_root, "vector-math-conda")
     scalar_contract = _manifest_contract(scalar_root, "scalar-math-conda")
@@ -327,24 +398,28 @@ def run(vector_root: Path, scalar_root: Path, *, plant_q: bool = False) -> dict:
     state = _common_state(card)
     freshwater, surface = gyre_surface_forcings(card, state, 4321)
     scalar_q = _q_to_legoesm(scalar_operands)
+    vector_q = _q_to_legoesm(vector_operands)
+    scalar_fu, scalar_fv = _transports_to_legoesm(scalar_operands)
+    vector_fu, vector_fv = _transports_to_legoesm(vector_operands)
 
     mask = np.asarray(state.v_mask.data, dtype=bool)
     western = wet_span_bins(mask) == 0
     selection = western[..., None] & np.zeros(
         (*mask.shape, ACTIVE_LEVELS), dtype=bool)
     selection[..., 0] = western
-    if plant_q:
-        scalar_q = np.array(scalar_q, copy=True)
-        face = np.argwhere(western)[0]
-        scalar_q[face[0], face[1], 0] += 1.0
 
-    def expose(name: str, q_override=None) -> np.ndarray:
+    def expose(
+        name: str,
+        q_override=None,
+        transport_override=None,
+    ) -> np.ndarray:
         model = LatLonCGridOceanModel(
             card.recipe.grid, card.recipe.z_coord, card.recipe.model_config,
             _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
                 expose_momentum_operator=name,
                 expose_momentum_operator_stage=3,
                 stage3_vorticity_q_override=q_override,
+                stage3_vorticity_transport_override=transport_override,
             ),
         )
         exposed = model.step(
@@ -352,34 +427,86 @@ def run(vector_root: Path, scalar_root: Path, *, plant_q: bool = False) -> dict:
             surface_forcing=surface)
         return np.asarray(exposed.v.data)
 
-    baseline_hpg = expose("hpg")
-    baseline_term = expose("vorticity")
-    baseline_advection = expose("advection")
-    q_array = jnp.asarray(scalar_q)
-    substituted_hpg = expose("hpg", q_array)
-    substituted_term = expose("vorticity", q_array)
-    substituted_advection = expose("advection", q_array)
-    untouched = {
-        "stage3_after_hpg_v": bool(np.array_equal(
-            baseline_hpg, substituted_hpg)),
-        "stage3_advection_v": bool(np.array_equal(
-            baseline_advection, substituted_advection)),
+    overrides = {
+        "baseline": (None, None),
+        "q_only": (jnp.asarray(scalar_q), None),
+        "Fu_only": (None, (jnp.asarray(scalar_fu), None)),
+        "q_plus_Fu": (
+            jnp.asarray(scalar_q), (jnp.asarray(scalar_fu), None)),
+        "Fv_control": (None, (None, jnp.asarray(scalar_fv))),
     }
+    exposed = {}
+    for arm, (q_override, transport_override) in overrides.items():
+        exposed[arm] = {
+            name: expose(name, q_override, transport_override)
+            for name in ("hpg", "vorticity", "advection")
+        }
+    baseline_hpg = exposed["baseline"]["hpg"]
+    baseline_term = exposed["baseline"]["vorticity"]
+    baseline_advection = exposed["baseline"]["advection"]
     vector_term = _native_v_term(vector_stage)
     scalar_term = _native_v_term(scalar_stage)
-    verdict = substitution_verdict(
-        baseline_term, substituted_term, vector_term, scalar_term,
-        selection, all(untouched.values()))
-    if plant_q:
-        require(verdict["verdict"] != "CONFIRM_Q_FORMATION",
-                "planted active q change did not make the verdict refuse")
+    arm_results = {}
+    for arm, fields in exposed.items():
+        untouched = {
+            "stage3_after_hpg_v": bool(np.array_equal(
+                baseline_hpg, fields["hpg"])),
+            "stage3_advection_v": bool(np.array_equal(
+                baseline_advection, fields["advection"])),
+        }
+        arm_results[arm] = {
+            "untouched_rows": untouched,
+            "posthoc_term_subtraction_context": substitution_verdict(
+                baseline_term, fields["vorticity"], vector_term, scalar_term,
+                selection, all(untouched.values())),
+            "source_accumulator": source_accumulator_result(
+                fields["vorticity"], scalar_stage, selection),
+        }
+
+    fv_control_exact = bool(np.array_equal(
+        baseline_term, exposed["Fv_control"]["vorticity"]))
+    require(fv_control_exact,
+            "F_v negative control moved the V-stencil result")
+    require(all(all(row["untouched_rows"].values())
+                for row in arm_results.values()),
+            "an operand substitution moved HPG or advection")
+    exact_subsets, boundary = classify_operand_boundary(arm_results)
+
+    plant_result = None
+    if plant_q or plant_fu:
+        face = np.argwhere(western)[0]
+        if plant_q:
+            planted = np.array(scalar_q, copy=True)
+            planted[face[0], face[1], 0] += 1.0
+            planted_term = expose("vorticity", jnp.asarray(planted), None)
+            reference_term = exposed["q_only"]["vorticity"]
+            name = "q"
+        else:
+            planted = np.array(scalar_fu, copy=True)
+            row = min(int(face[0]), planted.shape[0] - 1)
+            planted[row, int(face[1]), 0] += 1.0
+            planted_term = expose(
+                "vorticity", None, (jnp.asarray(planted), None))
+            reference_term = exposed["Fu_only"]["vorticity"]
+            name = "F_u"
+        changed = np.ascontiguousarray(
+            planted_term[selection]).view(np.uint64) != np.ascontiguousarray(
+                reference_term[selection]).view(np.uint64)
+        plant_result = {
+            "operand": name,
+            "registered_changed_words": int(np.count_nonzero(changed)),
+            "registered_signed_mean_move_m_s2": signed_row(
+                planted_term, reference_term, selection),
+        }
+        require(plant_result["registered_changed_words"] > 0,
+                f"planted active {name} word did not move the scored V row")
 
     q_selection = np.zeros_like(scalar_q, dtype=bool)
     q_selection[:, :-1, 0] |= western
     q_selection[:, 1:, 0] |= western
-    q_diff = np.asarray(scalar_q) - _q_to_legoesm(vector_operands)
+    q_diff = np.asarray(scalar_q) - vector_q
     report = {
-        "format": "gyre-r4-smag-round17-stage3-vorticity-v1",
+        "format": "gyre-r4-smag-round18-stage3-vorticity-v2",
         "worktree": worktree_stamp(),
         "common_restart": {
             "path": str(COMMON_RESTART), "sha256": COMMON_RESTART_SHA256,
@@ -387,13 +514,13 @@ def run(vector_root: Path, scalar_root: Path, *, plant_q: bool = False) -> dict:
         },
         "policy": "fp64-libm-certified-cpu",
         "jax_backend": jax.default_backend(),
-        "plant_q": plant_q,
+        "plant": "q" if plant_q else "F_u" if plant_fu else None,
         "providers": {"vector": vector_contract, "scalar": scalar_contract},
         "stage_header": vector_stage["header"],
         "operand_record": q_name,
         "reduction": (
             "stage-3 native surface V; western-boundary wet-span bin; "
-            "signed mean"
+            "signed mean and source-accumulator word identity"
         ),
         "nemo_scalar_minus_vector_q": {
             "active_surface_max_abs_s-1_m-1": float(np.max(
@@ -401,8 +528,25 @@ def run(vector_root: Path, scalar_root: Path, *, plant_q: bool = False) -> dict:
             "active_surface_unequal_words": int(np.count_nonzero(
                 q_diff[q_selection] != 0.0)),
         },
-        "untouched_rows": untouched,
-        "result": verdict,
+        "nemo_scalar_minus_vector_metric_transports": {
+            "F_u_surface_max_abs_m3_s": float(np.max(np.abs(
+                scalar_fu[..., 0] - vector_fu[..., 0]))),
+            "F_u_surface_unequal_words": int(np.count_nonzero(
+                scalar_fu[..., 0] != vector_fu[..., 0])),
+            "F_v_surface_max_abs_m3_s": float(np.max(np.abs(
+                scalar_fv[..., 0] - vector_fv[..., 0]))),
+            "F_v_surface_unequal_words": int(np.count_nonzero(
+                scalar_fv[..., 0] != vector_fv[..., 0])),
+        },
+        "source_accumulator_comparison": (
+            "float64(NEMO_before + legoESM_term) versus NEMO_after"),
+        "arms": arm_results,
+        "Fv_negative_control_full_v_bit_exact": fv_control_exact,
+        "exact_operand_subsets": exact_subsets,
+        "owner_boundary": boundary,
+        "plant_result": plant_result,
+        "result": arm_results["q_only"][
+            "posthoc_term_subtraction_context"],
         "source_citations": [
             "compiled stprk3_stg.f90:399-410",
             "compiled dynvor.f90:234-239",
@@ -417,17 +561,22 @@ def main() -> int:
     parser.add_argument("--vector-root", type=Path, default=VECTOR_ROOT)
     parser.add_argument("--scalar-root", type=Path, default=SCALAR_ROOT)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--plant-q", action="store_true")
+    plants = parser.add_mutually_exclusive_group()
+    plants.add_argument("--plant-q", action="store_true")
+    plants.add_argument("--plant-fu", action="store_true")
     args = parser.parse_args()
-    report = run(args.vector_root, args.scalar_root, plant_q=args.plant_q)
+    report = run(
+        args.vector_root, args.scalar_root,
+        plant_q=args.plant_q, plant_fu=args.plant_fu)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
                            encoding="utf-8")
     print(
-        "GYRE_R17_STAGE3_VORTICITY " + report["result"]["verdict"]
-        + f" ratio={report['result']['baseline_candidate_to_twin_ratio']}"
-        + f" substituted={report['result']['substituted_residual_abs_m_s2']:.17e}"
-        + f" envelope={report['result']['nemo_twin_envelope_abs_m_s2']:.17e}"
+        "GYRE_R18_STAGE3_VORTICITY " + report["owner_boundary"]
+        + " exact_subsets=" + ",".join(report["exact_operand_subsets"])
+        + " q_Fu_unequal=" + str(
+            report["arms"]["q_plus_Fu"]["source_accumulator"]
+            ["registered_unequal_words"])
     )
     return 0
 

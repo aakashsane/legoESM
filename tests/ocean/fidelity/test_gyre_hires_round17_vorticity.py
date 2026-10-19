@@ -60,6 +60,9 @@ def test_stage_and_q_readers_refuse_layout_and_preserve_fortran_order(
     operands = tool.read_ene_operands(qpath)
     expected_q0 = slabs[0].reshape((nx, ny), order="F").T
     np.testing.assert_array_equal(operands["q"][..., 0], expected_q0)
+    fu, fv = tool._transports_to_legoesm(operands)
+    np.testing.assert_array_equal(fu, operands["Fu"][2:-2, 1:-2])
+    np.testing.assert_array_equal(fv, operands["Fv"][1:-2, 2:-2])
 
     planted = bytearray(qpath.read_bytes())
     planted[:16] = b"WRONG_MAGIC____1"
@@ -129,8 +132,40 @@ def test_substitution_verdict_requires_twin_envelope_and_untouched_rows():
     assert moved["verdict"] == "REFUTE_Q_FORMATION"
 
 
-def test_model_tendency_q_override_moves_only_vorticity_component():
-    """The shared path consumes the oracle q without rebuilding its stencil."""
+def test_source_accumulator_and_boundary_use_exact_executed_addition(
+    monkeypatch,
+):
+    tool = _load_tool()
+    before = np.ones((2, 3, 1), dtype=np.float64)
+    term = np.full_like(before, 0.5)
+    after = before + term
+    monkeypatch.setattr(
+        tool, "_native_v_field",
+        lambda record, name: before if name == "before_v" else after,
+    )
+    selection = np.ones_like(before, dtype=bool)
+    exact = tool.source_accumulator_result(term, {}, selection)
+    assert exact["bit_exact"] is True
+    assert exact["registered_unequal_words"] == 0
+    moved = tool.source_accumulator_result(
+        term + 1.0e-6, {}, selection)
+    assert moved["bit_exact"] is False
+    assert moved["registered_unequal_words"] == term.size
+
+    arms = {
+        "q_only": {"source_accumulator": {"bit_exact": False}},
+        "Fu_only": {"source_accumulator": {"bit_exact": False}},
+        "q_plus_Fu": {"source_accumulator": {"bit_exact": True}},
+    }
+    assert tool.classify_operand_boundary(arms) == (
+        ["q_plus_Fu"], "TRANSPORT_FORMATION")
+    arms["q_plus_Fu"]["source_accumulator"]["bit_exact"] = False
+    assert tool.classify_operand_boundary(arms) == (
+        [], "COMPLETED_STENCIL")
+
+
+def test_model_tendency_operand_overrides_move_only_vorticity_component():
+    """The shared path consumes recorded operands without rebuilding them."""
     import jax.numpy as jnp
     from legoesm.core.precision import PrecisionPolicy, set_policy
     from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
@@ -165,11 +200,21 @@ def test_model_tendency_q_override_moves_only_vorticity_component():
         state, dt=card.dt_s, momentum_only=True,
         nemo_vorticity_q_override=jnp.zeros(q_shape, dtype=jnp.float64),
         return_nemo_operator_components=True)
+    transport_overridden = model.tendencies(
+        state, dt=card.dt_s, momentum_only=True,
+        nemo_vorticity_transport_override=(
+            jnp.zeros_like(state.u.data), None),
+        return_nemo_operator_components=True)
     baseline_components = baseline[2]
     override_components = overridden[2]
+    transport_components = transport_overridden[2]
     assert not np.array_equal(
         np.asarray(baseline_components["vorticity_v"].data),
         np.asarray(override_components["vorticity_v"].data),
+    )
+    assert not np.array_equal(
+        np.asarray(baseline_components["vorticity_v"].data),
+        np.asarray(transport_components["vorticity_v"].data),
     )
     for name in ("hpg_v", "advection_v", "operand_velocity_v",
                  "operand_momentum_h_v"):
@@ -178,6 +223,10 @@ def test_model_tendency_q_override_moves_only_vorticity_component():
         right = getattr(override_components[name], "data",
                         override_components[name])
         np.testing.assert_array_equal(np.asarray(left), np.asarray(right))
+        transport_right = getattr(transport_components[name], "data",
+                                  transport_components[name])
+        np.testing.assert_array_equal(
+            np.asarray(left), np.asarray(transport_right))
 
 
 def test_operator_script_pins_common_restart_and_same_binary_control():
@@ -192,6 +241,7 @@ def test_operator_script_pins_common_restart_and_same_binary_control():
     ):
         assert needle in source
     assert "rg " not in source
+    assert "--plant-fu" in TOOL.read_text(encoding="utf-8")
     model_source = (ROOT / "packages/ocean/legoesm/ocean/dynamics/"
                     "ocean_model_latlon_cgrid.py").read_text(encoding="utf-8")
     assert "if stage_index == 3 else None" in model_source

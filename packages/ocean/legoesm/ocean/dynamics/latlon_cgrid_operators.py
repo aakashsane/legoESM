@@ -4811,6 +4811,7 @@ def pv_flux_ene(
     total_vorticity_override: jnp.ndarray | None = None,
     direct_thickness_division: bool = False,
     potential_vorticity_override: jnp.ndarray | None = None,
+    metric_transport_override: tuple | None = None,
 ) -> tuple[jnp.ndarray, jnp.ndarray] | tuple[
     jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]
 ]:
@@ -4870,6 +4871,11 @@ def pv_flux_ene(
         q only; the production mass transports and ENE stencil remain live.
         Ordinary callers leave it unset.  Supplying both vorticity overrides
         is refused because they name opposite sides of the division.
+    metric_transport_override : (F_u, F_v) tuple or None
+        Private oracle discriminator for NEMO's already formed metric
+        transports ``zwx`` and ``zwy`` (``dynvor.f90:559-562``).  Either tuple
+        slot may be ``None`` to retain that live transport.  This changes no
+        q or stencil arithmetic, and ordinary callers leave it unset.
     Other parameters : identical to :func:`pv_flux_al81_partial_cell`.
 
     Returns
@@ -4934,6 +4940,28 @@ def pv_flux_ene(
             nemo_source_round(jnp.asarray(e1v)[..., jnp.newaxis] * h_v) * v)
         F_u = nemo_source_round(F_u * u_mask_3d)
         F_v = nemo_source_round(F_v * v_mask_3d)
+
+    if metric_transport_override is not None:
+        if (not isinstance(metric_transport_override, tuple)
+                or len(metric_transport_override) != 2):
+            raise ValueError(
+                "metric_transport_override must be a (F_u, F_v) tuple; "
+                "a None slot retains the live transport")
+        override_u, override_v = metric_transport_override
+        if override_u is not None:
+            override_u = jnp.asarray(override_u)
+            if override_u.shape != F_u.shape:
+                raise ValueError(
+                    "metric F_u override shape differs from the live "
+                    f"transport: {override_u.shape} versus {F_u.shape}")
+            F_u = override_u
+        if override_v is not None:
+            override_v = jnp.asarray(override_v)
+            if override_v.shape != F_v.shape:
+                raise ValueError(
+                    "metric F_v override shape differs from the live "
+                    f"transport: {override_v.shape} versus {F_v.shape}")
+            F_v = override_v
 
 
     # --- 3. u-face flux: ¼ ( q_S·(F_v_SW+F_v_SE) + q_N·(F_v_NW+F_v_NE) ) ---

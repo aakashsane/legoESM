@@ -5720,6 +5720,9 @@ class ModelDriver:
           (a legitimate resume/retry of the same run). An existing manifest that
           is invalid, or written for a *different* config, is fatal — one output
           directory holds one run; mixing two runs' provenance is refused.
+          Exception: an atmosphere driven by a runner with a replay spec
+          (run_coupled) continues when only that runner's ``atmosphere.*``
+          continuation controls differ (:meth:`_continue_driving_runner`).
         * **Required, not best-effort:** a write failure aborts ``setup()``.
           This is cheap — setup() has not yet entered the time loop — and upholds
           the A1 guarantee that a run which proceeds is always reconstructible.
@@ -5773,20 +5776,19 @@ class ModelDriver:
         # Atomic-exclusive create: wins the race against a concurrent start into
         # the same directory.  The winner creates the manifest; everyone else
         # (this run on retry/resume, or a racing process) takes the validate path.
+        manifest_kwargs = dict(
+            rng_seeds={"master": self._input_config.seed},
+            dataset_provenance=datasets,
+            # #1509: the --params values this run actually applied, so the
+            # manifest does not depend on the referenced file surviving
+            # unmodified. Absent (-> {}) when no --params were given.
+            params_applied=getattr(self, "_params_applied", None),
+            **({"runner_tag": self._manifest_runner_tag}
+               if getattr(self, "_manifest_runner_tag", None) else {}),
+        )
         try:
-            write_run_manifest(
-                self._output_dir,
-                self._input_config,
-                exclusive=True,
-                rng_seeds={"master": self._input_config.seed},
-                dataset_provenance=datasets,
-                # #1509: the --params values this run actually applied, so the
-                # manifest does not depend on the referenced file surviving
-                # unmodified. Absent (-> {}) when no --params were given.
-                params_applied=getattr(self, "_params_applied", None),
-                **({"runner_tag": self._manifest_runner_tag}
-                   if getattr(self, "_manifest_runner_tag", None) else {}),
-            )
+            write_run_manifest(self._output_dir, self._input_config,
+                               exclusive=True, **manifest_kwargs)
             return
         except FileExistsError:
             pass
@@ -5807,6 +5809,9 @@ class ModelDriver:
                 existing["config"]["config_hash"],
                 existing["config"].get("resolved_config") or {},
                 self._input_config):
+            if self._continue_driving_runner(existing, manifest_file,
+                                             manifest_kwargs):
+                return
             raise RuntimeError(
                 f"Output directory {self._output_dir} already holds a run "
                 f"manifest written for a DIFFERENT config; refusing to mix two "
@@ -5817,6 +5822,49 @@ class ModelDriver:
             f"Run manifest already present at {manifest_file}; preserving it "
             f"(same config — resume/retry)."
         )
+
+    def _continue_driving_runner(self, existing: dict, manifest_file: Path,
+                                 manifest_kwargs: dict) -> bool:
+        """A continuation of the run that drives this atmosphere (run_coupled):
+        when the existing record differs only in the atmosphere keys that
+        runner's continuation controls name (run length, checkpoint
+        frequency, wallclock budget), archive it by a hard link and write
+        this run's record.  False (caller refuses) otherwise."""
+        from datetime import datetime, timezone
+
+        from legoesm.driver.restart import (
+            RUNNER_REPLAY_SPECS,
+            config_drift_rows,
+            resolved_config_record,
+            write_run_manifest,
+        )
+        spec = RUNNER_REPLAY_SPECS.get(self._manifest_runner_tag or "")
+        prefix = "atmosphere."
+        keys = [k[len(prefix):] for k in (spec.continuation_keys if spec else ())
+                if k.startswith(prefix)]
+        if not keys or (existing.get("reproducibility") or {}).get(
+                "runner_tag") != self._manifest_runner_tag:
+            return False
+        rows = [r for r in config_drift_rows(
+                    existing["config"].get("resolved_config") or {},
+                    resolved_config_record(self._input_config))
+                if not any(r[0] == k or r[0].startswith(k + ".") for k in keys)]
+        if rows:
+            return False
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        prev = manifest_file.with_name(
+            f"{manifest_file.stem}.prev-{stamp}-{os.getpid()}.json")
+        os.link(manifest_file, prev)       # the old record stays live until
+        try:                               # the new one replaces it
+            write_run_manifest(self._output_dir, self._input_config,
+                               **manifest_kwargs)
+        except BaseException:
+            prev.unlink(missing_ok=True)
+            raise
+        logger.info(f"Run manifest at {manifest_file} continued "
+                    f"({self._manifest_runner_tag}); previous record kept at "
+                    f"{prev.name}")
+        return True
 
     def _lane_builds_own_physics(self) -> bool:
         """True on the lanes that build the scheme configs their kernels use

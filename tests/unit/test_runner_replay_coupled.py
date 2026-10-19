@@ -554,3 +554,36 @@ def test_reproduce_check_ignores_an_atmosphere_digest_the_rerun_did_not_pair(
     caplog.set_level(logging.INFO)
     assert _reproduce(path, tmp_path / "new", check=True) == 1
     assert "pairs none" in caplog.text
+
+
+def _atm_driver(tmp_path, cfg, tag="run_coupled"):
+    from legoesm.driver.model_driver import ModelDriver
+    d = object.__new__(ModelDriver)
+    d._mpi_rank, d._output_dir, d._input_config = None, tmp_path, cfg
+    d._params_applied, d._manifest_runner_tag = None, tag
+    return d
+
+
+def test_coupled_atmosphere_record_continues_with_its_controls(tmp_path):
+    """Choice 8 for run_coupled: its atmosphere's record may change run
+    length, checkpoint frequency and wallclock budget (old one archived);
+    any other change, or an untagged record, is refused as before."""
+    from legoesm.driver.config import ExperimentConfig
+    cfg = ExperimentConfig()
+    _atm_driver(tmp_path, cfg)._write_run_manifest()
+    live = tmp_path / restart.RUN_MANIFEST_FILENAME
+    first = live.read_bytes()
+    longer = cfg._replace(days=cfg.days + 3, output=cfg.output._replace(
+        checkpoint_days=7.0, max_wallclock_seconds=3600.0))
+    _atm_driver(tmp_path, longer)._write_run_manifest()
+    assert restart.read_run_manifest(live)["config"]["resolved_config"][
+        "days"] == cfg.days + 3
+    archived = list(tmp_path.glob("run_manifest.prev-*.json"))
+    assert len(archived) == 1 and archived[0].read_bytes() == first
+    now = live.read_bytes()
+    with pytest.raises(RuntimeError, match="DIFFERENT config"):
+        _atm_driver(tmp_path, longer._replace(seed=99))._write_run_manifest()
+    with pytest.raises(RuntimeError, match="DIFFERENT config"):
+        _atm_driver(tmp_path, cfg, tag=None)._write_run_manifest()
+    assert live.read_bytes() == now
+    assert len(list(tmp_path.glob("run_manifest.prev-*.json"))) == 1

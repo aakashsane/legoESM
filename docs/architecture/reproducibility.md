@@ -479,11 +479,11 @@ emits v2. Old manifests keep loading.
    compares the pairs both runs recorded). A
    coupled run that was itself resumed (`--resume`, from the command line or
    a deck) is not replayable, nor is its atmosphere record alone. The
-   coupling interval `--diag-days` is not a continuation control. Open: a
-   coupled continuation that changes run length, checkpoint frequency or the
-   wallclock budget is still refused by the atmosphere's own manifest rule
-   (exact configuration match), so today a coupled continuation may only
-   add `--resume`. A coupled
+   coupling interval `--diag-days` is not a continuation control. Its
+   atmosphere record (tagged `run_coupled`) follows the same continuation
+   controls: a change of run length, checkpoint frequency or wallclock budget
+   archives the old atmosphere record by a hard link and writes the new one;
+   any other change is refused, as for every atmosphere record. A coupled
    `--resume` checks the checkpoint's code before setup, and refuses (after
    setup, before stepping) without the matching coupled checkpoint. A runner builds its configuration through script code,
    so `reproduce` reruns the recording script: the manifest records the exact

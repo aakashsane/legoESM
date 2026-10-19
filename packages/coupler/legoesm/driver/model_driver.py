@@ -1621,7 +1621,8 @@ class ModelDriver:
     """
 
     def __init__(self, config: ExperimentConfig, output_dir: str | Path | None = None,
-                 *, expected_resolved_physics: dict | None = None):
+                 *, expected_resolved_physics: dict | None = None,
+                 manifest_runner_tag: str | None = None):
         # Defensive canonical-name normalization at the driver entry:
         # callers that bypass run_amip's argparse postprocessor (direct
         # test fixtures, ad-hoc scripts, older YAML loaders) might still
@@ -1653,6 +1654,12 @@ class ModelDriver:
         # ``legoesm reproduce`` passes the reference run's resolved physics;
         # the run refuses to start if its own resolves differently.
         self._expected_resolved_physics = expected_resolved_physics
+        # The runner that drives this atmosphere, recorded in its manifest
+        # (run_coupled: so its atmosphere record is not replayed alone).
+        self._manifest_runner_tag = manifest_runner_tag
+        # The final-state digest THIS run recorded in its manifest (None
+        # until then, or when it could not); the coupled record pairs it.
+        self.final_state_digest = None
         # export_mpas_step's hand-off dict; None = a normal run (review F9).
         self._mpas_step_export = None
         self._mpas_step_exported = False   # export consumes the driver
@@ -5777,6 +5784,8 @@ class ModelDriver:
                 # manifest does not depend on the referenced file surviving
                 # unmodified. Absent (-> {}) when no --params were given.
                 params_applied=getattr(self, "_params_applied", None),
+                **({"runner_tag": self._manifest_runner_tag}
+                   if getattr(self, "_manifest_runner_tag", None) else {}),
             )
             return
         except FileExistsError:
@@ -5971,6 +5980,7 @@ class ModelDriver:
             from legoesm.grids.halo import traced_corner_fill_modes
             record_state_digest(manifest_file, digest,
                                 corner_fill_traced=traced_corner_fill_modes())
+            self.final_state_digest = digest
         except Exception as exc:  # pragma: no cover - provenance best-effort
             logger.warning(f"Could not record final state digest: {exc}")
 

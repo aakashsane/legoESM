@@ -460,15 +460,32 @@ emits v2. Old manifests keep loading.
    configs, Sundqvist command-line overrides). This is the one place replay
    injects; the closure check still compares the whole record afterwards.
    **Component runners** (implemented for land `run_lmip.py`, ocean
-   `run_omip.py` and DINO `run_dino.py`; coupled follows; CORE2 is validated
-   only). Replay of `run_omip.py` always sets `--grid` to the manifest's grid
+   `run_omip.py`, DINO `run_dino.py` and coupled `run_coupled.py`; CORE2 is
+   validated only). Replay of `run_omip.py` always sets `--grid` to the manifest's grid
    (`--grid all` writes one manifest per grid); `run_dino.py --timing-jsonl`
    is pointed at the same file name in the rerun's output (replay refuses when
    the command line sets it but the manifest does not record it); a
    multi-controller DINO run records no final digest and is not replayable. `--diag-every`
    is not an OMIP continuation control (it also sets the JRA55 forcing block
    size), nor is `--quick` (it changes other defaults). The `run_omip.py` digest covers the
-   final sea ice when the run carries it. A runner builds its configuration through script code,
+   final sea ice when the run carries it. A coupled run's record
+   (`coupled/run_manifest.json`, written after setup with the component
+   configs the driver resolved) is replayed with its atmosphere record as a
+   companion: the rerun's atmosphere must resolve to it, and `--check`
+   compares both final digests (the coupled one covers every non-atmosphere
+   array a coupled checkpoint saves, recorded only for a completed run,
+   together with the digest this run's atmosphere recorded, so the pair
+   survives either record being archived or updated later; `--check`
+   compares the pairs both runs recorded). A
+   coupled run that was itself resumed (`--resume`, from the command line or
+   a deck) is not replayable, nor is its atmosphere record alone. The
+   coupling interval `--diag-days` is not a continuation control. Open: a
+   coupled continuation that changes run length, checkpoint frequency or the
+   wallclock budget is still refused by the atmosphere's own manifest rule
+   (exact configuration match), so today a coupled continuation may only
+   add `--resume`. A coupled
+   `--resume` checks the checkpoint's code before setup, and refuses (after
+   setup, before stepping) without the matching coupled checkpoint. A runner builds its configuration through script code,
    so `reproduce` reruns the recording script: the manifest records the exact
    command line (`run.argv`), the launch directory (`run.cwd`) and the process
    count (`reproducibility.n_processes`, taken when the manifest is written,

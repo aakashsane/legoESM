@@ -79,14 +79,16 @@ _COUPLED_DECKS = sorted(
 
 @pytest.mark.parametrize("deck", [None] + _COUPLED_DECKS,
                          ids=lambda d: "default" if d is None else d.name)
-def test_run_coupled_writes_manifest_before_setup(tmp_path, monkeypatch, deck):
+def test_run_coupled_writes_manifest_before_run(tmp_path, monkeypatch, deck):
     from legoesm.driver.coupled_esm_driver import CoupledESMDriver
     from scripts.run import run_coupled
 
     def _stop(self, *a, **kw):
         raise _LoopReached()
 
-    monkeypatch.setattr(CoupledESMDriver, "setup", _stop)
+    # setup is stubbed (no forcing files here); the manifest follows it
+    monkeypatch.setattr(CoupledESMDriver, "setup", lambda self: None)
+    monkeypatch.setattr(CoupledESMDriver, "run", _stop)
     argv = ["--output", str(tmp_path), "--days", "1"]
     if deck is not None:
         argv = ["--config", str(deck)] + argv + [

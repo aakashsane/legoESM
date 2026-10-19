@@ -979,7 +979,8 @@ def read_companion_manifest(ref_path, manifest: dict, spec, name: str,
                             key: str) -> tuple:
     """``(path, manifest)`` of reference *manifest*'s companion *name* (read
     from *ref_path*): under the output directory the run recorded, else under
-    the output root the record's location implies (a copy of the whole run).
+    the output root the record's location implies (a copy of the whole run);
+    in each, the live record and then its archived predecessors.
     A candidate counts only when it was written by the same code (commit) and
     its resolved configuration is the record's ``resolved_config[key]``.
     ``ValueError`` when no candidate does."""
@@ -1002,8 +1003,15 @@ def read_companion_manifest(ref_path, manifest: dict, spec, name: str,
     commit = (manifest.get("legoESM") or {}).get("commit")
     expected = recorded(resolved, key)
     reasons = []
+    # Under each root the live record, then its archived predecessors (a
+    # continuation archives the record it replaces), newest first.
+    stem = Path(name).stem
+    candidates = []
     for r in dict.fromkeys(roots):
-        path = r / name
+        candidates.append(r / name)
+        candidates += sorted((r / name).parent.glob(f"{stem}.prev-*.json"),
+                             reverse=True)
+    for path in candidates:
         try:
             m = read_run_manifest(path)
             validate_run_manifest(m)
@@ -1013,7 +1021,8 @@ def read_companion_manifest(ref_path, manifest: dict, spec, name: str,
         if (m.get("legoESM") or {}).get("commit") != commit:
             reasons.append(f"{path}: written by other code")
             continue
-        # A nested record carries type tags the top-level one does not.
+        # A nested record carries type tags the top-level one does not
+        # (type-only differences are left to the same-commit check above).
         rows = [r for r in config_drift_rows(
                     expected if isinstance(expected, dict) else {},
                     m["config"].get("resolved_config") or {})

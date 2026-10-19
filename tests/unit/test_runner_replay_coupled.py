@@ -592,3 +592,27 @@ def test_coupled_atmosphere_record_continues_with_its_controls(tmp_path):
     _atm_driver(other, cfg, tag=None)._write_run_manifest()
     with pytest.raises(RuntimeError, match="DIFFERENT config"):
         _atm_driver(other, longer)._write_run_manifest()
+
+
+def test_archived_coupled_record_finds_its_archived_atmosphere_record(
+        tmp_path, monkeypatch):
+    """After an allowed continuation replaced both records, the archived
+    coupled record pairs with the archived atmosphere record."""
+    import shutil
+    ref = _reference(monkeypatch, tmp_path)
+    coupled = ref / "coupled" / restart.RUN_MANIFEST_FILENAME
+    old = restart.read_run_manifest(coupled)
+    old_atm = ref / restart.RUN_MANIFEST_FILENAME
+    archived = ref / "run_manifest.prev-20261019T000000000000Z-1.json"
+    shutil.copyfile(old_atm, archived)           # the continuation's archive
+    _stub_setup(monkeypatch, atm_seed=7)          # live record: another config
+    _stop_at_run(monkeypatch)
+    old_atm.unlink()
+    with pytest.raises(_Ran):
+        _coupled(ref.parent / "elsewhere")
+    shutil.copyfile(ref.parent / "elsewhere" / restart.RUN_MANIFEST_FILENAME,
+                    old_atm)
+    path, _ = restart.read_companion_manifest(
+        coupled, old, restart.RUNNER_REPLAY_SPECS["run_coupled"],
+        restart.RUN_MANIFEST_FILENAME, "atmosphere")
+    assert path == archived

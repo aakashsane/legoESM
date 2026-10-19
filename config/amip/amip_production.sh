@@ -80,11 +80,12 @@
 : "${FORCING_1979_2014:=/work/bb1596/b309178/diffESM/legoesm_ap/data/forcing/cmip6_1979-2014}"
 : "${OZONE:=${FORCING_1979_2014}/vmro3_input4MIPs_ozone_CMIP_UReading-CCMI-1-0_gn_197901-201412.nc}"
 # MACv2-SP anthropogenic plumes on the Kinne MACv1 pre-industrial background,
-# 1850-2014: fine+coarse for radiation, fine mode for the droplet-number (CCN)
-# path (review 2026-10-10 F33/F37).  Same basenames on both machines; build
+# 1850-2014: fine+coarse for radiation AND for the droplet-number (CCN) path,
+# the TOTAL AOT the Andreae (2009) fit was built on (review 2026-10-10 F33/F37;
+# CCN was fine mode until the 2026-10-18 oracle audit, user decision 2026-10-19).  Same basenames on both machines; build
 # them here with scripts/data/adapt_cmip6_aerosol.py (see the Ginsburg twin).
 : "${AEROSOL:=${FORCING_1979_2014}/aeropt_macv2sp_sw_b14_tot_1850-2014_MACv1bg.nc}"
-: "${AEROSOL_CCN:=${FORCING_1979_2014}/aeropt_macv2sp_sw_b14_fin_1850-2014_MACv1bg.nc}"
+: "${AEROSOL_CCN:=${FORCING_1979_2014}/aeropt_macv2sp_sw_b14_tot_1850-2014_MACv1bg.nc}"
 # Volcanic: ETH CMIP6 stratospheric aerosol v4.0.0 (ECHAM6 SW + LW bands),
 # 1850-2014, the SAME product as the Ginsburg twin (review 2026-10-10 F33/F37).
 # Its 1979-2014 records equal the old *_1979-2014.nc file; the loader output

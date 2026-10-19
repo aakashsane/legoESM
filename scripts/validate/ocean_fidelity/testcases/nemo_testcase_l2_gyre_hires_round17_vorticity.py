@@ -137,6 +137,82 @@ def read_ene_operands(path: Path) -> dict[str, object]:
     return {"header": header, **arrays}
 
 
+def read_stage2_state(path: Path) -> dict[str, object]:
+    """Read the stage-2 output that becomes stage 3's Kmm input.
+
+    The inherited P3 writer calls ``l1_dump_stage(..., 2, Naa)`` immediately
+    after the stage-2 call and before swapping ``Naa`` into ``Nnn``
+    (compiled ``stprk3.f90:204-208``).  The round-17 header independently
+    records Kmm=2 for stage 3, so this is the named velocity/SSH provider.
+    """
+    raw = path.read_bytes()
+    require(len(raw) >= 52, f"{path}: short stage-2 state record")
+    magic = raw[:16].decode("ascii").rstrip()
+    header_values = struct.unpack("=9i", raw[16:52])
+    keys = ("version", "kt", "stage", "Kaa", "nx", "ny", "nz",
+            "ntr", "bits")
+    header = dict(zip(keys, header_values, strict=True))
+    require(magic == "NEMO_L1_STAGE_1", f"{path}: bad magic {magic!r}")
+    require(
+        (header["version"], header["kt"], header["stage"], header["Kaa"],
+         header["nx"], header["ny"], header["nz"], header["ntr"],
+         header["bits"])
+        == (1, 4321, 2, 2, *NATIVE_DIMS, 2, 64),
+        f"{path}: bad header {header}",
+    )
+    values = np.frombuffer(raw, dtype=np.float64, offset=52)
+    n3 = header["nx"] * header["ny"] * header["nz"]
+    n2 = header["nx"] * header["ny"]
+    require(values.size == 4 * n3 + n2, f"{path}: malformed payload")
+    arrays = {
+        name: _xyz(values[index * n3:(index + 1) * n3],
+                   header["nx"], header["ny"], header["nz"])[
+                       2:-2, 2:-2, :ACTIVE_LEVELS]
+        for index, name in enumerate(("T", "S", "u", "v"))
+    }
+    arrays["ssh"] = values[4 * n3:].reshape(
+        (header["nx"], header["ny"]), order="F")[2:-2, 2:-2].T
+    for name, array in arrays.items():
+        require(np.all(np.isfinite(array)),
+                f"{path}: non-finite active {name} word")
+    return {"header": header, **arrays}
+
+
+def wordwise_result(candidate: np.ndarray, oracle: np.ndarray) -> dict[str, object]:
+    """Report exact binary64 identity and ULP distance over named words."""
+    from nemo_testcase_state_ulp_probe import ulp_distance
+
+    candidate = np.ascontiguousarray(np.asarray(candidate, dtype=np.float64))
+    oracle = np.ascontiguousarray(np.asarray(oracle, dtype=np.float64))
+    require(candidate.shape == oracle.shape,
+            f"wordwise provider shapes differ: {candidate.shape} != {oracle.shape}")
+    require(np.all(np.isfinite(candidate)) and np.all(np.isfinite(oracle)),
+            "wordwise provider contains a non-finite value")
+    unequal = candidate.view(np.uint64) != oracle.view(np.uint64)
+    ulps = ulp_distance(candidate, oracle)
+    return {
+        "words": int(candidate.size),
+        "unequal_words": int(np.count_nonzero(unequal)),
+        "max_abs": float(np.max(np.abs(candidate - oracle))),
+        "max_ulp": int(np.max(ulps)),
+        "bit_exact": bool(not np.any(unequal)),
+    }
+
+
+def classify_factor_walk(arms: dict[str, dict[str, object]]) -> tuple[list[str], str]:
+    """Apply the preregistered two-boundary exactness rule."""
+    sufficient = sorted(
+        name for name, row in arms.items()
+        if row["formed_operand"]["bit_exact"]
+        and row["source_accumulator"]["bit_exact"]
+        and row["untouched_rows_bit_exact"]
+    )
+    return sufficient, (
+        "SINGLE_FACTOR_SUFFICIENT" if sufficient
+        else "COUPLED_FORMATION_COMPOSITION"
+    )
+
+
 def _manifest_contract(root: Path, flavour: str) -> dict[str, object]:
     """Verify the closed acquisition and same-binary passivity control."""
     manifest = root / "manifest.sha256"
@@ -622,16 +698,356 @@ def run(
     return report
 
 
+def run_factor_walk(
+    vector_root: Path,
+    scalar_root: Path,
+    *,
+    plant_q: bool = False,
+    plant_fu: bool = False,
+) -> dict:
+    """Walk the six preregistered source factors of live stage-3 q/F_u."""
+    import jax
+    import jax.numpy as jnp
+    from legoesm.core.precision import PrecisionPolicy, get_policy, set_policy
+    from legoesm.core.source_rounding import nemo_source_round
+    from legoesm.ocean.dynamics.latlon_cgrid_operators import (
+        compute_face_masks_3d,
+        nemo_een_ene_vertex_coriolis,
+        nemo_vor_ene_vorticity_cgrid,
+    )
+    from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
+        LatLonCGridOceanModel,
+        _NEMOWSRK3TestHooks,
+    )
+    from legoesm.ocean.fidelity.nemo_state_bridge import (
+        nemo_closed_u_east_to_face,
+        nemo_closed_v_north_to_face,
+    )
+    from legoesm.ocean.fidelity.nemo_testcase_recipe import gyre_surface_forcings
+    from legoesm.ocean.fidelity.provenance import worktree_stamp
+    from legoesm.ocean.vertical import (
+        compute_layer_thickness,
+        nemo_qco_card_mesh_operands,
+        nemo_qco_live_face_geometry_cgrid,
+        nemo_qco_live_vorticity_e3f_cgrid,
+        nemo_qco_vorticity_f_cgrid,
+    )
+
+    set_policy(PrecisionPolicy.fp64(transcendentals="libm"))
+    require(jax.default_backend() == "cpu", "round-19 gate requires CPU")
+    require(bool(jax.config.jax_enable_x64), "JAX x64 is disabled")
+    require(not bool(jax.config.jax_disable_jit),
+            "production JIT is required")
+    require(get_policy() == PrecisionPolicy.fp64(transcendentals="libm"),
+            "round-19 policy is not certified fp64/libm")
+    require(sha256(COMMON_RESTART) == COMMON_RESTART_SHA256,
+            "common developed restart moved")
+    require(not (plant_q and plant_fu),
+            "q and F_u plants must be run separately")
+    stamp = worktree_stamp()
+    require(stamp["clean"],
+            f"round-19 factor walk requires clean tree: {stamp['dirty_paths']}")
+
+    vector_contract = _manifest_contract(vector_root, "vector-math-conda")
+    scalar_contract = _manifest_contract(scalar_root, "scalar-math-conda")
+    scalar_stage = read_stage_vorticity(
+        scalar_root / "instrumented" / STAGE_NAME)
+    kmm = int(scalar_stage["header"]["Kmm"])
+    require(kmm == 2, f"stage-3 factor walk requires Kmm=2, got {kmm}")
+    q_name = f"oracle_r17_ene_q_kmm{kmm}_kt00004321.bin"
+    scalar_operands = read_ene_operands(
+        scalar_root / "instrumented" / q_name)
+    scalar_stage2 = read_stage2_state(
+        scalar_root / "instrumented" / "oracle_stage_kt00004321_s2.bin")
+    scalar_q = _q_to_legoesm(scalar_operands)
+    scalar_fu, _ = _transports_to_legoesm(scalar_operands)
+
+    card = _common_card()
+    state = _common_state(card)
+    freshwater, surface = gyre_surface_forcings(card, state, 4321)
+    grid = card.recipe.grid
+    z_coord = card.recipe.z_coord
+    config = card.recipe.model_config
+    trace_model = LatLonCGridOceanModel(
+        grid, z_coord, config,
+        _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+            expose_live_stage_operands=True),
+    )
+    trace = trace_model.step(
+        state, dt=card.dt_s, freshwater=freshwater,
+        surface_forcing=surface)
+    trace = jax.device_get(trace)
+    ordinary = LatLonCGridOceanModel(grid, z_coord, config).step(
+        state, dt=card.dt_s, freshwater=freshwater,
+        surface_forcing=surface)
+    left_leaves, left_tree = jax.tree_util.tree_flatten(trace.state_after)
+    right_leaves, right_tree = jax.tree_util.tree_flatten(
+        jax.device_get(ordinary))
+    require(left_tree == right_tree,
+            "trace and ordinary state pytree structures differ")
+    passive_mismatches = 0
+    for left, right in zip(left_leaves, right_leaves, strict=True):
+        left = np.ascontiguousarray(np.asarray(left))
+        right = np.ascontiguousarray(np.asarray(right))
+        require(left.shape == right.shape and left.dtype == right.dtype,
+                "trace and ordinary state leaf shape/dtype differs")
+        passive_mismatches += int(np.count_nonzero(
+            left.view(np.uint8) != right.view(np.uint8)))
+    require(passive_mismatches == 0,
+            f"live q/F_u trace moved {passive_mismatches} state bytes")
+    parts = trace.operator_operands[2]
+    live_q = np.asarray(parts["operand_vorticity_q"], dtype=np.float64)
+    live_fu = np.asarray(parts["operand_vorticity_Fu"], dtype=np.float64)
+    live_u = np.asarray(parts["operand_velocity_u"], dtype=np.float64)
+    live_v = np.asarray(parts["operand_velocity_v"], dtype=np.float64)
+    live_hu = np.asarray(parts["operand_momentum_h_u"], dtype=np.float64)
+    live_hf = np.asarray(parts["operand_vorticity_h_vtx"], dtype=np.float64)
+    live_f = np.asarray(nemo_een_ene_vertex_coriolis(grid),
+                        dtype=np.float64)
+    live_e2u = np.asarray(grid.dy_u, dtype=np.float64)
+    require(live_q.shape == scalar_q.shape
+            and live_fu.shape == scalar_fu.shape,
+            "live and scalar formed-operand shapes differ")
+
+    scalar_u = nemo_closed_u_east_to_face(scalar_stage2["u"])
+    scalar_v = nemo_closed_v_north_to_face(scalar_stage2["v"])
+    h_ref = compute_layer_thickness(
+        jnp.zeros_like(state.eta.data), state.H_bathy.data, z_coord,
+        min_water_column_m=config.min_water_column_m)
+    umask3, vmask3 = compute_face_masks_3d(z_coord.is_active, grid)
+    qco_mesh = nemo_qco_card_mesh_operands(
+        h_ref, umask3, vmask3, grid, jnp.float64)
+    scalar_hu = np.asarray(nemo_qco_live_face_geometry_cgrid(
+        jnp.asarray(scalar_stage2["ssh"]), qco_mesh.e3u_0,
+        qco_mesh.e3v_0, qco_mesh.umask3, qco_mesh.vmask3,
+        qco_mesh.hu_0, qco_mesh.hv_0, qco_mesh.area_t,
+        qco_mesh.area_u, qco_mesh.area_v)[0], dtype=np.float64)
+    scalar_hf = np.asarray(nemo_qco_live_vorticity_e3f_cgrid(
+        jnp.asarray(scalar_stage2["ssh"]), z_coord, jnp.float64,
+        grid=grid), dtype=np.float64)
+    scalar_f = np.asarray(nemo_qco_vorticity_f_cgrid(
+        z_coord, jnp.float64), dtype=np.float64)
+    raw_e2u = np.asarray(z_coord.nemo_een_barotropic.e2u,
+                        dtype=np.float64)
+    scalar_e2u = np.concatenate([raw_e2u[:, :1], raw_e2u], axis=1)
+    require(scalar_u.shape == live_u.shape and scalar_v.shape == live_v.shape,
+            "stage-2 velocity mapping differs from live stage-3 shapes")
+    require(scalar_hu.shape == live_hu.shape
+            and scalar_hf.shape == live_hf.shape
+            and scalar_e2u.shape == live_e2u.shape,
+            "scalar mesh provider differs from live factor shapes")
+
+    @jax.jit
+    def form_q(u_value, v_value, f_value, hf_value):
+        zeta = nemo_vor_ene_vorticity_cgrid(u_value, v_value, grid)
+        total = zeta + f_value[..., jnp.newaxis]
+        denominator = jnp.maximum(hf_value, jnp.asarray(1.0e-10))
+        return nemo_source_round(
+            nemo_source_round(total) / denominator)
+
+    @jax.jit
+    def form_fu(e2u_value, hu_value, u_value):
+        formed = nemo_source_round(
+            nemo_source_round(e2u_value[..., jnp.newaxis] * hu_value)
+            * u_value)
+        return nemo_source_round(formed * umask3)
+
+    calibrated_q = np.asarray(form_q(
+        jnp.asarray(live_u), jnp.asarray(live_v), jnp.asarray(live_f),
+        jnp.asarray(live_hf)))
+    calibrated_fu = np.asarray(form_fu(
+        jnp.asarray(live_e2u), jnp.asarray(live_hu), jnp.asarray(live_u)))
+    calibration = {
+        "q": wordwise_result(calibrated_q, live_q),
+        "F_u": wordwise_result(calibrated_fu, live_fu),
+    }
+    require(calibration["q"]["bit_exact"],
+            "round-19 q re-formation does not reproduce the captured live q")
+    require(calibration["F_u"]["bit_exact"],
+            "round-19 F_u re-formation does not reproduce captured live F_u")
+
+    mask = np.asarray(state.v_mask.data, dtype=bool)
+    western = wet_span_bins(mask) == 0
+    selection = western[..., None] & np.zeros(
+        (*mask.shape, ACTIVE_LEVELS), dtype=bool)
+    selection[..., 0] = western
+
+    def expose(name: str, q_override, fu_override) -> np.ndarray:
+        model = LatLonCGridOceanModel(
+            grid, z_coord, config,
+            _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
+                expose_momentum_operator=name,
+                expose_momentum_operator_stage=3,
+                stage3_vorticity_q_override=jnp.asarray(q_override),
+                stage3_vorticity_transport_override=(
+                    jnp.asarray(fu_override), None),
+            ),
+        )
+        exposed = model.step(
+            state, dt=card.dt_s, freshwater=freshwater,
+            surface_forcing=surface)
+        return np.asarray(exposed.v.data)
+
+    if plant_q or plant_fu:
+        q_index, fu_index = active_plant_locations(western, live_q, live_fu)
+        if plant_q:
+            reference = live_q
+            planted = np.array(live_q, copy=True)
+            index = q_index
+            planted[index] += 1.0
+            before = expose("vorticity", reference, scalar_fu)
+            after = expose("vorticity", planted, scalar_fu)
+            operand = "q"
+        else:
+            reference = live_fu
+            planted = np.array(live_fu, copy=True)
+            index = fu_index
+            planted[index] += 1.0
+            before = expose("vorticity", scalar_q, reference)
+            after = expose("vorticity", scalar_q, planted)
+            operand = "F_u"
+        changed = (np.ascontiguousarray(after[selection]).view(np.uint64)
+                   != np.ascontiguousarray(before[selection]).view(np.uint64))
+        plant_result = {
+            "operand": operand,
+            "index": list(index),
+            "registered_changed_words": int(np.count_nonzero(changed)),
+            "registered_signed_mean_move_m_s2": signed_row(
+                after, before, selection),
+        }
+        require(plant_result["registered_changed_words"] > 0,
+                f"planted live {operand} word did not move the scored V row")
+        return {
+            "format": "gyre-r4-smag-round19-formed-factor-plant-v1",
+            "worktree": stamp,
+            "policy": "fp64-libm-certified-cpu",
+            "trace_passivity_mismatched_bytes": passive_mismatches,
+            "providers": {"vector": vector_contract,
+                          "scalar": scalar_contract},
+            "calibration": calibration,
+            "plant": operand,
+            "plant_result": plant_result,
+            "owner_boundary": "PLANT_FIRED",
+        }
+
+    candidates = {
+        "q__kmm_velocity": (
+            "q",
+            np.asarray(form_q(
+                jnp.asarray(scalar_u), jnp.asarray(scalar_v),
+                jnp.asarray(live_f), jnp.asarray(live_hf))),
+        ),
+        "q__coriolis": (
+            "q",
+            np.asarray(form_q(
+                jnp.asarray(live_u), jnp.asarray(live_v),
+                jnp.asarray(scalar_f), jnp.asarray(live_hf))),
+        ),
+        "q__live_f_thickness": (
+            "q",
+            np.asarray(form_q(
+                jnp.asarray(live_u), jnp.asarray(live_v),
+                jnp.asarray(live_f), jnp.asarray(scalar_hf))),
+        ),
+        "Fu__e2u_metric": (
+            "F_u",
+            np.asarray(form_fu(
+                jnp.asarray(scalar_e2u), jnp.asarray(live_hu),
+                jnp.asarray(live_u))),
+        ),
+        "Fu__live_u_thickness": (
+            "F_u",
+            np.asarray(form_fu(
+                jnp.asarray(live_e2u), jnp.asarray(scalar_hu),
+                jnp.asarray(live_u))),
+        ),
+        "Fu__kmm_u_velocity": (
+            "F_u",
+            np.asarray(form_fu(
+                jnp.asarray(live_e2u), jnp.asarray(live_hu),
+                jnp.asarray(scalar_u))),
+        ),
+    }
+    baseline = {
+        name: expose(name, live_q, live_fu)
+        for name in ("hpg", "vorticity", "advection")
+    }
+    arms = {}
+    for name, (formed_name, candidate) in candidates.items():
+        q_value = candidate if formed_name == "q" else scalar_q
+        fu_value = candidate if formed_name == "F_u" else scalar_fu
+        fields = {
+            field: expose(field, q_value, fu_value)
+            for field in ("hpg", "vorticity", "advection")
+        }
+        untouched = bool(
+            np.array_equal(fields["hpg"], baseline["hpg"])
+            and np.array_equal(fields["advection"], baseline["advection"])
+        )
+        oracle_formed = scalar_q if formed_name == "q" else scalar_fu
+        arms[name] = {
+            "formed_quantity": formed_name,
+            "formed_operand": wordwise_result(candidate, oracle_formed),
+            "source_accumulator": source_accumulator_result(
+                fields["vorticity"], scalar_stage, selection),
+            "untouched_rows_bit_exact": untouched,
+        }
+    require(all(row["untouched_rows_bit_exact"] for row in arms.values()),
+            "a factor substitution moved HPG or advection")
+    sufficient, boundary = classify_factor_walk(arms)
+
+    report = {
+        "format": "gyre-r4-smag-round19-formed-factor-walk-v1",
+        "worktree": stamp,
+        "common_restart": {
+            "path": str(COMMON_RESTART), "sha256": COMMON_RESTART_SHA256,
+            "step": 4320, "next_step": 4321,
+        },
+        "policy": "fp64-libm-certified-cpu",
+        "jax_backend": jax.default_backend(),
+        "trace_passivity_mismatched_bytes": passive_mismatches,
+        "providers": {"vector": vector_contract, "scalar": scalar_contract},
+        "stage_header": scalar_stage["header"],
+        "stage2_header": scalar_stage2["header"],
+        "operand_record": q_name,
+        "calibration": calibration,
+        "live_formed_vs_scalar_nemo": {
+            "q": wordwise_result(live_q, scalar_q),
+            "F_u": wordwise_result(live_fu, scalar_fu),
+        },
+        "factor_providers_live_vs_scalar_nemo": {
+            "curl_Kmm_u": wordwise_result(live_u, scalar_u),
+            "curl_Kmm_v": wordwise_result(live_v, scalar_v),
+            "coriolis_ff_f": wordwise_result(live_f, scalar_f),
+            "live_F_thickness": wordwise_result(live_hf, scalar_hf),
+            "e2u_metric": wordwise_result(live_e2u, scalar_e2u),
+            "live_U_thickness": wordwise_result(live_hu, scalar_hu),
+        },
+        "arms": arms,
+        "sufficient_single_factors": sufficient,
+        "owner_boundary": boundary,
+        "plant": None,
+        "source_citations": [
+            "compiled stprk3.f90:204-208",
+            "compiled stprk3_stg.f90:404-430",
+            "compiled dynvor.f90:552-591",
+        ],
+    }
+    return report
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--vector-root", type=Path, default=VECTOR_ROOT)
     parser.add_argument("--scalar-root", type=Path, default=SCALAR_ROOT)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--factor-walk", action="store_true")
     plants = parser.add_mutually_exclusive_group()
     plants.add_argument("--plant-q", action="store_true")
     plants.add_argument("--plant-fu", action="store_true")
     args = parser.parse_args()
-    report = run(
+    runner = run_factor_walk if args.factor_walk else run
+    report = runner(
         args.vector_root, args.scalar_root,
         plant_q=args.plant_q, plant_fu=args.plant_fu)
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -639,9 +1055,21 @@ def main() -> int:
                            encoding="utf-8")
     if report["plant"] is not None:
         print(
-            "GYRE_R18_STAGE3_VORTICITY PLANT_FIRED operand="
+            ("GYRE_R19_FORMED_FACTOR" if args.factor_walk
+             else "GYRE_R18_STAGE3_VORTICITY")
+            + " PLANT_FIRED operand="
             + report["plant"] + " changed="
             + str(report["plant_result"]["registered_changed_words"])
+        )
+    elif args.factor_walk:
+        print(
+            "GYRE_R19_FORMED_FACTOR " + report["owner_boundary"]
+            + " sufficient=" + ",".join(
+                report["sufficient_single_factors"])
+            + " live_q_unequal=" + str(
+                report["live_formed_vs_scalar_nemo"]["q"]["unequal_words"])
+            + " live_Fu_unequal=" + str(
+                report["live_formed_vs_scalar_nemo"]["F_u"]["unequal_words"])
         )
     else:
         print(

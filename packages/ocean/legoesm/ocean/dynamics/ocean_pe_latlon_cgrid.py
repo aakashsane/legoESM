@@ -2613,6 +2613,7 @@ def _bc_pv_flux(
     ln_dynvor_msk=None,
     potential_vorticity_override=None,
     metric_transport_override=None,
+    return_ene_operands=False,
 ):
     """Stage 7b: vector-invariant potential-vorticity (vorticity) flux
     (Sadourny EC / Arakawa-Lamb-81 triad, or WENO-Z when momentum_advection is
@@ -2873,6 +2874,7 @@ def _bc_pv_flux(
     # real ETOPO under live-T integration.  Same Neumann fill of q at
     # land-adjacent vertices as WENO5 (for the centred-q part of the
     # triad).
+    ene_operands = None
     if _mom_adv in ("weno5", "weno7", "weno9"):
         _weno_order = {"weno5": 5, "weno7": 7, "weno9": 9}[_mom_adv]
         # Fill PV at land-adjacent vertices so WENO stencils see smooth
@@ -2967,13 +2969,16 @@ def _bc_pv_flux(
                 (nemo_een_ene_vertex_coriolis(grid) if f_vtx_override is None
                  else f_vtx_override)
                 if vorticity_scheme in ("ene_total", "ens_total") else None)
-            diag_vortcor_u, diag_vortcor_v = (pv_flux_ens if vorticity_scheme == "ens_total" else pv_flux_ene)(
+            _pv_result = (pv_flux_ens if vorticity_scheme == "ens_total" else pv_flux_ene)(
                 zeta, h_vtx, h_v, v, h_u, u,
                 u_mask_3d, v_mask_3d, vtx_mask_va,
                 f_vtx=_f_vtx,
                 q_boundary=een_q_boundary,
                 metric_widths=_mw,
                 metric_reciprocals=metric_reciprocals,
+                **({"return_operands": True}
+                   if return_ene_operands and vorticity_scheme == "ene_total"
+                   else {}),
                 **({"potential_vorticity_override":
                     potential_vorticity_override}
                    if vorticity_scheme == "ene_total" else {}),
@@ -2982,12 +2987,18 @@ def _bc_pv_flux(
                 **({"ln_dynvor_msk": ln_dynvor_msk}
                    if vorticity_scheme == "ens_total" else {}),
             )
+            if return_ene_operands and vorticity_scheme == "ene_total":
+                diag_vortcor_u, diag_vortcor_v, ene_operands = _pv_result
+            else:
+                diag_vortcor_u, diag_vortcor_v = _pv_result
 
     # Capture PV-flux advection contribution as the `vortcor` diagnostic
     # (per-step closure: Σ components == total to machine precision; see
     # `tests/ocean/unit/test_momentum_diagnostics_closure.py`).
     du_dt = du_dt + diag_vortcor_u
     dv_dt = dv_dt + diag_vortcor_v
+    if return_ene_operands:
+        return du_dt, dv_dt, diag_vortcor_u, diag_vortcor_v, ene_operands
     return du_dt, dv_dt, diag_vortcor_u, diag_vortcor_v
 
 
@@ -5480,6 +5491,7 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
     _vorticity_selection = getattr(config, "vorticity_scheme", "al81")
     _vorticity_scheme = getattr(
         _vorticity_selection, "scheme", _vorticity_selection)
+    _nemo_ene_operands = None
     if _mom_adv == "flux_form":
         # NEMO dynadv_up3 consumes ONE face thickness -- e3u(Kmm) =
         # e3u_0*(1+r3u(Kmm)) (domzgr_substitute.h90:127; domqco.F90:219-220)
@@ -5581,7 +5593,7 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
                 else nemo_een_ene_vertex_coriolis(grid)
             )
         _h_vtx_operand = _h_vtx_override
-        du_dt, dv_dt, diag_vortcor_u, diag_vortcor_v = _bc_pv_flux(
+        _pv_result = _bc_pv_flux(
             du_dt, dv_dt, u, v, _h_u_vor, _h_v_vor, h_k,
             u_mask_3d, v_mask_3d, mask, grid, _mom_adv,
             config.weno_smoothness,
@@ -5601,7 +5613,13 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
                 _vorticity_selection, "ln_dynvor_msk", None),
             potential_vorticity_override=nemo_vorticity_q_override,
             metric_transport_override=nemo_vorticity_transport_override,
+            return_ene_operands=return_nemo_operator_components,
         )
+        if return_nemo_operator_components:
+            (du_dt, dv_dt, diag_vortcor_u, diag_vortcor_v,
+             _nemo_ene_operands) = _pv_result
+        else:
+            du_dt, dv_dt, diag_vortcor_u, diag_vortcor_v = _pv_result
 
     # --- Stage 7b': PLANETARY Coriolis as an explicit tendency (Veros-faithful).
     # When config.coriolis_scheme == "explicit_ab2", the plain f×u of the FULL
@@ -6310,6 +6328,13 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
             "ldf_u": _mu(_nemo_ldf_term_u),
             "ldf_v": _mv(_nemo_ldf_term_v),
         }
+        if _nemo_ene_operands is not None:
+            (_nemo_ene_q, _nemo_ene_fu, _nemo_ene_fv) = _nemo_ene_operands
+            _nemo_operator_components.update({
+                "operand_vorticity_q": _nemo_ene_q,
+                "operand_vorticity_Fu": _nemo_ene_fu,
+                "operand_vorticity_Fv": _nemo_ene_fv,
+            })
         if (_nemo_stage1_source_order
                 and _nemo_stage1_keg_arm in (
                     "unmasked-materialized", "masked-materialized",

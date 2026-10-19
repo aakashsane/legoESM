@@ -71,6 +71,35 @@ def test_stage_and_q_readers_refuse_layout_and_preserve_fortran_order(
         tool.read_ene_operands(qpath)
 
 
+def test_stage2_reader_names_the_stage3_kmm_provider(tmp_path, monkeypatch):
+    tool = _load_tool()
+    monkeypatch.setattr(tool, "NATIVE_DIMS", (8, 7, 3))
+    monkeypatch.setattr(tool, "ACTIVE_LEVELS", 2)
+    nx, ny, nz = tool.NATIVE_DIMS
+    n3 = nx * ny * nz
+    n2 = nx * ny
+    arrays = [np.arange(n3, dtype=np.float64) + 1000 * i for i in range(4)]
+    ssh = np.arange(n2, dtype=np.float64) + 9000
+    path = tmp_path / "oracle_stage_kt00004321_s2.bin"
+    path.write_bytes(
+        b"NEMO_L1_STAGE_1 "
+        + struct.pack("=9i", 1, 4321, 2, 2, nx, ny, nz, 2, 64)
+        + b"".join(array.tobytes() for array in arrays)
+        + ssh.tobytes()
+    )
+    got = tool.read_stage2_state(path)
+    expected = arrays[2].reshape((nx, ny, nz), order="F").transpose(
+        1, 0, 2)[2:-2, 2:-2, :2]
+    np.testing.assert_array_equal(got["u"], expected)
+    assert got["header"]["Kaa"] == 2
+
+    moved = bytearray(path.read_bytes())
+    moved[16 + 3 * 4:16 + 4 * 4] = struct.pack("=i", 3)
+    path.write_bytes(moved)
+    with pytest.raises(Exception, match="bad header"):
+        tool.read_stage2_state(path)
+
+
 def test_q_reader_ignores_unread_halo_but_refuses_consumed_nonfinite(
     tmp_path, monkeypatch,
 ):
@@ -164,6 +193,47 @@ def test_source_accumulator_and_boundary_use_exact_executed_addition(
         [], "COMPLETED_STENCIL")
 
 
+def test_wordwise_and_factor_classification_require_both_exact_boundaries():
+    tool = _load_tool()
+    oracle = np.array([1.0, 2.0], dtype=np.float64)
+    assert tool.wordwise_result(oracle, oracle) == {
+        "words": 2,
+        "unequal_words": 0,
+        "max_abs": 0.0,
+        "max_ulp": 0,
+        "bit_exact": True,
+    }
+    moved = oracle.copy()
+    moved[1] = np.nextafter(moved[1], np.inf)
+    row = tool.wordwise_result(moved, oracle)
+    assert row["unequal_words"] == 1
+    assert row["max_ulp"] == 1
+
+    exact = {"bit_exact": True}
+    debt = {"bit_exact": False}
+    arms = {
+        "formed_only": {
+            "formed_operand": exact,
+            "source_accumulator": debt,
+            "untouched_rows_bit_exact": True,
+        },
+        "source_only": {
+            "formed_operand": debt,
+            "source_accumulator": exact,
+            "untouched_rows_bit_exact": True,
+        },
+    }
+    assert tool.classify_factor_walk(arms) == (
+        [], "COUPLED_FORMATION_COMPOSITION")
+    arms["single"] = {
+        "formed_operand": exact,
+        "source_accumulator": exact,
+        "untouched_rows_bit_exact": True,
+    }
+    assert tool.classify_factor_walk(arms) == (
+        ["single"], "SINGLE_FACTOR_SUFFICIENT")
+
+
 def test_active_plants_select_consumed_nonzero_stencil_words():
     tool = _load_tool()
     western = np.zeros((3, 4), dtype=bool)
@@ -225,6 +295,30 @@ def test_model_tendency_operand_overrides_move_only_vorticity_component():
     baseline_components = baseline[2]
     override_components = overridden[2]
     transport_components = transport_overridden[2]
+    for name, shape in (
+        ("operand_vorticity_q", q_shape),
+        ("operand_vorticity_Fu", state.u.data.shape),
+        ("operand_vorticity_Fv", state.v.data.shape),
+    ):
+        assert name in baseline_components
+        assert baseline_components[name].shape == shape
+    replayed = model.tendencies(
+        state, dt=card.dt_s, momentum_only=True,
+        nemo_vorticity_q_override=baseline_components["operand_vorticity_q"],
+        nemo_vorticity_transport_override=(
+            baseline_components["operand_vorticity_Fu"],
+            baseline_components["operand_vorticity_Fv"],
+        ),
+        return_nemo_operator_components=True,
+    )
+    np.testing.assert_array_equal(
+        np.asarray(baseline_components["vorticity_u"].data),
+        np.asarray(replayed[2]["vorticity_u"].data),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(baseline_components["vorticity_v"].data),
+        np.asarray(replayed[2]["vorticity_v"].data),
+    )
     assert not np.array_equal(
         np.asarray(baseline_components["vorticity_v"].data),
         np.asarray(override_components["vorticity_v"].data),

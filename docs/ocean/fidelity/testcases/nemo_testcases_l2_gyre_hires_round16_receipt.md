@@ -195,18 +195,18 @@ requested comparison.
 
 The corrected NEMO writer captures the pre-ZDF state before `dyn_zdf` removes
 the prognostic barotropic velocity at
-`GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/dynzdf.f90:159-169`.  After the
+`GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/dynzdf.f90:159-168`.  After the
 implicit solve, the stage code computes and applies the final barotropic
 correction, then passes the final surface V to the recorder at
-`GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/stprk3_stg.f90:502-534`.  The writer
+`GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/stprk3_stg.f90:504,532,534`.  The writer
 therefore assigns the removal to its vertical row and the restoration to its
 external row, as its explicit row equations show at
-`GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90:153-184`.
+`GYRE_OMIP_L2_P3_R15BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90:161-184`.
 
 In legoESM, the vertical solve explicitly re-adds the subtracted barotropic
 mean to both the production and no-stress results before returning at
 `ocean_model_latlon_cgrid.py:13050-13058`.  Its budget trace then forms
 vertical, stress, external, and independent total rows from those returned
-boundaries at `ocean_model_latlon_cgrid.py:10423-10442`.  This executed-source
+boundaries at `ocean_model_latlon_cgrid.py:10425-10442`.  This executed-source
 comparison is why only the vertical-plus-external pair is semantically
 matched; it does not change the preregistered raw table.

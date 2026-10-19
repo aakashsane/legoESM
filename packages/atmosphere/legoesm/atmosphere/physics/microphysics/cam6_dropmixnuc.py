@@ -58,6 +58,9 @@ _TINV_MIN = 1.0e-6                  # dtmin only from rates above this [1/s]
 _DTMIX_SAFETY = 0.9                 # dtmix = 0.9 dtmin
 _QCLD_FLOOR = 1.0e-6                # tendnd uses max(qcld, 1e-6) [1/kg]
 _WSUB_CAP = 10.0                    # microp_aero.F90:529-541 caps wsub at 10 m/s
+_WSUB_MIN = 0.20                    # microp_aero.F90:524, :550 wsub floor [m/s]
+_QSMALL = 1.0e-18                   # microp_aero.F90:70 smallest condensate [kg/kg]
+_TKE_PER_WP2 = 3.0 / 2.0            # microp_aero.F90:517 CLUBB tke = (3/2) wp2
 
 
 def _layer_geometry(temp, pmid, pint, rpdel, zm):
@@ -251,3 +254,40 @@ def cam6_dropmixnuc(ncldwtr, temp, pmid, pint, rpdel, zm, kvh, wsub, cldn, cldo,
     tendnd = jnp.where((nsubmix > n_max)[:, None], jnp.nan, tendnd)
     pad = jnp.zeros((tendnd.shape[0], top_lev), dtype=tendnd.dtype)
     return jnp.concatenate([pad, tendnd], axis=1)[:, :nlev_full]
+
+
+def cam6_microp_aero_npccn(ncldwtr, temp, pmid, pint, rpdel, zm, q_liq, q_ice, wp2_iface,
+                           kvh_iface, ast, cldo, dtmicro, aer_num, aer_mass, props, top_lev,
+                           n_max):
+    """CAM6 ``microp_aero_run`` droplet activation under CLUBB: ``npccn`` [1/kg/s].
+
+    ``wsub`` from CLUBB ``tke = 1.5 wp2`` on interfaces (microp_aero.F90:517,
+    :527-553: ``sqrt(0.5 (tke_k + tke_k+1) 2/3)`` capped at 10 then floored at
+    0.20; 0.20 above ``top_lev``, :523-524); ``use_preexisting_ice = .true.``
+    (CAM6 default) so dropmixnuc gets ``cldn = ast``, ``cldo`` and the liquid
+    fraction ``cldliqf = q_liq/(q_liq+q_ice)`` where that sum exceeds qsmall,
+    else 0 (:586-597, :604-606); ``npccn = tendnd`` (:614).  ``wp2_iface`` and
+    ``kvh_iface`` are prognostic CLUBB's final-sub-step exports (S8), top-first
+    ``(ncol, nlev+1)``; ``cldo`` is the previous macmic sub-step's ``ast``
+    (micro_mg_cam.F90:1829).  Ice nucleation changes no state field on this
+    prescribed-aerosol path (nucleate_ice_cam.F90:731-740), so every input is
+    the post-macrophysics state.
+    """
+    wsub, cldliqf = cam6_microp_aero_inputs(q_liq, q_ice, wp2_iface, top_lev)
+    return cam6_dropmixnuc(ncldwtr, temp, pmid, pint, rpdel, zm, kvh_iface, wsub, ast, cldo,
+                           cldliqf, dtmicro, aer_num, aer_mass, props, top_lev, n_max)
+
+
+def cam6_microp_aero_inputs(q_liq, q_ice, wp2_iface, top_lev):
+    """``(wsub, cldliqf)`` of :func:`cam6_microp_aero_npccn`, full ``(ncol, nlev)``."""
+    above = jnp.arange(q_liq.shape[1]) < top_lev
+    tke = _TKE_PER_WP2 * wp2_iface
+    arg = 0.5 * (tke[:, :-1] + tke[:, 1:]) * (2.0 / 3.0)
+    # zero-safe sqrt: d sqrt/d arg is infinite at 0; the floor masks the value there.
+    pos = arg > 0.0
+    root = jnp.where(pos, jnp.sqrt(jnp.where(pos, arg, 1.0)), 0.0)
+    wsub = jnp.where(above, _WSUB_MIN, jnp.maximum(_WSUB_MIN, jnp.minimum(root, _WSUB_CAP)))
+    qcld = q_liq + q_ice
+    has = (qcld > _QSMALL) & ~above
+    cldliqf = jnp.where(has, q_liq / jnp.where(has, qcld, 1.0), 0.0)
+    return wsub, cldliqf

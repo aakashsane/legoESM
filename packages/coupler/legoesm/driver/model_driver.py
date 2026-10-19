@@ -219,6 +219,80 @@ def _exchange_halo_cell_fields(halo_ex, fields):
     return tuple(result)
 
 
+def split_land_columns(idx, n_proc, proc):
+    """Split the packed land columns ``idx`` into ``n_proc`` near-equal
+    contiguous shares.  Returns ``(mine, padded)``: this process's columns,
+    and the ``(n_proc, L)`` table of every share padded to one length L by
+    repeating the share's last column (a duplicate write of the same value),
+    so the gather is one fixed-shape collective on every process."""
+    shares = np.array_split(np.asarray(idx), n_proc)
+    if min(s.size for s in shares) == 0:
+        raise ValueError(
+            f"{np.size(idx)} land columns cannot be split over {n_proc} "
+            "processes (a share would be empty)")
+    L = max(s.size for s in shares)
+    padded = np.stack([np.concatenate([s, np.full(L - s.size, s[-1])])
+                       for s in shares])
+    return shares[proc], padded
+
+
+def gather_land_step(run, ncol, padded, proc, allgather):
+    """Run this process's share of the land step and rebuild the full output
+    on every process (shares from ``split_land_columns``).  ``run()`` returns
+    the land step tuple ``(state, 8 per-cell fields, 5 counts, iter max)``;
+    every per-column leaf (leading axis ``ncol``) takes each column from the
+    process that solved it, counts are summed, the iteration max is maxed.
+
+    ``allgather(tree)`` stacks a pytree across processes on a new axis 0 and
+    is a collective: every process calls it twice per land call.  All local
+    work that can fail (the step, the payload) runs BEFORE the first one, a
+    success flag, so a failure on one process raises on every process
+    instead of leaving the others blocked in the payload gather."""
+    err = None
+    try:
+        out = run()
+        mine = jnp.asarray(padded[proc])
+        flat = jnp.asarray(padded.reshape(-1))
+        leaves, tdef = jax.tree_util.tree_flatten(out[:9])
+        # A leaf that is not per column would keep only this process's
+        # share's update and silently differ across processes: refuse it.
+        bad = [np.shape(x) for x in leaves
+               if not (hasattr(x, "shape") and x.ndim >= 1
+                       and x.shape[0] == ncol)]
+        if bad:
+            raise ValueError(
+                f"land step output leaves {bad} are not per-column "
+                f"(ncol={ncol}); the split land solve cannot gather them")
+        # ONE (L, K) float64 buffer for every per-column leaf (exact for the
+        # float/bool/small-int leaves the land carries).
+        rows = [jnp.asarray(x)[mine].reshape(mine.shape[0], -1)
+                for x in leaves]
+        widths = [r.shape[1] for r in rows]
+        payload = jax.block_until_ready(
+            (jnp.concatenate([r.astype(jnp.float64) for r in rows], axis=1),
+             jnp.stack([jnp.asarray(x, jnp.float64) for x in out[9:]])))
+    except Exception as exc:  # noqa: BLE001 - agreed across processes below
+        err = exc
+    flags = allgather(jnp.asarray(0.0 if err is None else 1.0))
+    if err is not None:
+        raise err
+    if float(np.max(np.asarray(flags))) != 0.0:
+        raise RuntimeError("split land solve failed on another process "
+                           "(see its traceback); stopping in lockstep")
+    g_rows, g_cnt = allgather(payload)
+    g_rows = jnp.asarray(g_rows).reshape(flat.shape[0], -1)
+    full, k = [], 0
+    for x, w in zip(leaves, widths):
+        blk = g_rows[:, k:k + w].reshape((-1,) + x.shape[1:])
+        full.append(jnp.asarray(x).at[flat].set(blk.astype(x.dtype)))
+        k += w
+    g_cnt = jnp.asarray(g_cnt)
+    counts = tuple(jnp.sum(g_cnt[:, i]).astype(jnp.asarray(out[9 + i]).dtype)
+                   for i in range(len(out) - 10))
+    return (tuple(jax.tree_util.tree_unflatten(tdef, full)) + counts
+            + (jnp.max(g_cnt[:, -1]).astype(jnp.asarray(out[-1]).dtype),))
+
+
 def _map_flat_column_leaves(tree, n_tile, global_ncol, fn):
     """Apply ``fn(leaf, n_tile)`` to every array leaf of ``tree`` whose leading
     axis equals ``global_ncol`` (a per-column field); leave all other leaves
@@ -13456,6 +13530,18 @@ class ModelDriver:
             # not repack.
             _land_pack_idx_np = np.nonzero(
                 np.asarray(self._f_land).reshape(-1) > 0.0)[0]
+            # Multi-controller SPMD (the FV3 duo lane): every process holds
+            # the whole globe's land, so each solves only its share of the
+            # land columns and one gather per land call rebuilds the full
+            # copy.  All processes take this branch (config + process count
+            # only), so the gather is reached by every one of them.
+            _land_split = None
+            if (self._is_spmd_multiprocess()
+                    and str(getattr(cfg, "land_surface_scheme", "")) != "clm_ml"
+                    and _land_pack_idx_np.size >= jax.process_count()):
+                _land_pack_idx_np, _land_split = split_land_columns(
+                    _land_pack_idx_np, jax.process_count(),
+                    jax.process_index())
             _land_pack_on = (
                 str(getattr(cfg, "land_surface_scheme", "")) != "clm_ml"
                 and 0 < _land_pack_idx_np.size < _f_land_cols.shape[0])
@@ -13669,6 +13755,22 @@ class ModelDriver:
             # surface blend never runs land-free for a whole interval.
             _land_step_boot_fn = (
                 _land_step_fn if _LAND_K == 1 else _make_land_step(DT))
+            if _land_split is not None:
+                from jax.experimental import multihost_utils as _mhu
+                _proc = jax.process_index()
+
+                def _with_gather(step):
+                    def _step(*a):
+                        return gather_land_step(
+                            lambda: step(*a), _land_ncol_full, _land_split,
+                            _proc, _mhu.process_allgather)
+                    return _step
+                _land_step_boot_fn = (
+                    _with_gather(_land_step_boot_fn)
+                    if _land_step_boot_fn is not _land_step_fn else None)
+                _land_step_fn = _with_gather(_land_step_fn)
+                if _land_step_boot_fn is None:
+                    _land_step_boot_fn = _land_step_fn
 
             # Phase 2b (#1312): per-cell root-zone beta_soil -> the traced
             # ``forcing["beta_land"]`` the turbulence surface flux consumes.

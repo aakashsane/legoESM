@@ -72,6 +72,21 @@ def _column(ncol=4, nlev=24, dtheta_dz=4e-3, seed=0):
                 config=CLUBBConfig())
 
 
+def _hydrostatic_heights(col):
+    """Replace the fixture's heights with the model's own hydrostatic ones.
+
+    ``_column``'s linear z_full does not lie between its z_half for most
+    levels (zm outside its zt bracket), so CLUBB's zt->zm interpolation of
+    Lscale becomes an extrapolation and can go negative, which the
+    prognostic core turns into tau = 0.  Every model lane builds z_full as
+    the midpoint of the hydrostatic z_half (compute_heights_from_sigma).
+    """
+    from legoesm.atmosphere.physics._shared import compute_heights_from_sigma
+    z_full, z_half = compute_heights_from_sigma(col["T"], col["p_half"],
+                                                q_v=col["q_v"])
+    return dict(col, z_full=z_full, z_half=z_half)
+
+
 def test_dispatch_selects_clubb():
     name, fn, cfg = get_turbulence_fn(TurbulenceConfig(scheme="clubb"))
     assert name == "clubb"
@@ -2185,7 +2200,7 @@ def test_clubb_prognostic_injected_flux_equals_kinematic_prescription():
     from legoesm.atmosphere.physics.turbulence.surface_layer import (
         latent_enthalpy_correction, surface_moisture_flux,
     )
-    kw = _column(ncol=3, nlev=18)
+    kw = _hydrostatic_heights(_column(ncol=3, nlev=18))
     kw.pop("tke")
     ncol, nlev = kw["T"].shape
     cfg = CLUBBConfig(prognostic=True, clubb_dt=300.0)
@@ -2383,7 +2398,7 @@ def test_prognostic_surface_theta_l_variance_is_physical():
         unpack_clubb_moments,
     )
 
-    col = _column(ncol=2, nlev=24)
+    col = _hydrostatic_heights(_column(ncol=2, nlev=24))
     cfg = CLUBBConfig(prognostic=True)
     moments = pack_clubb_moments(
         init_clubb_moments(2, 24, cfg, dtype=col["T"].dtype))

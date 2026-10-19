@@ -112,8 +112,26 @@ Focused reader, source-accumulator, seam, directionality, refusal, and plant
 controls pass: `25 passed`. The deliberately reverted `F_u` seam fails the
 directionality test, and the restored seam passes. `git diff --check` passes.
 
-Review status is **UNREVIEWED** pending the final clean-tree review attempts.
-This is not a waiver. No scientific owner or physical change is landed.
+The high-resolution split passes `120 passed, 2 deselected`. The shared
+card/operator split initially reported `176 passed, 3 deselected` plus one
+failure: the default receipt still cited pre-seam legoESM line numbers. The
+map audit had correctly moved those keys, so the default receipt was
+re-anchored to the same statements and its complete gate suite then passed
+`17 passed`. The final unique aggregate is:
+
+`FULL_LANE_BATTERY_SPLIT_PASS: 297 passed, 5 deselected across two CPU/x64 groups`
+
+The round-specific citation gate passes all four compiled-source citations
+with zero unmapped citations, failures, or stale map entries; all nine
+self-tests fire. Shifting the `vor_ene` dispatch citation by two lines returns
+`SYMBOL-NOT-AT-LINE` and exits 1.
+
+Review status is **UNREVIEWED**. The read-only Codex reviewer cannot
+initialize its local app server because that service attempts a write on the
+read-only host filesystem. The read-only Claude reviewer starts but terminates
+with `ENOTFOUND` reaching its API. No GLM binary or endpoint is available.
+These are recorded service failures, not review verdicts or waivers. No
+scientific owner or physical change is landed.
 
 ## Compiled-source citations
 

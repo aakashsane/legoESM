@@ -1,8 +1,10 @@
 # GYRE high-resolution round 18 receipt
 
-Date: 2026-10-19. Status: **LANDED -- COMPLETED ENE STENCIL
-EXONERATED; UPSTREAM COUPLED INPUT DEBT**. This round changes no physical or
-configurable path.
+Date: 2026-10-19. Status: **HELD FOR INDEPENDENT REVIEW -- COMPLETED ENE
+STENCIL EXONERATED; UPSTREAM COUPLED INPUT DEBT**. This round changes no
+physical or configurable path. The measurement and controls are committed;
+the scientific verdict is not promoted to LANDED without the two required
+reviews.
 
 ## Finding -> disposition -> evidence
 

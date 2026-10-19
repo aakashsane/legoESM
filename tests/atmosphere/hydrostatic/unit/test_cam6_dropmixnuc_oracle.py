@@ -155,6 +155,7 @@ def test_microp_aero_npccn_gradient():
     f = lambda w: jnp.sum(cam6_microp_aero_npccn(*st, ql, qi, w, kvh, cldn, cldo, dt, *tail))
     g = np.asarray(jax.grad(f)(wp2))
     assert np.isfinite(g).all()
+    assert np.abs(g).max() > 0.0, "npccn does not depend on wp2 (detached)"
     assert np.asarray(wp2)[0, 5] == 0.0 and np.asarray(wp2)[0, 6] == 0.0   # tke = 0 interfaces
     gw = np.asarray(jax.grad(lambda w: jnp.sum(cam6_microp_aero_inputs(ql, qi, w, top_lev - 1)[0]))(wp2))
     inner = (wsub_f > 0.20) & (wsub_f < 10.0)

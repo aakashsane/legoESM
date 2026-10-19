@@ -459,8 +459,16 @@ emits v2. Old manifests keep loading.
    `run_amip.py` may replace them there (`--params` routing, AIMIP trained
    configs, Sundqvist command-line overrides). This is the one place replay
    injects; the closure check still compares the whole record afterwards.
-   **Component runners** (implemented for land, `run_lmip.py`; ocean, DINO
-   and coupled follow). A runner builds its configuration through script code,
+   **Component runners** (implemented for land `run_lmip.py`, ocean
+   `run_omip.py` and DINO `run_dino.py`; coupled follows; CORE2 is validated
+   only). Replay of `run_omip.py` always sets `--grid` to the manifest's grid
+   (`--grid all` writes one manifest per grid); `run_dino.py --timing-jsonl`
+   is pointed at the same file name in the rerun's output (replay refuses when
+   the command line sets it but the manifest does not record it); a
+   multi-controller DINO run records no final digest and is not replayable. `--diag-every`
+   is not an OMIP continuation control (it also sets the JRA55 forcing block
+   size), nor is `--quick` (it changes other defaults). The `run_omip.py` digest covers the
+   final sea ice when the run carries it. A runner builds its configuration through script code,
    so `reproduce` reruns the recording script: the manifest records the exact
    command line (`run.argv`), the launch directory (`run.cwd`) and the process
    count (`reproducibility.n_processes`, taken when the manifest is written,
@@ -477,10 +485,11 @@ emits v2. Old manifests keep loading.
    output directory overlapping the reference run's or already holding a
    manifest.
    Runner manifests without replay support are validated only, as before. It reruns
-   with only the output flag rewritten and with `LEGOESM_REPRODUCE_REFERENCE`
+   with only the output flag rewritten (plus the runner's own rewrites:
+   `run_omip.py`'s `--grid`, `run_dino.py`'s `--timing-jsonl`, below) and with `LEGOESM_REPRODUCE_REFERENCE`
    / `LEGOESM_REPRODUCE_OUTPUT` set; the rerun's manifest writer then refuses
    before stepping unless the rerun resolves to the reference record
-   (resolved configuration minus the output path, applied `--params`, resolved
+   (resolved configuration minus the rewritten keys, applied `--params`, resolved
    physics, and each input's path and size). `--check` compares final digests;
    without it, a rerun that records no final digest did not complete and
    fails. Without `--output` the rerun goes to a new temporary directory,
@@ -501,7 +510,7 @@ emits v2. Old manifests keep loading.
    refused, and
    with the drift override it is archived and replaced unchecked. Restart files carry no code
    identity of their own: the drift gate trusts the manifest found beside the
-   restart.
+   restart (or one level above it, for `run_omip.py` and `run_dino.py`).
 2. Commit check plus a drift diff table in `reproduce` and restart-chain
    continuation, and reporting from `config_hash_matches` (item 2). Until the
    code delta is captured (P1 step 6), a recorded or current `git_dirty` (a
@@ -511,9 +520,12 @@ emits v2. Old manifests keep loading.
    proceed anyway, pass `legoesm reproduce --allow-version-drift` or set
    `LEGOESM_ALLOW_VERSION_DRIFT=1` (any driver). A checkpoint needs the
    writing run's `run_manifest.json` beside it. `run_lmip.py --restart-from`
-   is gated the same way, before the run writes its own manifest. Not yet
-   gated: the `--restart-from` loaders in `run_omip.py`, `run_dino.py` and
-   `run_omip_core2.py`, which read restart files directly.
+   is gated the same way, before the run writes its own manifest;
+   `run_omip.py --restart` and `run_dino.py --restart-from` look for the
+   manifest beside the file or one level above (`restarts/`, `snapshots/`),
+   before loading it. `run_omip_core2.py --restart-from` refuses a restart
+   archive whose recorded source revision is unknown, different, dirty or
+   mixed-tree (it was a warning before).
 3. The manifest is written by `run_omip.py`, `run_lmip.py`, `run_coupled.py`
    and `run_dino.py` (item 3).
 4. Docs: correct the README claim that every run is reproducible

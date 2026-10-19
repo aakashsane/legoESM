@@ -74,6 +74,26 @@ def test_time_and_vertical_match_gfortran_oracle():
         np.testing.assert_allclose(got, out_exp, rtol=1e-12, atol=1e-30)
 
 
+def test_one_yr_is_the_model_calendar_year():
+    from legoesm.forcing.time_utils import NOLEAP_DAYS_PER_MONTH, NOLEAP_DAYS_PER_YEAR
+    assert clim.NOLEAP_ONE_YR == NOLEAP_DAYS_PER_YEAR
+    assert clim._NOLEAP_MONTH_DAYS == NOLEAP_DAYS_PER_MONTH
+
+
+def test_load_bracket_records_maps_two_months(tmp_path, monkeypatch):
+    name = clim.PPE_TIMESERIES.format(var="so4_a1")
+    _write_synthetic(tmp_path / name, "so4_a1", 3)
+    monkeypatch.setitem(clim.PPE_SHA256, name, hashlib.sha256((tmp_path / name).read_bytes()).hexdigest())
+    lon_w, lat_w = clim.horizontal_weights([-60.0, 0.0, 60.0], [0.0, 90.0, 180.0, 270.0],
+                                           np.array([0.1, -0.5]), np.array([0.2, 5.0]))
+    got = clim.load_bracket_records(tmp_path, (11, 0), lon_w, lat_w, fields=("so4_a1",))["so4_a1"]
+    want = cam_lininterp.lininterp_2d(_all_at_once(tmp_path / name, "so4_a1")[[11, 0]], lon_w, lat_w)
+    assert got.shape == (2, 3, 2)
+    np.testing.assert_array_equal(got, want)
+    with pytest.raises(ValueError, match="month indices"):
+        clim.read_monthly_climatology(tmp_path, "so4_a1", months=(12,))
+
+
 def test_record_dates_are_cam_clim_dates():
     assert clim.CLIM_RECORD_TIMES == (15.0, 44.0, 74.0, 104.0, 135.0, 165.0, 196.0, 227.0, 257.0, 288.0, 318.0, 349.0)
 

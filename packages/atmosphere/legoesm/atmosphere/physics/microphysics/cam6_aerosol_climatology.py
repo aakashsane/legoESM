@@ -24,7 +24,7 @@ from legoesm.atmosphere.physics.microphysics.cam6_modal_aerosol import (
     MAM4_SPECIES,
     read_pinned_netcdf,
 )
-from legoesm.atmosphere.physics.radiation.rrtmgp.optics.cam_lininterp import lininterp_init
+from legoesm.atmosphere.physics.radiation.rrtmgp.optics.cam_lininterp import lininterp_2d, lininterp_init
 
 __physics_contract__ = {
     "summary": "CAM6 PPE prescribed-aerosol monthly climatology loader + CAM tracer_data horizontal mapping.",
@@ -73,7 +73,10 @@ PPE_SHA256 = {
 CAM_CLIM_DATES = (20000116, 20000214, 20000316, 20000415, 20000516, 20000615,
                   20000716, 20000816, 20000915, 20001016, 20001115, 20001216)
 _NOLEAP_MONTH_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-NOLEAP_ONE_YR = 365.0  # tracer_data.F90:265-275 one_yr on the noleap calendar
+# one_yr as CAM computes it (tracer_data.F90:265-275: Jan 1 of year 2 minus Jan 1 of
+# year 1) on the model's only calendar, noleap (legoesm.forcing.time_utils, a layer
+# above atmosphere, so the month table is restated here; a test pins them equal).
+NOLEAP_ONE_YR = float(sum(_NOLEAP_MONTH_DAYS))
 
 
 def noleap_days_since_jan1(date: int, sec: int = 0) -> float:
@@ -104,6 +107,8 @@ def read_monthly_climatology(data_dir, var: str, months=range(12)):
         if v.shape[0] != _N_YEARS * _N_MONTHS:
             raise ValueError(f"{path}: {v.shape[0]} records, expected {_N_YEARS * _N_MONTHS}")
         months = tuple(months)
+        if any(m not in range(_N_MONTHS) for m in months):
+            raise ValueError(f"months must be 0-based month indices 0..11, got {months}")
         out = np.empty((len(months),) + v.shape[1:], dtype=np.float64)
         for i, m in enumerate(months):
             r = [np.asarray(v[m + _N_MONTHS * y], dtype=np.float64) for y in range(_N_YEARS)]
@@ -134,6 +139,17 @@ def horizontal_weights(file_lat_deg, file_lon_deg, lat_rad, lon_rad):
     lat_w = lininterp_init(np.asarray(file_lat_deg, dtype=np.float64) * d2r, lat_rad, 1)
     return lon_w, lat_w
 
+
+
+def load_bracket_records(data_dir, months, lon_w, lat_w, fields=None):
+    """The two held records (user decision 2b) of every PPE field mapped to the
+    model columns: ``{var: (2, lev, ncol)}`` and ``{"PS": (2, ncol)}``, for
+    0-based ``months = (n, np1)`` from :func:`bracket`.  ``fields`` defaults to
+    PS + all species + all mode numbers."""
+    if fields is None:
+        fields = ("PS",) + PPE_SPECIES_FIELDS + PPE_NUMBER_FIELDS
+    return {var: lininterp_2d(read_monthly_climatology(data_dir, var, months)[0], lon_w, lat_w)
+            for var in fields}
 
 
 def bracket(times, t: float):

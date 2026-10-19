@@ -487,7 +487,8 @@ emits v2. Old manifests keep loading.
    run does not take over a standalone atmosphere record of equal
    configuration, nor the reverse (an untagged record beside a
    `coupled/run_manifest.json`, written before the tag, still counts as the
-   coupled run's). The
+   coupled run's; one moved away from its coupled record carries no
+   ownership and reads as a standalone record). The
    atmosphere record is written during setup, before the coupled record is
    checked, so a continuation the coupled record then refuses leaves the
    atmosphere record replaced (its predecessor archived beside it, where

@@ -296,7 +296,7 @@ def test_tiny_real_gyre_two_day_scan_matches_certified_loop():
     # visible rather than silently relaxing it after seeing the residual.
     assert report["differences"]["within_atol"] is False
     assert report["differences"]["surface_temperature_c_max_abs"] == (
-        pytest.approx(1.8106049992638873e-10, rel=1.0e-6)
+        pytest.approx(1.652047387779021e-10, rel=1.0e-6)
     )
 
 

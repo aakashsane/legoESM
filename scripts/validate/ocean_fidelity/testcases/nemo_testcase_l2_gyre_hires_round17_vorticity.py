@@ -257,6 +257,49 @@ def classify_operand_boundary(
     return exact, boundary
 
 
+def active_plant_locations(
+    western: np.ndarray,
+    q: np.ndarray,
+    fu: np.ndarray,
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """Pick consumed q/F_u words with maximal surface-V stencil leverage."""
+    require(q.shape[0] == western.shape[0]
+            and q.shape[1] == western.shape[1] + 1,
+            "q/registered-V plant shapes differ")
+    require(fu.shape[0] + 1 == western.shape[0]
+            and fu.shape[1] == western.shape[1] + 1,
+            "F_u/registered-V plant shapes differ")
+    fu_pad = np.pad(fu[..., 0], ((1, 1), (0, 0)), mode="constant")
+    rows, cols = np.nonzero(western)
+    require(rows.size > 0, "registered V plant row is empty")
+    west_sensitivity = fu_pad[rows, cols] + fu_pad[rows + 1, cols]
+    east_sensitivity = fu_pad[rows, cols + 1] + fu_pad[rows + 1, cols + 1]
+    all_sensitivity = np.stack(
+        [np.abs(west_sensitivity), np.abs(east_sensitivity)], axis=1)
+    flat = int(np.argmax(all_sensitivity))
+    face_index, side = np.unravel_index(flat, all_sensitivity.shape)
+    require(all_sensitivity[face_index, side] > 0.0,
+            "every consumed q plant coefficient is zero")
+    j = int(rows[face_index])
+    i = int(cols[face_index] + side)
+    q_index = (j, i, 0)
+
+    q_w = np.abs(q[rows, cols, 0])
+    q_e = np.abs(q[rows, cols + 1, 0])
+    all_q = np.stack([q_w, q_e], axis=1)
+    flat_fu = int(np.argmax(all_q))
+    face_fu, side_fu = np.unravel_index(flat_fu, all_q.shape)
+    require(all_q[face_fu, side_fu] > 0.0,
+            "every consumed F_u plant coefficient is zero")
+    j_fu = int(rows[face_fu])
+    i_fu = int(cols[face_fu] + side_fu)
+    # In the zero-padded latitude stencil, V row j consumes F_u rows j-1 and
+    # j.  Prefer j where it exists; only the final V row needs j-1.
+    row_fu = j_fu if j_fu < fu.shape[0] else j_fu - 1
+    fu_index = (row_fu, i_fu, 0)
+    return q_index, fu_index
+
+
 def signed_row(candidate: np.ndarray, reference: np.ndarray,
                selection: np.ndarray) -> float:
     candidate = np.asarray(candidate, dtype=np.float64)
@@ -427,6 +470,58 @@ def run(
             surface_forcing=surface)
         return np.asarray(exposed.v.data)
 
+    if plant_q or plant_fu:
+        q_index, fu_index = active_plant_locations(
+            western, scalar_q, scalar_fu)
+        if plant_q:
+            planted = np.array(scalar_q, copy=True)
+            planted[q_index] += 1.0
+            reference_term = expose(
+                "vorticity", jnp.asarray(scalar_q), None)
+            planted_term = expose(
+                "vorticity", jnp.asarray(planted), None)
+            name = "q"
+            index = q_index
+        else:
+            planted = np.array(scalar_fu, copy=True)
+            planted[fu_index] += 1.0
+            reference_term = expose(
+                "vorticity", None, (jnp.asarray(scalar_fu), None))
+            planted_term = expose(
+                "vorticity", None, (jnp.asarray(planted), None))
+            name = "F_u"
+            index = fu_index
+        changed = np.ascontiguousarray(
+            planted_term[selection]).view(np.uint64) != np.ascontiguousarray(
+                reference_term[selection]).view(np.uint64)
+        plant_result = {
+            "operand": name,
+            "native_index": list(index),
+            "registered_changed_words": int(np.count_nonzero(changed)),
+            "registered_signed_mean_move_m_s2": signed_row(
+                planted_term, reference_term, selection),
+        }
+        require(plant_result["registered_changed_words"] > 0,
+                f"planted active {name} word did not move the scored V row")
+        return {
+            "format": "gyre-r4-smag-round18-stage3-vorticity-plant-v2",
+            "worktree": worktree_stamp(),
+            "common_restart": {
+                "path": str(COMMON_RESTART), "sha256": COMMON_RESTART_SHA256,
+                "step": 4320, "next_step": 4321,
+            },
+            "policy": "fp64-libm-certified-cpu",
+            "jax_backend": jax.default_backend(),
+            "plant": name,
+            "providers": {
+                "vector": vector_contract, "scalar": scalar_contract},
+            "stage_header": vector_stage["header"],
+            "operand_record": q_name,
+            "owner_boundary": "PLANT_FIRED",
+            "exact_operand_subsets": [],
+            "plant_result": plant_result,
+        }
+
     overrides = {
         "baseline": (None, None),
         "q_only": (jnp.asarray(scalar_q), None),
@@ -472,35 +567,6 @@ def run(
             "an operand substitution moved HPG or advection")
     exact_subsets, boundary = classify_operand_boundary(arm_results)
 
-    plant_result = None
-    if plant_q or plant_fu:
-        face = np.argwhere(western)[0]
-        if plant_q:
-            planted = np.array(scalar_q, copy=True)
-            planted[face[0], face[1], 0] += 1.0
-            planted_term = expose("vorticity", jnp.asarray(planted), None)
-            reference_term = exposed["q_only"]["vorticity"]
-            name = "q"
-        else:
-            planted = np.array(scalar_fu, copy=True)
-            row = min(int(face[0]), planted.shape[0] - 1)
-            planted[row, int(face[1]), 0] += 1.0
-            planted_term = expose(
-                "vorticity", None, (jnp.asarray(planted), None))
-            reference_term = exposed["Fu_only"]["vorticity"]
-            name = "F_u"
-        changed = np.ascontiguousarray(
-            planted_term[selection]).view(np.uint64) != np.ascontiguousarray(
-                reference_term[selection]).view(np.uint64)
-        plant_result = {
-            "operand": name,
-            "registered_changed_words": int(np.count_nonzero(changed)),
-            "registered_signed_mean_move_m_s2": signed_row(
-                planted_term, reference_term, selection),
-        }
-        require(plant_result["registered_changed_words"] > 0,
-                f"planted active {name} word did not move the scored V row")
-
     q_selection = np.zeros_like(scalar_q, dtype=bool)
     q_selection[:, :-1, 0] |= western
     q_selection[:, 1:, 0] |= western
@@ -544,7 +610,7 @@ def run(
         "Fv_negative_control_full_v_bit_exact": fv_control_exact,
         "exact_operand_subsets": exact_subsets,
         "owner_boundary": boundary,
-        "plant_result": plant_result,
+        "plant_result": None,
         "result": arm_results["q_only"][
             "posthoc_term_subtraction_context"],
         "source_citations": [
@@ -571,13 +637,20 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
                            encoding="utf-8")
-    print(
-        "GYRE_R18_STAGE3_VORTICITY " + report["owner_boundary"]
-        + " exact_subsets=" + ",".join(report["exact_operand_subsets"])
-        + " q_Fu_unequal=" + str(
-            report["arms"]["q_plus_Fu"]["source_accumulator"]
-            ["registered_unequal_words"])
-    )
+    if report["plant"] is not None:
+        print(
+            "GYRE_R18_STAGE3_VORTICITY PLANT_FIRED operand="
+            + report["plant"] + " changed="
+            + str(report["plant_result"]["registered_changed_words"])
+        )
+    else:
+        print(
+            "GYRE_R18_STAGE3_VORTICITY " + report["owner_boundary"]
+            + " exact_subsets=" + ",".join(report["exact_operand_subsets"])
+            + " q_Fu_unequal=" + str(
+                report["arms"]["q_plus_Fu"]["source_accumulator"]
+                ["registered_unequal_words"])
+        )
     return 0
 
 

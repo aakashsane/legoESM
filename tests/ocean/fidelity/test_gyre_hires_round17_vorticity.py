@@ -164,6 +164,23 @@ def test_source_accumulator_and_boundary_use_exact_executed_addition(
         [], "COMPLETED_STENCIL")
 
 
+def test_active_plants_select_consumed_nonzero_stencil_words():
+    tool = _load_tool()
+    western = np.zeros((3, 4), dtype=bool)
+    western[1, 2] = True
+    q = np.ones((3, 5, 1), dtype=np.float64)
+    fu = np.zeros((2, 5, 1), dtype=np.float64)
+    fu[1, 2, 0] = 3.0
+    fu[1, 3, 0] = 1.0
+    q_index, fu_index = tool.active_plant_locations(western, q, fu)
+    assert q_index == (1, 2, 0)
+    assert fu_index == (1, 2, 0)
+
+    fu[:] = 0.0
+    with pytest.raises(Exception, match="coefficient is zero"):
+        tool.active_plant_locations(western, q, fu)
+
+
 def test_model_tendency_operand_overrides_move_only_vorticity_component():
     """The shared path consumes recorded operands without rebuilding them."""
     import jax.numpy as jnp

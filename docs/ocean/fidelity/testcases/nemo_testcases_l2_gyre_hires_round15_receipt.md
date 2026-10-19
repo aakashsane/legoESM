@@ -144,8 +144,7 @@ vertical and stress differences into full-native rows at
 `GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90:153-163`.  Those
 different extents are the measured writer defect.
 
-The corrected tracked patch keeps the production work arrays unchanged but
-declares the recorder-only companion with the full `jpi` extent at
-`nemo_testcase_l2_gyre_hires_budget/dynzdf_round14.patch:11-20`.  Its forward
-and backward solve still uses NEMO's already-formed production matrix; only
-the recorder array's horizontal index alignment changes.
+The corrected tracked `dynzdf_round14.patch` keeps the production work arrays
+unchanged but declares the recorder-only companion with the full `jpi` extent.
+Its forward and backward solve still uses NEMO's already-formed production
+matrix; only the recorder array's horizontal index alignment changes.

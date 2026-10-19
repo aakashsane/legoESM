@@ -255,9 +255,6 @@ FILES = {
         NEMO / "cfgs/GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynzdf.f90"),
     "GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90"),
-    "nemo_testcase_l2_gyre_hires_budget/dynzdf_round14.patch": (
-        REPO / "scripts/validate/ocean_fidelity/testcases/"
-        "nemo_testcase_l2_gyre_hires_budget/dynzdf_round14.patch"),
     "GYRE_OMIP_L2/BLD/ppsrc/nemo/trdini.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2/BLD/ppsrc/nemo/trdini.f90"),
     "GYRE_OMIP_L2/BLD/ppsrc/nemo/iom.f90": (
@@ -1622,11 +1619,8 @@ CITATION_MAP = {
         'REAL(wp) ::   zWu , zWv',
         'REAL(wp), DIMENSION(:,:,:), ALLOCATABLE ::   ztrdu, ztrdv', 6],
     'GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90:153-163': [
-        'SUBROUTINE r14_zdf_row',
+        'SUBROUTINE r14_zdf_row( kj, pv_no_stress, pv_full )',
         'zr14_after_zdf(:,kj) = pv_full(:,1)', 11],
-    'nemo_testcase_l2_gyre_hires_budget/dynzdf_round14.patch:11-20': [
-        '@@ -81,6 +82,11 @@',
-        'REAL(wp), DIMENSION(jpi,jpkm1)', 10],
     # --- GYRE high-resolution round 14: RK3 HPG starts (not adds) RHS ---
     'dynhpg.F90:276-295': [
         ('puu(ji,jj,1,Krhs) = zhpi(ji,jj)', 1),

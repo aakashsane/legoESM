@@ -878,6 +878,13 @@ FILES = {
         NEMO / "cfgs/GYRE_OMIP_L2_P3_SM_R140RHS/BLD/ppsrc/nemo/domqco.f90"),
     "GYRE_OMIP_L2_P3_SM_R140RHS/BLD/ppsrc/nemo/domain.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_SM_R140RHS/BLD/ppsrc/nemo/domain.f90"),
+    # GYRE-HR round 17 starts from the admitted round-14 budget producer's
+    # developed restart, so bind the call order and ENE arithmetic to that
+    # producer's exact compiled sources.
+    "GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/stprk3_stg.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/stprk3_stg.f90"),
+    "GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynvor.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynvor.f90"),
     "round64/oracle_krhs_split/ocean.output": Path(
         "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/round64/"
         "oracle_krhs_split/ocean.output"),
@@ -1645,6 +1652,20 @@ CITATION_MAP = {
     'GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/gyre_r14_budget.f90:153-163': [
         'SUBROUTINE r14_zdf_row( kj, pv_no_stress, pv_full )',
         'zr14_after_zdf(:,kj) = pv_full(:,1)', 11],
+    # --- GYRE high-resolution round 17: common-state ENE-q discriminator ---
+    'GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/stprk3_stg.f90:231-247': [
+        'CASE ( 3 )',
+        'r3f(:,:    ) = r1_2 * ( r3fb(:,:) + r3fa(:,:) )', 17],
+    'GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/stprk3_stg.f90:399-410': [
+        'CALL    dyn_hpg( kstp,      Kmm, uu, vv, Krhs )',
+        'CALL    dyn_vor( kstp,      Kmm, uu, vv, Krhs )',
+        'CALL dyn_adv( kstp, Kmm, Kmm, uu, vv, Krhs)', 12],
+    'GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynvor.f90:230-238': [
+        'CALL vor_ene( kt, Kmm, pu, pv, pu_rhs, pv_rhs, ntot )', 9],
+    'GYRE_OMIP_L2_P3_R14BUD/BLD/ppsrc/nemo/dynvor.f90:536-573': [
+        'CASE ( np_CRV )',
+        'zwz(ji,jj) = zwz(ji,jj) / (e3f_0vor',
+        'pv_rhs(ji,jj,jk) = pv_rhs(ji,jj,jk) - r1_4 * r1_e2v', 38],
     # --- GYRE high-resolution round 14: RK3 HPG starts (not adds) RHS ---
     'dynhpg.F90:276-295': [
         ('puu(ji,jj,1,Krhs) = zhpi(ji,jj)', 1),

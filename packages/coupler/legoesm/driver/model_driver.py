@@ -5059,6 +5059,12 @@ class ModelDriver:
             p_s = self._gather_spmd_tree_to_host(p_s)
         return p_s, lat
 
+    def _owned_lon(self):
+        """Longitude [rad] in the ``_owned_p_s_and_lat`` layout."""
+        if self._owned_face_ids is not None:
+            return self._physics_lon
+        return self._grid_lon
+
     def _owned_temp(self):
         """Grid-point air temperature in the ``_owned_p_s_and_lat`` layout;
         None when the state carries no grid-point ``T`` (e.g. spectral)."""
@@ -5069,8 +5075,11 @@ class ModelDriver:
             return temp[self._owned_face_ids]
         return self._gather_spmd_tree_to_host(temp)
 
-    def _precompute_external_forcing(self, day, p_s, lat, temp=None):
-        """Pre-compute ozone/aerosol/GHG fields outside JIT boundary."""
+    def _precompute_external_forcing(self, day, p_s, lat, temp=None, lon=None):
+        """Pre-compute ozone/aerosol/GHG fields outside JIT boundary.
+
+        ``lon`` [rad] matches ``lat``; None -> :meth:`_owned_lon` (the layout
+        of :meth:`_owned_p_s_and_lat`, which every caller but spectral uses)."""
         from legoesm.forcing.external import (
             get_ozone_at_time, get_aerosol_at_time, get_aerosol_lw_at_time,
             get_aerosol_sw_volcanic_at_time,
@@ -5180,10 +5189,15 @@ class ModelDriver:
                 ) * w_strat
                 ).astype(aerosol_od.dtype)
             # AOD->CCN input: TROPOSPHERIC column in the visible (550 nm)
-            # band, volcanic excluded, from ``ccn_path`` (fine mode) if set.
+            # band, volcanic excluded, from ``ccn_path`` if set, read at each
+            # column's own longitude (the Andreae 2009 fit is local total
+            # AOT; a zonal mean gave polluted E China and the clean N Pacific
+            # one droplet number).
+            lon_col = jnp.asarray(
+                self._owned_lon() if lon is None else lon).reshape(ncol)
             self._aerosol_ccn_aod = jnp.asarray(get_aerosol_at_time(
                 _trop_cfg._replace(path=_acfg.ccn_path or _acfg.path),
-                day, lat_grid=lat_col, band="vis",
+                day, lat_grid=lat_col, band="vis", lon_grid=lon_col,
             )).reshape(ncol).astype(p_s.dtype)
 
         # Volcanic stratospheric LONGWAVE aerosol (gap #9): same (ncol,
@@ -16403,6 +16417,8 @@ class ModelDriver:
         else:
             _lat_2d_loop = self._grid_lat
         _lat_col_loop = _lat_2d_loop.reshape(-1)
+        _lon_2d_loop = (jnp.broadcast_to(self._grid_lon[None, :], shape_2d)
+                        if self._grid_lon.ndim == 1 else self._grid_lon)
 
         # Light-weight time series for AMIP / validation.  The spectral
         # path is otherwise diagnostic-free; without these arrays the
@@ -16533,7 +16549,7 @@ class ModelDriver:
                         # daily_forcing_bucket / FIX_RESTART_TIME).
                         _o3, _aer, _ghg = self._precompute_external_forcing(
                             float(_fd_int), _f_now['p_s'], _lat_2d_loop,
-                            temp=_f_now['T'],
+                            temp=_f_now['T'], lon=_lon_2d_loop,
                         )
                         _ext_daily = {"o3_vmr": _o3, "aerosol_od": _aer}
                         # Volcanic LONGWAVE aerosol (gap #9): only when active

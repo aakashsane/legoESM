@@ -17,7 +17,9 @@ from legoesm.thermo import (
     saturation_mixing_ratio,
     saturation_mixing_ratio_ice,
     saturation_specific_humidity,
+    saturation_specific_humidity_goff_gratch,
     saturation_specific_humidity_ice,
+    saturation_specific_humidity_ice_goff_gratch,
 )
 
 # Default condensation/autoconversion sigmoid sharpness (used in signatures).
@@ -340,7 +342,8 @@ def _hard_saturation_rate_limit(condensation, q_v, dt, hard_max_heating_K,
 
 
 def hard_saturation_blend(condensation, T, q_v, p_full, dt, q_sat,
-                          hard_threshold, hard_max_heating_K):
+                          hard_threshold, hard_max_heating_K,
+                          sat_fn=saturation_specific_humidity):
     """Blend the on-curve hard adjustment into ``condensation`` + rate-limit.
 
     The ONE place the reviewed hard-adjustment logic lives, shared by
@@ -382,10 +385,11 @@ def hard_saturation_blend(condensation, T, q_v, p_full, dt, q_sat,
         cond_hard = _hard_saturation_condensation(
             T.astype(jnp.float64), q_v.astype(jnp.float64),
             p_full.astype(jnp.float64), dt,
-            q_sat.astype(jnp.float64),
+            q_sat.astype(jnp.float64), sat_fn=sat_fn,
         ).astype(q_v.dtype)
     else:
-        cond_hard = _hard_saturation_condensation(T, q_v, p_full, dt, q_sat)
+        cond_hard = _hard_saturation_condensation(T, q_v, p_full, dt, q_sat,
+                                                  sat_fn=sat_fn)
     rel_humidity = q_v / jnp.maximum(q_sat, _HARD_SAT_QSAT_FLOOR)
     activation = jax.nn.sigmoid(
         _HARD_SAT_MASK_SHARPNESS * (rel_humidity - hard_threshold))
@@ -487,7 +491,8 @@ def hard_saturation_drain(T, q_v, p_full, dt,
 
 def saturation_adjustment(T, q_v, p_full, dt, sharpness=_DEFAULT_SAT_SHARPNESS, q_c=None,
                           hard_adjust=False, hard_threshold=_DEFAULT_HARD_SAT_THRESHOLD,
-                          hard_max_heating_K=_DEFAULT_HARD_SAT_MAX_HEATING_K):
+                          hard_max_heating_K=_DEFAULT_HARD_SAT_MAX_HEATING_K,
+                          sat_fn=saturation_specific_humidity):
     """Compute smooth saturation adjustment (condensation tendency).
 
     Parameters
@@ -533,6 +538,10 @@ def saturation_adjustment(T, q_v, p_full, dt, sharpness=_DEFAULT_SAT_SHARPNESS, 
         67 g/kg pool) in one step — the detonation the naive cap caused.  Mild
         super-saturation (full drain below the cap) still lands on the curve in
         one step.  Ignored when ``hard_adjust`` is False.
+    sat_fn : callable ``(T, p) -> q_sat``, default the shared Tetens curve
+        Liquid saturation specific humidity used for ``q_sat`` and the hard
+        adjustment (Morrison's CAM6 MG2 mode passes CAM's Goff-Gratch
+        :func:`legoesm.thermo.saturation_specific_humidity_goff_gratch`).
 
     Returns
     -------
@@ -569,12 +578,11 @@ def saturation_adjustment(T, q_v, p_full, dt, sharpness=_DEFAULT_SAT_SHARPNESS, 
     # spurious "float64 truncated to float32" astype warning JAX emits otherwise.
     if jax.config.jax_enable_x64:
         _state_dtype = q_v.dtype
-        q_sat64 = saturation_specific_humidity(T.astype(jnp.float64),
-                                          p_full.astype(jnp.float64))
+        q_sat64 = sat_fn(T.astype(jnp.float64), p_full.astype(jnp.float64))
         excess = (q_v.astype(jnp.float64) - q_sat64).astype(_state_dtype)
         q_sat = q_sat64.astype(_state_dtype)
     else:
-        q_sat = saturation_specific_humidity(T, p_full)
+        q_sat = sat_fn(T, p_full)
         excess = q_v - q_sat
     dqsdt = constants.L_v * q_sat / (constants.R_v * T ** 2)
     psychrometric = 1.0 + dqsdt * constants.L_v / constants.c_pd
@@ -587,7 +595,7 @@ def saturation_adjustment(T, q_v, p_full, dt, sharpness=_DEFAULT_SAT_SHARPNESS, 
         # (:func:`hard_saturation_drain`) via :func:`hard_saturation_blend`.
         condensation = hard_saturation_blend(
             condensation, T, q_v, p_full, dt, q_sat,
-            hard_threshold, hard_max_heating_K)
+            hard_threshold, hard_max_heating_K, sat_fn=sat_fn)
     if q_c is not None:
         # Evaporation rate (negative ``condensation``) is bounded by
         # the available cloud water: |condensation| × dt ≤ q_c, i.e.
@@ -1186,7 +1194,8 @@ def mg2_precip_sublimation_limiter(q_v, T, p, pre, prds, ice_sublim, vap_dep,
     share (``dum1 = pre/sum``, ``dum2 = prds/sum``, ``1 - dum1 - dum2``) of the
     one-step adjustment to saturation from the state after deposition and
     nucleation: rain to LIQUID saturation, snow and ice to ICE saturation,
-    each ``min((qtmp - qsat)/(1 + L^2 qsat/(c_p R_v ttmp^2)), 0)/dt``.
+    each ``min((qtmp - qsat)/(1 + L^2 qsat/(c_p R_v ttmp^2)), 0)/dt``, with
+    MG2's own ``qsat_water``/``qsat_ice`` (CAM Goff-Gratch).
     Returns ``(pre, prds, ice_sublim)``."""
     tot = pre + prds + ice_sublim
     on = tot < -1.0e-20
@@ -1195,17 +1204,17 @@ def mg2_precip_sublimation_limiter(q_v, T, p, pre, prds, ice_sublim, vap_dep,
     ttmp = T + (pre * constants.L_v  # latent-ok: MG2 oracle constant (xxlv)
                 + (prds + vap_dep + ice_sublim + mnuccd)
                 * constants.L_s) * dt / cp  # latent-ok: MG2 oracle constant (xxls)
-    on = on & (qtmp > saturation_specific_humidity(ttmp, p))
+    on = on & (qtmp > saturation_specific_humidity_goff_gratch(ttmp, p))
     den = jnp.where(on, tot, -1.0)
     dum1 = pre / den
     dum2 = prds / den
     qtmp = q_v - (vap_dep + mnuccd) * dt
     ttmp = T + ((vap_dep + mnuccd) * constants.L_s) * dt / cp  # latent-ok: MG2 oracle constant (xxls)
-    qvn = saturation_specific_humidity(ttmp, p)
+    qvn = saturation_specific_humidity_goff_gratch(ttmp, p)
     dum = jnp.minimum((qtmp - qvn) / (1.0 + constants.L_v ** 2 * qvn  # latent-ok: MG2 oracle constant (xxlv_squared)
                                       / (cp * constants.R_v * ttmp ** 2)), 0.0)
     pre_n = dum * dum1 / dt
-    qvn = saturation_specific_humidity_ice(ttmp, p)
+    qvn = saturation_specific_humidity_ice_goff_gratch(ttmp, p)
     dum = jnp.minimum((qtmp - qvn) / (1.0 + constants.L_s ** 2 * qvn  # latent-ok: MG2 oracle constant (xxls_squared)
                                       / (cp * constants.R_v * ttmp ** 2)), 0.0)
     prds_n = dum * dum2 / dt

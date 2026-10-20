@@ -196,6 +196,61 @@ def saturation_vapor_pressure_goff(T: jax.Array) -> jax.Array:
 
 
 # ---------------------------------------------------------------------------
+# CAM6 Goff & Gratch (1946) saturation (wv_sat_methods.F90)
+# ---------------------------------------------------------------------------
+# Transcribed line for line from ESCOMP/CAM cam_cesm2_1_rel_60
+# (a03b84b7c4e34f965b115686f22a043b85739e56) src/physics/cam/wv_sat_methods.F90,
+# CAM's default scheme (``initial_default_idx = GoffGratch_idx``, :53).  NOT the
+# WMO Goff (1957) curve of :func:`saturation_vapor_pressure_goff`.  The
+# vapour-pressure -> specific-humidity map is CAM's own hard one
+# (``wv_sat_svp_to_qsat``), not the smooth shared conversion: a different
+# formula at an oracle boundary (same as :func:`nemo_si3_saturation_over_ice`).
+
+
+def saturation_vapor_pressure_goff_gratch(T: jax.Array) -> jax.Array:
+    """Saturation vapour pressure over liquid water [Pa], CAM
+    ``GoffGratch_svp_water`` (wv_sat_methods.F90:369-380)."""
+    tboil = constants.T_boil_cam
+    return 10.0 ** (-7.90298 * (tboil / T - 1.0)
+                    + 5.02808 * jnp.log10(tboil / T)
+                    - 1.3816e-7 * (10.0 ** (11.344 * (1.0 - T / tboil)) - 1.0)
+                    + 8.1328e-3 * (10.0 ** (-3.49149 * (tboil / T - 1.0)) - 1.0)
+                    + jnp.log10(1013.246)) * 100.0
+
+
+def saturation_vapor_pressure_ice_goff_gratch(T: jax.Array) -> jax.Array:
+    """Saturation vapour pressure over ice [Pa], CAM ``GoffGratch_svp_ice``
+    (wv_sat_methods.F90:382-391)."""
+    h2otrip = constants.T_triple_cam
+    return 10.0 ** (-9.09718 * (h2otrip / T - 1.0)
+                    - 3.56654 * jnp.log10(h2otrip / T)
+                    + 0.876793 * (1.0 - T / h2otrip)
+                    + jnp.log10(6.1071)) * 100.0
+
+
+def _specific_humidity_from_esat_cam(e_sat: jax.Array, p: jax.Array) -> jax.Array:
+    """CAM ``wv_sat_svp_to_qsat`` (wv_sat_methods.F90:180-193): saturation
+    SPECIFIC humidity ``epsilo es / (p - omeps es)``, and 1 where
+    ``p - es <= 0``."""
+    eps = constants.epsilon
+    return jnp.where(p - e_sat <= 0.0, 1.0,
+                     eps * e_sat / (p - (1.0 - eps) * e_sat))
+
+
+def saturation_specific_humidity_goff_gratch(T: jax.Array, p: jax.Array) -> jax.Array:
+    """Saturation specific humidity over liquid [kg/kg], CAM
+    ``wv_sat_qsat_water`` (wv_sat_methods.F90:195-218), the ``qsat_water``
+    MG2 calls (micro_mg2_0.F90:113-115)."""
+    return _specific_humidity_from_esat_cam(saturation_vapor_pressure_goff_gratch(T), p)
+
+
+def saturation_specific_humidity_ice_goff_gratch(T: jax.Array, p: jax.Array) -> jax.Array:
+    """Saturation specific humidity over ice [kg/kg], CAM ``wv_sat_qsat_ice``
+    (wv_sat_methods.F90:220-243), the ``qsat_ice`` MG2 calls."""
+    return _specific_humidity_from_esat_cam(saturation_vapor_pressure_ice_goff_gratch(T), p)
+
+
+# ---------------------------------------------------------------------------
 # Flatau et al. (1992) polynomial saturation vapor pressure
 # ---------------------------------------------------------------------------
 # CLUBB (and CAM, via ``saturation_formula = flatau``) closes its assumed-PDF

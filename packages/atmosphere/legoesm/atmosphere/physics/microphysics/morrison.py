@@ -58,7 +58,10 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
+from legoesm.thermo import saturation_specific_humidity as _saturation_specific_humidity
+from legoesm.thermo import saturation_specific_humidity_goff_gratch as _qsat_water_goff_gratch
 from legoesm.thermo import saturation_specific_humidity_ice as _saturation_specific_humidity_ice
+from legoesm.thermo import saturation_specific_humidity_ice_goff_gratch as _qsat_ice_goff_gratch
 from legoesm.thermo import homogeneous_freezing_rh_factor as _homogeneous_freezing_rh_factor
 from legoesm.atmosphere.physics.microphysics._warm_rain import (
     saturation_adjustment,
@@ -335,6 +338,14 @@ def morrison_microphysics(
         q_r = jnp.maximum(q_r + minstsm, 0.0)
         N_r = jnp.maximum(N_r + ninstsm * rho, 0.0)   # N_r per-volume
     sharpness = config.saturation_sharpness
+    # Saturation curves: the CAM6 MG2 mode uses MG2's own qsat_water/qsat_ice,
+    # CAM's Goff-Gratch (micro_mg2_0.F90:113-115, :909-916); other modes keep
+    # the shared Tetens / Clausius-Clapeyron curves.  Static Python gate.
+    if config.warm_rain_incloud:
+        qsat_water_fn, qsat_ice_fn = _qsat_water_goff_gratch, _qsat_ice_goff_gratch
+    else:
+        qsat_water_fn = _saturation_specific_humidity
+        qsat_ice_fn = _saturation_specific_humidity_ice
 
     N_c_eff = effective_Nc(
         N_c, config.Nc_0,
@@ -351,6 +362,7 @@ def morrison_microphysics(
         hard_adjust=config.hard_saturation_adjustment,
         hard_threshold=config.hard_sat_adjust_threshold,
         hard_max_heating_K=config.hard_sat_max_heating_K,
+        sat_fn=qsat_water_fn,
     )
     # CAM6 arrangement: when the turbulence closure already diagnosed this
     # layer's cloud liquid and handed it to the host, MG2 carries NO
@@ -543,7 +555,7 @@ def morrison_microphysics(
     #    (module_mp_graupel.f90:3387-3398).
     # Target number kc2 = min(N_i0·exp(cooper_a·(T_f−T)), N_i_nuc_max)/ρ
     # (canonical Cooper 0.005 L⁻¹ = N_i0=5 m⁻³ base; cap 500 L⁻¹).
-    q_sat_i = _saturation_specific_humidity_ice(T, p_full)
+    q_sat_i = qsat_ice_fn(T, p_full)
     # DEPOSITION target only. IFS/SAM homogeneous-freezing allowance: pristine
     # air below 235 K may hold ice supersaturation up to rh_homo (gSAM
     # cloud.f90), withdrawn where cloud ice is already present at scheme entry (the cloud.f90 qci gate; see thermo.homogeneous_freezing_rh_factor). The NUCLEATION gates below

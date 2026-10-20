@@ -11,14 +11,14 @@ MPAS and FV3-duo column production decks -- now hands ZM the lagged
 Fixture ``oracle_fixtures/zm_pblh_cam.npz``: inputs and outputs of the real
 CAM cam_cesm2_1_rel_60 (SHA a03b84b7c4e34f965b115686f22a043b85739e56)
 zm_conv.F90, run by ``sbatch --wait scripts/validate/oracle/zm_pblh/build.sh``
-(legoESM constants and saturation curve, ientropy tightened to 1e-11 K; see
+(legoESM constants, legoESM qsat_water curve for the plume, ientropy tightened to 1e-11 K; see
 make_fixture.py).  Column ``nocturnal_elevated`` (pblh 150 m) does not convect
 in CAM; with the old 700 hPa launch bound it did.
 
-``zm_conv_evap`` compares against CAM's ``qsat`` (zm_conv.F90:1484): the
-``svp_trans`` vapour-pressure blend to ice between 0 and -20 degC
-(wv_sat_methods.F90:326-361), run in the oracle by CAM's own svp_trans on the
-legoESM curves.  ``convtran`` transports CLDLIQ, CLDICE, NUMLIQ, NUMICE,
+``zm_conv_evap`` compares against CAM's ``qsat`` (zm_conv.F90:1484), run
+unmodified in the oracle: the 1-K table (wv_saturation.F90:216-226, estblf
+:306-321) of the Goff-Gratch ``svp_trans`` vapour-pressure blend to ice between
+0 and -20 degC (wv_sat_methods.F90:326-361).  ``convtran`` transports CLDLIQ, CLDICE, NUMLIQ, NUMICE,
 RAINQM, SNOWQM, NUMRAI (zm_conv_intr.F90:829-846, micro_mg_cam.F90:416-435) =
 legoESM ``q_c, q_i, N_c, N_i, q_r, q_s, N_r``.
 
@@ -152,26 +152,45 @@ def test_convtran_covers_the_cam6_convtran1_set_and_conserves_columns(fx):
     assert no_tr.tracer_transport is None
 
 
-def test_evaporation_saturation_is_the_cam_trans_curve():
-    """thermo.saturation_specific_humidity_trans = CAM svp_trans: water curve at
-    and above T_freeze, ice curve at or below T_freeze - 20 K, the vapour-
-    pressure blend (T_freeze - T)/20 in between."""
-    from legoesm.thermo import (saturation_specific_humidity, saturation_specific_humidity_ice,
-                                saturation_vapor_pressure, saturation_vapor_pressure_ice,
-                                saturation_vapor_pressure_trans,
-                                saturation_specific_humidity_trans)
-    t0, p = constants.T_freeze, jnp.asarray(6.0e4)
+def test_evaporation_saturation_is_the_cam_qsat_table():
+    """thermo.saturation_vapor_pressure_trans = CAM svp_trans on Goff-Gratch:
+    water curve at and above T_freeze, ice curve at or below T_freeze - 20 K,
+    the vapour-pressure blend (T_freeze - T)/20 in between.  The CAM qsat table
+    (saturation_specific_humidity_cam_table) reproduces svp_trans at the 1-K
+    nodes tmin + k and interpolates linearly between them; T is clamped to
+    [tmin, tmax]."""
+    from legoesm.thermo import (saturation_specific_humidity_cam_table,
+                                saturation_vapor_pressure_goff_gratch,
+                                saturation_vapor_pressure_ice_goff_gratch,
+                                saturation_vapor_pressure_trans)
+    t0 = constants.T_freeze
     warm = jnp.asarray([t0, t0 + 5.0, 300.0])
     cold = jnp.asarray([t0 - 20.0, t0 - 35.0, 200.0])
-    np.testing.assert_array_equal(saturation_specific_humidity_trans(warm, p),
-                                  saturation_specific_humidity(warm, p))
-    np.testing.assert_array_equal(saturation_specific_humidity_trans(cold, p),
-                                  saturation_specific_humidity_ice(cold, p))
+    np.testing.assert_array_equal(saturation_vapor_pressure_trans(warm),
+                                  saturation_vapor_pressure_goff_gratch(warm))
+    np.testing.assert_array_equal(saturation_vapor_pressure_trans(cold),
+                                  saturation_vapor_pressure_ice_goff_gratch(cold))
     t = jnp.asarray(t0 - 7.0)
     w = 7.0 / 20.0
     np.testing.assert_allclose(saturation_vapor_pressure_trans(t),
-                               w * saturation_vapor_pressure_ice(t)
-                               + (1.0 - w) * saturation_vapor_pressure(t), rtol=TOL)
+                               w * saturation_vapor_pressure_ice_goff_gratch(t)
+                               + (1.0 - w) * saturation_vapor_pressure_goff_gratch(t), rtol=TOL)
+    p = 6.0e4
+    eps = constants.epsilon
+
+    def q(e):
+        return eps * e / (p - (1.0 - eps) * e)
+    tmin = 127.16
+    for k in (100, 140, 150):       # 227.16, 267.16, 277.16 K
+        e0 = float(saturation_vapor_pressure_trans(jnp.asarray(tmin + k)))
+        e1 = float(saturation_vapor_pressure_trans(jnp.asarray(tmin + k + 1)))
+        assert float(saturation_specific_humidity_cam_table(
+            jnp.asarray(tmin + k), p)) == pytest.approx(q(e0), rel=TOL)
+        assert float(saturation_specific_humidity_cam_table(
+            jnp.asarray(tmin + k + 0.25), p)) == pytest.approx(q(0.75 * e0 + 0.25 * e1), rel=TOL)
+    e_lo = float(saturation_vapor_pressure_trans(jnp.asarray(tmin)))
+    assert float(saturation_specific_humidity_cam_table(jnp.asarray(100.0), p)) == pytest.approx(
+        q(e_lo), rel=TOL)
 
 
 def _bridge(fx, pblh):

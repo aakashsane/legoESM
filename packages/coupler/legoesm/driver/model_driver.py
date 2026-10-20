@@ -14326,6 +14326,10 @@ class ModelDriver:
                 # start (physpkg.F90:419-424), refreshed by the first
                 # turbulence call.
                 "pblh",
+                # relvar (2026-10-19): CAM6 MG2 relative cloud-water variance;
+                # seeds at its fresh init (CAM pbuf value 2) and is rewritten
+                # by CLUBB before the microphysics reads it in every sub-step.
+                "relvar",
             })
             if _any_physstate:
                 from legoesm.atmosphere.physics.physics_state import (

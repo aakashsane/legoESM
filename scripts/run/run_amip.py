@@ -2095,11 +2095,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="cos(lat) taper of the E3SM frontal/background drag "
                              "toward the poles (E3SM structured-dycore branch); "
                              "--no-... is the unstructured/MPAS branch.")
-    parser.add_argument("--mcfarlane-tau-max", type=float, default=None,
-                        dest="mcfarlane_tau_max",
-                        help="McFarlane orographic GWD surface stress cap [Pa] "
-                             "(default 10.0). Reaches the kernel on every lane "
-                             "via gwd_config_for.")
     parser.add_argument("--mcfarlane-k-wave", type=float, default=None,
                         dest="mcfarlane_k_wave",
                         help="McFarlane orographic GWD horizontal wavenumber "
@@ -2962,9 +2957,6 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
             args.e3sm_cam_dttke_intrinsic
             if args.e3sm_cam_dttke_intrinsic is not None
             else _EXPERIMENT_DEFAULTS.e3sm_cam_dttke_intrinsic),
-        mcfarlane_tau_max=(
-            args.mcfarlane_tau_max if args.mcfarlane_tau_max is not None
-            else _EXPERIMENT_DEFAULTS.mcfarlane_tau_max),
         mcfarlane_k_wave=(
             args.mcfarlane_k_wave if args.mcfarlane_k_wave is not None
             else _EXPERIMENT_DEFAULTS.mcfarlane_k_wave),

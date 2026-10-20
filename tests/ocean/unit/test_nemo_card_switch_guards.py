@@ -46,6 +46,7 @@ def test_fold_vector_sign_without_any_stress_is_still_none():
     {},                                        # default al81 vector form
     {"vorticity_scheme": "een_planetary"},
     {"vorticity_scheme": "een_total", "momentum_advection": "flux_form"},
+    {"vorticity_scheme": "een_total", "momentum_advection": "weno5"},
 ])
 def test_een_relative_vorticity_refused_where_it_would_be_ignored(over):
     from legoesm.grids.latlon import create_latlon_grid

@@ -59,7 +59,7 @@ HARD_SAT_GUARD_DEFAULTS = {
 # Schemes carrying the guard (kept sorted; used in the fail-loud messages below
 # and asserted against the factory by the ratchet).
 HARD_SAT_GUARD_SCHEMES = (
-    "kessler", "ml_emulator", "morrison", "p3", "seifert_beheng",
+    "ml_emulator", "morrison", "p3", "seifert_beheng",
     "sundqvist", "thompson",
 )
 # SHRINK-ONLY exemptions.  Each reason was verified in the scheme's own source,
@@ -96,6 +96,15 @@ HARD_SAT_GUARD_EXEMPT = {
         "the bulk saturation curve on top of it would be inconsistent with the "
         "resolved spectrum and break the WRF FSBM-2 oracle match."
     ),
+    "kessler": (
+        "Kessler is the faithful port of ESCOMP atmos_phys0_31_000 "
+        "kessler_run (user decision 2026-10-19: the scheme named Kessler must "
+        "BE the oracle). The oracle has no hard-adjustment guard: its own "
+        "Durran-Klemp (1983) adjustment max(prod, -q_c) removes the full "
+        "linearised supersaturation in every CFL subcycle. KesslerConfig keeps "
+        "the three guard fields only so an old deck fails loudly: "
+        "kessler.py::_require_oracle_defaults raises on any non-default value."
+    ),
     "none": (
         "microphysics='none' has NO scheme function at all -- "
         "_get_microphysics_fn returns (name, None, None) and the physics "
@@ -110,16 +119,16 @@ __param_spec__ = {
         "scheme_key": "atm.micro.KesslerConfig",
         "excluded": {
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
+            "evaporation_coeff": "not in the oracle (ESCOMP atmos_phys0_31_000 kessler_run): a non-default or traced value raises",
+            "rain_fall_speed": "not in the oracle (ESCOMP atmos_phys0_31_000 kessler_run): a non-default or traced value raises",
+            "hard_sat_adjust_threshold": "not in the oracle (ESCOMP atmos_phys0_31_000 kessler_run): a non-default or traced value raises",
+            "hard_sat_max_heating_K": "not in the oracle (ESCOMP atmos_phys0_31_000 kessler_run): a non-default or traced value raises",
         },
         "params": {
             # PRIMARY warm-rain knobs (Kessler 1969).
             "autoconversion_threshold": {"units": "kg/kg", "bounds": (0.0001, 0.003), "tunable_tier": 1, "transform": "sigmoid", "category": "autoconversion", "reference": "Kessler (1969)", "shape": None},
             "autoconversion_rate": {"units": "1/s", "bounds": (0.0001, 0.01), "tunable_tier": 1, "transform": "sigmoid", "category": "autoconversion", "reference": "Kessler (1969)", "shape": None},
             "accretion_coeff": {"units": "1", "bounds": (0.5, 6.6), "tunable_tier": 1, "transform": "sigmoid", "category": "accretion", "reference": "Kessler (1969)", "shape": None},
-            "evaporation_coeff": {"units": "1", "bounds": (0.1, 5.0), "tunable_tier": 2, "transform": "sigmoid", "category": "evaporation", "reference": "Kessler (1969)", "shape": None},
-            "rain_fall_speed": {"units": "m/s", "bounds": (1.0, 15.0), "tunable_tier": 2, "transform": "sigmoid", "category": "fall_speed", "reference": "Kessler (1969)", "shape": None},
-            "hard_sat_adjust_threshold": {"units": "1", "bounds": (1.0, 2.0), "tunable_tier": 2, "transform": "sigmoid", "category": "condensation", "reference": "hard saturation-adjustment guard", "shape": None},
-            "hard_sat_max_heating_K": {"units": "K", "bounds": (0.5, 50.0), "tunable_tier": 2, "transform": "sigmoid", "category": "condensation", "reference": "hard saturation-adjustment guard", "shape": None},
         },
     },
     "MicrophysicsMLEmulatorConfig": {
@@ -1401,7 +1410,8 @@ def apply_microphysics_experiment_flags(
             )
         scheme_config = scheme_config._replace(subgrid_autoconversion=True)
     if hard_saturation_adjustment:
-        if "hard_saturation_adjustment" not in fields:
+        if ("hard_saturation_adjustment" not in fields
+                or scheme not in HARD_SAT_GUARD_SCHEMES):
             raise ValueError(
                 f"hard_saturation_adjustment=True is not supported by the "
                 f"{scheme!r} microphysics scheme; use one of "

@@ -84,6 +84,13 @@ LIQUID_FIELD = "hard_saturation_adjustment"
 # rejection instead of an ON/OFF difference.
 LIQUID_GUARD_REJECTED = ("morrison",)
 
+
+def _is_satadj_refusal(err: ValueError) -> bool:
+    """True only for the sam-flavour refusal of the liquid guard, so an
+    unrelated ValueError cannot certify it."""
+    return "satadj_liquid" in str(err) and LIQUID_FIELD in str(err)
+
+
 # Cold cirrus cell: 215 K at 200 hPa, ice-super-saturated, ICE-FREE (so the
 # allowance applies) — the regime the ramp exists for.
 COLD_T_K = 215.0
@@ -312,10 +319,14 @@ def section_2_load_bearing() -> list[str]:
         if scheme in LIQUID_GUARD_REJECTED:
             fn, cfg = _scheme_fn_and_config(scheme)
             T, hyd, p_full, p_half, rho, dz = restw
+            # control: the same column and config with the guard off runs
+            fn(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S, cfg())
             try:
                 fn(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S,
                    cfg(**{LIQUID_FIELD: True}))
-            except ValueError:
+            except ValueError as e:
+                if not _is_satadj_refusal(e):
+                    raise
                 print(f"    {scheme}: {LIQUID_FIELD} rejected (gSAM "
                       "satadj_liquid runs unconditionally)")
             else:
@@ -509,9 +520,14 @@ def section_3_reachable() -> list[str]:
                     WARM_T_K, WARM_P_PA, 0.9 * float(
                         thermo.saturation_specific_humidity(
                             jnp.asarray(WARM_T_K), jnp.asarray(WARM_P_PA))))
+                # control: the lane's config with the guard off runs
+                fn_s(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S,
+                     sub_on._replace(**{LIQUID_FIELD: False}))
                 try:
                     fn_s(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S, sub_on)
-                except ValueError:
+                except ValueError as e:
+                    if not _is_satadj_refusal(e):
+                        raise
                     continue
                 failures.append(
                     f"{label}/{scheme}: the sam-flavour config with "

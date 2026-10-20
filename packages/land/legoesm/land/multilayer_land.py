@@ -612,8 +612,11 @@ def _step_multilayer_land_impl(
         # PHYSICAL snow cover (unscaled, as the layered pack): the node covers
         # f of the cell; the surface sees the cover-blended skin.  Whole-cell
         # cover of a trace pack pinned the canopy's ground at T_freeze and
-        # overheated the soil (snow-node runaway, 2026-10).
-        f_snow = snow_cover_fraction(jnp.maximum(snow, 0.0), config.land_albedo)
+        # overheated the soil (snow-node runaway, 2026-10).  As the layered
+        # pack, the cover counts this step's snowfall (no elevation bands on
+        # this branch, so the snowfall is the forcing's).
+        f_snow = snow_cover_fraction(
+            jnp.maximum(snow, 0.0) + forcing.precip_snow * dt, config.land_albedo)
         T_surface = _node_skin(T_snow0, T_soil[:, 0], f_snow)
     else:
         T_surface = T_soil[:, 0]

@@ -542,8 +542,11 @@ def test_held_column_reports_the_capped_skin():
         st, new, resp, sfc._replace(converged=jnp.array([False])), f, cfg, 1)[:5]
     assert bool(mask[0])
     np.testing.assert_array_equal(np.asarray(_h.T_snow), [276.0])  # pending melt kept
-    np.testing.assert_allclose(np.asarray(held_resp.T_sfc), [_TF])
-    np.testing.assert_allclose(np.asarray(held_resp.T_rad), [_TF])
+    # Previous skin = cover blend of the node (capped at T_freeze) and the soil.
+    skin = np.asarray(land_skin_temperature(st, cfg))
+    assert 268.0 < skin[0] < _TF
+    np.testing.assert_allclose(np.asarray(held_resp.T_sfc), skin)
+    np.testing.assert_allclose(np.asarray(held_resp.T_rad), skin)
 
 
 def test_skin_helper_contract():

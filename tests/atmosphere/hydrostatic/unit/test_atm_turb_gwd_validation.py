@@ -200,6 +200,22 @@ def test_conservation_closed_column(name):
     assert jnp.allclose(out.shflx, 0.0, atol=1e-8)
     assert jnp.allclose(out.lhflx, 0.0, atol=1e-8)
 
+    if name == "holtslag_boville":
+        # CAM compute_vdiff invariants (oracle-ported): layer mass dp/g;
+        # dry static energy + KE (frictional heating returns the KE removed),
+        # water and momentum.
+        m = (d["p_half"][:, 1:] - d["p_half"][:, :-1]) / constants.g
+        u1, v1 = d["u"] + DT * out.du_dt, d["v"] + DT * out.dv_dt
+        dke = 0.5 * (u1 ** 2 + v1 ** 2 - d["u"] ** 2 - d["v"] ** 2)
+        e0 = jnp.sum(m * constants.c_pd * d["T"], axis=1)
+        de = jnp.sum(m * (constants.c_pd * DT * out.dT_dt + dke), axis=1) / e0
+        assert jnp.max(jnp.abs(de)) < 1e-12, f"{name}: DSE+KE not conserved"
+        dq = jnp.sum(m * out.dq_v_dt, axis=1) * DT / jnp.sum(m * d["q_v"], axis=1)
+        assert jnp.max(jnp.abs(dq)) < 1e-12, f"{name}: water not conserved"
+        du = jnp.sum(m * out.du_dt, axis=1) * DT
+        assert jnp.max(jnp.abs(du)) < 1e-9, f"{name}: momentum not conserved"
+        return
+
     exner = (d["p_full"] / constants.p_ref) ** constants.kappa
     rdz = d["rho"] * jnp.abs(d["z_half"][:, :-1] - d["z_half"][:, 1:])
 

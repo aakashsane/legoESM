@@ -21,6 +21,15 @@ clearing the four-times envelope localises a boundary but does not discharge
 it. Trace passivity requires the ordinary and instrumented legoESM final state
 to be byte-identical. Active-word plants must move the selected comparison.
 
+For this source-boundary walk, the envelope statistic is the maximum absolute
+residual over NEMO-owned wet U or V words, reported separately in source order
+U then V. This is the maximum-residual diagnostic already used for the round-19
+Kmm state (`2.71e-8` U and `2.41e-8 m/s` V); no regional or depth reduction is
+introduced. The first stage or cumulative contributor is the earliest one
+whose first face field clears four times the same field's scalar/vector
+maximum. The all-word statistic is accompanied by exact counts and ULPs so a
+large maximum cannot be described as exact or discharged.
+
 ## Ordered walk
 
 The existing records first score corrected momentum after stages 1 and 2.

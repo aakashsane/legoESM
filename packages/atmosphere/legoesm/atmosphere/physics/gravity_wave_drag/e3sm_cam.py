@@ -1645,20 +1645,24 @@ def e3sm_cam_gwd(
     Each source runs :func:`_e3sm_cam_gwd_one_source` with its own
     efficiency (:func:`_effgw_for_source`) in CAM's ``gw_tend`` order
     (``_CAM_SOURCE_ORDER``: convective, frontal, orographic) and the
-    tendencies are summed into ``ptend`` as CAM does.  CAM's per-source
-    energy closure (``energy_change``/``energy_fixer``, gw_common.F90:858)
-    is evaluated on the ACCUMULATED ``ptend``, so each source here receives
-    the wind tendency accumulated by the sources before it (``du_prior``)
-    and closes the MARGINAL discrete kinetic-energy change — summing
-    independently closed sources would leave the ``dt*du_a*du_b`` cross
-    terms open (codex review).  See the single-source docstring for the
-    arguments.
+    tendencies are summed into ``ptend`` as E3SM does.  Each spectral
+    source's C.-C. Chen fixer acts on the ACCUMULATED ``ptend`` (it receives
+    the wind tendency of the sources before it, ``du_prior``), so the
+    spectral suite closes the discrete column energy.  The orographic member
+    then applies E3SM's closure ``-(ptend%u*(u + 0.5*dt*ptend%u) + ...)``
+    over the WHOLE accumulated ptend against the un-updated wind
+    (gw_drag.F90:903-913): in a mixed suite this adds the spectral sources'
+    kinetic-energy change as heat a second time, even over ocean
+    (landfrac = 0), and the column energy budget does not close.  That is
+    the E3SM v3.0.1 ``use_gw_energy_fix = .false.`` behaviour, ported as
+    is.  See the single-source docstring for the arguments.
 
     DOCUMENTED DEPARTURES from CAM6 ``gw_tend`` (dual review 2026-09-21):
     * the orographic source keeps the E3SM LOCAL discrete-KE heating; CAM6
       spreads ``energy_fixer(de - flx_heat)`` uniformly below ``tend_level``
-      (gw_drag.F90:1798-1817).  Column budgets agree, the vertical profile
-      of the orographic heating does not.
+      (gw_drag.F90:1798-1817).  The vertical profile of the orographic
+      heating differs; column budgets agree only for the orographic-only
+      suite.
     * (removed) the Beres source level, the frontal launch/trigger levels,
       the ediff bottom and the Newtonian alpha profile now all come from the
       reference interfaces ``p_ref_half`` (E3SM ``pref_edge``), as in E3SM.
@@ -1734,10 +1738,11 @@ def _e3sm_cam_gwd_one_source(
     """Faithful E3SM/CAM gravity-wave drag (gw_drag_prof solver), ONE source.
 
     ``du_prior``/``dv_prior`` (ncol, nlev) are the wind tendencies already
-    accumulated by earlier sources of a multi-source call; the energy
-    closures below then act on ``u + dt*du_prior`` so they close the
-    MARGINAL discrete kinetic-energy change exactly as CAM's accumulated
-    ``ptend`` energy fixer does.  ``None`` (single source) = plain ``u``.
+    accumulated by earlier sources of a multi-source call.  The spectral
+    fixer acts on ``u + dt*du_prior`` (the accumulated ptend, as E3SM's
+    momentum_energy_conservation does); the orographic closure acts on the
+    accumulated tendency ``du_prior + du`` against the un-updated ``u``
+    (gw_drag.F90:903-913).  ``None`` (single source) = plain ``u``.
 
     Parameters
     ----------

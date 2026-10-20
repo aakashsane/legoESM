@@ -28,8 +28,9 @@ kernel has no phis input and diffuses c_p*T + g*z.  The constant cancels
 exactly in exact arithmetic, but in the one column with surface height
 (midlat_front, phis = g*1500 m) the last ulp of s_new differs: 1.03e-12 W/kg
 = 2 ulp(dse)/dt at dt = 112.5 s, i.e. 4.5e-9 field-relative.  That column's
-heating is asserted separately as a strict xfail; momentum is asserted on
-every column.
+heating is asserted against the same oracle fed dse without phis
+(``ptend_s_nophis``), and against the true oracle as a strict xfail;
+momentum is asserted on every column.
 """
 from __future__ import annotations
 
@@ -117,6 +118,7 @@ def _arm(fx, arm, ds):
     m = meta["arms"][arm]
     out = _run(_inputs(z, ds), _config(m["ours"]), m["dt"], table if m["mfcc"] else None)
     ref = {k: z[f"{arm}/{ds}/ptend_{k}"] for k in "uvs"}
+    ref["s0"] = z.get(f"{arm}/{ds}/ptend_s_nophis", ref["s"])
     return out, ref, z[f"{ds}/phis"] == 0.0
 
 
@@ -125,14 +127,16 @@ def test_matches_e3sm_oracle(fx, arm, ds):
     out, ref, flat = _arm(fx, arm, ds)
     ds_ours = np.asarray(out.dT_dt) * constants.c_pd
     errs = {"du_dt": _rel_err(out.du_dt, ref["u"]), "dv_dt": _rel_err(out.dv_dt, ref["v"]),
-            "dT_dt": _rel_err_field(ds_ours[flat], ref["s"][flat])}
-    print(arm, ds, "max rel err vs E3SM v3.0.1 (dT over phis == 0 columns):", errs)
+            "dT_dt": _rel_err_field(ds_ours[flat], ref["s"][flat]),
+            "dT_dt_elevated_vs_nophis": _rel_err_field(ds_ours[~flat], ref["s0"][~flat])
+            if np.any(~flat) else 0.0}
+    print(arm, ds, "max rel err vs E3SM v3.0.1:", errs)
     assert np.abs(ref["u"]).max() > 1e-6 and np.abs(ref["s"][flat]).max() > 1e-4
     assert max(errs.values()) <= _TOL, errs
 
 
 @pytest.mark.xfail(strict=True, reason="kernel dse omits phis (asked): 2 ulp(dse)/dt")
-@pytest.mark.parametrize("arm", ["background", "frontal_taper"])
+@pytest.mark.parametrize("arm", [a for a, ds in _cases() if ds == "l36"])
 def test_heating_matches_e3sm_oracle_with_surface_height(fx, arm):
     out, ref, flat = _arm(fx, arm, "l36")
     ds_ours = np.asarray(out.dT_dt) * constants.c_pd

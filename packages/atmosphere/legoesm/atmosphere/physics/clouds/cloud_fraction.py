@@ -957,6 +957,16 @@ def cam6_ice_stratus_fraction(
     :func:`trop_cloud_top_taper`, the same weight CLUBB's own tendencies use.
     ``trop_cloud_top_press == 0`` is CLUBB's static "no top" gate (CAM:
     ``top_lev = 1``, nothing zeroed).
+
+    KNOWN DIFFERENCE (user decision 2026-10-20): CAM's cut is a hard step on
+    the reference-pressure ``top_lev``; here it is the smooth log-pressure
+    taper, kept because differentiability is never traded for oracle
+    fidelity.  It leaves a little aist above the top and trims it just
+    below; on production L32 (top 100 Pa, lid 225 Pa) the top layer is
+    scaled by 0.99982.  ``trop_cloud_taper_lnp_width -> 0`` gives a hard
+    cut, but on the column's own ``p_full`` (CAM: reference pressure), so
+    the cut level can differ by one layer and a layer exactly at the top
+    pressure keeps weight 0.5.
     """
     q_s = mixing_ratio_to_specific_humidity(saturation_mixing_ratio_goff(T, p_full))
     esl = saturation_vapor_pressure_goff(T)

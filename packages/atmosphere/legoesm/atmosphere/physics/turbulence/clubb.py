@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 7131)
+Table of contents (sections, in order; flag reference table at line 7174)
 -----------------------------------------------------------------------------
   1. [line  351] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  472] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -50,7 +50,7 @@ Table of contents (sections, in order; flag reference table at line 7131)
   18. [line  5328] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  6074] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  6086] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 

@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 7123)
+Table of contents (sections, in order; flag reference table at line 7174)
 -----------------------------------------------------------------------------
   1. [line  351] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  472] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -50,7 +50,7 @@ Table of contents (sections, in order; flag reference table at line 7123)
   18. [line  5328] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  6074] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  6086] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 
@@ -5508,7 +5508,7 @@ def compute_pdf_closure(diag, wp2, wp3, rtp2, thlp2, rtpthlp, up2, vp2,
         rtpthvp=zm_trap["rtpthvp"], thlpthvp=zm_trap["thlpthvp"],
         rc_coef_zm=zm_out["rc_coef"],
         cloud_frac=cloud_frac, rcm=rcm, rcm_grid=rcm_grid,
-        rcm_zm=zm_out["rcm"],
+        rcm_zm=zm_out["rcm"], rcp2_zt=zt_out["rcp2"],
         wprcp=zm_out["wprcp"], rtprcp=zm_out["rtprcp"],
         thlprcp=zm_out["thlprcp"], uprcp=zm_out["uprcp"],
         vprcp=zm_out["vprcp"],
@@ -5549,9 +5549,21 @@ def _pdf_closure_on_grid(wm, rtm, thlm, um, vm, wp2, rtp2, thlp2,
         xprcp["thlprcp"], wpthlp, wprtp, hom["wp2thlp"], hom["wp2rtp"],
         rtpthlp, rtp2, thlp2)
 
+    # Cloud-water variance r_c'^2, pdf_closure_module.F90:1072-1074 (computed
+    # unconditionally under CLUBB_CAM; CAM hands it out as qclvar, :1798).
+    mf = comp["mixt_frac"]
+    rcp2 = jnp.maximum(
+        0.0,
+        mf * (comp["chi_1"] * comp["rc_1"]
+              + comp["cf_1"] * comp["stdev_chi_1"] ** 2)
+        + (1.0 - mf) * (comp["chi_2"] * comp["rc_2"]
+                        + comp["cf_2"] * comp["stdev_chi_2"] ** 2)
+        - comp["rcm"] ** 2)
+
     out = dict(adg1)
     out.update(hom)
     out.update(xprcp)
+    out.update(rcp2=rcp2)
     out.update(cloud_frac=comp["cloud_frac"], rcm=comp["rcm"],
                chi_1=comp["chi_1"], chi_2=comp["chi_2"],
                wpthvp=wpthvp, wp2thvp=wp2thvp, rtpthvp=rtpthvp,
@@ -5986,7 +5998,7 @@ def advance_clubb_core(state: CLUBBMomentState, forcing: CLUBBForcing, *,
 
     diagnostics = dict(
         cloud_frac=pdf_post["cloud_frac"], rcm=pdf_post["rcm"],
-        rcm_grid=pdf_post["rcm_grid"],
+        rcm_grid=pdf_post["rcm_grid"], rcp2_zt=pdf_post["rcp2_zt"],
         wpthvp=pdf_post["wpthvp"], Kh_zt=diag["Kh_zt"], Kh_zm=diag["Kh_zm"])
     return new_state, diagnostics
 
@@ -6326,6 +6338,29 @@ def virtual_potential_temperature_with_liquid(T, q_v, q_c, exner):
     return (virtual_temperature(T, q_v) - T * q_c) / exner
 
 
+# --- CAM6 relative cloud-water variance for MG2 (clubb_intr.F90, cam_cesm2_1_rel_60) ---
+_CAM6_QCLVAR_MAX = 1.0        # qclvar = min(1, rcp2_zt) (:1998)
+_CAM6_RELVARMAX = 10.0        # relvarmax, deep_scheme /= 'CLUBB_SGS' (CAM6 ZM, :2418)
+_CAM6_RELVAR_MIN = 1.0e-3     # relvar lower clip (:2425)
+
+
+def cam6_relvar(rcm, rcp2):
+    """CAM6 relative cloud-water variance ``relvar`` handed to MG2.
+
+    ``clubb_intr.F90:1998, 2421-2425``: ``qclvar = min(1, rcp2_zt)``,
+    ``relvar = relvarmax`` by default and, where ``rcm /= 0`` and
+    ``qclvar /= 0``, ``min(relvarmax, max(0.001, rcm**2/qclvar))``.  ``rcm``
+    is the cloud liquid CLUBB leaves on the host (CAM's ``rcm`` after the
+    clubbtop reset, the value its ptend writes), ``rcp2`` the closure's
+    ``r_c'^2`` on the same levels.
+    """
+    qclvar = jnp.minimum(_CAM6_QCLVAR_MAX, rcp2)
+    has = (rcm != 0.0) & (qclvar != 0.0)
+    ratio = rcm ** 2 / jnp.where(has, qclvar, 1.0)
+    return jnp.where(
+        has, jnp.clip(ratio, _CAM6_RELVAR_MIN, _CAM6_RELVARMAX), _CAM6_RELVARMAX)
+
+
 # clubb_intr.F90:2043 (cam_cesm2_1_rel == cesm2_2_rel): a level whose rtp2 is
 # at or below this [(kg/kg)^2] and whose rcm is exactly 0 pushes clubbtop down.
 _CLUBBTOP_RTP2_QUIET = 1.0e-15
@@ -6496,9 +6531,13 @@ def clubb_step(
     # variables the closure advances are TOTAL water and LIQUID-water potential
     # temperature, so the host's existing cloud liquid enters both. With the
     # lever off, q_c is absent and these reduce to the historical q_v / theta.
+    # CAM's HOST convention (cam_cesm2_1_rel_60 clubb_intr.F90:1550):
+    # thlm = T*exner_clubb - (latvap/cpair)*qc, i.e. theta_l = theta -
+    # (L_v/c_pd) q_c with NO 1/exner on the latent term (CLUBB's own internal
+    # thl uses L_v/(c_pd exner); the host does not -- matched to the host).
     if liquid_partition:
         q_t = q_v + q_c
-        T_l = T - (constants.L_v / constants.c_pd) * q_c
+        T_l = T - exner * (constants.L_v / constants.c_pd) * q_c
         thv = virtual_potential_temperature_with_liquid(T, q_v, q_c, exner)
     else:
         q_t = q_v
@@ -6545,7 +6584,6 @@ def clubb_step(
 
     # ---- Surface turbulent-flux lower boundary conditions (kinematic) ----
     rho_sfc = rho[:, -1]
-    exner_sfc = exner[:, -1]
     # Each BC component is either prescribed (LES/SCM intercomparison cases) or
     # computed by CLUBB's own bulk formula from the air-surface contrast. The
     # bulk formula is evaluated only if at least one component still needs it
@@ -6558,8 +6596,10 @@ def clubb_step(
             T_sfc, q_sfc, rho_sfc, config.surface, z_full[:, -1] - z_half[:, -1])
         wprtp_b = surface_moisture_flux(config.surface, lhflx_b, T_sfc) / rho_sfc   # w'rt'  [kg/kg m/s]
         # Heat BC carries the latent enthalpy correction (water at L(T) vs L_v).
+        # CAM host convention (clubb_intr.F90:1781): wpthlp_sfc =
+        # shf/(cpair*rho_ds_zm(1)), no division by exner.
         wpthlp_b = ((shflx_b + latent_enthalpy_correction(lhflx_b, wprtp_b * rho_sfc))
-                    / (rho_sfc * constants.c_pd * exner_sfc))  # w'thl' [K m/s]
+                    / (rho_sfc * constants.c_pd))              # w'thl' [K m/s]
         # Surface stress convention is tau = -rho*Cd*|V|*u (compute_surface_fluxes),
         # so the kinematic momentum flux is u'w'_sfc = tau_x/rho (NEGATIVE for u>0 —
         # momentum transported downward / drag), NOT -tau_x/rho.
@@ -6580,7 +6620,7 @@ def clubb_step(
     # the floor pins the gradient to 0 there while leaving any physical stress
     # (|u'w'| >> 1e-8) bit-unchanged.
     shflx = shflx_b if sfc_wpthlp is None else (
-        sfc_wpthlp * (rho_sfc * constants.c_pd * exner_sfc))
+        sfc_wpthlp * (rho_sfc * constants.c_pd))
     lhflx = lhflx_b if sfc_wprtp is None else sfc_wprtp * (rho_sfc * constants.L_v)
     ustar = ustar_b if (sfc_upwp is None and sfc_vpwp is None) else (
         jnp.maximum(upwp_sfc ** 2 + vpwp_sfc ** 2, 1e-30) ** 0.25)
@@ -6638,8 +6678,10 @@ def clubb_step(
         # guaranteed here -- the same as CAM.
         rcm_new = flip_vertical(diags["rcm"])
         q_new = flip_vertical(new_state.rtm) - rcm_new
-        T_new = (flip_vertical(new_state.thlm) * exner
-                 + (constants.L_v / constants.c_pd) * rcm_new)
+        # Inverse of the inbound host map (clubb_intr.F90:2048-2051:
+        # clubb_s = cpair*((thlm + (latvap/cpair)*rcm)/exner_clubb)).
+        T_new = (flip_vertical(new_state.thlm)
+                 + (constants.L_v / constants.c_pd) * rcm_new) * exner
         # REPLACES the host liquid, matching the reference; the seeding above is
         # what makes that reversible rather than a one-way ratchet.
         dq_c_dt = (rcm_new - q_c) / dt
@@ -6702,7 +6744,7 @@ def clubb_step(
     # host's c_pd*T + L_v*q_v: the heat BC (latent-enthalpy correction
     # included) plus the water BC at the reference L_v.  Equals shflx + lhflx
     # for the bulk and injected paths; read by the column energy fixer.
-    sfc_energy_in = rho_sfc * (constants.c_pd * exner_sfc * wpthlp_sfc
+    sfc_energy_in = rho_sfc * (constants.c_pd * wpthlp_sfc
                                + constants.L_v * wprtp_sfc)  # latent-ok: CAM6 clubb_intr energy-fix reference constant
     diags = dict(diags, ustar=ustar, shflx=shflx, lhflx=lhflx,
                  sfc_energy_in=sfc_energy_in)
@@ -6837,8 +6879,6 @@ def clubb_turbulence_prognostic(
             "driver's tiled bottom BC) OR the explicit sfc_* kinematic "
             "prescriptions, not both."
         )
-    exner_sfc = exner_function(p_full[:, -1])
-
     def _sfc_bcs(rho_local):
         """Kinematic lower-BC ``(sfc_wpthlp, sfc_wprtp, sfc_upwp, sfc_vpwp)`` for
         the given near-surface density.  With an injected tiled DYNAMIC flux we
@@ -6854,9 +6894,12 @@ def clubb_turbulence_prognostic(
         rho_s = rho_local[:, -1]
         _E_sf = surface_moisture_flux(config.surface, lhflx_sf, T_sfc)
         return (
-            # Heat BC carries the latent enthalpy correction (water at L(T) vs L_v).
+            # Heat BC carries the latent enthalpy correction (water at L(T) vs
+            # L_v).  CAM host convention (clubb_intr.F90:1781): wpthlp_sfc =
+            # shf/(cpair*rho_ds_zm(1)), no division by exner; the (1-exner)
+            # share of the heat goes to the column energy fixer, as in CAM.
             (shflx_sf + latent_enthalpy_correction(lhflx_sf, _E_sf))
-            / (rho_s * constants.c_pd * exner_sfc),           # w'thl' [K m/s]
+            / (rho_s * constants.c_pd),                       # w'thl' [K m/s]
             _E_sf / rho_s,                                     # w'rt'  [kg/kg m/s]
             tau_x_sf / rho_s,                                  # u'w'   [m^2/s^2]
             tau_y_sf / rho_s,                                  # v'w'   [m^2/s^2]
@@ -6876,6 +6919,7 @@ def clubb_turbulence_prognostic(
         clubbtop = diags.get("clubbtop")
         Kh_full = flip_vertical(diags["Kh_zt"])
         cloud_frac_a = diags["cloud_frac"]
+        rcp2_a = diags["rcp2_zt"]
         dq_c_dt = diags.get("dq_c_dt")
     else:
         dt_sub = dt / n_sub
@@ -6929,6 +6973,7 @@ def clubb_turbulence_prognostic(
         # moments being returned as the carry, not to a sub-cycle average of
         # states the host never sees.
         cloud_frac_a = diag_stk["cloud_frac"][-1]
+        rcp2_a = diag_stk["rcp2_zt"][-1]
 
     # With an injected tiled flux, report the surface diagnostics as the INJECTED
     # dynamic values directly (Louis-equivalent), rather than clubb_step's
@@ -6980,6 +7025,11 @@ def clubb_turbulence_prognostic(
             (jnp.log(jnp.clip(p_full, 1.0, None))
              - jnp.log(config.trop_cloud_top_press))
             / config.trop_cloud_taper_lnp_width)
+    # MG2's relvar from the liquid CLUBB leaves on the host and the closure's
+    # rcp2 of the same (final) sub-step; only with the liquid partition, where
+    # that liquid is CLUBB's (CAM always partitions).
+    relvar = (None if dq_c_dt is None
+              else cam6_relvar(q_c + dt * dq_c_dt, flip_vertical(rcp2_a)))
     output = TurbulenceOutput(
         du_dt=du_dt, dv_dt=dv_dt, dT_dt=dT_dt, dq_v_dt=dq_v_dt,
         Km=Kh_full, Kh=Kh_full, shflx=shflx, lhflx=lhflx,
@@ -6988,7 +7038,8 @@ def clubb_turbulence_prognostic(
         # as lhflx / L_v.
         evap_sfc=surface_moisture_flux(config.surface, lhflx, T_sfc),
         ustar=ustar,
-        h_pbl=h_pbl, cloud_fraction=cloud_fraction_td, dq_c_dt=dq_c_dt)
+        h_pbl=h_pbl, cloud_fraction=cloud_fraction_td, dq_c_dt=dq_c_dt,
+        relvar=relvar)
     return output, pack_clubb_moments(new_moments)
 
 

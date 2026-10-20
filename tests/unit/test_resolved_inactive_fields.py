@@ -157,7 +157,8 @@ def _mcfarlane_drag(h_topo, h_topo_col):
         u=jnp.full((ncol, nlev), 25.0), v=jnp.zeros((ncol, nlev)), T=T,
         p_full=p_full, p_half=p_half, z_full=z_full, z_half=z_half,
         rho=p_full / (constants.R_d * T), lat=jnp.zeros((ncol,)), dt=600.0,
-        config=McFarlaneConfig(h_topo=h_topo), h_topo_col=h_topo_col)
+        config=McFarlaneConfig(h_topo=h_topo), h_topo_col=h_topo_col,
+        p_ref_half=p_half[0])
     return jnp.sum(out.du_dt ** 2)
 
 

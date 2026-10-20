@@ -862,7 +862,7 @@ _KK2000_CAM6_RELVAR_MAX = 10.0     # relvarmax, non-CLUBB deep scheme (:2418)
 # there qcic = 0, so every warm-rain rate is zero whatever qric is.  For the
 # warm-rain consumers here precip_frac therefore equals lcldm (cldm = lcldm
 # with CLUBB's fraction as both).
-_MG2_MINCLD = 1.0e-4       # micro_mg_utils.F90:123 mincld [-]
+MG2_MINCLD = 1.0e-4       # micro_mg_utils.F90:123 mincld [-]
 MG2_QSMALL = 1.0e-18      # micro_mg_utils.F90 qsmall [kg/kg]
 MG2_QRIC_MAX = 0.01       # micro_mg2_0.F90:1316 in-precip rain cap [kg/kg]
 
@@ -896,7 +896,7 @@ def mg2_incloud_warm_rain_inputs(q_c, q_r, N_c, cloud_fraction, rescale_nc,
     MG2's in-precip ``qric = min(qr/precip_frac, 0.01)`` (0 below qsmall,
     :1312-1322) with ``precip_frac`` from :func:`mg2_precip_frac`.
     """
-    lcldm = jnp.maximum(cloud_fraction, _MG2_MINCLD)
+    lcldm = jnp.maximum(cloud_fraction, MG2_MINCLD)
     has_qc = q_c >= MG2_QSMALL
     q_c_ic = jnp.where(has_qc, jnp.minimum(q_c / lcldm, KK2000_CAM6_QC_MAX),
                        0.0)
@@ -917,7 +917,7 @@ def mg2_precip_frac(cloud_fraction, q_c, q_i):
     level above's value.  Level 0 = model top (this module's convention, the
     same as CAM's k=1).  Shape ``(ncol, nlev)``.
     """
-    cldm = jnp.maximum(cloud_fraction, _MG2_MINCLD)
+    cldm = jnp.maximum(cloud_fraction, MG2_MINCLD)
     clear = (q_c < MG2_QSMALL) & (q_i < MG2_QSMALL)
 
     def _down(prev, xs):

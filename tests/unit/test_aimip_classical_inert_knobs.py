@@ -79,7 +79,7 @@ def test_surface_knob_map_matches_measured_gradients(bulk):
     def f(raw):
         cfg = eqx.tree_at(lambda m: m.raw_values, p, raw).to_surface_config(
             bulk_scheme=bulk)
-        out = compute_surface_fluxes(u, v, T, q, T_sfc, q_sfc, rho, cfg)
+        out = compute_surface_fluxes(u, v, T, q, T_sfc, q_sfc, rho, cfg, t_bot=T)
         return sum(jnp.sum(wi * o) for wi, o in zip(w, out))
 
     g = jax.grad(f)(p.raw_values)

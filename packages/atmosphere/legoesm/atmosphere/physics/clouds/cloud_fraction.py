@@ -1015,6 +1015,7 @@ def compute_cloud_properties(
     conv_mass_flux_up: jnp.ndarray | None = None,
     conv_icwmr: jnp.ndarray | None = None,
     p_half: jnp.ndarray | None = None,
+    n_cloud_in_cloud: bool = False,
 ) -> CloudProperties:
     """Compute diagnostic cloud fraction and cloud optical properties.
 
@@ -1041,6 +1042,16 @@ def compute_cloud_properties(
         condensate floor and hence radiation reflect the moist closure's
         less-overcast marine BL.  ``None`` (default) keeps the RH grid-scale
         fraction (byte-identical).
+    n_cloud_in_cloud : bool
+        True when ``n_cloud`` is an IN-CLOUD droplet number (the aerosol/CCN
+        activated number, CAM6 MG2 ``nccons`` convention ``ncic = ncnst/rho``),
+        False (default) when it is the GRID-MEAN prognostic ``N_c`` tracer.
+        Under scheme ``cam6_clubb`` an in-cloud number is paired with the
+        in-cloud water ``q_c / max(ast, mincld)``, as CAM6 MG2 forms the
+        droplet effective radius it hands to radiation (micro_mg2_0.F90:2741,
+        2753, 2830-2838; lcldm = max(ast, mincld) with ast = max(alst, aist),
+        micro_mg_cam.F90:1810, :2009; mincld = 1e-4, micro_mg_utils.F90:123).
+        Other schemes keep the grid-mean pairing (#1521).
 
     Returns
     -------
@@ -1078,6 +1089,7 @@ def compute_cloud_properties(
     RH = q_v / jnp.maximum(q_sat, 1.0e-10)
 
     # --- Cloud fraction ---
+    _ast_cam6 = None  # CAM6 stratiform fraction max(alst, aist); cam6_clubb only
     if config.scheme == "xu_randall":
         q_c = jnp.zeros_like(T) if q_cloud is None else q_cloud
         q_i = jnp.zeros_like(T) if q_ice is None else q_ice
@@ -1144,7 +1156,8 @@ def compute_cloud_properties(
         else:
             deepcu = cam6_deep_convective_fraction(
                 conv_mass_flux_up, conv_icwmr, config)
-        cf = jnp.minimum(jnp.maximum(alst, aist) + deepcu, 1.0)
+        _ast_cam6 = jnp.maximum(alst, aist)
+        cf = jnp.minimum(_ast_cam6 + deepcu, 1.0)
     else:
         raise ValueError(
             f"Unknown cloud scheme: {config.scheme!r}. "
@@ -1385,9 +1398,10 @@ def compute_cloud_properties(
         # Where the prognostic droplet number is 0/garbage (SAM specified-Nc
         # Morrison, dopredictNc=.false., keeps the Nc slot at 0), fall back to the
         # specified Nc_default so r_eff is the SAM constant-Nc value, not 35 um.
-        # The PSD ratio N_c/q_c must pair LIKE WITH LIKE.  ``N_c`` is a tracer,
-        # hence a GRID-MEAN number density, and ``q_c`` above is a grid-mean
-        # mixing ratio (:833-836), so where the prognostic tracer is live the
+        # The PSD ratio N_c/q_c must pair LIKE WITH LIKE.  A prognostic ``N_c``
+        # tracer (``n_cloud_in_cloud=False``) is a GRID-MEAN number density,
+        # and ``q_c`` above is a grid-mean mixing ratio (:833-836), so where
+        # the prognostic tracer is live the
         # ratio is already the in-cloud ratio and needs no cf.  ``Nc_default``
         # is NOT a grid mean: it is SAM's specified IN-CLOUD concentration
         # (dopredictNc=.false.), exact there because a CRM cell is either fully
@@ -1411,6 +1425,16 @@ def compute_cloud_properties(
         n_cloud = jnp.where(n_cloud > 1.0, n_cloud, config.Nc_default)
         _cf_psd = jnp.clip(cf, _INHOM_CF_FLOOR, 1.0)
         q_c_psd = jnp.where(_nc_is_specified, q_c / _cf_psd, q_c)
+        if n_cloud_in_cloud and _ast_cam6 is not None:
+            # In-cloud number (CCN): pair it with the in-cloud water exactly as
+            # CAM6 MG2 does for REL, dumc = qc/lcldm with lcldm = max(ast,
+            # mincld) (micro_mg2_0.F90:878, :2741; ast, not the radiative cover
+            # that also holds deepcu).  The dead-number branch above is kept.
+            from legoesm.atmosphere.physics.microphysics._warm_rain import (
+                MG2_MINCLD,
+            )
+            q_c_psd = jnp.where(_nc_is_specified, q_c_psd,
+                                q_c / jnp.maximum(_ast_cam6, MG2_MINCLD))
         # MOIST density, same basis as the bridges that produced ``n_cloud``
         # from the per-mass tracer: a dry rho here un-does that conversion
         # with a different density and biases nc_permass — hence LAMC and
@@ -1447,12 +1471,11 @@ def compute_cloud_properties(
         # per-mass [1/kg] — the SAME PSD as the M2005 deposition.  So
         # ``r_eff_ice = 1.5·(q_i/(CONS12·N_i))^(1/3)`` [m].  EFFI = 25 µm in
         # ice-free cells (SAM uses 25 µm when q_i < QSMALL = 1e-14).
-        # The radius is returned in metres; the RRTMGP cloud-optics
-        # (cloud_optics.py) converts radius→generalized DIAMETER (×2) and
-        # clamps to the ice lookup-table validity range, so NO explicit
-        # bound is imposed here. (NB: legoESM's RRTMGP omits SAM's
-        # ``ρ_ci/917`` solid-ice density rescale that its RRTM ice table
-        # needs — an accepted RRTMG↔RRTMGP generation difference.)
+        # The radius is returned in metres (bulk-density-500 PSD radius);
+        # the RRTMGP cloud-optics (cloud_optics.py) converts it to CAM6's
+        # solid-ice effective DIAMETER ``2·r·500/917`` (MG2
+        # micro_mg2_0.F90:2795) and clamps to the ice lookup-table validity
+        # range, so NO explicit bound is imposed here.
         #
         # PAIR LIKE WITH LIKE (#1520): ``n_ice`` is the PROGNOSTIC (tracer)
         # ice number, so the M2005 PSD is meaningful only for the PROGNOSTIC

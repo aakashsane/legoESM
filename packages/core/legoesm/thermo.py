@@ -361,12 +361,51 @@ def saturation_mixing_ratio_ice(
     jax.Array
         Ice saturation mixing ratio [kg/kg].
     """
-    e_sat_i = 611.2 * jnp.exp(
+    return _mixing_ratio_from_esat(saturation_vapor_pressure_ice(T), p)
+
+
+def saturation_vapor_pressure_ice(T: jax.Array) -> jax.Array:
+    """Saturation vapour pressure over ice [Pa] (Clausius-Clapeyron).
+
+    e_sat_i = 611.2 * exp(L_s/R_v * (1/T_freeze - 1/T)): the curve of
+    :func:`saturation_mixing_ratio_ice`, exposed for vapour-pressure blends.
+    """
+    return 611.2 * jnp.exp(
         constants.L_s / constants.R_v * (1.0 / constants.T_freeze - 1.0 / T)
     )
-    denom = jax.nn.softplus(p - e_sat_i - 1.0) + 1.0
-    q_sat_i = constants.epsilon * e_sat_i / denom
-    return 1.0 - jax.nn.softplus(20.0 * (1.0 - q_sat_i)) / 20.0
+
+
+# --- CAM liquid->ice saturation transition (CESM2.1 wv_saturation.F90:82) ---
+_CAM_TTRICE_K = 20.0   # ttrice: es blends from water to ice over 0 .. -20 degC
+
+
+def saturation_vapor_pressure_trans(T: jax.Array) -> jax.Array:
+    """CAM ``wv_sat_svp_trans`` over the shared curves [Pa].
+
+    CESM2.1 ``wv_sat_methods.F90:326-361``: water curve at and above
+    ``T_freeze - ttrice`` (0 below), then for ``T < T_freeze`` the VAPOUR
+    PRESSURE is blended toward ice with weight ``(T_freeze - T)/ttrice``
+    (1 below ``T_freeze - ttrice``).  The water and ice curves are the shared
+    Tetens (:func:`saturation_vapor_pressure`) and Clausius-Clapeyron
+    (:func:`saturation_vapor_pressure_ice`) ones, not CAM's Goff-Gratch.
+    """
+    tmelt = constants.T_freeze
+    e_liq = jnp.where(T >= tmelt - _CAM_TTRICE_K, saturation_vapor_pressure(T), 0.0)
+    weight = jnp.where(tmelt - T > _CAM_TTRICE_K, 1.0, (tmelt - T) / _CAM_TTRICE_K)
+    return jnp.where(T < tmelt,
+                     weight * saturation_vapor_pressure_ice(T) + (1.0 - weight) * e_liq,
+                     e_liq)
+
+
+def saturation_specific_humidity_trans(T: jax.Array, p: jax.Array) -> jax.Array:
+    """Saturation SPECIFIC humidity over the CAM liquid->ice transition curve.
+
+    CAM ``qsat`` (``wv_saturation.F90``): ``svp_trans`` vapour pressure, then
+    ``ε·e/(p − (1−ε)·e)``; here through the shared smooth ``e -> r`` conversion
+    of :func:`saturation_specific_humidity` (``q = r/(1 + r)``).
+    """
+    w_sat = _mixing_ratio_from_esat(saturation_vapor_pressure_trans(T), p)
+    return w_sat / (1.0 + w_sat)
 
 
 def nemo_si3_saturation_over_ice(

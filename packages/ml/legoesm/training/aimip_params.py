@@ -114,10 +114,9 @@ _MCFARLANE_TRAINABLE: list[ParamConstraint] = [
     ParamConstraint("mcfarlane_efficiency", 0.1, 1.0, "sigmoid"),
     ParamConstraint("mcfarlane_min_wind", 0.5, 5.0, "sigmoid"),
     ParamConstraint("mcfarlane_envelope_scale", 0.5, 2.0, "sigmoid"),
-    # Extended: orographic wavenumber + spread + tau cap.
+    # Extended: orographic wavenumber + spread.
     ParamConstraint("mcfarlane_k_wave", 1.0e-5, 5.0e-4, "sigmoid"),
     ParamConstraint("mcfarlane_directional_spread", 0.5, 2.0, "sigmoid"),
-    ParamConstraint("mcfarlane_tau_max", 1.0, 50.0, "sigmoid"),
 ]
 
 # Xu-Randall cloud fraction.  ``T_freeze`` is NOT trainable per
@@ -576,7 +575,6 @@ class AIMIPClassicalParams(eqx.Module):
             envelope_scale=d["mcfarlane_envelope_scale"],
             k_wave=d["mcfarlane_k_wave"],
             directional_spread=d["mcfarlane_directional_spread"],
-            tau_max=d["mcfarlane_tau_max"],
         )
 
     def to_cloud_config(self) -> CloudConfig:
@@ -703,7 +701,6 @@ def _canonical_scheme_defaults() -> dict[str, float]:
         "mcfarlane_envelope_scale": float(mc.envelope_scale),
         "mcfarlane_k_wave": float(mc.k_wave),
         "mcfarlane_directional_spread": float(mc.directional_spread),
-        "mcfarlane_tau_max": float(mc.tau_max),
         # Cloud (Xu-Randall)
         "cloud_rh_crit": float(cl.rh_crit),
         "cloud_alpha_xr": float(cl.alpha_xr),

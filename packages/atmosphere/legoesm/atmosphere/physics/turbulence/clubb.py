@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 7123)
+Table of contents (sections, in order; flag reference table at line 7131)
 -----------------------------------------------------------------------------
   1. [line  351] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  472] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -6496,9 +6496,13 @@ def clubb_step(
     # variables the closure advances are TOTAL water and LIQUID-water potential
     # temperature, so the host's existing cloud liquid enters both. With the
     # lever off, q_c is absent and these reduce to the historical q_v / theta.
+    # CAM's HOST convention (cam_cesm2_1_rel_60 clubb_intr.F90:1550):
+    # thlm = T*exner_clubb - (latvap/cpair)*qc, i.e. theta_l = theta -
+    # (L_v/c_pd) q_c with NO 1/exner on the latent term (CLUBB's own internal
+    # thl uses L_v/(c_pd exner); the host does not -- matched to the host).
     if liquid_partition:
         q_t = q_v + q_c
-        T_l = T - (constants.L_v / constants.c_pd) * q_c
+        T_l = T - exner * (constants.L_v / constants.c_pd) * q_c
         thv = virtual_potential_temperature_with_liquid(T, q_v, q_c, exner)
     else:
         q_t = q_v
@@ -6545,7 +6549,6 @@ def clubb_step(
 
     # ---- Surface turbulent-flux lower boundary conditions (kinematic) ----
     rho_sfc = rho[:, -1]
-    exner_sfc = exner[:, -1]
     # Each BC component is either prescribed (LES/SCM intercomparison cases) or
     # computed by CLUBB's own bulk formula from the air-surface contrast. The
     # bulk formula is evaluated only if at least one component still needs it
@@ -6558,8 +6561,10 @@ def clubb_step(
             T_sfc, q_sfc, rho_sfc, config.surface, z_full[:, -1] - z_half[:, -1])
         wprtp_b = surface_moisture_flux(config.surface, lhflx_b, T_sfc) / rho_sfc   # w'rt'  [kg/kg m/s]
         # Heat BC carries the latent enthalpy correction (water at L(T) vs L_v).
+        # CAM host convention (clubb_intr.F90:1781): wpthlp_sfc =
+        # shf/(cpair*rho_ds_zm(1)), no division by exner.
         wpthlp_b = ((shflx_b + latent_enthalpy_correction(lhflx_b, wprtp_b * rho_sfc))
-                    / (rho_sfc * constants.c_pd * exner_sfc))  # w'thl' [K m/s]
+                    / (rho_sfc * constants.c_pd))              # w'thl' [K m/s]
         # Surface stress convention is tau = -rho*Cd*|V|*u (compute_surface_fluxes),
         # so the kinematic momentum flux is u'w'_sfc = tau_x/rho (NEGATIVE for u>0 —
         # momentum transported downward / drag), NOT -tau_x/rho.
@@ -6580,7 +6585,7 @@ def clubb_step(
     # the floor pins the gradient to 0 there while leaving any physical stress
     # (|u'w'| >> 1e-8) bit-unchanged.
     shflx = shflx_b if sfc_wpthlp is None else (
-        sfc_wpthlp * (rho_sfc * constants.c_pd * exner_sfc))
+        sfc_wpthlp * (rho_sfc * constants.c_pd))
     lhflx = lhflx_b if sfc_wprtp is None else sfc_wprtp * (rho_sfc * constants.L_v)
     ustar = ustar_b if (sfc_upwp is None and sfc_vpwp is None) else (
         jnp.maximum(upwp_sfc ** 2 + vpwp_sfc ** 2, 1e-30) ** 0.25)
@@ -6638,8 +6643,10 @@ def clubb_step(
         # guaranteed here -- the same as CAM.
         rcm_new = flip_vertical(diags["rcm"])
         q_new = flip_vertical(new_state.rtm) - rcm_new
-        T_new = (flip_vertical(new_state.thlm) * exner
-                 + (constants.L_v / constants.c_pd) * rcm_new)
+        # Inverse of the inbound host map (clubb_intr.F90:2048-2051:
+        # clubb_s = cpair*((thlm + (latvap/cpair)*rcm)/exner_clubb)).
+        T_new = (flip_vertical(new_state.thlm)
+                 + (constants.L_v / constants.c_pd) * rcm_new) * exner
         # REPLACES the host liquid, matching the reference; the seeding above is
         # what makes that reversible rather than a one-way ratchet.
         dq_c_dt = (rcm_new - q_c) / dt
@@ -6702,7 +6709,7 @@ def clubb_step(
     # host's c_pd*T + L_v*q_v: the heat BC (latent-enthalpy correction
     # included) plus the water BC at the reference L_v.  Equals shflx + lhflx
     # for the bulk and injected paths; read by the column energy fixer.
-    sfc_energy_in = rho_sfc * (constants.c_pd * exner_sfc * wpthlp_sfc
+    sfc_energy_in = rho_sfc * (constants.c_pd * wpthlp_sfc
                                + constants.L_v * wprtp_sfc)  # latent-ok: CAM6 clubb_intr energy-fix reference constant
     diags = dict(diags, ustar=ustar, shflx=shflx, lhflx=lhflx,
                  sfc_energy_in=sfc_energy_in)
@@ -6837,8 +6844,6 @@ def clubb_turbulence_prognostic(
             "driver's tiled bottom BC) OR the explicit sfc_* kinematic "
             "prescriptions, not both."
         )
-    exner_sfc = exner_function(p_full[:, -1])
-
     def _sfc_bcs(rho_local):
         """Kinematic lower-BC ``(sfc_wpthlp, sfc_wprtp, sfc_upwp, sfc_vpwp)`` for
         the given near-surface density.  With an injected tiled DYNAMIC flux we
@@ -6854,9 +6859,12 @@ def clubb_turbulence_prognostic(
         rho_s = rho_local[:, -1]
         _E_sf = surface_moisture_flux(config.surface, lhflx_sf, T_sfc)
         return (
-            # Heat BC carries the latent enthalpy correction (water at L(T) vs L_v).
+            # Heat BC carries the latent enthalpy correction (water at L(T) vs
+            # L_v).  CAM host convention (clubb_intr.F90:1781): wpthlp_sfc =
+            # shf/(cpair*rho_ds_zm(1)), no division by exner; the (1-exner)
+            # share of the heat goes to the column energy fixer, as in CAM.
             (shflx_sf + latent_enthalpy_correction(lhflx_sf, _E_sf))
-            / (rho_s * constants.c_pd * exner_sfc),           # w'thl' [K m/s]
+            / (rho_s * constants.c_pd),                       # w'thl' [K m/s]
             _E_sf / rho_s,                                     # w'rt'  [kg/kg m/s]
             tau_x_sf / rho_s,                                  # u'w'   [m^2/s^2]
             tau_y_sf / rho_s,                                  # v'w'   [m^2/s^2]

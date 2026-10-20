@@ -825,6 +825,7 @@ def _call_radiation_backend(
     q_ice: jnp.ndarray | None = None,
     n_ice: jnp.ndarray | None = None,
     n_cloud: jnp.ndarray | None = None,
+    n_cloud_in_cloud: bool = False,
     ghg_vmr_override: dict | None = None,
     f_day: jnp.ndarray | None = None,
     rrtmgp_solver=None,
@@ -862,6 +863,9 @@ def _call_radiation_backend(
         Cloud liquid water mixing ratio (ncol, nlev) [kg/kg].
     q_ice : jnp.ndarray or None
         Cloud ice mixing ratio (ncol, nlev) [kg/kg].
+    n_cloud_in_cloud : bool
+        ``n_cloud`` is an in-cloud (aerosol/CCN) droplet number, not the
+        grid-mean tracer; see ``compute_cloud_properties``.
     ghg_vmr_override : dict or None
         Runtime GHG VMR overrides passed to RRTMGP (e.g. transient CO2).
     f_day : jnp.ndarray or None
@@ -1023,6 +1027,7 @@ def _call_radiation_backend(
             q_ice=q_ice,
             n_ice=n_ice,
             n_cloud=n_cloud,
+            n_cloud_in_cloud=n_cloud_in_cloud,
             conv_precip=conv_precip,
             cloud_fraction_override=cloud_fraction_override,
             lat=lat,
@@ -1647,6 +1652,7 @@ def _make_hydrostatic_radiation(
         # is gated on the scheme — gray runs the microphysics fill (second
         # indirect effect) but skips this radiation-only first-indirect path
         # instead of computing a droplet field the gray optics would discard.
+        _nc_in_cloud = False
         if nc_from_aerosol and radiation_config.scheme == "rrtmgp":
             # Route through the SAME activation dispatch as the microphysics
             # N_c fill (proxy | arg) so the first (radiation r_eff) and second
@@ -1680,6 +1686,7 @@ def _make_hydrostatic_radiation(
                 ccn_aod=(forcing.get("aerosol_ccn_aod")
                          if forcing is not None else None),
             )
+            _nc_in_cloud = True  # specified in-cloud number (MG2 nccons)
 
         f_day_col = f_day.reshape(ncol) if f_day is not None else None
 
@@ -1794,6 +1801,7 @@ def _make_hydrostatic_radiation(
             q_cloud=q_cloud_col,
             q_ice=q_ice_col,
             n_cloud=n_cloud_col,
+            n_cloud_in_cloud=_nc_in_cloud,
             n_ice=n_ice_col,
             f_day=f_day_col,
             rrtmgp_solver=rrtmgp_solver,

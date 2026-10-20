@@ -419,11 +419,13 @@ class TestTurbulenceAudit:
 # ===========================================================================
 # Gravity-wave drag + radiation + clouds
 # ===========================================================================
-def _gwd_call(fn, cfg, extra=()):
+def _gwd_call(fn, cfg, extra=(), **kw):
     A = _aux()
     T, q_v, p_full, p_half = _column()
+    if kw.pop("p_ref_from_column", False):
+        kw["p_ref_half"] = p_half.reshape(-1, p_half.shape[-1])[0]
     out = fn(A["u"], A["v"], T, p_full, p_half, A["z_full"], A["z_half"],
-             A["rho"], A["lat"], 60.0, cfg, *extra)
+             A["rho"], A["lat"], 60.0, cfg, *extra, **kw)
     # GWDOutput is itself a NamedTuple (==tuple); only unwrap the
     # (output, spectrum) 2-tuple, detected by absence of du_dt.
     out = out if hasattr(out, "du_dt") else out[0]
@@ -447,7 +449,8 @@ class TestGWDRadiationCloudsAudit:
         from legoesm.atmosphere.physics.gravity_wave_drag.mcfarlane import mcfarlane_gwd
         from legoesm.atmosphere.physics.gravity_wave_drag.config import McFarlaneConfig
         assert_grad_ok(lambda x: _gwd_call(mcfarlane_gwd,
-            McFarlaneConfig()._replace(G_0=x)), 0.5, "mcfarlane.G_0")
+            McFarlaneConfig()._replace(G_0=x), p_ref_from_column=True),
+            0.5, "mcfarlane.G_0")
 
     def test_hines_total_rms_wind(self):
         from legoesm.atmosphere.physics.gravity_wave_drag.hines import hines_gwd

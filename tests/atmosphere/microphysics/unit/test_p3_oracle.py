@@ -97,7 +97,7 @@ def _step(fx, case, dt, cfg=HARD, dtype=jnp.float64):
     return P3.p3_step(g["T"], g["q_v"], hyd, g["p"], g["rho"], g["dz"], float(dt), cfg)
 
 
-def test_fixture_provenance_and_vendored_table():
+def test_fixture_provenance_and_fetched_table():
     fx = _fx()
     m = _meta(fx)
     assert m["tag"] == "v4.8.0"
@@ -105,8 +105,8 @@ def test_fixture_provenance_and_vendored_table():
     assert m["module_mp_p3_sha256"] == (
         "716950a3081ec4e338c9a918d26ec80f7ee0e40b3e284283f070423237f6a3c6")
     assert m["config"]["nccnst_per_m3"] == WRF_NCCNST
-    sha = hashlib.sha256(Path(P3.P3_LOOKUP_TABLE_1).read_bytes()).hexdigest()
-    assert sha == m["lookup_table_1_sha256"] == (
+    sha = hashlib.sha256(P3.p3_lookup_table_path().read_bytes()).hexdigest()
+    assert sha == m["lookup_table_1_sha256"] == P3.P3_LOOKUP_TABLE_SHA256 == (
         "be1ab6fb03481e376e47c6c79d808af5d8ab069f2b242931e9c54801bad4ae84")
     # the oracle's saturation stub reproduces legoesm.thermo
     assert max(m["qsat_stub_vs_thermo_max_rel"].values()) <= TOL
@@ -322,6 +322,74 @@ def test_lookup_table_reader_rejects_other_versions(tmp_path):
     short.write_text("LOOKUP_TABLE_1-version: 5.4_2momI\n1 2 3\n")
     with pytest.raises(ValueError, match="values"):
         P3.read_p3_lookup_table_1(short)
+
+
+def test_uncached_table_offline_raises(tmp_path, monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    def offline(*a, **k):
+        raise urllib.error.URLError("offline")
+    monkeypatch.setenv("LEGOESM_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(urllib.request, "urlopen", offline)
+    with pytest.raises(RuntimeError, match="not cached"):
+        P3.p3_lookup_table_path()
+    assert not any((tmp_path / "p3").iterdir())
+
+
+def test_uncached_table_is_downloaded_and_cached(tmp_path, monkeypatch):
+    import io
+    import urllib.request
+
+    good = b"VERSION 4.1\nsynthetic\n"
+    monkeypatch.setattr(P3, "P3_LOOKUP_TABLE_SHA256", hashlib.sha256(good).hexdigest())
+    calls = []
+
+    def serve(url, **k):
+        calls.append(url)
+        return io.BytesIO(good)
+    monkeypatch.setenv("LEGOESM_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(urllib.request, "urlopen", serve)
+    path = P3.p3_lookup_table_path()
+    assert path == tmp_path / "p3" / P3.P3_LOOKUP_TABLE_NAME
+    assert path.read_bytes() == good
+    assert calls == [P3.P3_LOOKUP_TABLE_URL]
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+    P3.p3_lookup_table_path()
+    assert len(calls) == 1
+
+
+def test_failed_download_uses_a_peer_installed_table(tmp_path, monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    good = b"VERSION 4.1\nsynthetic\n"
+    monkeypatch.setattr(P3, "P3_LOOKUP_TABLE_SHA256", hashlib.sha256(good).hexdigest())
+    target = tmp_path / "p3" / P3.P3_LOOKUP_TABLE_NAME
+
+    def peer_wins_then_fail(*a, **k):
+        target.write_bytes(good)
+        raise urllib.error.URLError("rate limited")
+    monkeypatch.setenv("LEGOESM_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(urllib.request, "urlopen", peer_wins_then_fail)
+    assert P3.p3_lookup_table_path() == target
+    assert sorted(p.name for p in target.parent.iterdir()) == [target.name]
+
+
+def test_wrong_table_bytes_raise(tmp_path, monkeypatch):
+    import io
+    import urllib.request
+
+    monkeypatch.setenv("LEGOESM_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda *a, **k: io.BytesIO(b"VERSION 4.1\n"))
+    with pytest.raises(RuntimeError, match="sha256"):
+        P3.p3_lookup_table_path()
+    assert not any((tmp_path / "p3").iterdir())
+    cached = tmp_path / "p3" / P3.P3_LOOKUP_TABLE_NAME
+    cached.write_text("tampered")
+    with pytest.raises(RuntimeError, match="wrong sha256"):
+        P3.p3_lookup_table_path()
 
 
 @pytest.mark.parametrize("field", P3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)

@@ -1447,12 +1447,11 @@ def compute_cloud_properties(
         # per-mass [1/kg] — the SAME PSD as the M2005 deposition.  So
         # ``r_eff_ice = 1.5·(q_i/(CONS12·N_i))^(1/3)`` [m].  EFFI = 25 µm in
         # ice-free cells (SAM uses 25 µm when q_i < QSMALL = 1e-14).
-        # The radius is returned in metres; the RRTMGP cloud-optics
-        # (cloud_optics.py) converts radius→generalized DIAMETER (×2) and
-        # clamps to the ice lookup-table validity range, so NO explicit
-        # bound is imposed here. (NB: legoESM's RRTMGP omits SAM's
-        # ``ρ_ci/917`` solid-ice density rescale that its RRTM ice table
-        # needs — an accepted RRTMG↔RRTMGP generation difference.)
+        # The radius is returned in metres (bulk-density-500 PSD radius);
+        # the RRTMGP cloud-optics (cloud_optics.py) converts it to CAM6's
+        # solid-ice effective DIAMETER ``2·r·500/917`` (MG2
+        # micro_mg2_0.F90:2795) and clamps to the ice lookup-table validity
+        # range, so NO explicit bound is imposed here.
         #
         # PAIR LIKE WITH LIKE (#1520): ``n_ice`` is the PROGNOSTIC (tracer)
         # ice number, so the M2005 PSD is meaningful only for the PROGNOSTIC

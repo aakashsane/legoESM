@@ -707,7 +707,9 @@ _HARD_SAT_LOG_QV_EPS = 1.0e-9        # [kg/kg] count a point as "drained" above 
 
 def _mpas_zenith_ocean_albedo(lat, day, orbit=None):
     """Briegleb (1992) open-ocean albedo at the daytime-effective daily-mean
-    solar cosine, per cell.
+    solar cosine, per cell -- the MPAS ``dynamic_albedo`` path for the
+    single-albedo (non-rrtmgp) radiation schemes.  With rrtmgp the lane uses
+    the CESM2.1 direct/diffuse split instead (integration.cesm_ocean_albedo_direct).
 
     ``mu = Q_day / (S_0 * f_day)`` is the cosine a column sees AVERAGED OVER
     ITS SUNLIT HOURS, which is the right weighting for an albedo that is held
@@ -5059,6 +5061,12 @@ class ModelDriver:
             p_s = self._gather_spmd_tree_to_host(p_s)
         return p_s, lat
 
+    def _owned_lon(self):
+        """Longitude [rad] in the ``_owned_p_s_and_lat`` layout."""
+        if self._owned_face_ids is not None:
+            return self._physics_lon
+        return self._grid_lon
+
     def _owned_temp(self):
         """Grid-point air temperature in the ``_owned_p_s_and_lat`` layout;
         None when the state carries no grid-point ``T`` (e.g. spectral)."""
@@ -5069,8 +5077,11 @@ class ModelDriver:
             return temp[self._owned_face_ids]
         return self._gather_spmd_tree_to_host(temp)
 
-    def _precompute_external_forcing(self, day, p_s, lat, temp=None):
-        """Pre-compute ozone/aerosol/GHG fields outside JIT boundary."""
+    def _precompute_external_forcing(self, day, p_s, lat, temp=None, lon=None):
+        """Pre-compute ozone/aerosol/GHG fields outside JIT boundary.
+
+        ``lon`` [rad] matches ``lat``; None -> :meth:`_owned_lon` (the layout
+        of :meth:`_owned_p_s_and_lat`, which every caller but spectral uses)."""
         from legoesm.forcing.external import (
             get_ozone_at_time, get_aerosol_at_time, get_aerosol_lw_at_time,
             get_aerosol_sw_volcanic_at_time,
@@ -5180,10 +5191,15 @@ class ModelDriver:
                 ) * w_strat
                 ).astype(aerosol_od.dtype)
             # AOD->CCN input: TROPOSPHERIC column in the visible (550 nm)
-            # band, volcanic excluded, from ``ccn_path`` (fine mode) if set.
+            # band, volcanic excluded, from ``ccn_path`` if set, read at each
+            # column's own longitude (the Andreae 2009 fit is local total
+            # AOT; a zonal mean gave polluted E China and the clean N Pacific
+            # one droplet number).
+            lon_col = jnp.asarray(
+                self._owned_lon() if lon is None else lon).reshape(ncol)
             self._aerosol_ccn_aod = jnp.asarray(get_aerosol_at_time(
                 _trop_cfg._replace(path=_acfg.ccn_path or _acfg.path),
-                day, lat_grid=lat_col, band="vis",
+                day, lat_grid=lat_col, band="vis", lon_grid=lon_col,
             )).reshape(ncol).astype(p_s.dtype)
 
         # Volcanic stratospheric LONGWAVE aerosol (gap #9): same (ncol,
@@ -13361,6 +13377,9 @@ class ModelDriver:
         from legoesm.forcing.surface_utils import (
             blend_surface_property, blended_surface_albedo,
         )
+        from legoesm.atmosphere.physics.radiation.integration import (
+            OCEAN_ALBEDO_DIFFUSE_CESM,
+        )
         # dynamic_albedo is a REAL ExperimentConfig option that the FV lane
         # honours (physics_pipeline applies a zenith-angle-dependent ocean
         # albedo). The MPAS blend below is static, so selecting it here would
@@ -13374,18 +13393,18 @@ class ModelDriver:
         # shortwave bias, i.e. the surface reflects too little, and a flat
         # ocean albedo is one of three candidate causes.
         #
-        # Cadence: the MPAS surface albedo is assembled ONCE PER FORCING DAY
-        # (with the SST/sea-ice sample), not per radiation call, so the cosine
-        # used here is the DAYTIME-EFFECTIVE daily mean
-        # ``mu = Q_day / (S_0 * f_day)`` -- exactly the quantity the FV lane
-        # uses on its non-diurnal path, and consistent with the daily cadence
-        # of the field it feeds.  Under a diurnal cycle this is an average over
-        # the sunlit day rather than the instantaneous value; that is an
-        # approximation of the ALBEDO, not of the insolation, and it is stated
-        # rather than hidden.
+        # rrtmgp: CESM2.1 form (cime5.6.47 seq_flux_mct.F90 L881-894): the
+        # DIRECT beam takes the zenith curve at the radiation time's own
+        # cos(zenith) (orbit-consistent: the radiation call's cosine), the
+        # DIFFUSE beam a fixed 0.06.  The daily blend below is the diffuse
+        # albedo; radiation forms the direct one per call from
+        # ``open_ocean_frac`` (integration.cesm_ocean_albedo_direct).
+        # Single-albedo schemes (gray) keep the daily-mean-cosine curve
+        # (_mpas_zenith_ocean_albedo) on both beams, unchanged.
         _zenith_ocean_alb = bool(getattr(cfg, "dynamic_albedo", False))
+        _cesm_ocean_alb = _zenith_ocean_alb and _rad_scheme == "rrtmgp"
         _alb_lat = None
-        if _zenith_ocean_alb:
+        if _zenith_ocean_alb and not _cesm_ocean_alb:
             _, _alb_lat_np = self._owned_p_s_and_lat()
             _alb_lat = jnp.asarray(_alb_lat_np).reshape(-1)
         _albedo_ocean = float(cfg.albedo_ocean)
@@ -13605,6 +13624,17 @@ class ModelDriver:
             # not repack.
             _land_pack_idx_np = np.nonzero(
                 np.asarray(self._f_land).reshape(-1) > 0.0)[0]
+            if _is_mpas_cell_partitioned(self):
+                # Owned columns only.  After every land call the land halo
+                # exchange below overwrites the halo rows of every consumed
+                # output with the owner's, so solving the halo copies was
+                # discarded work (about a third of the land solve at 8
+                # nodes).  Halo rows of the land STATE stay frozen: what is
+                # derived from them (soil beta) is exchanged with the outputs,
+                # and checkpoints, digests and the CMOR feed take owned rows.
+                _land_pack_idx_np = _land_pack_idx_np[
+                    _land_pack_idx_np
+                    < int(self._voronoi_layout.partition.n_owned_cells)]
             # Multi-controller SPMD (the FV3 duo lane): every process holds
             # the whole globe's land, so each solves only its share of the
             # land columns and one gather per land call rebuilds the full
@@ -14291,6 +14321,11 @@ class ModelDriver:
                 # the correct pre-feature state (deepcu exactly 0).
                 "conv_mass_flux_up",
                 "conv_icwmr",
+                # pblh (2026-10-20, user decision on #2045): the carried PBL
+                # height ZM reads one step lagged; zero-seed = CAM's cold
+                # start (physpkg.F90:419-424), refreshed by the first
+                # turbulence call.
+                "pblh",
             })
             if _any_physstate:
                 from legoesm.atmosphere.physics.physics_state import (
@@ -14882,8 +14917,15 @@ class ModelDriver:
                         # to the scalar config albedo (0.06 = open ocean) for
                         # EVERY column, land included.
                         if _sfc_albedo_on:
+                            # dynamic_albedo (CESM2.1 seq_flux_mct): this
+                            # daily blend is the DIFFUSE albedo (open ocean
+                            # 0.06); radiation swaps the open-ocean part of
+                            # the DIRECT beam for the zenith curve at each
+                            # call's own cos(zenith), via open_ocean_frac.
                             _alb_ocean_day = _albedo_ocean
-                            if _zenith_ocean_alb:
+                            if _cesm_ocean_alb:
+                                _alb_ocean_day = OCEAN_ALBEDO_DIFFUSE_CESM
+                            elif _zenith_ocean_alb:
                                 _alb_ocean_day = _mpas_zenith_ocean_albedo(
                                     _alb_lat, _force_day_canonical,
                                     getattr(self, "orbit", None))
@@ -14893,6 +14935,10 @@ class ModelDriver:
                                 blended_surface_albedo(
                                     _sic_day, _alb_f_land, _albedo_ice,
                                     _alb_ocean_day, _albedo_land_static))
+                            if _cesm_ocean_alb:
+                                _forcing_daily["open_ocean_frac"] = (
+                                    (1.0 - _sic_day) if _alb_f_land is None
+                                    else (1.0 - _alb_f_land) * (1.0 - _sic_day))
                     if _ext_forcing:
                         _ext_p_s, _ext_lat = self._owned_p_s_and_lat()
                         _o3, _aer, _ghg = self._precompute_external_forcing(
@@ -16403,6 +16449,8 @@ class ModelDriver:
         else:
             _lat_2d_loop = self._grid_lat
         _lat_col_loop = _lat_2d_loop.reshape(-1)
+        _lon_2d_loop = (jnp.broadcast_to(self._grid_lon[None, :], shape_2d)
+                        if self._grid_lon.ndim == 1 else self._grid_lon)
 
         # Light-weight time series for AMIP / validation.  The spectral
         # path is otherwise diagnostic-free; without these arrays the
@@ -16533,7 +16581,7 @@ class ModelDriver:
                         # daily_forcing_bucket / FIX_RESTART_TIME).
                         _o3, _aer, _ghg = self._precompute_external_forcing(
                             float(_fd_int), _f_now['p_s'], _lat_2d_loop,
-                            temp=_f_now['T'],
+                            temp=_f_now['T'], lon=_lon_2d_loop,
                         )
                         _ext_daily = {"o3_vmr": _o3, "aerosol_od": _aer}
                         # Volcanic LONGWAVE aerosol (gap #9): only when active

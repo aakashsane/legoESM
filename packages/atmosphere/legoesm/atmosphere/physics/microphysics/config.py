@@ -1125,11 +1125,18 @@ class ThompsonConfig(NamedTuple):
 class P3Config(NamedTuple):
     """Configuration for P3 (Predicted Particle Properties) microphysics.
 
-    Single ice category with predicted rime mass (q_rim) and rime volume
-    (B_rim). Liquid phase uses Seifert-Beheng warm-rain helpers.
-
-    Ice particle properties (fall speed, density) are diagnosed from
-    (q_i, N_i, q_rim, B_rim) rather than assumed from a fixed habit.
+    ``p3.py`` is a faithful port of WRF v4.8.0 ``module_mp_p3.F`` (P3 v4.5.2)
+    for ``mp_physics = 50``: one 2-moment ice category with predicted rime mass
+    (q_rim) and rime volume (B_rim), lookup table v5.4_2momI, specified droplet
+    number, KK2000 warm rain, Cooper nucleation; oracle-tested to 1e-10 at the
+    hard limit.  Fields it reads: ``Nc_0`` (specified droplet number [1/m^3],
+    WRF ``nccnst``), the Cooper nucleation fields ``N_i0``, ``cooper_a``,
+    ``N_i_nuc_max``, ``cooper_T_nuc``, ``cooper_supi_min``, ``rho_rim_min`` /
+    ``rho_rim_max`` and the three smoothing fields ``ice_sigmoid_sharpness``,
+    ``cooper_supi_sharpness``, ``melt_sharpness`` (the oracle at 1e6 / 1e9 /
+    1e6).  Every other field belonged to the former surrogate and has no WRF
+    P3 counterpart: ``p3.check_p3_config`` raises if one is changed from its
+    default (``P3_FIELDS_WITHOUT_ORACLE_COUNTERPART``).
 
     Slot reuse in HydrometeorState
     --------------------------------

@@ -1222,7 +1222,7 @@ def test_p3_column_water_budget_closes():
 
     Mass-bearing tendencies in P3: ``dq_v + dq_c + dq_r + dq_i``.
     ``dq_rim`` is excluded: the rime mass is PART of the total ice q_i
-    (gSAM P3 qirim <= qitot), so adding it double-counts.  ``dB_rim_dt`` is
+    (WRF P3 qirim <= qitot), so adding it double-counts.  ``dB_rim_dt`` is
     volume per kg air, not a mass.  Mass closure in a closed column:
 
         ∫ (dq_v + dq_c + dq_r + dq_i) dp/g + precip = 0

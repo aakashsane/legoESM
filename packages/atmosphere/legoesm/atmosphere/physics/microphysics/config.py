@@ -1127,18 +1127,19 @@ class ThompsonConfig(NamedTuple):
 class P3Config(NamedTuple):
     """Configuration for P3 (Predicted Particle Properties) microphysics.
 
-    ``p3.py`` is a faithful port of gSAM 1.8.8 P3 v3.1.14 (one ice
-    category, lookup table 1 v4.1, Meyers nucleation, KK2000 warm rain,
-    specified droplet number), oracle-tested to 1e-10 at the hard limit.
-    Fields it reads: ``Nc_0`` (specified droplet number [1/m^3], gSAM
-    ``Nc0``), ``N_i_nuc_max`` (Meyers cap), ``cooper_T_nuc`` /
-    ``cooper_supi_min`` (nucleation gate), ``rho_rim_min`` /
+    ``p3.py`` is a faithful port of WRF v4.8.0 ``module_mp_p3.F`` (P3 v4.5.2)
+    for ``mp_physics = 50``: one 2-moment ice category with predicted rime mass
+    (q_rim) and rime volume (B_rim), lookup table v5.4_2momI, specified droplet
+    number, KK2000 warm rain, Cooper nucleation; oracle-tested to 1e-10 at the
+    hard limit.  Fields it reads: ``Nc_0`` (specified droplet number [1/m^3],
+    WRF ``nccnst``), the Cooper nucleation fields ``N_i0``, ``cooper_a``,
+    ``N_i_nuc_max``, ``cooper_T_nuc``, ``cooper_supi_min``, ``rho_rim_min`` /
     ``rho_rim_max`` and the three smoothing fields ``ice_sigmoid_sharpness``,
-    ``cooper_supi_sharpness``, ``melt_sharpness`` (oracle at 1e6 / 1e9 /
-    1e6).  The opt-in ``hard_saturation_adjustment`` guard (not part of gSAM
+    ``cooper_supi_sharpness``, ``melt_sharpness`` (the oracle at 1e6 / 1e9 /
+    1e6).  The opt-in ``hard_saturation_adjustment`` guard (not part of WRF
     P3, default off) is applied after the P3 step as for ml_emulator.  Every
-    other field belonged to the former surrogate and has no gSAM
-    counterpart: ``p3.check_p3_config`` raises if one is changed from its
+    other field belonged to the former surrogate and has no WRF
+    P3 counterpart: ``p3.check_p3_config`` raises if one is changed from its
     default (``P3_FIELDS_WITHOUT_ORACLE_COUNTERPART``).
 
     Slot reuse in HydrometeorState

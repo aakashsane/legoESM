@@ -6,7 +6,7 @@ Thompson) is the simplified bilinear SURROGATE :func:`accretion`::
     dq_c_ac = k_ac * q_c * q_r * rho * gamma_norm        (k_ac default 5.25)
 
 It is NOT faithful to the published Khairoutdinov-Kogan (2000) accretion used by
-gSAM P3 and SAM-M2005.  The gSAM P3 oracle (``module_mp_p3.f90:3615``, the
+WRF P3 and SAM-M2005.  The WRF v4.8.0 P3 oracle (``module_mp_p3.F:3460``, the
 default iparam=3 / KK2000 path; in a single column with the sub-grid cloud/precip
 fractions off, ``SCF=iSCF=SPF=iSPF=1`` and ``dum2=SPF-SPF_clr=1``) is::
 
@@ -34,7 +34,7 @@ departure).  ``safe_pow`` clips negatives and keeps the fractional power AD-safe
 (at ``q_c*q_r=0`` the ``^1.15`` branch already has a finite ZERO slope —
 ``d/dx x^1.15 = 1.15*x^0.15 -> 0`` — so it is not a singular-slope fix).
 
-P3 itself now runs the gated KK2000 accretion of the gSAM oracle (p3.py, 
+P3 itself now runs the gated KK2000 accretion of the WRF P3 oracle (p3.py,
 pinned end-to-end by test_p3_oracle.py); the end-to-end surrogate pins that
 lived here were removed with the surrogate.
 
@@ -56,12 +56,12 @@ from legoesm.atmosphere.physics.microphysics.config import P3Config
 
 jax.config.update("jax_enable_x64", True)
 
-# gSAM P3 KK2000 accretion oracle constants (module_mp_p3.f90:3615), typed from
+# WRF P3 KK2000 accretion oracle constants (module_mp_p3.F:3460), typed from
 # the Fortran, NOT the module — identical to SAM-M2005 module_mp_graupel.f90:1952.
 _O_KK2000_ACC_COEFF = 67.0
 _O_KK2000_ACC_EXP = 1.15
 _O_K_AC_DEFAULT = 5.25          # P3Config.k_ac default (surrogate coefficient)
-_O_QSMALL = 1.0e-14            # Fortran accretion gate qc,qr >= qsmall (module_mp_p3.f90)
+_O_QSMALL = 1.0e-14            # Fortran accretion gate qc,qr >= qsmall (module_mp_p3.F)
 
 
 # --- surrogate FORM pinned to round-off -------------------------------------
@@ -137,7 +137,7 @@ def test_departure_coefficient():
 # --- the FAITHFUL form pinned to the P3 oracle ------------------------------
 
 def test_accretion_kk2000_matches_p3_oracle():
-    """accretion_kk2000 == 67*(q_c*q_r)^1.15 (module_mp_p3.f90:3615) to round-off,
+    """accretion_kk2000 == 67*(q_c*q_r)^1.15 (module_mp_p3.F:3460) to round-off,
     across a range of states — a cross-source check that the repo's faithful form
     matches the on-disk P3 Fortran (identical to SAM-M2005:1952)."""
     q_c = jnp.array([1.0e-3, 2.0e-3, 5.0e-4, 3.0e-3])

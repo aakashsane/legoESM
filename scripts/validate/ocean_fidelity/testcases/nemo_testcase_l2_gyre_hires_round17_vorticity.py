@@ -220,7 +220,7 @@ def classify_factor_walk(arms: dict[str, dict[str, object]]) -> tuple[list[str],
     )
 
 
-def _manifest_contract(root: Path, flavour: str) -> dict[str, object]:
+def manifest_contract(root: Path, flavour: str) -> dict[str, object]:
     """Verify the closed acquisition and same-binary passivity control."""
     manifest = root / "manifest.sha256"
     require(manifest.is_file(), f"{root}: missing manifest.sha256")
@@ -444,7 +444,7 @@ def _load_module(name: str, filename: str):
     return module
 
 
-def _common_state(card):
+def common_state(card):
     """Bridge the pinned restart, including the six external-mode histories."""
     import jax.numpy as jnp
 
@@ -467,7 +467,7 @@ def _common_state(card):
     return state._replace(bt_hist=history)
 
 
-def _common_card():
+def common_card():
     """Build the registered physical deck; step 4321 belongs to the forcing."""
     from legoesm.ocean.fidelity.nemo_testcase_recipe import (
         GYRE_R4_SMAG_NAMELIST,
@@ -476,6 +476,13 @@ def _common_card():
 
     return build_nemo_testcase_card(
         "GYRE-zco", namelist=GYRE_R4_SMAG_NAMELIST)
+
+
+# Compatibility for the already-committed round-17 direct tests.  New tools
+# use the public names above; the aliases do not create a second implementation.
+_manifest_contract = manifest_contract
+_common_state = common_state
+_common_card = common_card
 
 
 def run(
@@ -507,8 +514,8 @@ def run(
     require(not (plant_q and plant_fu),
             "q and F_u plants must be run separately")
 
-    vector_contract = _manifest_contract(vector_root, "vector-math-conda")
-    scalar_contract = _manifest_contract(scalar_root, "scalar-math-conda")
+    vector_contract = manifest_contract(vector_root, "vector-math-conda")
+    scalar_contract = manifest_contract(scalar_root, "scalar-math-conda")
     vector_stage = read_stage_vorticity(vector_root / "instrumented" / STAGE_NAME)
     scalar_stage = read_stage_vorticity(scalar_root / "instrumented" / STAGE_NAME)
     require(vector_stage["header"] == scalar_stage["header"],
@@ -520,8 +527,8 @@ def run(
     require(vector_operands["header"] == scalar_operands["header"],
             "scalar/vector ENE headers differ")
 
-    card = _common_card()
-    state = _common_state(card)
+    card = common_card()
+    state = common_state(card)
     freshwater, surface = gyre_surface_forcings(card, state, 4321)
     scalar_q = _q_to_legoesm(scalar_operands)
     vector_q = _q_to_legoesm(vector_operands)
@@ -757,8 +764,8 @@ def run_factor_walk(
     require(stamp["clean"],
             f"round-19 factor walk requires clean tree: {stamp['dirty_paths']}")
 
-    vector_contract = _manifest_contract(vector_root, "vector-math-conda")
-    scalar_contract = _manifest_contract(scalar_root, "scalar-math-conda")
+    vector_contract = manifest_contract(vector_root, "vector-math-conda")
+    scalar_contract = manifest_contract(scalar_root, "scalar-math-conda")
     scalar_stage = read_stage_vorticity(
         scalar_root / "instrumented" / STAGE_NAME)
     kmm = int(scalar_stage["header"]["Kmm"])
@@ -771,8 +778,8 @@ def run_factor_walk(
     scalar_q = _q_to_legoesm(scalar_operands)
     scalar_fu, _ = _transports_to_legoesm(scalar_operands)
 
-    card = _common_card()
-    state = _common_state(card)
+    card = common_card()
+    state = common_state(card)
     freshwater, surface = gyre_surface_forcings(card, state, 4321)
     grid = card.recipe.grid
     z_coord = card.recipe.z_coord

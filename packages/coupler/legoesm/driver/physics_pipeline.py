@@ -4207,10 +4207,11 @@ def thread_morrison_scalars(config, scheme, micro_config):
     # DCS: an explicit value always wins; unset (None) = the flavor's DCS,
     # SAM 250 um (the leaf default) or CAM6 MG2 500 um for "mg".
     _dcs = getattr(config, "morrison_ice_snow_d_auto", None)
-    if _dcs is None and scheme == "morrison" and getattr(
-            config, "morrison_flavor", "mg") == "mg":
-        from legoesm.atmosphere.physics.microphysics.morrison import MG2_DCS_M
-        _dcs = MG2_DCS_M
+    if scheme == "morrison":
+        from legoesm.atmosphere.physics.microphysics.morrison import (
+            run_ice_snow_d_auto)
+        _dcs = run_ice_snow_d_auto(_dcs, getattr(config, "morrison_flavor",
+                                                 None))
     if _dcs is not None:
         _touched["ice_snow_d_auto"] = float(_dcs)
     # Flavor is a string selector, not a float: forward only when it deviates

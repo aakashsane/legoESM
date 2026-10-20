@@ -214,7 +214,10 @@ class TestMorrisonScalarOverlay:
         from legoesm.atmosphere.physics.microphysics.config import (
             MorrisonConfig,
         )
-        assert self._leaf() == MorrisonConfig()
+        from legoesm.atmosphere.physics.microphysics.morrison import MG2_DCS_M
+        # the default (mg) run differs from the leaf only by the flavour's
+        # unset DCS, CAM6 MG2 500 um
+        assert self._leaf() == MorrisonConfig(ice_snow_d_auto=MG2_DCS_M)
 
     def test_declared_default_matches_the_leaf(self):
         """The cause-2 defect: 1e-8 declared vs 1e-3 real.  Locked equal so
@@ -435,7 +438,8 @@ class TestRound2Findings:
         got = _resolve_microphysics(ExperimentConfig(
             microphysics="morrison",
             morrison_dep_coeff=1e-3 * (1 + 4.7e-8)))[1]   # f32 storage noise
-        assert got == MorrisonConfig()
+        from legoesm.atmosphere.physics.microphysics.morrison import MG2_DCS_M
+        assert got == MorrisonConfig(ice_snow_d_auto=MG2_DCS_M)
 
     def test_above_tolerance_retune_is_applied(self):
         from legoesm.driver.config import ExperimentConfig

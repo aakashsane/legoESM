@@ -178,6 +178,15 @@ _MG2_ACCRETION_VARCOEF_EXP = 1.15  # MG2 accrete_cloud_water_rain var_coef(relva
 MG2_DCS_M = 500.0e-6
 
 
+def run_ice_snow_d_auto(dcs, flavor):
+    """The run's DCS [m] from the ExperimentConfig value: an explicit value
+    always wins; unset (None) is CAM6 MG2's 500 um for the "mg" flavour and
+    None (= the MorrisonConfig leaf's SAM 250 um) otherwise."""
+    if dcs is not None:
+        return float(dcs)
+    return MG2_DCS_M if (flavor or "mg") == "mg" else None
+
+
 def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     """Resolve ``morrison_flavor`` into the concrete parameter set.
 

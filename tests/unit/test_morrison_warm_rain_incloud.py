@@ -425,6 +425,9 @@ def test_microphysics_reads_clubbs_cloud_fraction_from_the_same_substep(monkeypa
     tr = dict(state.tracers)
     tr["q_i"] = state.T.replace(data=1.0e-5 * top, name="q_i", units="kg/kg")
     tr["q_v"] = tr["q_v"].replace(data=jnp.maximum(tr["q_v"].data, 2.0e-3 * top))
+    # the MG2 mode carries the snow number (refused without it)
+    tr["N_s"] = state.T.replace(data=jnp.zeros_like(state.T.data), name="N_s",
+                                units="1/kg")
     state = state._replace(tracers=tr)
     fn, cfg = _mpas_physics(True, n=2)
     ps = init_physics_state(*state.T.data.shape, cfg)
@@ -462,8 +465,11 @@ def test_experiment_config_cli_and_threading():
     cfg.validate_strict()
     base = MorrisonConfig()
     assert thread_morrison_scalars(cfg, "morrison", base).warm_rain_incloud is True
+    from legoesm.atmosphere.physics.microphysics.morrison import MG2_DCS_M
+    # off: only the mg run's unset DCS (CAM6 MG2 500 um) reaches the leaf
     assert thread_morrison_scalars(
-        cfg._replace(morrison_warm_rain_incloud=False), "morrison", base) is base
+        cfg._replace(morrison_warm_rain_incloud=False), "morrison", base
+    ) == base._replace(ice_snow_d_auto=MG2_DCS_M)
     for bad in (dict(turbulence="tke"), dict(cld_macmic_num_steps=1),
                 dict(subgrid_autoconversion=True), dict(cloud_scheme="sundqvist")):
         with pytest.raises(ValueError, match="morrison_warm_rain_incloud"):

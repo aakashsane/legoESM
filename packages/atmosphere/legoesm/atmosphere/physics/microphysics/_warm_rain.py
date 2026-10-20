@@ -934,14 +934,18 @@ def mg2_droplet_fall_coefficients(q_c, N_c_kg, lcldm, T, rho):
     q_ic = jnp.where(has_c, q_c / lcldm, 0.0)
     n_ic = jnp.where(has_c, jnp.maximum(N_c_kg / lcldm, 0.0), 0.0)
     _, pgam, lamc = mg2_size_dist_liq(q_ic, n_ic * rho, rho)
-    pgam = jnp.where(has_c, pgam, 0.0)  # MG2's -100 marker would put gammaln off its domain
+    # MG2 gates the fall speed at qcic >= qsmall but the size distribution at
+    # qcic > qsmall, so qcic == qsmall exactly divides by lamc = 0 there (inf
+    # in the Fortran too); such a cell falls at 0 here.
+    falls = has_c & (lamc > 0.0)
+    pgam = jnp.where(falls, pgam, 0.0)  # MG2's -100 marker would put gammaln off its domain
     mu = _MU_PREFACTOR * safe_pow(T, _MU_T_EXPONENT) / (T + _MU_SUTHERLAND_T)
     acn = g * constants.rho_water / (18.0 * mu)
     bc = _MG2_DROP_FALL_BC
-    lam_bc = safe_pow(jnp.where(has_c, lamc, 1.0), bc)
+    lam_bc = safe_pow(jnp.where(falls, lamc, 1.0), bc)
     lg = jax.scipy.special.gammaln
-    fc = jnp.where(has_c, g * rho * acn * jnp.exp(lg(4.0 + bc + pgam) - lg(pgam + 4.0)) / lam_bc, 0.0)
-    fnc = jnp.where(has_c, g * rho * acn * jnp.exp(lg(1.0 + bc + pgam) - lg(pgam + 1.0)) / lam_bc, 0.0)
+    fc = jnp.where(falls, g * rho * acn * jnp.exp(lg(4.0 + bc + pgam) - lg(pgam + 4.0)) / lam_bc, 0.0)
+    fnc = jnp.where(falls, g * rho * acn * jnp.exp(lg(1.0 + bc + pgam) - lg(pgam + 1.0)) / lam_bc, 0.0)
     return fc, fnc
 
 

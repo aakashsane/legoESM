@@ -189,3 +189,18 @@ def test_substeps_off_is_one_pass():
     # and it is not the sub-stepped answer
     full = np.asarray(A._run(fx).qc_budget["sedimentation"])
     assert float(_rel(sed, full).max()) > 1e-3
+
+
+def test_cloud_water_exactly_at_qsmall_is_finite():
+    """MG2 gates the fall speed at qcic >= qsmall and the size distribution at
+    qcic > qsmall; exactly at qsmall the slope is 0 (codex review)."""
+    q = jnp.asarray([[W.MG2_QSMALL, 1.0e-4]])
+    fc, fnc = W.mg2_droplet_fall_coefficients(q, jnp.asarray([[1.0e6, 1.0e8]]), jnp.ones((1, 2)),
+                                              jnp.full((1, 2), 280.0), jnp.ones((1, 2)))
+    assert np.isfinite(np.asarray(fc)).all() and np.isfinite(np.asarray(fnc)).all()
+    assert float(fc[0, 0]) == 0.0 and float(fc[0, 1]) > 0.0
+    out = W.mg2_cloud_sedimentation(q, jnp.asarray([[1.0e6, 1.0e8]]), jnp.ones((1, 2)),
+                                    jnp.full((1, 2), 280.0), jnp.ones((1, 2)),
+                                    jnp.asarray([[80000.0, 80500.0, 81000.0]]), 600.0, 16)
+    for a in out[:5]:
+        assert np.isfinite(np.asarray(a)).all()

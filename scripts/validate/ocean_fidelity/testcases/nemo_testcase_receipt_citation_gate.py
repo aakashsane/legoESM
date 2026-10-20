@@ -889,6 +889,8 @@ FILES = {
     # its source-ordered operand verdict is bound to that writer's program.
     "GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3_stg.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3_stg.f90"),
+    "GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3.f90"),
     "GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/dynvor.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/dynvor.f90"),
     "round64/oracle_krhs_split/ocean.output": Path(
@@ -1633,6 +1635,10 @@ FILES = {
 # recurring symbol is refused now, and every multi-line citation states its
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
+    # --- GYRE high-resolution round 19: formed q/F_u factor walk ---
+    'GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3.f90:207-215': [
+        'CALL stp_RK3_stg( 2, kstp, Nbb, Nnn, Nrhs, Naa )',
+        'CALL stp_RK3_stg( 3, kstp, Nbb, Nnn, Nrhs, Naa )', 9],
     # --- GYRE high-resolution round 18: completed ENE source walk ---
     'GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3_stg.f90:404-430': [
         'CALL    dyn_hpg( kstp,      Kmm, uu, vv, Krhs )',
@@ -2288,7 +2294,7 @@ CITATION_MAP = {
     'tests/SWG/MY_SRC/usrdef_sbc.F90:84-106': [
         'ztauu =   REAL( rn_tau, wp ) * COS( rn_theta * rad )',
         'END SUBROUTINE usrdef_sbc_ice_tau', 23],
-    'ocean_pe_latlon_cgrid.py:2630-2634': [
+    'ocean_pe_latlon_cgrid.py:2631-2635': [
         'if vorticity_scheme not in (',
         'f"\'al81\', \'ene\', \'ene_total\', \'ens_total\', \'een_total\', or \'een_planetary\'"', 5],
     'nemo_recipe.py:58': 'NEMO_CONSTANTS_CONFIG = _CANONICAL_NEMO_CONSTANTS',
@@ -2706,8 +2712,8 @@ CITATION_MAP = {
     'overflow_kt1_10/namelist_cfg:92': 'ln_dynvor_ens = .true.',
     'nemo_testcase_recipe.py:3659':
         'if (cfg.momentum_advection != "vector_invariant"',
-    'ocean_pe_latlon_cgrid.py:5483': ('if _mom_adv == "flux_form":', 2),
-    'ocean_pe_latlon_cgrid.py:5501': (
+    'ocean_pe_latlon_cgrid.py:5495': ('if _mom_adv == "flux_form":', 2),
+    'ocean_pe_latlon_cgrid.py:5513': (
         '_bc_horizontal_momentum_advection_flux_form(', 2),
     'nemo_testcase_recipe.py:3662':
         'requires ln_dynadv_vec=.true. with nn_dynkeg=0',
@@ -5211,10 +5217,10 @@ CITATION_MAP = {
         ('IF( ln_sdw ) THEN', 1), 'wsd   (:,:,:) = 0._wp', 9],
     'ocean_pe_latlon_cgrid.py:2042-2076': [
         'elif config.ke_gradient_scheme == "c2":', 'dp_dy = _dKp_dy[..., 1]', 35],
-    'ocean_pe_latlon_cgrid.py:3299-3325': [
+    'ocean_pe_latlon_cgrid.py:3310-3336': [
         'area_w = jax.lax.optimization_barrier(',
         'diag_vertadv_v = jax.lax.optimization_barrier(diag_vertadv_v)', 27],
-    'ocean_pe_latlon_cgrid.py:5319-5357': [
+    'ocean_pe_latlon_cgrid.py:5330-5368': [
         'zad_w, zad_h_u, zad_h_v = w, h_u, h_v',
         ('zad_h_v = jax.lax.optimization_barrier(zad_h_v)', 1), 39],
     'ocean_model_latlon_cgrid.py:7477-7487': [
@@ -5930,7 +5936,7 @@ CITATION_MAP = {
     'nemo_testcase_l1_overflow_round63_dynzdf_walk_gate.py:280-292': [
         'planted = None',
         'R60.require(after == before + 1, "plant did not add one refusal")', 13],
-    'ocean_pe_latlon_cgrid.py:3655-3658': [
+    'ocean_pe_latlon_cgrid.py:3666-3669': [
         ('if not (getattr(grid, "dlon", 0.0) and grid.dlon > 0.0):', 1),
         ('"with a scalar dlon (got dlon<=0; tripolar unsupported)."', 1),
         4],
@@ -5997,8 +6003,8 @@ CITATION_MAP = {
     'ocean.output:875': 'Barotropic time filter => nn_bt_flt',
     'lock_kt1_10/ocean.output:615': 'no explicit diffusion                ln_dynldf_OFF',
     'overflow_kt1_10/ocean.output:727': 'no explicit diffusion                ln_dynldf_OFF',
-    'ocean_pe_latlon_cgrid.py:5771': 'rho_prime=rho_prime, h_k=h_k,',
-    'ocean_pe_latlon_cgrid.py:5748-5749': [
+    'ocean_pe_latlon_cgrid.py:5789': 'rho_prime=rho_prime, h_k=h_k,',
+    'ocean_pe_latlon_cgrid.py:5766-5767': [
         '_u_ldf_local = u if ldf_state is None else ldf_state[2]',
         '_v_ldf_local = v if ldf_state is None else ldf_state[3]',
         2],
@@ -6598,7 +6604,7 @@ CITATION_MAP = {
     'lbc_lnk_pt2pt_generic.h90:305': ('ptab(jf)%pt4d(ishti+ji,ishtj+jj,jk,jl) = zland', 1),
     'DINO/BLD/ppsrc/nemo/domqco.f90:211-215,177-181': [('DO jj = ntsj-( nn_hls), ntej+(  nn_hls-1 ) ; DO ji = ntsi-( nn_hls), ntei+(  nn_hls-1)', 1), ('&                    + e1e2t(ji,jj+1) * pssh(ji,jj+1)  ) * r1_hv_0(ji,jj) * r1_e1e2v(ji,jj)', 1), ('CALL dom_qco_r3c( ssh(:,:,Kbb), r3t(:,:,Kbb), r3u(:,:,Kbb), r3v(:,:,Kbb)           )', 1), ("&                         r3u(:,:,Kmm), 'U', 1._wp, r3v(:,:,Kmm), 'V', 1._wp, r3f(:,:), 'F', 1._wp )", 1), 10],
     'lbclnk.f90:1816-1820,1866-1871,2130-2135': [('zland = 0._wp                                     ! land filling value: zero by default', 3), ('IF( PRESENT(kfillmode) )   ifill_nfd = kfillmode', 3), ('DO jn = 1, 4   ! 4 sides', 2), ('ELSE                                ;   ifill(jn,jf) = jpfillcst       ! constant value (zland)', 3), ('IF(     ifill(jn,jf) == jpfillcst ) THEN', 5), ('ptab(jf)%pt4d(ishti+ji,ishtj+jj,jk,jl) = zland', 5), 17],
-    'nemo_state_bridge.py:275,917': [('nemo_prognostic_barotropic_velocity=True,', 1), ('nemo_prognostic_barotropic_velocity=True,', 2), 2],
+    'nemo_state_bridge.py:280,922': [('nemo_prognostic_barotropic_velocity=True,', 1), ('nemo_prognostic_barotropic_velocity=True,', 2), 2],
     'nemogcm.f90:185': ('CALL stp_MLF( istp )', 1),
     'dynspg_ts.f90:489-491': [('sshn_e(:,:) =    pssh (:,:,Kbb)', 1), ('vn_e  (:,:) =    pvv_b(:,:,Kbb)', 1), 3],
     'zdftke.F90:845-846': [('ELSE                          ! standard case : associated avt minimum = molecular viscosity (10^-6 m2/s)', 1), ('rmxl_min = 1.e-6_wp / ( rn_ediff * SQRT( rn_emin ) )    ! resulting minimum length to recover molecular viscosity', 1), 2],

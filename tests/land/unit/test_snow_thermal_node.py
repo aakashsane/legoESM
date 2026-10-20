@@ -385,8 +385,11 @@ def test_flux_heats_the_node_and_melt_follows_from_its_enthalpy():
         assert float(transp[0]) >= 0.0          # no canopy dew onto the pack
         # Pack mass leaves at the latent heat the two-leaf scheme CHARGED, which
         # since #1875 is the sublimation heat over snow (sfc.L_soil); the pack
-        # supplies the snow-covered share of the ground's latent flux.
-        fc = snow_cover_fraction(s0.snow_depth, cfg.land_albedo)
+        # supplies the snow-covered share of the ground's latent flux, with the
+        # cover of the pack left after the step-start stored-heat melt.
+        m_store = (constants.c_pi * s0.snow_depth
+                   * jnp.maximum(s0.T_snow - _TF, 0.0) / constants.L_f)
+        fc = snow_cover_fraction(s0.snow_depth - m_store, cfg.land_albedo)
         sublim = fc * sfc.LE_soil / sfc.L_soil
         return s0.snow_depth - s1.snow_depth - sublim * dt, s1, r1
 

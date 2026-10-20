@@ -161,12 +161,12 @@ def _gate_run(opts):
                     lambda x: (hasattr(x, "shape") and len(x.shape) >= 1
                                and x.shape[0] == ncol), full)
                 return solve_land_on_devices(step, args, is_col, *split)
-            return jax.device_get(jax.jit(g)(
+            return jax.jit(g)(
                 self._land_ml_state, a2s, jnp.asarray(doy, jnp.float64),
                 jnp.asarray(doy - 1.0),
-                jnp.asarray(year0 + start_day / 365.0)))
+                jnp.asarray(year0 + start_day / 365.0))
 
-        ref = call(cols)      # device 0
+        ref = jax.device_get(call(cols))      # device 0
         report, failed = {}, False
         for nd in opts.devices:
             if jax.device_count() < nd:
@@ -174,7 +174,20 @@ def _gate_run(opts):
                                  f"{jax.device_count()}")
             slots, keep = shard_land_columns(cols, nd)
             mesh = Mesh(np.array(jax.devices()[:nd]), ("land",))
-            got = call(slots, (mesh, keep))
+            raw = call(slots, (mesh, keep))
+            # report only: the leaves not per column, and whether every
+            # device's copy of each is identical
+            shared = []
+            for path, x in jax.tree_util.tree_flatten_with_path(raw)[0]:
+                if x.ndim and x.shape[0] == len(cols):
+                    continue
+                c = [np.asarray(s.data).tobytes()
+                     for s in x.addressable_shards]
+                shared.append(f"{jax.tree_util.keystr(path)}:"
+                              f"{'agree' if len(set(c)) == 1 else 'DIFFER'}")
+            print(f"SHARED devices={nd}: {len(shared)} leaves: "
+                  f"{' '.join(shared)}", flush=True)
+            got = jax.device_get(raw)
             # whole-run counters are recounted on the split side: compare
             # the per-column results and those counts, not the step's own
             # scalars (identical by construction on the one-call side)

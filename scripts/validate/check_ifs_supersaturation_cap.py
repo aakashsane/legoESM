@@ -499,6 +499,24 @@ def section_3_reachable() -> list[str]:
                 failures.append(
                     f"{label}/{scheme}: {LIQUID_FIELD} defaults to {liq!r}; it "
                     "is an opt-in and must default False")
+            if (scheme in LIQUID_GUARD_REJECTED
+                    and getattr(sub_on, "morrison_flavor", None) == "sam"):
+                # sam-flavour Morrison runs gSAM's satadj_liquid on every call
+                # and must REFUSE the guard the lane passed through: certify
+                # the refusal by calling the scheme with the lane's config.
+                fn_s, _ = _scheme_fn_and_config(scheme)
+                q_vw, (T, hyd, p_full, p_half, rho, dz) = _column(
+                    WARM_T_K, WARM_P_PA, 0.9 * float(
+                        thermo.saturation_specific_humidity(
+                            jnp.asarray(WARM_T_K), jnp.asarray(WARM_P_PA))))
+                try:
+                    fn_s(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S, sub_on)
+                except ValueError:
+                    continue
+                failures.append(
+                    f"{label}/{scheme}: the sam-flavour config with "
+                    f"{LIQUID_FIELD}=True ran instead of being rejected")
+                continue
             if liq_on is not True:
                 failures.append(
                     f"{label}/{scheme}: asked for {LIQUID_FIELD}=True and the "

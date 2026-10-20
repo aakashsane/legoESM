@@ -1,0 +1,74 @@
+"""One process driving several devices (FV3 duo face-shard / window layouts):
+the land columns are split over the devices and solved under a shard_map.
+
+Runs on however many devices jax sees; run ALONE with
+``XLA_FLAGS=--xla_force_host_platform_device_count=6`` to cover 2 and 6.
+"""
+from typing import NamedTuple
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+import pytest
+from jax.sharding import Mesh
+
+from legoesm.driver.model_driver import (shard_land_columns,
+                                         solve_land_on_devices)
+
+
+class _Sfc(NamedTuple):
+    held: jax.Array
+    fallback: jax.Array
+    fallback_rejected: jax.Array
+    n_held: jax.Array
+    n_fallback: jax.Array
+    n_fallback_rejected: jax.Array
+
+
+class _Cfg(NamedTuple):
+    scale: jax.Array      # per column, as the packed land config carries
+    name: str             # non-array config leaf
+
+
+def _step(st, cfg, d):
+    """Column-local stand-in for the land step: (state, response, carbon,
+    surface) with per-column masks and whole-run counters."""
+    T = st * cfg.scale + d
+    held = T > 1.0
+    fb = T < 0.2
+    rej = held & fb
+    return (T, T * 2.0, None,
+            _Sfc(held, fb, rej, jnp.sum(held.astype(jnp.int32)),
+                 jnp.sum(fb.astype(jnp.int32)), jnp.sum(rej.astype(jnp.int32))))
+
+
+def test_shares_cover_every_column_once_in_order():
+    cols = np.array([3, 4, 8, 9, 11, 15, 16])
+    for n in (1, 2, 3, 7):
+        slots, keep = shard_land_columns(cols, n)
+        assert slots.size % n == 0
+        np.testing.assert_array_equal(slots[keep], cols)
+
+
+@pytest.mark.parametrize("n_dev", [1, 2, 6])
+def test_sharded_solve_is_the_one_call_solve(n_dev):
+    if jax.device_count() < n_dev:
+        pytest.skip(f"need {n_dev} devices (XLA_FLAGS "
+                    "--xla_force_host_platform_device_count)")
+    rng = np.random.default_rng(1)
+    cols = np.sort(rng.choice(100, 37, replace=False))   # uneven shares
+    st_full = jnp.asarray(rng.uniform(0.0, 1.0, 100))
+    scale_full = jnp.asarray(rng.uniform(0.5, 1.5, 100))
+    # compiled on both sides (eager vs jit differs by FMA fusion alone)
+    ref = jax.jit(lambda s, c, d: _step(s, _Cfg(c, "x"), d))(
+        st_full[cols], scale_full[cols], jnp.asarray(0.25))
+    slots, keep = shard_land_columns(cols, n_dev)
+    mesh = Mesh(np.array(jax.devices()[:n_dev]), ("land",))
+    got = jax.jit(lambda s, c, d: solve_land_on_devices(
+        _step, (s, _Cfg(c, "x"), d), mesh, keep, slots.size))(
+        st_full[slots], scale_full[slots], jnp.asarray(0.25))
+    for a, b in zip(jax.tree_util.tree_leaves(ref),
+                    jax.tree_util.tree_leaves(got)):
+        assert np.asarray(a).dtype == np.asarray(b).dtype
+        np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+    assert int(got[3].n_held) == int(np.sum(np.asarray(ref[3].held)))

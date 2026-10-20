@@ -2495,6 +2495,10 @@ def _assert_optics_thinning(cfg, *, thinned: bool):
     # The MPAS lane's own builder (model_driver._run_column), so the pin reads
     # the config the run would radiate with, not the YAML.
     from legoesm.driver.model_driver import _standalone_cloud_config
+    from legoesm.driver.physics_pipeline import turbulence_config_for
+    from legoesm.atmosphere.physics.turbulence.integration import (
+        resolved_clubb_config,
+    )
     cloud_cfg = _standalone_cloud_config(
         cfg, cfg.cloud_scheme, allow_convective_cloud=True)
     assert cloud_cfg.cloud_partial_coverage_optics == "none"
@@ -2509,7 +2513,9 @@ def _assert_optics_thinning(cfg, *, thinned: bool):
         q_ice=jnp.zeros_like(q_c),
         cloud_fraction_override=jnp.full((1, 4), 0.5),
         # cam6_clubb's tropopause switch needs these; harmless to the others.
-        lat=jnp.zeros((1,)), p_half=p_half)
+        lat=jnp.zeros((1,)), p_half=p_half,
+        # cam6_clubb's aist top cut reads the run's resolved CLUBB config.
+        clubb_config=resolved_clubb_config(turbulence_config_for(cfg)))
     raw = q_c * dp / constants.g
     ratio = float(jnp.sum(props.lwp) / jnp.sum(raw))
     if thinned:
@@ -4748,14 +4754,18 @@ def test_persistent_dgrid_flag_flows_to_config_1028():
 def test_clubb_trop_cloud_top_press_reaches_the_turbulence_kernel():
     """The CLUBB upper domain limit (CAM trop_cloud_top_press) was a scheme
     field no run could set; the flag threads it through the same single source
-    the prognostic flag uses, and None keeps the scheme's own 0 (off)."""
+    the prognostic flag uses, and None keeps the scheme's own default, CAM6's
+    namelist 100 Pa (namelist_defaults_cam.xml:1295)."""
+    from legoesm.atmosphere.physics.turbulence.integration import (
+        resolved_clubb_config,
+    )
     from legoesm.driver.physics_pipeline import turbulence_config_for
     parser = build_arg_parser()
     cfg_off = build_config_from_args(_postprocess_args(parser.parse_args(
         ["--dataset", "analytical", "--turbulence", "clubb"]), parser))
     assert cfg_off.clubb_trop_cloud_top_press is None
     tc_off = turbulence_config_for(cfg_off)
-    assert tc_off.clubb is None or tc_off.clubb.trop_cloud_top_press == 0.0
+    assert resolved_clubb_config(tc_off).trop_cloud_top_press == 100.0
     cfg_on = build_config_from_args(_postprocess_args(parser.parse_args(
         ["--dataset", "analytical", "--turbulence", "clubb",
          "--clubb-trop-cloud-top-press", "15000"]), parser))

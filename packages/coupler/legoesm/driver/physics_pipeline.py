@@ -4633,7 +4633,7 @@ def turbulence_config_for(config):
             tc = tc._replace(liquid_partition=True)
         # CLUBB's upper domain limit (CAM ``trop_cloud_top_press``), same
         # threading and the same refusal as the prognostic flag.  None (default)
-        # => byte-identical: the scheme's own 0.0 (off) stands.
+        # => the scheme's own default stands (CLUBBConfig, CAM6 100 Pa).
         _ctp = getattr(config, "clubb_trop_cloud_top_press", None)
         if _ctp is not None:
             if tc.scheme != "clubb":

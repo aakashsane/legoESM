@@ -1041,7 +1041,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         dest="clubb_trop_cloud_top_press",
                         help="CLUBB upper domain limit [Pa] (CAM "
                              "trop_cloud_top_press): mixing tapered to zero "
-                             "above it. Default: the scheme's own 0 = no limit.")
+                             "above it. Default: the scheme's own (CAM6 100 Pa).")
     for _f, _leaf in {**ZM_SCALAR_FIELDS, **CLUBB_SCALAR_FIELDS}.items():
         _cls = ("ZhangMcFarlaneConfig" if _f.startswith("zm_")
                 else "CLUBBParams")

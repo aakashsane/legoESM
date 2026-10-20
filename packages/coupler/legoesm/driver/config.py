@@ -805,7 +805,7 @@ class ExperimentConfig(NamedTuple):
     clubb_liquid_partition: bool = False
     # CLUBB's upper domain limit [Pa] (CAM ``trop_cloud_top_press``): the
     # scheme's mixing is tapered to zero above this pressure.  None (default)
-    # keeps the scheme's own 0.0 = no limit, byte-identical.
+    # keeps the scheme's own default (CLUBBConfig: CAM6's 100 Pa).
     clubb_trop_cloud_top_press: float | None = None
     # Moisture-only multiplier on CLUBB's q_v eddy diffusivity at the faces
     # whose sigma lies in ``clubb_q_flux_scale_sigma_band`` (cloud-base mixing

@@ -213,24 +213,40 @@ def make_microphysics_physics(
     # grid lat/lon — works identically for cubed-sphere ``(face, n, n)``,
     # lat-lon ``(n_lat, n_lon)``, and MPAS Voronoi ``(nCells,)``.
     if model_type in ("hydrostatic", "mpas"):
-        return _make_hydrostatic_microphysics(microphysics_config, dt,
-                                              cloud_config=cloud_config,
-                                              model_type=model_type,
-                                              relvar_from_clubb=relvar_from_clubb)
+        fn = _make_hydrostatic_microphysics(microphysics_config, dt,
+                                            cloud_config=cloud_config,
+                                            model_type=model_type,
+                                            relvar_from_clubb=relvar_from_clubb)
     elif model_type == "nonhydrostatic":
-        return _make_nonhydrostatic_microphysics(microphysics_config, dt)
+        fn = _make_nonhydrostatic_microphysics(microphysics_config, dt)
     elif model_type == "plane":
-        return _make_plane_microphysics(microphysics_config, dt)
+        fn = _make_plane_microphysics(microphysics_config, dt)
     elif model_type == "mpas_nh":
-        return _make_mpas_nh_microphysics(microphysics_config, dt)
+        fn = _make_mpas_nh_microphysics(microphysics_config, dt)
     elif model_type == "spectral_pe":
-        return _make_spectral_pe_microphysics(microphysics_config, dt)
+        fn = _make_spectral_pe_microphysics(microphysics_config, dt)
     else:
         raise ValueError(
             f"Unknown model_type: {model_type!r}. "
             f"Choose from 'hydrostatic', 'nonhydrostatic', 'plane', "
             f"'mpas_nh', 'spectral_pe', 'mpas'."
         )
+    require_relvar_for_kk2000_cam6(microphysics_config, relvar_from_clubb)
+    return fn
+
+
+def require_relvar_for_kk2000_cam6(microphysics_config, relvar_wired: bool):
+    """Refuse a lane that selects Morrison ``kk2000_cam6`` without wiring
+    CLUBB's per-cell relvar (it would run the CAM6 law at a constant)."""
+    m = getattr(microphysics_config, "morrison", None)
+    if (microphysics_config.scheme == "morrison" and m is not None
+            and m.warm_rain_scheme == "kk2000_cam6" and not relvar_wired):
+        raise ValueError(
+            "warm_rain_scheme='kk2000_cam6' needs CLUBB's per-cell relvar "
+            "(clubb_intr.F90:2416-2425), which only the MPAS/hydrostatic "
+            "lane wires, with prognostic CLUBB and its liquid partition "
+            "(cld_macmic_num_steps>=2); this lane passes none.  Select "
+            "warm_rain_scheme='kk2000' (or another law) here.")
 
 
 # ===========================================================================

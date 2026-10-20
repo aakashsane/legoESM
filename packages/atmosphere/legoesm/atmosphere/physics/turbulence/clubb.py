@@ -5998,7 +5998,10 @@ def advance_clubb_core(state: CLUBBMomentState, forcing: CLUBBForcing, *,
 
     diagnostics = dict(
         cloud_frac=pdf_post["cloud_frac"], rcm=pdf_post["rcm"],
-        rcm_grid=pdf_post["rcm_grid"], rcp2_zt=pdf_post["rcp2_zt"],
+        rcm_grid=pdf_post["rcm_grid"],
+        # CAM's qclvar: rcp2_zt of the PRE-advance closure (CLUBB_CESM r8099
+        # advance_clubb_core_module.F90:1150 -> :1798, before the advances).
+        rcp2_zt=pdf["rcp2_zt"],
         wpthvp=pdf_post["wpthvp"], Kh_zt=diag["Kh_zt"], Kh_zm=diag["Kh_zm"])
     return new_state, diagnostics
 
@@ -6351,8 +6354,8 @@ def cam6_relvar(rcm, rcp2):
     ``relvar = relvarmax`` by default and, where ``rcm /= 0`` and
     ``qclvar /= 0``, ``min(relvarmax, max(0.001, rcm**2/qclvar))``.  ``rcm``
     is the cloud liquid CLUBB leaves on the host (CAM's ``rcm`` after the
-    clubbtop reset, the value its ptend writes), ``rcp2`` the closure's
-    ``r_c'^2`` on the same levels.
+    clubbtop reset, the value its ptend writes), ``rcp2`` the pre-advance
+    closure's ``r_c'^2`` (CAM's ``qclvar_out``) on the same levels.
     """
     qclvar = jnp.minimum(_CAM6_QCLVAR_MAX, rcp2)
     has = (rcm != 0.0) & (qclvar != 0.0)
@@ -7025,9 +7028,9 @@ def clubb_turbulence_prognostic(
             (jnp.log(jnp.clip(p_full, 1.0, None))
              - jnp.log(config.trop_cloud_top_press))
             / config.trop_cloud_taper_lnp_width)
-    # MG2's relvar from the liquid CLUBB leaves on the host and the closure's
-    # rcp2 of the same (final) sub-step; only with the liquid partition, where
-    # that liquid is CLUBB's (CAM always partitions).
+    # MG2's relvar from the liquid CLUBB leaves on the host and the final
+    # sub-step's qclvar (pre-advance rcp2, CAM's timing); only with the liquid
+    # partition, where that liquid is CLUBB's (CAM always partitions).
     relvar = (None if dq_c_dt is None
               else cam6_relvar(q_c + dt * dq_c_dt, flip_vertical(rcp2_a)))
     output = TurbulenceOutput(

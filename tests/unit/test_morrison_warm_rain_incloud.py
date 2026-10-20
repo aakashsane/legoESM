@@ -333,11 +333,16 @@ def _mpas_physics(incloud, turb="clubb", n=2):
     from legoesm.atmosphere.physics.microphysics.config import MorrisonConfig
     from legoesm.atmosphere.physics.radiation import RadiationConfig
     from legoesm.atmosphere.physics.turbulence import TurbulenceConfig
+    from legoesm.atmosphere.physics.turbulence.clubb import CLUBBConfig
     cfg = PhysicsConfig(
         radiation=RadiationConfig(scheme="none",
                                   cloud_config=CloudConfig(scheme="cam6_clubb")),
         convection=ConvectionConfig(scheme="none"),
-        turbulence=TurbulenceConfig(scheme=turb),
+        # kk2000_cam6 needs CLUBB's per-cell relvar: prognostic CLUBB with
+        # its liquid partition
+        turbulence=(TurbulenceConfig(scheme="clubb", liquid_partition=True,
+                                     clubb=CLUBBConfig(prognostic=True))
+                    if turb == "clubb" else TurbulenceConfig(scheme=turb)),
         microphysics=MicrophysicsConfig(
             scheme="morrison",
             morrison=MorrisonConfig(warm_rain_scheme="kk2000_cam6",
@@ -367,7 +372,9 @@ def test_lane_guard_needs_clubb_and_the_subcycle():
         _mpas_physics(True, turb="tke", n=2)
     with pytest.raises(ValueError, match="cld_macmic_num_steps>=2"):
         _mpas_physics(True, turb="clubb", n=1)
-    assert callable(_mpas_physics(False, turb="tke", n=1)[0])
+    # kk2000_cam6 without CLUBB's relvar is refused at construction
+    with pytest.raises(ValueError, match="per-cell relvar"):
+        _mpas_physics(False, turb="tke", n=1)
     # CAM6 ast needs the run's cam6_clubb cloud config for aist
     from legoesm.atmosphere.physics.microphysics import MicrophysicsConfig
     from legoesm.atmosphere.physics.microphysics.integration import (
@@ -537,3 +544,17 @@ def test_production_deck_selects_incloud_and_threads_it():
     cfg.validate_strict()
     assert thread_morrison_scalars(cfg, "morrison", MorrisonConfig()
                                    ).warm_rain_incloud is True
+
+
+def test_pipeline_lanes_refuse_kk2000_cam6_and_the_column_lane_does_not():
+    """The FV/spectral pipeline has no CLUBB relvar hand-off, so kk2000_cam6
+    is refused at build; the MPAS column loop builds its microphysics through
+    make_physics (guarded above) and must not be refused here."""
+    from legoesm.driver.config import ExperimentConfig, GridConfig
+    from legoesm.driver.physics_pipeline import _resolve_microphysics
+    kw = dict(microphysics="morrison", morrison_warm_rain_scheme="kk2000_cam6")
+    with pytest.raises(ValueError, match="per-cell relvar"):
+        _resolve_microphysics(ExperimentConfig(**kw))
+    cfg = ExperimentConfig(grid=GridConfig(grid_type="mpas"), **kw)
+    assert cfg.column_loop_lane
+    assert _resolve_microphysics(cfg)[1].warm_rain_scheme == "kk2000_cam6"

@@ -39,6 +39,7 @@ from legoesm.driver.physics_pipeline import (
     gwd_config_for,
     mean_grid_spacing_m,
     moisture_registry_for,
+    registry_scheme_config,
     turbulence_config_for,
     validate_microphysics_tracer_slots,
 )
@@ -1683,11 +1684,12 @@ class ModelDriver:
         self._persistent_cgrid = False
         self.tracers: dict[str, jax.Array] = {}
         self.tracer_registry: TracerRegistry = moisture_registry_for(
-            config.microphysics)
+            config.microphysics, registry_scheme_config(config))
         validate_microphysics_tracer_slots(
             config.microphysics,
             self.tracer_registry.n_tracers,
             context="ModelDriver tracer registry",
+            scheme_config=registry_scheme_config(config),
         )
         self.get_sst_sic = None
         # Seasonal insolation offset (days): align model day 0 to
@@ -2333,6 +2335,7 @@ class ModelDriver:
             self.config.microphysics,
             have_slots,
             context=context,
+            scheme_config=registry_scheme_config(self.config),
         )
 
     def _preflight_land_inputs(self) -> None:
@@ -8809,10 +8812,30 @@ class ModelDriver:
                                   jnp.asarray(d[f"trc_{_k}"]), part, "cell")
                               if _mpi else jnp.asarray(d[f"trc_{_k}"])),
                         name=_k, dims=("nCells", "nlev"),
-                        units=("1/kg" if _k in ("N_c", "N_r", "N_i")
+                        units=("1/kg" if _k in ("N_c", "N_r", "N_i", "N_s")
                                else "kg/kg"))
                     for _k in _names
                 })
+                # Schema-growth migration (grow-only allowlist, as for the
+                # PhysicsState fields): tracers ADDED after a checkpoint
+                # format was in production.  N_s (CAM6 MG2 two-moment snow,
+                # user decision 2026-10-20): zero, so MG2's snow size limit
+                # treats the carried snow as the largest allowed flakes until
+                # new snow adds number.  Without the seed the restart silently
+                # ran single-moment snow.
+                _NEW_OPTIONAL_TRACERS = frozenset({"N_s"})
+                _seed = [n for n in self.tracer_registry.names
+                         if n not in _names and n in _NEW_OPTIONAL_TRACERS]
+                if _seed:
+                    logger.info(
+                        "  MPAS restart checkpoint predates tracer(s) %s — "
+                        "seeding them with zeros.", _seed)
+                    _ref = self.state.tracers[_names[0]].data
+                    self.state = self.state._replace(tracers={
+                        **self.state.tracers,
+                        **{_k: Field(data=jnp.zeros_like(_ref), name=_k,
+                                     dims=("nCells", "nlev"), units="1/kg")
+                           for _k in _seed}})
             # Multilayer (Richards) land columns (MPAS port): stage the
             # ``land_ml_<field>`` arrays into carry_aux and reuse the shared
             # fail-loud restore (#730 exact-field-set contract).  Under MPI the

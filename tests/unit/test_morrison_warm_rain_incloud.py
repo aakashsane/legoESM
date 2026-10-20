@@ -425,6 +425,9 @@ def test_microphysics_reads_clubbs_cloud_fraction_from_the_same_substep(monkeypa
     tr = dict(state.tracers)
     tr["q_i"] = state.T.replace(data=1.0e-5 * top, name="q_i", units="kg/kg")
     tr["q_v"] = tr["q_v"].replace(data=jnp.maximum(tr["q_v"].data, 2.0e-3 * top))
+    # the MG2 mode carries the snow number (refused without it)
+    tr["N_s"] = state.T.replace(data=jnp.zeros_like(state.T.data), name="N_s",
+                                units="1/kg")
     state = state._replace(tracers=tr)
     fn, cfg = _mpas_physics(True, n=2)
     ps = init_physics_state(*state.T.data.shape, cfg)

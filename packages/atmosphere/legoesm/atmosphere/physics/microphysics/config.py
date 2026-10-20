@@ -527,6 +527,34 @@ class SeifertBehengConfig(NamedTuple):
     hard_sat_max_heating_K: float = 5.0         # per-step latent-heating cap [K]
 
 
+# Unset Morrison DCS per flavour [m] (MorrisonConfig.ice_snow_d_auto=None,
+# resolved by resolve_morrison_flavor): SAM clice_snow_Dauto, CAM6 MG2
+# micro_mg_dcs (namelist_defaults_cam.xml:1244).
+SAM_DCS_M = 250.0e-6
+MG2_DCS_M = 500.0e-6
+
+
+def resolve_unset_ice_snow_d_auto(cfg):
+    """THE resolution of an unset Morrison DCS: by flavour (sam 250 um, mg
+    500 um); an explicit value is returned unchanged.  Used by the scheme
+    (resolve_morrison_flavor) and by the trainable collector's seed."""
+    if cfg.ice_snow_d_auto is not None:
+        return cfg
+    if cfg.morrison_flavor == "mg":
+        return cfg._replace(ice_snow_d_auto=MG2_DCS_M)
+    if cfg.morrison_flavor == "sam":
+        return cfg._replace(ice_snow_d_auto=SAM_DCS_M)
+    return cfg      # unknown flavour: resolve_morrison_flavor raises
+
+
+# Unset (None) spec'd fields -> the resolver that gives their value from a
+# config instance.  The trainable collector seeds from it (the class default
+# when no run config is passed, i.e. the default "mg" flavour), and the
+# param-spec gate requires these fields to be classified.
+__param_unset_defaults__ = {
+    "MorrisonConfig": {"ice_snow_d_auto": resolve_unset_ice_snow_d_auto}}
+
+
 class MorrisonConfig(NamedTuple):
     """Configuration for Morrison double-moment (ice+liquid)."""
     # Reference flavor. "mg" (DEFAULT, for GLOBAL/GCM runs) = E3SM/CESM
@@ -766,7 +794,10 @@ class MorrisonConfig(NamedTuple):
     #     "dropped — single-moment snow" note here was stale).
     #   "heuristic" = the legacy constant-rate agg_coeff·q_i·f_ice.
     ice_to_snow_scheme: str = "m2005_autoconv"
-    ice_snow_d_auto: float = 250.0e-6   # SAM DCS [m] (clice_snow_Dauto)
+    # DCS [m]; None = the flavour's (resolve_morrison_flavor at scheme entry):
+    # SAM clice_snow_Dauto 250 um, mg = CAM6 MG2 micro_mg_dcs 500 um
+    # (namelist_defaults_cam.xml:1244).  An explicit value always wins.
+    ice_snow_d_auto: float | None = None
     # Aggregation (heuristic ice→snow rate)
     agg_coeff: float = 1e-3          # Ice-to-snow aggregation rate [1/s]
     # Melting
@@ -1525,7 +1556,11 @@ def apply_microphysics_experiment_flags(
         for _leaf, _val in morrison_scalars.items():
             if _val is None:
                 continue
-            _cur = float(getattr(scheme_config, _leaf))
+            _cur = getattr(scheme_config, _leaf)
+            if _cur is None:        # an unset leaf (DCS): any value applies
+                _updates[_leaf] = float(_val)
+                continue
+            _cur = float(_cur)
             # rel_tol absorbs float32-host round-trip noise
             # (float32(1e-3) != 1e-3 exactly) so a stored config that merely
             # round-tripped through a narrower dtype does not force a

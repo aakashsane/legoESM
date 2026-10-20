@@ -4107,6 +4107,20 @@ def test_morrison_flavor_round_trips():
     assert d.morrison_flavor == "mg"
 
 
+def test_morrison_ice_snow_d_auto_round_trips():
+    """--morrison-ice-snow-d-auto (and the deck key) reach ExperimentConfig;
+    default unset (None = the flavor's DCS)."""
+    parser = build_arg_parser()
+    cfg = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--microphysics", "morrison",
+        "--morrison-ice-snow-d-auto", "3.0e-4",
+    ]), parser))
+    assert cfg.morrison_ice_snow_d_auto == 3.0e-4
+    d = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert d.morrison_ice_snow_d_auto is None
+
+
 def test_morrison_flavor_yaml_route():
     """--config YAML route (keys become parser defaults): morrison_flavor: sam
     must reach ExperimentConfig, and an explicit CLI flag must still win."""

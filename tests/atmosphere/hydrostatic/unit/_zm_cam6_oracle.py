@@ -24,7 +24,11 @@ import numpy as np
 from scipy.optimize import brentq
 
 from legoesm import constants
-from legoesm.thermo import saturation_mixing_ratio, saturation_vapor_pressure
+from legoesm.thermo import (
+    saturation_mixing_ratio,
+    saturation_vapor_pressure,
+    saturation_vapor_pressure_ice,
+)
 
 _w_sat_jit = jax.jit(saturation_mixing_ratio)
 
@@ -38,6 +42,23 @@ def qsat_pa(t, p_pa):
     the pins stay at 1e-10 while a port that feeds ``w`` itself is caught.
     """
     w = float(_w_sat_jit(np.float64(t), np.float64(p_pa)))
+    return w / (1.0 + w)
+
+
+def qsat_trans_pa(t, p_pa):
+    """CAM ``qsat`` (wv_saturation.F90), the call in ``zm_conv_evap``:
+    ``wv_sat_svp_trans`` (wv_sat_methods.F90:326-361, ttrice = 20 K) written
+    out line for line over the shared water / ice curves, then the shared
+    smooth ``e -> w`` conversion and ``q = w/(1 + w)``."""
+    ttrice = 20.0   # wv_saturation.F90:82
+    t, p = float(t), float(p_pa)
+    es = float(saturation_vapor_pressure(np.float64(t))) if t >= tfreez - ttrice else 0.0
+    if t < tfreez:
+        esice = float(saturation_vapor_pressure_ice(np.float64(t)))
+        weight = 1.0 if (tfreez - t) > ttrice else (tfreez - t) / ttrice
+        es = weight * esice + (1.0 - weight) * es
+    w = eps1 * es / (np.logaddexp(p - es - 1.0, 0.0) + 1.0)
+    w = 1.0 - np.logaddexp(20.0 * (1.0 - w), 0.0) / 20.0
     return w / (1.0 + w)
 
 
@@ -726,7 +747,7 @@ def zm_conv_evap(t0, pmid0, pdel0, q0, prdprec0, cldfrc0, deltat, prec_in, ke):
     ntprprd, ntsnprd, tend_s, tend_q = _arr(pver), _arr(pver), _arr(pver), _arr(pver)
     evpvint = 0.0
     for k in range(1, pver + 1):
-        qs = qsat_pa(t[k], pmid[k])
+        qs = qsat_trans_pa(t[k], pmid[k])
         fice, fsnow_conv = cldfrc_fice(t[k])
         if t[k] > tfreez:
             flxsntm = 0.0

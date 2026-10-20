@@ -6,13 +6,17 @@ convtran) compiled by build.sh after patch_oracle.py (P1 drops the dead
 zm_mphy call, P2 makes the ientropy Brent tolerances variables, P3/P4 add
 diagnostic copies only).  driver.F90 reproduces zm_conv_intr.F90::zm_conv_tend
 (zm_convr(delt=0.5*ztodt) -> physics_update T,Q with qneg3 1e-12 ->
-zm_conv_evap(ztodt) -> momtran).  stubs.F90 supplies CAM infrastructure.
+zm_conv_evap(ztodt) -> momtran -> convtran on the MG2 convtran1
+constituents legoESM carries).  stubs.F90 supplies CAM infrastructure;
+patch_wv_sat.py (W1) lets CAM's own wv_sat_svp_trans run on legoESM's curves.
 
-Variant (the tier-1 audit's V1, oracle_audit/zm_deep_convection): legoESM
-constants (physconst mode 1), legoESM's saturation curve reproduced in
-Fortran (wv_saturation sat_mode 1) and the ientropy Brent solve tightened to
-tol 1e-11 K / EPS 1e-15 so it converges to the root the port's Newton
-solve finds.  Heights are the port's own (compute_column_geometry, the CAM-SE
+Variant (the tier-1 audit's V1, oracle_audit/zm_deep_convection, with the
+evaporation's qsat moved to CAM's mixed-phase form): legoESM constants
+(physconst mode 1), legoESM's water saturation curve reproduced in Fortran
+for qsat_water and, for zm_conv_evap's qsat, CAM's svp_trans liquid->ice
+blend over legoESM's Tetens / Clausius-Clapeyron curves (wv_saturation
+sat_mode 5), and the ientropy Brent solve tightened to tol 1e-11 K / EPS
+1e-15 so it converges to the root the port's Newton solve finds.  Heights are the port's own (compute_column_geometry, the CAM-SE
 geopotential_t form).  Everything else is the stock CAM code path.
 
 The columns are the tier-1 set (3 MPAS AMIP day-1 L32 columns from
@@ -21,7 +25,10 @@ plus 12 constructed soundings) with pressures taken from the production
 cam_l32 coordinate at each column's surface pressure, so the MPAS bridge and
 the oracle see identical inputs.  Each column carries a PBL height (pblh);
 column ``nocturnal_elevated`` (pblh 150 m, moist layer at 850-800 hPa) is the
-one where the launch bound decides whether the column convects.
+one where the launch bound decides whether the column convects.  Cloud
+liquid/ice are the tier-1 profiles (2e-4 and 5e-5 times the cloud fraction);
+the droplet/ice/rain numbers and rain/snow masses are constructed profiles of
+distinct vertical shape, so a tracer routed to the wrong name cannot pass.
 
     sbatch --wait scripts/validate/oracle/zm_pblh/build.sh    (from the repo root)
 """
@@ -41,7 +48,12 @@ REAL_COLS = os.path.join(REPO, "tests", "atmosphere", "hydrostatic", "unit", "fi
                          "zm_cam6_real_zero_humidity_columns.npz")
 DT = 1800.0  # CAM6 physics step (ztodt)
 # V1: (const_mode, sat_mode, ientropy tol [K], ientropy EPS)
-VARIANT = (1, 1, 1e-11, 1e-15)
+VARIANT = (1, 5, 1e-11, 1e-15)
+# convtran1 tracers: (fixture key, legoESM tracer name, oracle output name)
+TRACERS = (("qc", "q_c", "dqc_convtran"), ("qi", "q_i", "dqi_convtran"),
+           ("nc", "N_c", "dnc_convtran"), ("ni", "N_i", "dni_convtran"),
+           ("qr", "q_r", "dqr_convtran"), ("qs", "q_s", "dqs_convtran"),
+           ("nr", "N_r", "dnr_convtran"))
 ORACLE_TAG = "cam_cesm2_1_rel_60"
 ORACLE_SHA = "a03b84b7c4e34f965b115686f22a043b85739e56"
 
@@ -132,6 +144,14 @@ def build_columns():
                                 + 0.5 * np.exp(-((pf - 8.5e4) / 5.0e3) ** 2), 0.0, 1.0)
         out["land"][i] = c["land"]
         out["pblh"][i] = c["pblh"]
+    pf, s = out["p_full"], out["p_full"] / out["p_half"][:, -1:]
+    out["qc"] = 2.0e-4 * out["cld"]                                   # kg/kg
+    out["qi"] = 5.0e-5 * out["cld"]                                   # kg/kg
+    out["nc"] = 5.0e7 * out["cld"] * s                                # 1/kg
+    out["ni"] = 2.0e5 * out["cld"] * (1.0 - s)                        # 1/kg
+    out["qr"] = 2.0e-5 * np.exp(-((pf - 7.0e4) / 1.5e4) ** 2)         # kg/kg
+    out["qs"] = 1.0e-5 * np.exp(-((pf - 4.0e4) / 1.0e4) ** 2)         # kg/kg
+    out["nr"] = 1.0e4 * np.exp(-((pf - 7.5e4) / 1.0e4) ** 2)          # 1/kg
     out["p_s"] = out["p_half"][:, -1].copy()
     # exactly what the hydrostatic/MPAS bridge hands zm_convr as pref_edge
     out["pref_edge"] = np.asarray(coord.pressure_at_half(jnp.asarray(constants.p_ref, dtype=jnp.float64)))
@@ -160,12 +180,12 @@ def write_oracle_input(c, z, zf, path):
          f"{cfg.c0_lnd:.17e} {cfg.c0_ocn:.17e} {cfg.ke:.17e} 1.0e-5 {cfg.momcu:.17e} "
          f"{cfg.momcd:.17e} {int(cfg.num_cin)}",
          fmt(c["pref_edge"])]
-    zero = np.zeros(nlev)
     for i in range(ncol):
         L += [f"{c['land'][i]:.17e} {c['pblh'][i]:.17e} 0.0",
               fmt(c["T"][i]), fmt(np.maximum(c["q"][i], 1e-12)), fmt(c["p_full"][i]),
               fmt(c["p_half"][i]), fmt(np.diff(c["p_half"][i])), fmt(z[i]), fmt(zf[i]),
-              fmt(c["u"][i]), fmt(c["v"][i]), fmt(c["cld"][i]), fmt(zero), fmt(zero)]
+              fmt(c["u"][i]), fmt(c["v"][i]), fmt(c["cld"][i])]
+        L += [fmt(c[key][i]) for key, _, _ in TRACERS]
     open(path, "w").write("\n".join(L) + "\n")
 
 
@@ -199,7 +219,8 @@ def read_oracle(path):
 
 # Oracle outputs kept in the fixture (the production-contract fields).
 KEEP = ("cape", "prec", "snow", "mb", "qtnd", "heat", "dlf", "ql", "mcon", "evap_tend_s",
-        "evap_tend_q", "ntprprd", "dudt", "dvdt", "seten", "lcl", "lel", "mx_buoy")
+        "evap_tend_q", "ntprprd", "dudt", "dvdt", "seten", "lcl", "lel", "mx_buoy") + tuple(
+            out for _, _, out in TRACERS)
 
 
 def main(exe, workdir, cam_dir):
@@ -221,13 +242,16 @@ def main(exe, workdir, cam_dir):
     if sha != ORACLE_SHA:
         raise RuntimeError(f"CAM checkout is {sha}, expected {ORACLE_SHA} ({ORACLE_TAG})")
     md5 = hashlib.md5(open(os.path.join(cam_dir, "src/physics/cam/zm_conv.F90"), "rb").read()).hexdigest()
+    md5w = hashlib.md5(open(os.path.join(cam_dir, "src/physics/cam/wv_sat_methods.F90"),
+                            "rb").read()).hexdigest()
     lego_sha = subprocess.run(["git", "-C", REPO, "rev-parse", "HEAD"], capture_output=True,
                               text=True).stdout.strip()
-    meta = (f"oracle=ESCOMP/CAM tag={ORACLE_TAG} sha={sha} zm_conv.F90 md5={md5}; "
+    meta = (f"oracle=ESCOMP/CAM tag={ORACLE_TAG} sha={sha} zm_conv.F90 md5={md5} "
+            f"wv_sat_methods.F90 md5={md5w}; "
             f"variant const_mode,sat_mode,ient_tol,ient_eps={VARIANT}; dt={DT}; "
             f"generator=scripts/validate/oracle/zm_pblh/build.sh (make_fixture.py) at legoESM {lego_sha}")
     save = {k: c[k] for k in ("T", "q", "p_s", "p_full", "p_half", "u", "v", "cld", "land", "pblh",
-                              "pref_edge", "names")}
+                              "pref_edge", "names") + tuple(key for key, _, _ in TRACERS)}
     save.update({f"oracle_{k}": o[k] for k in KEEP})
     save["oracle_ideep"] = ideep
     save["oracle_limcnv"] = np.asarray(o["limcnv"])

@@ -2444,7 +2444,9 @@ def test_config_yaml_round_trips_authoritative_values():
     # (CESM gust_fac = 0); the coastal ocean-surface flux is on (#1320).
     assert cfg.surface_gustiness_zi is None
     assert cfg.ocean_flux_on_ocean_surface is True
-    assert cfg.convective_precip_efficiency == pytest.approx(0.8)
+    # No convective_precip_efficiency row: ZM has no precip-efficiency field,
+    # so the 0.8 the deck carried was read by nothing (oracle audit 2026-10-18).
+    assert cfg.convective_precip_efficiency is None
     # User table 2026-09-24, "production now, matches CAM6", three rows set
     # EXPLICITLY so nothing rests on a code default (the defaults are the
     # opposite of all three): the closure's liquid handed to cloud water; the
@@ -5263,6 +5265,36 @@ def test_production_deck_pins_the_zm_land_fraction_policy():
         build_arg_parser())
     assert keys["convection"] == "zhang_mcfarlane"
     assert keys["zm_land_fraction"] == "required"
+
+
+def test_zm_transport_cloud_tracers_flows_to_config_and_kernel():
+    """--[no-]zm-transport-cloud-tracers threads CLI -> ExperimentConfig ->
+    ZhangMcFarlaneConfig and survives the AMIP export; default on (CAM6)."""
+    from legoesm.driver.config import ExperimentConfig
+    from legoesm.driver.physics_pipeline import _resolve_convection
+    parser = build_arg_parser()
+    base = ["--dataset", "analytical", "--convection", "zhang_mcfarlane"]
+    cfg_on = build_config_from_args(_postprocess_args(parser.parse_args(base), parser))
+    cfg_off = build_config_from_args(_postprocess_args(parser.parse_args(
+        base + ["--no-zm-transport-cloud-tracers"]), parser))
+    assert cfg_on.zm_transport_cloud_tracers is True
+    assert cfg_off.zm_transport_cloud_tracers is False
+    assert _resolve_convection(cfg_on)[1].transport_cloud_tracers is True
+    assert _resolve_convection(cfg_off)[1].transport_cloud_tracers is False
+    for c in (cfg_on, cfg_off):
+        assert ExperimentConfig.from_amip_config(
+            c.to_amip_config()).zm_transport_cloud_tracers == c.zm_transport_cloud_tracers
+    # a quoted YAML "false" reaches the config as a str (truthy); refuse it
+    with pytest.raises(ValueError, match="zm_transport_cloud_tracers"):
+        cfg_on._replace(zm_transport_cloud_tracers="false").validate_strict()
+
+
+def test_production_deck_pins_zm_tracer_transport_on():
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    for deck in ("amip_production.yaml", "amip_production_fv3duo_c24.yaml"):
+        keys = load_yaml_config(
+            str(_repo_root() / "config" / "amip" / deck), build_arg_parser())
+        assert keys["zm_transport_cloud_tracers"] is True, deck
 
 
 def test_production_deck_pins_the_reference_aod():

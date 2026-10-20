@@ -195,10 +195,15 @@ end module zm_microphysics
 !               (wv_sat_methods, real code); qsat = linear interpolation of the
 !               1-K table of svp_trans (water/ice blend over 20 K below tmelt),
 !               verbatim estblf; then svp_to_qsat and es=min(es,p).
+!  sat_mode 5 = what the port does since the evaporation moved to CAM's mixed-
+!               phase qsat: qsat_water as mode 1; qsat = CAM's wv_sat_svp_trans
+!               (unmodified) over the legoESM Tetens/Clausius-Clapeyron curves
+!               (patch W1, index 91), then mode 1's smooth conversion.
 module wv_saturation
   use shr_kind_mod, only: r8 => shr_kind_r8
   use wv_sat_methods, only: wv_sat_methods_init, wv_sat_svp_water, wv_sat_svp_trans, &
-                            svp_to_qsat => wv_sat_svp_to_qsat
+                            svp_to_qsat => wv_sat_svp_to_qsat, &
+                            Lego_idx, lego_tfrz, lego_ls, lego_rv
   implicit none
   private
   public :: qsat, qsat_water, wv_sat_init_stub, sat_mode
@@ -215,6 +220,7 @@ module wv_saturation
   end interface
 contains
   subroutine wv_sat_init_stub(mode, tmelt, h2otrip, epsilo)
+    use physconst, only: latvap, latice, rh2o
     integer, intent(in) :: mode
     real(r8), intent(in) :: tmelt, h2otrip, epsilo
     character(len=256) :: errstring
@@ -222,6 +228,10 @@ contains
     sat_mode = mode
     eps_l = epsilo
     tfrz_l = tmelt
+    ! patch W1 curve constants: legoESM T_freeze, L_s = L_v + L_f, R_v
+    lego_tfrz = tmelt
+    lego_ls = latvap + latice
+    lego_rv = rh2o
     call wv_sat_methods_init(r8, tmelt, h2otrip, tboil, ttrice, epsilo, errstring)
     if (len_trim(errstring) > 0) then
        write(*,*) trim(errstring); stop 2
@@ -265,6 +275,19 @@ contains
     end if
   end subroutine tetens_hard
 
+  ! sat_mode 5, qsat only: CAM's svp_trans liquid->ice blend (wv_sat_methods,
+  ! unmodified) over the legoESM curves (patch W1), then legoESM's smooth
+  ! e->r conversion and q = r/(1+r) = legoesm.thermo.saturation_specific_humidity_trans.
+  elemental subroutine lego_qsat_trans(t, p, es, qs)
+    real(r8), intent(in) :: t, p
+    real(r8), intent(out) :: es, qs
+    real(r8) :: w
+    es = wv_sat_svp_trans(t, Lego_idx)
+    w = eps_l*es/(softplus(p - es - 1._r8) + 1._r8)
+    w = 1._r8 - softplus(20._r8*(1._r8 - w))/20._r8
+    qs = w/(1._r8 + w)
+  end subroutine lego_qsat_trans
+
   elemental real(r8) function estblf(t) result(es)
     real(r8), intent(in) :: t
     integer  :: i
@@ -278,7 +301,7 @@ contains
   elemental subroutine qsat_water(t, p, es, qs)
     real(r8), intent(in) :: t, p
     real(r8), intent(out) :: es, qs
-    if (sat_mode == 1) then
+    if (sat_mode == 1 .or. sat_mode == 5) then
        call lego_qsat(t, p, es, qs)
     else if (sat_mode == 3) then
        call tetens_hard(t, p, es, qs)
@@ -294,6 +317,8 @@ contains
     real(r8), intent(out) :: es, qs
     if (sat_mode == 1) then
        call lego_qsat(t, p, es, qs)
+    else if (sat_mode == 5) then
+       call lego_qsat_trans(t, p, es, qs)
     else if (sat_mode == 3) then
        call tetens_hard(t, p, es, qs)
     else if (sat_mode == 4) then

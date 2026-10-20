@@ -22,7 +22,7 @@ echo "CAM SHA: $(git -C $CAM rev-parse HEAD)"
 gfortran --version | head -1
 cd $W
 python3 $HERE/patch_oracle.py $CAM/src/physics/cam/zm_conv.F90 zm_conv_patched.F90
-cp $CAM/src/physics/cam/wv_sat_methods.F90 .
+python3 $HERE/patch_wv_sat.py $CAM/src/physics/cam/wv_sat_methods.F90 wv_sat_methods.F90
 FFLAGS="-O2 -cpp -ffree-line-length-none -fno-fast-math -DPCOLS_VAL=16 -DPVER_VAL=32"
 gfortran $FFLAGS -c wv_sat_methods.F90
 gfortran $FFLAGS -c $HERE/stubs.F90

@@ -4001,7 +4001,9 @@ def _resolve_convection(config):
             conv_config = conv_config._replace(precip_efficiency=_pe)
         if scheme == "zhang_mcfarlane":
             conv_config = conv_config._replace(
-                land_fraction=config.zm_land_fraction, **_zm_set)
+                land_fraction=config.zm_land_fraction,
+                transport_cloud_tracers=config.zm_transport_cloud_tracers,
+                **_zm_set)
 
         # Tiedtke plume buoyancy-death memory (ExperimentConfig /
         # --convective-buoyancy-death-memory, Tiedtke-only per the CLI guard).

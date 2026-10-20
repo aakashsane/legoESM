@@ -1,7 +1,8 @@
 ! Standalone driver reproducing CAM6 zm_conv_tend (zm_conv_intr.F90:366-918)
 ! with the pbuf/outfld/ptend plumbing replaced by local arrays:
 !   zm_convr -> physics_update(T,q) -> zm_conv_evap -> physics_update ->
-!   momtran(u,v) -> convtran(CLDLIQ, CLDICE)
+!   momtran(u,v) -> convtran(CLDLIQ, CLDICE, NUMLIQ, NUMICE, RAINQM, SNOWQM,
+!   NUMRAI): the MG2 is_convtran1 constituents legoESM carries (micro_mg_cam.F90:416-435)
 ! Input/outputs are plain text (list-directed); see make_fixture.py.
 program zm_driver
   use shr_kind_mod, only: r8 => shr_kind_r8
@@ -20,6 +21,7 @@ program zm_driver
   real(r8) :: pref_edge(pverp)
   real(r8), dimension(pcols) :: landfrac, pblh, tpert, phis
   real(r8), dimension(pcols,pver) :: t, q, pmid, pdel, zm, u, v, cld, qc, qi
+  real(r8), dimension(pcols,pver) :: nc, ni, qr, qsn, nr
   real(r8), dimension(pcols,pverp) :: pint, zi
   ! zm_convr outputs
   real(r8), dimension(pcols) :: prec, jctop, jcbot, cape, dsubcld, rliq, rice
@@ -38,9 +40,11 @@ program zm_driver
   real(r8) :: winds(pcols,pver,2), wind_tends(pcols,pver,2), pguall(pcols,pver,2), pgdall(pcols,pver,2)
   real(r8) :: icwu(pcols,pver,2), icwd(pcols,pver,2), seten(pcols,pver)
   logical :: l_windt(2)
-  ! convtran on [Q, CLDLIQ, CLDICE]; Q itself is not transported (lq(1)=.false.)
-  real(r8) :: qall(pcols,pver,3), dqall(pcols,pver,3), fracis(pcols,pver,3), fake_dpdry(pcols,pver)
-  logical :: lq(3)
+  ! convtran on [Q, CLDLIQ, CLDICE, NUMLIQ, NUMICE, RAINQM, SNOWQM, NUMRAI];
+  ! Q itself is not transported (lq(1)=.false.)
+  integer, parameter :: ntr = 8
+  real(r8) :: qall(pcols,pver,ntr), dqall(pcols,pver,ntr), fracis(pcols,pver,ntr), fake_dpdry(pcols,pver)
+  logical :: lq(ntr)
   ! scattered gathered fields
   real(r8), dimension(pcols,pver) :: mu_s, md_s, du_s, eu_s, ed_s, dp_s
   real(r8), dimension(pcols) :: dsub_s
@@ -58,6 +62,7 @@ program zm_driver
   read(iu,*) c0_lnd, c0_ocn, ke, ke_lnd, momcu, momcd, num_cin
   read(iu,*) pref_edge
   t = 0; q = 0; pmid = 0; pdel = 0; zm = 0; u = 0; v = 0; cld = 0; qc = 0; qi = 0
+  nc = 0; ni = 0; qr = 0; qsn = 0; nr = 0
   pint = 0; zi = 0; landfrac = 0; pblh = 0; tpert = 0; phis = 0
   do i = 1, ncol
      read(iu,*) landfrac(i), pblh(i), tpert(i)
@@ -73,6 +78,11 @@ program zm_driver
      read(iu,*) cld(i,:)
      read(iu,*) qc(i,:)
      read(iu,*) qi(i,:)
+     read(iu,*) nc(i,:)
+     read(iu,*) ni(i,:)
+     read(iu,*) qr(i,:)
+     read(iu,*) qsn(i,:)
+     read(iu,*) nr(i,:)
   end do
   close(iu)
   ! pad unused columns with copies of column 1 (never read: loops run to ncol)
@@ -137,11 +147,17 @@ program zm_driver
   qall(:,:,1) = max(q + (qtnd + tend_q)*ztodt, 1.e-12_r8)
   qall(:,:,2) = qc
   qall(:,:,3) = qi
-  lq = (/ .false., .true., .true. /)
+  qall(:,:,4) = nc
+  qall(:,:,5) = ni
+  qall(:,:,6) = qr
+  qall(:,:,7) = qsn
+  qall(:,:,8) = nr
+  lq = .true.
+  lq(1) = .false.
   fracis = 1._r8
   fake_dpdry = 0._r8
   dqall = 0._r8
-  call convtran(1, lq, qall, 3, mu, md, du, eu, ed, dp, dsubcld, &
+  call convtran(1, lq, qall, ntr, mu, md, du, eu, ed, dp, dsubcld, &
                 jt, maxg, ideep, 1, lengath, 0, fracis, dqall, fake_dpdry, ztodt)
 
   ! scatter the gathered cloud-model arrays
@@ -178,6 +194,9 @@ program zm_driver
   call w2('pgu_u', pguall(:,:,1)); call w2('pgd_u', pgdall(:,:,1))
   call w2('icwu_u', icwu(:,:,1)); call w2('icwd_u', icwd(:,:,1))
   call w2('dqc_convtran', dqall(:,:,2)); call w2('dqi_convtran', dqall(:,:,3))
+  call w2('dnc_convtran', dqall(:,:,4)); call w2('dni_convtran', dqall(:,:,5))
+  call w2('dqr_convtran', dqall(:,:,6)); call w2('dqs_convtran', dqall(:,:,7))
+  call w2('dnr_convtran', dqall(:,:,8))
   close(iu)
   write(*,*) 'ORACLE_DONE lengath=', lengath, ' limcnv=', limcnv
 

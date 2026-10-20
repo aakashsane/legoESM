@@ -8,49 +8,49 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 7174)
+Table of contents (sections, in order; flag reference table at line 7175)
 -----------------------------------------------------------------------------
-  1. [line  351] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
-  2. [line  472] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
+  1. [line  352] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
+  2. [line  473] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
       model flags fixed at CAM defaults — reference table at file end)
-  3. [line  774] Staggered CLUBB grid (``CLUBBGrid`` / zm-zt operators /
+  3. [line  775] Staggered CLUBB grid (``CLUBBGrid`` / zm-zt operators /
       ``make_clubb_grid[_from_levels]`` / ``flip_vertical``)
-  4. [line  1105] Flatau saturation adapters (``sat_mixrat_liq``/``sat_mixrat_ice`` over
+  4. [line  1106] Flatau saturation adapters (``sat_mixrat_liq``/``sat_mixrat_ice`` over
       the canonical ``legoesm.thermo`` curves)
-  5. [line  1159] Closure helpers (``safe_sqrt`` / ``compute_sigma_sqd_w`` /
+  5. [line  1160] Closure helpers (``safe_sqrt`` / ``compute_sigma_sqd_w`` /
       ``calc_brunt_vaisala_freq_sqd``)
-  6. [line  1333] Parcel buoyant-sorting mixing length (``compute_mixing_length`` /
+  6. [line  1334] Parcel buoyant-sorting mixing length (``compute_mixing_length`` /
       ``set_Lscale_max``)
-  7. [line  1781] Implicit band solvers (``tridiag_solve`` / ``penta_solve``)
-  8. [line  1909] Mass-conserving hole filling (``fill_holes_vertical`` /
+  7. [line  1782] Implicit band solvers (``tridiag_solve`` / ``penta_solve``)
+  8. [line  1910] Mass-conserving hole filling (``fill_holes_vertical`` /
       ``fill_holes_wp2_from_horz_tke``)
-  9. [line  2090] Skewness diagnostics (``Skx_func`` / ``compute_gamma_Skw`` / LG05 /
+  9. [line  2091] Skewness diagnostics (``Skx_func`` / ``compute_gamma_Skw`` / LG05 /
       ``compute_skewness_diagnostics``)
-  10. [line  2278] Dissipation time-scale family (``compute_tke`` / ``compute_tau_family``)
-  11. [line  2359] ADG1 assumed-PDF parameter closure (``ADG1_pdf_driver`` + the liquid
+  10. [line  2279] Dissipation time-scale family (``compute_tke`` / ``compute_tau_family``)
+  11. [line  2360] ADG1 assumed-PDF parameter closure (``ADG1_pdf_driver`` + the liquid
       cloud-fraction closure)
-  12. [line  2681] ADG1 PDF moment integrals + buoyancy-flux assembly
+  12. [line  2682] ADG1 PDF moment integrals + buoyancy-flux assembly
       (``calc_pdf_higher_order_moments`` / ``calc_pdf_xprcp_fluxes`` /
       ``calc_xpthvp_terms``) + the two-level-set reconciliation
       (``calc_trapezoid_zt`` / ``calc_trapezoid_zm`` / ``clip_rcm`` /
       ``compute_cloud_cover``). Every routine in this section is
       grid-agnostic: CAM evaluates the closure once per level set, so all
       regridding is the caller's.
-  13. [line  3042] Moment-advance building blocks + the xp2_xpyp / windm advances
+  13. [line  3043] Moment-advance building blocks + the xp2_xpyp / windm advances
       (diffusion/mean-advection LHS builders, Cauchy-Schwarz clips,
       ``advance_xp2_xpyp`` / ``advance_windm_edsclrm``)
-  14. [line  3936] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
+  14. [line  3937] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
       ``damp_coefficient`` / ``compute_C6_C7_Skw_fnc``)
-  15. [line  4001] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
+  15. [line  4002] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
       ``clip_skewness``)
-  16. [line  4674] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
+  16. [line  4675] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
       ``calc_turb_adv_range``)
-  17. [line  4954] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
+  17. [line  4955] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
       coupling + ``solve_xm_wpxp_with_single_lhs``)
-  18. [line  5328] Core orchestration (``compute_clubb_diagnostics`` /
+  18. [line  5329] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  6086] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  6090] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 
@@ -133,6 +133,7 @@ from legoesm.atmosphere.physics._shared import (
 )
 from legoesm.atmosphere.physics.clouds.cloud_fraction import (
     cam_chem_tropopause_level,
+    trop_cloud_top_taper,
 )
 from legoesm.atmosphere.physics.turbulence.config import SurfaceLayerConfig
 from legoesm.atmosphere.physics.turbulence.output import TurbulenceOutput
@@ -673,11 +674,11 @@ class CLUBBConfig(NamedTuple):
         CAM's ``ref_pres`` namelist knob of the same name ("Troposphere cloud
         physics will be done only below the top defined by this pressure"),
         which ``clubb_intr.F90`` applies to CLUBB by slicing every column at
-        ``top_lev = trop_cloud_top_lev``. Default 0.0 = OFF (CAM's own code
-        default, ``protected :: trop_cloud_top_press = 0._r8``; CAM's
-        build-namelist supplies 1 hPa, which is above every current lid here
-        and would be inert anyway) — a static Python feature gate, so
-        existing runs are byte-identical. A 32-level WeatherBench arm
+        ``top_lev = trop_cloud_top_lev``. Default 100 Pa = the CAM6
+        build-namelist value (namelist_defaults_cam.xml:1295
+        ``<trop_cloud_top_press> 1.D2``, cam_cesm2_1_rel_60).  0.0 = OFF (CAM's
+        bare code default ``protected :: trop_cloud_top_press = 0._r8``,
+        ref_pres.F90:34) is a static Python feature gate. A 32-level WeatherBench arm
         measured a stratospheric state excursion from the diagnostic phase-1
         scheme (2026-08-17); setting this to ~5000 Pa confines the scheme to
         below 50 hPa there. Unlike CAM's hard subcolumn slice, the taper is
@@ -704,7 +705,7 @@ class CLUBBConfig(NamedTuple):
     prognostic: bool = False
     cloud_buoyancy: bool = True
     cloud_source: str = "native"
-    trop_cloud_top_press: float = 0.0
+    trop_cloud_top_press: float = 100.0
     trop_cloud_taper_lnp_width: float = 0.15
     # Multiplier on the DIAGNOSED sub-grid variances entering the PDF closure
     # (both variances and their covariance, so the correlation is preserved).
@@ -6714,10 +6715,8 @@ def clubb_step(
         # by the surface fluxes, or into the bottom layer if that would dry a
         # level below clubbtop (CAM apply_to_surface).  Heat: the column
         # energy fixer in the caller closes it below clubbtop (2138-2150).
-        w = jax.nn.sigmoid(
-            (jnp.log(jnp.clip(p_full, 1.0, None))
-             - jnp.log(config.trop_cloud_top_press))
-            / config.trop_cloud_taper_lnp_width)
+        w = trop_cloud_top_taper(p_full, config.trop_cloud_top_press,
+                                 config.trop_cloud_taper_lnp_width)
         dp_g = (p_half[:, 1:] - p_half[:, :-1]) / constants.g
         spread = w / jnp.sum(dp_g * w, axis=1, keepdims=True)  # [kg/m2]^-1
 
@@ -7024,10 +7023,9 @@ def clubb_turbulence_prognostic(
     # mixing no longer maintains.  Porting the exclusion, not just the formula.
     cloud_fraction_td = flip_vertical(cloud_frac_a)
     if config.trop_cloud_top_press > 0.0:
-        cloud_fraction_td = cloud_fraction_td * jax.nn.sigmoid(
-            (jnp.log(jnp.clip(p_full, 1.0, None))
-             - jnp.log(config.trop_cloud_top_press))
-            / config.trop_cloud_taper_lnp_width)
+        cloud_fraction_td = cloud_fraction_td * trop_cloud_top_taper(
+            p_full, config.trop_cloud_top_press,
+            config.trop_cloud_taper_lnp_width)
     # MG2's relvar from the liquid CLUBB leaves on the host and the final
     # sub-step's qclvar (pre-advance rcp2, CAM's timing); only with the liquid
     # partition, where that liquid is CLUBB's (CAM always partitions).

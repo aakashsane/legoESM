@@ -45,7 +45,7 @@ from legoesm.atmosphere.physics.turbulence.clubb import (  # noqa: E402
 
 _CUT_PA = 15000.0                       # a mid-column CLUBB top (150 hPa) that cuts inside the L32 grid
 _ON = CLUBBConfig(prognostic=True, clubb_dt=300.0, trop_cloud_top_press=_CUT_PA)
-_OFF = CLUBBConfig(prognostic=True, clubb_dt=300.0)
+_OFF = CLUBBConfig(trop_cloud_top_press=0.0, prognostic=True, clubb_dt=300.0)
 _DT = 300.0
 _TROP_LAPSE = 6.5e-3                    # test profile: tropospheric lapse [K/m]
 _STRAT_LAPSE = -2.5e-3                  # test profile: stratospheric warming [K/m]
@@ -412,6 +412,21 @@ def test_missing_latitude_or_troplev_raises():
             c["T_sfc"], c["q_sfc"], _DT, 1, _ON)
     with pytest.raises(ValueError, match="troplev"):
         _step(c, _ON, unpack_clubb_moments(carry))
+
+
+def test_default_top_is_cam6_and_needs_latitudes():
+    """The default CLUBBConfig carries CAM6's trop_cloud_top_press (100 Pa,
+    namelist_defaults_cam.xml:1295), so the default prognostic path needs the
+    column latitudes like CAM's chemistry tropopause does."""
+    cfg = CLUBBConfig(prognostic=True, clubb_dt=300.0)
+    assert cfg.trop_cloud_top_press == 100.0
+    c = _column(0.0)
+    ncol, nlev = c["T"].shape
+    carry = pack_clubb_moments(init_clubb_moments(ncol, nlev, cfg))
+    with pytest.raises(ValueError, match="latitudes"):
+        clubb_turbulence_prognostic(
+            *_args(c), carry, c["p_full"], c["p_half"], c["z_full"],
+            c["z_half"], c["T_sfc"], c["q_sfc"], c["rho"], _DT, cfg)
 
 
 # --------------------------------------------------------------------------

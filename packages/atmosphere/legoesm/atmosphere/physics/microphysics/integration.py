@@ -162,6 +162,11 @@ def _min_tracer_slots_for_config(scheme_name: str, scheme_config=None) -> int:
         # reconstructed-box coalescence path writes rain mass and cloud/rain
         # number tendencies, so slot 7 must exist.
         return 8
+    if (scheme_name == "morrison"
+            and getattr(scheme_config, "warm_rain_incloud", False)):
+        # CAM6 MG2 mode: two-moment snow, so slot [9] = N_s (per-mass)
+        # carries MG2's prognostic snow number (micro_mg2_0.F90 nsn/nstend).
+        return 10
     return _PLANE_MIN_TRACER_SLOTS[scheme_name]
 
 
@@ -182,6 +187,7 @@ def make_microphysics_physics(
     model_type: str = "hydrostatic",
     dt: float = 300.0,  # coeff-ok: default physics timestep [s]
     cloud_config=None,
+    clubb_config=None,
     relvar_from_clubb: bool = False,
 ) -> Callable:
     """Create a physics function for microphysics matching a model's signature.
@@ -197,6 +203,9 @@ def make_microphysics_physics(
     cloud_config : CloudConfig, optional
         The run's cloud config (scheme ``cam6_clubb``); read only by Morrison
         ``warm_rain_incloud`` for the CAM6 ice-stratus fraction ``aist``.
+    clubb_config : CLUBBConfig, optional
+        The run's CLUBB config; ``warm_rain_incloud`` requires it (raises if
+        None): aist is zeroed above CLUBB's top (clubb_intr.F90:2535).
     relvar_from_clubb : bool
         Read the per-cell ``PhysicsState.relvar`` CLUBB wrote in the same
         macmic sub-step (CAM6 pbuf RELVAR) into Morrison ``kk2000_cam6``.
@@ -216,6 +225,7 @@ def make_microphysics_physics(
         fn = _make_hydrostatic_microphysics(microphysics_config, dt,
                                             cloud_config=cloud_config,
                                             model_type=model_type,
+                                            clubb_config=clubb_config,
                                             relvar_from_clubb=relvar_from_clubb)
     elif model_type == "nonhydrostatic":
         fn = _make_nonhydrostatic_microphysics(microphysics_config, dt)
@@ -258,6 +268,7 @@ def _make_hydrostatic_microphysics(
     dt: float,
     cloud_config=None,
     model_type: str = "hydrostatic",
+    clubb_config=None,
     relvar_from_clubb: bool = False,
 ) -> Callable:
     """Create microphysics physics_fn for PrimitiveEquationModel.
@@ -287,6 +298,11 @@ def _make_hydrostatic_microphysics(
             "warm_rain_incloud=True uses CAM6's ast = max(alst, aist); the "
             "ice-stratus fraction needs the cam6_clubb cloud config, got "
             f"{getattr(cloud_config, 'scheme', None)!r}.")
+    if _incloud and clubb_config is None:
+        raise ValueError(
+            "warm_rain_incloud=True needs the run's CLUBBConfig "
+            "(clubb_config): CAM zeroes aist above CLUBB's top_lev "
+            "(clubb_intr.F90:2535); got None.")
     if _incloud and model_type != "mpas":
         # Checked at build time, not the first step: aist's tropopause
         # switch needs MPAS cell latitudes (mesh.latCell).
@@ -375,6 +391,13 @@ def _make_hydrostatic_microphysics(
         rho = _compute_rho(T_col, p_full_col, q_v_col)
         dz = _compute_heights_from_sigma(T_col, p_half_col, q_v_col)
 
+        if _incloud and (state.tracers is None or "N_s" not in state.tracers):
+            # CAM6 MG2 mode carries the snow number; without it the scheme
+            # would silently run single-moment snow (user decision
+            # 2026-10-20: refuse).
+            raise ValueError(
+                "warm_rain_incloud=True (CAM6 MG2 two-moment snow) needs the "
+                "snow number tracer N_s in the state; it is absent.")
         # Extract actual hydrometeor state from tracers (fall back to zero
         # for any species not present in the tracer registry).
         hydrometeors = HydrometeorState(
@@ -387,6 +410,11 @@ def _make_hydrostatic_microphysics(
             N_c=number_per_mass_to_per_volume(_get_tracer("N_c"), rho),
             N_r=number_per_mass_to_per_volume(_get_tracer("N_r"), rho),
             N_i=_get_tracer("N_i"),
+            # Prognostic snow number [1/kg] when the state carries it (the
+            # CAM6 MG2 mode's two-moment snow, required there, see above);
+            # absent outside that mode => None => single-moment snow.
+            N_s=(_get_tracer("N_s") if state.tracers is not None
+                 and "N_s" in state.tracers else None),
         )
 
         # Aerosol-CCN specified-Nc fill.  Override the (dead-zeros, never
@@ -469,7 +497,10 @@ def _make_hydrostatic_microphysics(
                 _aist = cam6_ice_stratus_fraction(
                     q_v_col, T_col, p_full_col, hydrometeors.q_i,
                     jnp.asarray(grid.latCell).reshape(ncol), cloud_config,
-                    p_half_col[:, :-1])
+                    p_half_col[:, :-1],
+                    trop_cloud_top_press=clubb_config.trop_cloud_top_press,
+                    trop_cloud_taper_lnp_width=(
+                        clubb_config.trop_cloud_taper_lnp_width))
                 _kw["cloud_fraction"] = jnp.maximum(
                     jnp.clip(_cf.reshape(ncol, nlev), 0.0, 1.0), _aist)
             if relvar_from_clubb:
@@ -516,9 +547,11 @@ def _make_hydrostatic_microphysics(
             "N_r": (number_per_volume_to_per_mass(micro_out.dN_r_dt, rho),
                     "1/(kg s)"),
             "N_i": (micro_out.dN_i_dt, "1/(kg s)"),
+            "N_s": (micro_out.dN_s_dt, "1/(kg s)"),
         }
         for _nname, (_ntend, _nunits) in _num_tends.items():
-            if state.tracers is not None and _nname in state.tracers:
+            if (state.tracers is not None and _nname in state.tracers
+                    and _ntend is not None):
                 tracer_tends[_nname] = Field(
                     data=_ntend.reshape(shape_3d),
                     name=f"d{_nname}_dt_micro", dims=dims_3d, units=_nunits,

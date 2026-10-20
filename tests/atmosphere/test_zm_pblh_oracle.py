@@ -109,11 +109,12 @@ def test_fixture_exercises_the_pbl_launch_bound(fx):
     assert "a03b84b7c4e34f965b115686f22a043b85739e56" in str(fx["meta"])
 
 
-def _wrapper(fx, tracers=True):
+def _wrapper(fx, tracers=True, config=None):
     return zhang_mcfarlane_convection(
         jnp.asarray(fx["T"]), jnp.asarray(fx["q"]), jnp.asarray(fx["p_full"]),
         jnp.asarray(fx["p_half"]), jnp.asarray(fx["u"]), jnp.asarray(fx["v"]),
-        jnp.zeros_like(jnp.asarray(fx["T"])), float(fx["dt"]), ZhangMcFarlaneConfig(),
+        jnp.zeros_like(jnp.asarray(fx["T"])), float(fx["dt"]),
+        ZhangMcFarlaneConfig() if config is None else config,
         land_frac=jnp.asarray(fx["land"]), cld_frac=jnp.asarray(fx["cld"]),
         pblh=jnp.asarray(fx["pblh"]), pref_edge=jnp.asarray(fx["pref_edge"]),
         tracers=({nm: jnp.asarray(fx[key]) for key, nm, _ in TRACERS} if tracers else None))
@@ -174,7 +175,7 @@ def test_evaporation_saturation_is_the_cam_trans_curve():
                                + (1.0 - w) * saturation_vapor_pressure(t), rtol=TOL)
 
 
-def _bridge(fx, pblh):
+def _bridge(fx, pblh, zm=None):
     """The hydrostatic/MPAS convection bridge on the fixture columns."""
     ncol, nlev = fx["T"].shape
     coord = make_cam6_l32_levels()
@@ -186,7 +187,7 @@ def _bridge(fx, pblh):
         u=Field(jnp.asarray(fx["u"])), v=Field(jnp.asarray(fx["v"])),
         T=Field(jnp.asarray(fx["T"])), p_s=Field(jnp.asarray(fx["p_s"])),
         phis=Field(jnp.zeros((ncol,))), tracers=tracers)
-    zm = ZhangMcFarlaneConfig()
+    zm = ZhangMcFarlaneConfig() if zm is None else zm
     ps = update_physics_state(init_physics_state(ncol, nlev, PhysicsConfig()),
                               {"cloud_fraction": jnp.asarray(fx["cld"]), "pblh": pblh})
     fn = make_convection_physics(ConvectionConfig(scheme="zhang_mcfarlane", zhang_mcfarlane=zm),
@@ -215,6 +216,32 @@ def test_mpas_bridge_passes_the_carried_pblh_and_matches_cam(fx):
         o_cmp[nm] = fx[f"oracle_{key}"]
     errs = {k: _rel(ours[k], o_cmp[k]) for k in ours}
     assert max(errs.values()) <= TOL, errs
+
+
+def test_transport_switch_off_drops_exactly_the_tracer_transport(fx):
+    """ZhangMcFarlaneConfig.transport_cloud_tracers=False: no convtran (the
+    scheme returns tracer_transport=None even when handed tracers), q_c gets
+    the detrained condensate alone, the other convtran1 tracers get no
+    convective tendency, and T/q_v/winds/mass flux are bit-identical to on."""
+    off_cfg = ZhangMcFarlaneConfig(transport_cloud_tracers=False)
+    assert ZhangMcFarlaneConfig().transport_cloud_tracers is True
+    out_off, _ = _wrapper(fx, config=off_cfg)
+    assert out_off.tracer_transport is None
+    pblh = jnp.asarray(fx["pblh"])
+    on, c_on = _bridge(fx, pblh)
+    off, c_off = _bridge(fx, pblh, zm=off_cfg)
+    for a, b in ((on.dT_dt, off.dT_dt), (on.du_dt, off.du_dt), (on.dv_dt, off.dv_dt),
+                 (on.tracer_tendencies["q_v"], off.tracer_tendencies["q_v"])):
+        np.testing.assert_array_equal(np.asarray(a.data), np.asarray(b.data))
+    np.testing.assert_array_equal(np.asarray(c_on["conv_mass_flux_up"]),
+                                  np.asarray(c_off["conv_mass_flux_up"]))
+    qc_off = np.asarray(off.tracer_tendencies["q_c"].data)
+    np.testing.assert_allclose(qc_off, np.asarray(out_off.dq_c_conv_dt).reshape(qc_off.shape),
+                               rtol=TOL, atol=0)
+    assert np.any(np.asarray(on.tracer_tendencies["q_c"].data) != qc_off)
+    for _, nm, _ in TRACERS[1:]:
+        t = off.tracer_tendencies.get(nm)
+        assert t is None or not np.any(np.asarray(t.data)), nm
 
 
 def test_zm_gradient_is_finite_with_carried_pblh(fx):

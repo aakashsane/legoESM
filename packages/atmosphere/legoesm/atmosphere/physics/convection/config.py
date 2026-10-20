@@ -734,6 +734,10 @@ class ZhangMcFarlaneConfig(NamedTuple):
     enable_cmt : bool
         Run ``momtran`` (convective momentum transport + KE-dissipation
         heating); when False ``du_dt_conv``/``dv_dt_conv`` are ``None``.
+    transport_cloud_tracers : bool
+        Run ``convtran`` on the carried CAM6 convtran1 tracers
+        (``zm_conv_intr.F90:829-846``); when False they are not transported
+        and ``tracer_transport`` is ``None``.
     """
     c0_lnd: float = 0.0075
     c0_ocn: float = 0.03
@@ -750,6 +754,7 @@ class ZhangMcFarlaneConfig(NamedTuple):
     pbl_top_pa: float = 7.0e4
     parcel_tpert: float = 0.0
     enable_cmt: bool = True
+    transport_cloud_tracers: bool = True
     # Column land fraction policy (static, closure-time).  "required": the host
     # must pass ``land_frac`` (it picks c0_lnd vs c0_ocn per column); a missing
     # one raises instead of silently treating every column as ocean.  "none":

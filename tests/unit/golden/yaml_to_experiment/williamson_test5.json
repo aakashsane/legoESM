@@ -391,5 +391,6 @@
   "zm_dmpdz": null,
   "zm_ke": null,
   "zm_land_fraction": "required",
-  "zm_tau": null
+  "zm_tau": null,
+  "zm_transport_cloud_tracers": true
 }

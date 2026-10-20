@@ -251,6 +251,7 @@ zm_ke: 5.0e-6               # rain evaporation efficiency
 zm_dmpdz: -1.0e-3           # dilute-plume entrainment [1/m]
 zm_tau: 3600.0              # CAPE consumption timescale [s]
 zm_capelmt: 70.0            # deep-convection CAPE threshold [J/kg]
+zm_transport_cloud_tracers: true  # ZM convtran of carried cloud/precip water + numbers (CAM6)
 
 # ---- turbulence ---------------------------------------------------------------
 turbulence: clubb

@@ -409,19 +409,19 @@ def morrison_microphysics(
         dN_r_au = dN_r_au * cf_eff
         dq_c_ac = accretion(q_c_ic, q_r_ic, rho, config.k_ac) * cf_eff
     elif config.warm_rain_scheme == "seifert_beheng_sb2001":
-        # PUBLISHED SB2001 universal functions (phi_au, phi_ac) — the faithful
-        # gSAM IRAIN=1 MASS rates (module_mp_graupel.f90:1835-1844, :1960-1962),
-        # as opposed to the simplified "seifert_beheng" proxy above. tau is a
-        # scale-invariant ratio so the in-cloud (q/cf) rescaling leaves it
-        # unchanged. NOTE the subgrid enhancement is NOT the same across the
-        # laws: with the droplet number held at the grid-mean (not rescaled by cf), the
-        # q_c^4 autoconversion gets a cf^-3 enhancement vs cf^-1 for accretion —
-        # STRONGER than the kk2000 path. This (and the un-rescaled in-cloud N_c)
-        # is a known subgrid-closure limitation, moot at the default
-        # ``subgrid_autoconversion=False`` (cf_eff=1). The SB2001-specific
-        # cloud-NUMBER autoconv factor (2·PRC·rho/x_*) is not applied — the
-        # generic ``-dq_c_au·rho/x_c`` sink below (predict_Nc=True) is used
-        # instead; see ``autoconversion_sb2001``.
+        # Seifert & Beheng (2001) as gSAM M2005 runs it (IRAIN=1,
+        # module_mp_graupel.f90:1830-1844, :1955-1962): rate gates, droplet
+        # shape nu DIAGNOSED from N_c and the droplet-slope clamp on N_c
+        # (gSAM default dofix_pgam=.false.), see ``autoconversion_sb2001``.
+        # Oracle-pinned by tests/atmosphere/microphysics/unit/
+        # test_sb2001_warm_rain_oracle.py at predict_Nc=False (gSAM default).
+        # NOTE the subgrid enhancement is NOT the same across the laws: with
+        # the droplet number held at the grid-mean (not rescaled by cf), the
+        # q_c^4 autoconversion gets a cf^-3 enhancement vs cf^-1 for accretion
+        # — moot at the default ``subgrid_autoconversion=False`` (cf_eff=1).
+        # NOT YET FAITHFUL under predict_Nc=True: gSAM's SB2001 cloud-NUMBER
+        # sinks (NPRC = 2·PRC/x_*, NPRA) are not applied — the generic
+        # ``-dq_c_au·rho/x_c`` sink below is used instead.
         dq_c_au, dN_r_au, x_c = autoconversion_sb2001(
             q_c_ic, q_r_ic, N_c_ic, rho,
         )
@@ -432,8 +432,7 @@ def morrison_microphysics(
         raise ValueError(
             f"Unknown warm_rain_scheme: {config.warm_rain_scheme!r}; choose "
             f"'kk2000' (SAM M2005 default), 'kk2000_cam6' (CAM6 MG2), 'seifert_beheng' (simplified "
-            f"proxy) or 'seifert_beheng_sb2001' (published SB2001 universal "
-            f"functions)."
+            f"proxy) or 'seifert_beheng_sb2001' (SB2001 as gSAM M2005 runs it)."
         )
     # Rain self-collection + breakup. "sb2001" (SAM NRAGG) self-collects
     # ~5580× faster than the legacy k_sc=1e-3 sigmoid form, so rain coalesces

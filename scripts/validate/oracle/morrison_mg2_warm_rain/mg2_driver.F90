@@ -7,15 +7,16 @@
 ! (mg2, :1244), do_cldice=.true., use_hetfrz_classnuc=.true. (frzimm/cnt/dep=0),
 ! microp_uniform from argv(3).  Constants = legoESM's (constants.py).
 ! usage: mg2_driver in.txt out.txt [microp_uniform T|F] [P]
-! Built with -DMG2_TAP against the probe copy (build.sh, tap/) it writes a 16th column: nctend right after
-! the activation re-apply (micro_mg2_0.F90:2022).
+! Built with -DMG2_TAP against the probe copy (build.sh, tap/) it writes three more columns: nctend right
+! after the activation re-apply (micro_mg2_0.F90:2022), nctend after sedimentation (before :2501), and the
+! droplet sedimentation sub-step count.
 ! A 4th argument P = prognostic droplet number: nccons_in=.false. (ncic = max(nc/lcldm, 0)) and a 19th input
 ! column per level, npccn [1/kg/s]; without it the input has 18 columns and nccons_in=.true. as before.
 program mg2_driver
   use micro_mg_utils, only: r8
   use micro_mg2_0, only: micro_mg_init, micro_mg_tend
 #ifdef MG2_TAP
-  use micro_mg2_0, only: nctend_stage
+  use micro_mg2_0, only: nctend_stage, nctend_sed, nstepc_tap
 #endif
   use wv_sat_methods, only: wv_sat_methods_init
   implicit none
@@ -28,7 +29,7 @@ program mg2_driver
   logical :: uni, prog
   integer :: ninp
 #ifdef MG2_TAP
-  integer, parameter :: nout = 16
+  integer, parameter :: nout = 18
 #else
   integer, parameter :: nout = 15
 #endif
@@ -126,6 +127,8 @@ program mg2_driver
              qcsedten(1,k), umr(1,k), qcrat(1,k), rflx(1,k+1), lflx(1,k+1)]
 #ifdef MG2_TAP
         allout(ic,k,16) = nctend_stage(1,k)
+        allout(ic,k,17) = nctend_sed(1,k)
+        allout(ic,k,18) = real(nstepc_tap(1), r8)
 #endif
      end do
   end do
@@ -136,7 +139,7 @@ program mg2_driver
   end do
   do ic = 1, ncol
      do k = 1, nlev
-        write(11, '(2i4,16(1x,es25.16e3))') ic, k, allout(ic,k,:)
+        write(11, '(2i4,'//char(48+nout/10)//char(48+mod(nout,10))//'(1x,es25.16e3))') ic, k, allout(ic,k,:)
      end do
   end do
   close(11)

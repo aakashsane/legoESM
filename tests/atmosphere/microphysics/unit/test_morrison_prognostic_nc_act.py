@@ -65,16 +65,25 @@ def _mg2_masks(fx):
 
 
 def test_droplet_number_budget_matches_mg2_stage():
+    """Compared after droplet sedimentation (stage S10.3, MG2 probe before
+    :2501) and, where no cloud water is left, after MG2's number clear (:2913);
+    the S10.2 coverage masks use the probe right after the activation re-apply."""
     fx = _fx()
     out = _run(fx)
+    dt = float(fx["dt"])
     dN = np.asarray(out.dN_c_dt) / fx["col_rho"]          # per kg, as MG2
-    _, neg, bound = _mg2_masks(fx)
-    err = _rel(dN[~neg], fx["ora_nctend_stage"][~neg])
-    print("S10.2 nctend max rel err", float(err.max()), "cells", int((~neg).sum()),
-          "floor cells", int(neg.sum()))
+    _, _, bound = _mg2_masks(fx)
+    nc = fx["col_nc_kg"]
+    clear = fx["col_q_c"] + fx["ora_qctend"] * dt < 1e-18
+    neg = ~clear & (nc + fx["ora_nctend_sed"] * dt < 0.0)
+    keep = ~clear & ~neg
+    err = _rel(dN[keep], fx["ora_nctend_sed"][keep])
+    print("S10.2 nctend max rel err", float(err.max()), "cells", int(keep.sum()),
+          "floor cells", int(neg.sum()), "clear cells", int(clear.sum()))
     assert float(err.max()) <= TOL
+    assert float(_rel(dN[clear], fx["ora_nctend"][clear]).max()) <= TOL
     # interim floor (user decision 2026-10-20) where MG2's number would go negative
-    floor = -fx["col_nc_kg"] / float(fx["dt"])
+    floor = -nc / dt
     assert np.allclose(dN[neg], floor[neg], rtol=1e-12, atol=0.0)
     qb = out.qc_budget
     for k, ora in (("autoconversion", "ora_prctot"), ("accretion", "ora_pratot")):
@@ -86,7 +95,9 @@ def test_droplet_number_budget_matches_mg2_stage():
     witness = (fx["ora_qcrat"] < 1.0) & ~bound & (npc == 0) & (qc > 0)
     assert witness.any()                                         # mass limited, number not
     assert ((npc > 0) & (qc > 0) & ~neg).any() and ((npc < 0) & (qc > 0) & ~neg).any()
-    assert ((npc != 0) & (qc == 0) & ~neg).any()                 # re-apply in clear air
+    # clear air: MG2 re-applies npccn (:2022) and its number clear (:2913) then
+    # overrides it; both sides end at -nc/dt there
+    assert ((npc != 0) & (qc == 0) & (fx["ora_nctend_stage"] == npc)).any() and clear.any()
     capped = (qc / np.maximum(fx["col_cf"], 1e-4) > 5.0e-3) & ~neg & ~bound
     assert capped.any()                       # MG2's 5e-3 in-cloud cap, number not limited
     assert neg.sum() < (~neg).sum()
@@ -123,20 +134,43 @@ def test_cold_riming_number_sinks_and_no_ice_riming():
     c = np.asarray(cloudy)
     assert (rim[c] > 0).all() and np.all(qb["autoconversion"][c] == 0) \
         and np.all(qb["accretion"][c] == 0)
-    sinks = -sum(v for k, v in qb.items() if k != "condensation")
+    sinks = -sum(v for k, v in qb.items() if k not in ("condensation", "sedimentation"))
     dt = float(fx["dt"])
     assert (sinks[c] * dt < 0.99 * np.asarray(q_c)[c]).all()   # qc mass limiter not binding
     rho = jnp.asarray(fx["col_rho"])
     qcic = q_c / cf
     ncic = W.mg2_size_bounded_nc(qcic, jnp.asarray(fx["col_nc_kg"]) * rho / cf, rho)
-    want = -rim * np.asarray(ncic / qcic)
+    pre = -rim * np.asarray(ncic / qcic)
     got = np.asarray(out.dN_c_dt)
     nc_vol = np.asarray(jnp.asarray(fx["col_nc_kg"]) * rho)
-    has_n = c & (nc_vol > 0)
-    assert (-want[has_n] * dt < nc_vol[has_n]).all()            # nc limiter not binding
+    has_n = _top(c) & (nc_vol > 0)
+    assert has_n.sum() >= 3
+    assert (-pre[has_n] * dt < nc_vol[has_n]).all()             # nc limiter not binding
+    want = _with_sedimentation(fx, out, q_c, jnp.asarray(nc_vol),
+                               jnp.asarray(np.where(has_n, pre, 0.0)), T)
     assert float(_rel(got[has_n], want[has_n]).max()) <= 1e-12
     # a cloudy cell with no droplets: the nc limiter removes nothing (MG2 :1628-1642)
     assert (c & (nc_vol == 0)).any() and np.all(got[c & (nc_vol == 0)] == 0.0)
+
+
+def _top(c):
+    """Top cloudy level of each cloud layer: no droplets fall into it, so its
+    sedimentation depends on its own state only."""
+    return c & ~np.concatenate([np.zeros_like(c[:, :1]), c[:, :-1]], axis=1)
+
+
+def _with_sedimentation(fx, out, q_c, N_c, dN_pre, T):
+    """``dN_pre`` (per volume, before droplet sedimentation and the number clear)
+    carried through the S10.3 steps with the oracle-tested port, as Morrison does."""
+    rho = jnp.asarray(fx["col_rho"])
+    dt = float(fx["dt"])
+    cf = jnp.maximum(jnp.asarray(fx["col_cf"]), 1e-4)
+    dqc_pre = out.dq_c_dt - out.qc_budget["sedimentation"]
+    _, sed_n, _, _, _, _ = W.mg2_cloud_sedimentation(
+        q_c + dqc_pre * dt, (N_c + dN_pre * dt) / rho, cf, T, rho,
+        jnp.asarray(fx["col_p_half"]), dt, _cfg().sed_cfl_substeps_max)
+    dN = dN_pre + sed_n * rho
+    return np.asarray(jnp.where(q_c + out.dq_c_dt * dt < 1e-18, -N_c / dt, dN))
 
 
 def _cold(fx, qcic, q_r, nc_scale=1.0):
@@ -154,7 +188,8 @@ def _cold(fx, qcic, q_r, nc_scale=1.0):
                            N_r=jnp.where(cloudy, q_r * rho / 6.5e-8, 0.0)))
     qb = {k: np.asarray(v) for k, v in out.qc_budget.items()}
     ncic = W.mg2_size_bounded_nc(q_c / cf, N_c / cf, rho)
-    return out, qb, np.asarray(cloudy), np.asarray(ncic / (q_c / cf)), np.asarray(N_c), np.asarray(q_c)
+    return (out, qb, np.asarray(cloudy), np.asarray(ncic / (q_c / cf)), np.asarray(N_c),
+            np.asarray(q_c), T)
 
 
 def test_cold_full_sum_and_graupel_under_the_number_cap():
@@ -163,17 +198,21 @@ def test_cold_full_sum_and_graupel_under_the_number_cap():
     sink is capped by MG2's nc limiter at N_c/dt x omsm (user decision 7a)."""
     fx = _fx()
     dt = float(fx["dt"])
-    out, qb, c, r, N_c, q_c = _cold(fx, 1.0e-6, 1.0e-5)
+    out, qb, c, r, N_c, q_c, T = _cold(fx, 1.0e-6, 1.0e-5)
     mass = -(qb["autoconversion"] + qb["accretion"] + qb["riming_snow"] + qb["riming_graupel"])
-    sinks = -sum(v for k, v in qb.items() if k != "condensation")
-    ok = c & (N_c > 0) & (sinks * dt < 0.99 * q_c) & (mass * r * dt < 0.99 * N_c)
+    sinks = -sum(v for k, v in qb.items() if k not in ("condensation", "sedimentation"))
+    ok = _top(c) & (N_c > 0) & (sinks * dt < 0.99 * q_c) & (mass * r * dt < 0.99 * N_c)
     assert ok.any() and (qb["autoconversion"][ok] < 0).all() and (qb["riming_graupel"][ok] < 0).all()
-    assert float(_rel(np.asarray(out.dN_c_dt)[ok], -(mass * r)[ok]).max()) <= 1e-12
-    out, qb, c, r, N_c, q_c = _cold(fx, 1.0e-6, 1.0e-5, nc_scale=1.0e-6)
+    want = _with_sedimentation(fx, out, jnp.asarray(q_c), jnp.asarray(N_c),
+                               jnp.asarray(np.where(ok, -(mass * r), 0.0)), T)
+    assert float(_rel(np.asarray(out.dN_c_dt)[ok], want[ok]).max()) <= 1e-12
+    out, qb, c, r, N_c, q_c, T = _cold(fx, 1.0e-6, 1.0e-5, nc_scale=1.0e-6)
     mass = -(qb["autoconversion"] + qb["accretion"] + qb["riming_snow"] + qb["riming_graupel"])
-    capd = c & (N_c > 0) & (mass * r * dt > 1.01 * N_c)
+    capd = _top(c) & (N_c > 0) & (mass * r * dt > 1.01 * N_c)
     assert capd.any() and (qb["riming_graupel"][capd] < 0).all()
-    assert np.allclose(np.asarray(out.dN_c_dt)[capd], -(N_c / dt * OMSM)[capd], rtol=1e-12, atol=0)
+    want = _with_sedimentation(fx, out, jnp.asarray(q_c), jnp.asarray(N_c),
+                               jnp.asarray(np.where(capd, -N_c / dt * OMSM, 0.0)), T)
+    assert float(_rel(np.asarray(out.dN_c_dt)[capd], want[capd]).max()) <= 1e-12
 
 
 def test_npccn_guards():

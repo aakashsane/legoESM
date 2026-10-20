@@ -71,14 +71,15 @@ def test_whole_call_rain_matches_mg2_prognostic_nc():
     out = _run(fx, _cfg())
     qb = out.qc_budget
     rho = fx["col_rho"]
-    evap = np.asarray(out.dq_v_dt) + np.asarray(qb["condensation"])
     errs = {
         "prc": _rel(-np.asarray(qb["autoconversion"]), fx["ora_prctot"]),
         "pra": _rel(-np.asarray(qb["accretion"]), fx["ora_pratot"]),
-        "evap": _rel(evap, fx["ora_nevapr"]),
+        # vapour: rain evaporation + evaporation of droplets sedimenting into
+        # clear air (stage S10.3); no condensation under liquid_from_closure
+        "qvlat": _rel(out.dq_v_dt, fx["ora_qvlat"]),
         "dq_r": _rel(out.dq_r_dt, fx["ora_qrtend"]),
         "dN_r": _rel(np.asarray(out.dN_r_dt) / rho, fx["ora_nrtend"]),
-        "precip": _rel(out.precipitation, fx["ora_rain_sfc_flux"]),
+        "precip": _rel(out.precipitation, fx["ora_rain_sfc_flux"] + fx["ora_lflx_bot"][:, -1]),
     }
     worst = {k: float(v.max()) for k, v in errs.items()}
     print("prognostic-nc whole-call max rel err", worst)

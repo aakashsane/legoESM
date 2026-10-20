@@ -75,6 +75,7 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     MG2_QRIC_MAX,
     MG2_QSMALL,
     mg2_size_bounded_nc,
+    mg2_cloud_sedimentation,
     mg2_incloud_warm_rain_inputs,
     mg2_inprecip_rain,
     mg2_precip_frac,
@@ -2106,6 +2107,33 @@ def morrison_microphysics(
             dN_r_dt = dN_r_dt + _n2 * rho / dt          # N_r per-volume
             dT_dt = dT_dt - L_f * _m2 / dt / c_pd
 
+    if _prog_nc:
+        # MG2 cloud-droplet sedimentation on the post-process state
+        # (micro_mg2_0.F90:2056-2377; user decision 9a), sharing the
+        # sedimentation sub-step cap, its required-count report and strict
+        # error (user decision 2026-10-20).  N_c is per volume here.
+        (sed_c, sed_nc_kg, sed_qv, sed_T, precip_c,
+         _req_c) = mg2_cloud_sedimentation(
+            q_c + dq_c_dt * dt, (N_c + dN_c_dt * dt) / rho, cf_eff, T, rho,
+            p_half, dt, _nsub)
+        if config.sed_cfl_substeps:
+            sed_substeps_required = jnp.maximum(sed_substeps_required, _req_c)
+            if config.sed_cfl_substeps_strict:
+                _overflow_c = jnp.any(_req_c > _nsub_max)
+                sed_c, sed_nc_kg, sed_qv, sed_T, precip_c = eqx.error_if(
+                    (sed_c, sed_nc_kg, sed_qv, sed_T, precip_c), _overflow_c,
+                    "Morrison cloud-droplet sedimentation: a column needs more "
+                    "CFL sub-steps than MorrisonConfig.sed_cfl_substeps_max="
+                    f"{_nsub_max}; shorten the physics sub-step or raise the cap")
+                _sed_poison = jnp.where(_overflow_c, jnp.nan, _sed_poison)
+        dq_c_dt = dq_c_dt + sed_c
+        dN_c_dt = dN_c_dt + sed_nc_kg * rho
+        dq_v_dt = dq_v_dt + sed_qv
+        dT_dt = dT_dt + sed_T
+        # MG2's last droplet-number write (micro_mg2_0.F90:2913): no cloud
+        # water left after the step => no droplets.
+        dN_c_dt = jnp.where(q_c + dq_c_dt * dt < MG2_QSMALL, -N_c / dt, dN_c_dt)
+
     # === Non-negativity floor on the cloud/rain/ice NUMBER tendencies ===
     # Each individual number sink above is bounded (evap/riming ∝ N/dt,
     # ice autoconv clamped to N_i/dt), but their SUM — plus an inward
@@ -2354,6 +2382,10 @@ def morrison_microphysics(
     # surface flux from ``sedimentation_tendency`` so column water
     # conservation holds exactly when the CFL limiter fires.
     precipitation = precip_r + precip_i + precip_s + precip_g
+    if _prog_nc:
+        # droplets reaching the surface count as precipitation (CAM6 prect;
+        # user decision 2026-10-20)
+        precipitation = precipitation + precip_c
 
     # (No placeholder outputs here — every MicrophysicsOutput field below is
     # a computed tendency, so no dtype pin is needed; a former bare
@@ -2388,9 +2420,9 @@ def morrison_microphysics(
         # donor clamp), and ``condensation`` is the saturation-adjustment
         # source.  They reconstruct ``dq_c_dt`` exactly -- the probe asserts
         # the residual, so a term added to ``dq_c_dt`` without being listed
-        # here is caught rather than hidden.  Sedimentation of cloud water is
-        # NOT a q_c term in this scheme (cloud droplets do not sediment); it
-        # appears in the rain budget instead.
+        # here is caught rather than hidden.  Cloud droplets sediment only
+        # under prognostic_droplet_number (MG2), where "sedimentation" is
+        # listed; otherwise cloud water does not sediment.
         out = out._replace(qc_budget={
             "condensation": condensation,
             "autoconversion": -dq_c_au,
@@ -2402,6 +2434,8 @@ def morrison_microphysics(
             "homogeneous_freezing": -homo_freeze_c,
             "bergeron_snow": -bergs,
         })
+        if _prog_nc:
+            out.qc_budget["sedimentation"] = sed_c
     if _sed_poison is not None:
         # Strict mode: every FLOAT field carries the overflow guard (the
         # count stays a usable integer).  Static Python branch -- the

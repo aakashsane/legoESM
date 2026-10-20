@@ -30,6 +30,14 @@ npccn = 0: the number limiter binds).  Run through the probe build ``mg2_tap``
 (build.sh), whose 16th output column is nctend right after the activation
 re-apply (micro_mg2_0.F90:2022).
 
+``--prognostic-nc-sed`` writes ``mg2_prognostic_nc_sed.npz`` for the cloud-droplet
+sedimentation and the number clear (stage S10.3): the activation columns plus
+``thin`` (32 layers of 50 Pa, so MG2's droplet sub-step count exceeds 1, and a
+cloud fraction falling downward through the cloud, so part of the incoming flux
+evaporates) and ``clearnc`` (cloud water below qsmall with droplets left, and
+clear-air activation), through ``mg2_tap`` (nctend after sedimentation, before
+micro_mg2_0.F90:2501, and the droplet sub-step count).
+
 Usage (CPU node; needs gfortran and the CAM checkout)::
 
     python scripts/validate/oracle/morrison_mg2_warm_rain/make_fixture.py \\
@@ -287,6 +295,29 @@ def build_activation_columns(cols):
     return out + [wit, lim, cap]
 
 
+def build_sedimentation_columns(cols):
+    """``--prognostic-nc-sed`` columns: the activation columns plus ``thin`` and ``clearnc``."""
+    from legoesm import constants as C
+    base = next(c for c in cols if c["name"] == "trop_deep")
+    nlev = len(base["T"])
+    ph = 90000.0 + 50.0 * np.arange(nlev + 1)
+    pf = 0.5 * (ph[1:] + ph[:-1])
+    T = np.full(nlev, 285.0)
+    rho = pf / (C.R_d * T)
+    cloud = (np.arange(nlev) >= 8) & (np.arange(nlev) < 24)
+    cf = np.where(cloud, np.linspace(0.9, 0.2, nlev), 0.0)
+    qc = np.where(cloud, 5.0e-4, 0.0)
+    nc_vol = 3.0e7
+    thin = dict(base, name="thin", T=T, p_half=ph, p_full=pf, rho=rho, cf=cf, q_c=qc,
+                q_v=np.full(nlev, 8.0e-3), q_r=np.zeros(nlev), N_r=np.zeros(nlev),
+                N_c=np.full(nlev, nc_vol), nc_kg=np.where(cloud, nc_vol / rho * cf, 0.0),
+                relvar=np.ones(nlev), npccn=np.zeros(nlev))
+    tiny = base["q_c"] > 0
+    clear = dict(base, name="clearnc", q_c=np.where(tiny, 5.0e-19, 0.0),
+                 nc_kg=np.where(tiny, 1.0e6, 0.0), npccn=np.where(tiny, 0.0, 1.0e3))
+    return cols + [thin, clear]
+
+
 def write_prognostic_column_inputs(cols, path):
     nlev = len(cols[0]["T"])
     with open(path, "w") as f:
@@ -329,8 +360,12 @@ def load_column_outputs(path, ncol, nlev):
     body = np.array([[float(x) for x in line.split()] for line in lines[ncol:]
                      if line.strip()]).reshape(ncol, nlev, -1)
     out = {k: body[:, :, i + 2] for i, k in enumerate(ORACLE_COLS)}
-    if body.shape[-1] == len(ORACLE_COLS) + 3:      # mg2_tap: nctend after :2022
-        out["nctend_stage"] = body[:, :, -1]
+    extra = body.shape[-1] - len(ORACLE_COLS) - 2   # mg2_tap probe columns
+    if extra >= 1:
+        out["nctend_stage"] = body[:, :, len(ORACLE_COLS) + 2]    # after :2022
+    if extra >= 3:
+        out["nctend_sed"] = body[:, :, len(ORACLE_COLS) + 3]      # before :2501
+        out["nstepc"] = body[:, :, len(ORACLE_COLS) + 4]          # droplet sed sub-steps
     out["prect"] = prect
     return out
 
@@ -351,7 +386,8 @@ def _meta(a):
         generator=("python scripts/validate/oracle/morrison_mg2_warm_rain/"
                    f"make_fixture.py --cam <CAM> --build <dir> --out {a.out.name}"
                    + (" --prognostic-nc" if a.prognostic_nc else "")
-                   + (" --prognostic-nc-act" if a.prognostic_nc_act else "")))
+                   + (" --prognostic-nc-act" if a.prognostic_nc_act else "")
+                   + (" --prognostic-nc-sed" if a.prognostic_nc_sed else "")))
 
 
 def main_prognostic(a):
@@ -394,10 +430,34 @@ def main_prognostic_act(a):
     write_prognostic_column_inputs(cols, fin)
     subprocess.run([str(a.build / "mg2_tap"), str(fin), str(fout), "F", "P"], check=True)
     o = load_column_outputs(fout, ncol, nlev)
-    for k in ORACLE_COLS + ("nctend_stage",):
+    for k in ORACLE_COLS + ("nctend_stage", "nctend_sed", "nstepc"):
         fx[f"ora_{k}"] = o[k]
     meta = _meta(a)
-    meta["probe"] = "build.sh tap/: micro_mg2_0.F90 + nctend_stage after :2022 (3 added lines)"
+    meta["probe"] = ("build.sh tap/: micro_mg2_0.F90 + nctend after :2022, nctend before :2501, "
+                     "droplet sedimentation nstep (8 added lines)")
+    fx["meta"] = np.array(json.dumps(meta))
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(a.out, **fx)
+    print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
+
+
+def main_prognostic_sed(a):
+    cols = build_sedimentation_columns(
+        build_activation_columns(build_prognostic_columns(build_columns())))
+    ncol, nlev = len(cols), len(cols[0]["T"])
+    fx = {f"col_{k}": np.stack([c[k] for c in cols])
+          for k in COL_FIELDS + ("nc_kg", "relvar", "npccn")}
+    fx["col_names"] = np.array([c["name"] for c in cols])
+    fx["dt"] = np.array(DT)
+    fin, fout = a.build / "sed_col_in.txt", a.build / "sed_col_out.txt"
+    write_prognostic_column_inputs(cols, fin)
+    subprocess.run([str(a.build / "mg2_tap"), str(fin), str(fout), "F", "P"], check=True)
+    o = load_column_outputs(fout, ncol, nlev)
+    for k in ORACLE_COLS + ("nctend_stage", "nctend_sed", "nstepc"):
+        fx[f"ora_{k}"] = o[k]
+    meta = _meta(a)
+    meta["probe"] = ("build.sh tap/: micro_mg2_0.F90 + nctend after :2022, nctend before :2501, "
+                     "droplet sedimentation nstep (8 added lines)")
     fx["meta"] = np.array(json.dumps(meta))
     a.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(a.out, **fx)
@@ -411,6 +471,7 @@ def main(argv=None):
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--prognostic-nc", action="store_true")
     ap.add_argument("--prognostic-nc-act", action="store_true")
+    ap.add_argument("--prognostic-nc-sed", action="store_true")
     a = ap.parse_args(argv)
     subprocess.run(["bash", str(HERE / "build.sh"), str(a.cam), str(a.build)],
                    check=True)
@@ -418,6 +479,8 @@ def main(argv=None):
         return main_prognostic(a)
     if a.prognostic_nc_act:
         return main_prognostic_act(a)
+    if a.prognostic_nc_sed:
+        return main_prognostic_sed(a)
     cols = build_columns()
     ncol, nlev = len(cols), len(cols[0]["T"])
     fx = {f"col_{k}": np.stack([c[k] for c in cols]) for k in COL_FIELDS}

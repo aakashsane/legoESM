@@ -816,6 +816,7 @@ MG2_QRIC_MAX = 0.01       # micro_mg2_0.F90:1316 in-precip rain cap [kg/kg]
 # al. 1994 fit, :395-397); lambda bounded so the mean diameter stays in
 # [2, 50] um (:409-410); ncic <= qcic/min_mean_mass_liq (:173, :493-494).
 _MG2_PGAM_A = 0.7
+_MG2_DROP_FALL_BC = 2.0    # micro_mg_utils.F90:133 bc, droplet fall-speed exponent
 _MG2_PGAM_B = 0.008e-6     # [cm^3 -> m^3 conversion folded in] per (#/m^3)
 _MG2_PGAM_MIN = 2.0
 _MG2_DROP_DIAM_MAX = 50.0e-6   # [m] -> lambda lower bound (pgam+1)/50 um
@@ -921,6 +922,77 @@ def mg2_size_dist_liq(q_c_ic, N_c_ic, rho):
     return (jnp.where(active, nc_kg * rho, N_c_ic),
             jnp.where(active, pgam, _MG2_PGAM_UNSET),
             jnp.where(active, jnp.clip(lam, lam_lo, lam_hi), 0.0))
+
+
+def mg2_droplet_fall_coefficients(q_c, N_c_kg, lcldm, T, rho):
+    """MG2 droplet ``(fc, fnc)`` [Pa/s per unit mixing ratio] (micro_mg2_0.F90:
+    2056-2120): ``g rho`` x the mass- / number-weighted Stokes fall speed of the
+    in-cloud size distribution of the grid state ``(q_c, N_c_kg)``; 0 where the
+    in-cloud water is below qsmall."""
+    g = constants.g
+    has_c = q_c / lcldm >= MG2_QSMALL
+    q_ic = jnp.where(has_c, q_c / lcldm, 0.0)
+    n_ic = jnp.where(has_c, jnp.maximum(N_c_kg / lcldm, 0.0), 0.0)
+    _, pgam, lamc = mg2_size_dist_liq(q_ic, n_ic * rho, rho)
+    pgam = jnp.where(has_c, pgam, 0.0)  # MG2's -100 marker would put gammaln off its domain
+    mu = _MU_PREFACTOR * safe_pow(T, _MU_T_EXPONENT) / (T + _MU_SUTHERLAND_T)
+    acn = g * constants.rho_water / (18.0 * mu)
+    bc = _MG2_DROP_FALL_BC
+    lam_bc = safe_pow(jnp.where(has_c, lamc, 1.0), bc)
+    lg = jax.scipy.special.gammaln
+    fc = jnp.where(has_c, g * rho * acn * jnp.exp(lg(4.0 + bc + pgam) - lg(pgam + 4.0)) / lam_bc, 0.0)
+    fnc = jnp.where(has_c, g * rho * acn * jnp.exp(lg(1.0 + bc + pgam) - lg(pgam + 1.0)) / lam_bc, 0.0)
+    return fc, fnc
+
+
+def mg2_cloud_sedimentation(q_c, N_c_kg, lcldm, T, rho, p_half, dt, n_substeps_max):
+    """CAM6 MG2 cloud-droplet sedimentation (micro_mg2_0.F90:2056-2120,
+    :2204-2216, :2319-2377) on the POST-process grid state.
+
+    ``q_c`` [kg/kg] and ``N_c_kg`` [1/kg] are ``state + tendency*dt``; ``lcldm`` =
+    max(cloud fraction, mincld); ``T``/``rho`` the start-of-step temperature and
+    the caller's air density; ``p_half`` interfaces [Pa], level 0 = model top.
+    Fall speeds (fixed over sub-steps) from the in-cloud size distribution:
+    ``acn = g rho_w/(18 mu)``, ``bc = 2``,
+    ``fc = g rho acn G(4+bc+pgam)/(lamc^bc G(pgam+4))``,
+    ``fnc = g rho acn G(1+bc+pgam)/(lamc^bc G(pgam+1))`` where in-cloud q_c >= qsmall.
+    Sub-steps per column ``nstep = 1 + floor(max_k max(fc, fnc)/pdel * dt)``,
+    clipped to ``n_substeps_max``; flux ``F = fc q``; level k gains
+    ``d F(k-1)`` with ``d = min(lcldm(k)/lcldm(k-1), 1)``; the inflow share
+    ``(1-d) F(k-1)`` falling into clear air evaporates (vapour source, latent
+    cooling ``L_v/c_pd``).  Returns ``(dq_c, dN_c_kg, dq_v, dT, sfc_flux,
+    nstep_required)`` [kg/kg/s, 1/(kg s), kg/kg/s, K/s, kg/(m^2 s), int].
+    """
+    g = constants.g
+    pdel = p_half[:, 1:] - p_half[:, :-1]
+    fc, fnc = mg2_droplet_fall_coefficients(q_c, N_c_kg, lcldm, T, rho)
+    c0 = q_c
+    n0 = jnp.where(q_c < MG2_QSMALL, 0.0, jnp.maximum(N_c_kg, 0.0))
+    courant = jnp.max(jnp.maximum(fc, fnc) / pdel, axis=1) * dt
+    nstep_req = 1 + jnp.floor(courant).astype(jnp.int32)
+    nsub = jnp.clip(nstep_req, 1, n_substeps_max)[:, None]
+    inv = 1.0 / nsub.astype(q_c.dtype)
+    ratio = jnp.minimum(lcldm[:, 1:] / lcldm[:, :-1], 1.0)
+    d = jnp.concatenate([jnp.zeros_like(ratio[:, :1]), ratio], axis=1)
+
+    def _shift(x):  # value of the level above; nothing enters the top
+        return jnp.concatenate([jnp.zeros_like(x[:, :1]), x[:, :-1]], axis=1)
+
+    def body(i, carry):
+        c, n, dqc, dn, dqv, sfc = carry
+        on = (i < nsub).astype(q_c.dtype)
+        F, Fn = fc * c, fnc * n
+        tend_c = (F - d * _shift(F)) / pdel
+        tend_n = (Fn - d * _shift(Fn)) / pdel
+        evap = (1.0 - d) * _shift(F) / pdel
+        w = on * inv
+        return (c - tend_c * dt * w, n - tend_n * dt * w, dqc - tend_c * w,
+                dn - tend_n * w, dqv + evap * w, sfc + F[:, -1] / g * w[:, 0])
+
+    z = jnp.zeros_like(q_c)
+    _, _, dqc, dn, dqv, sfc = jax.lax.fori_loop(
+        0, int(n_substeps_max), body, (c0, n0, z, z, z, jnp.zeros_like(q_c[:, 0])))
+    return dqc, dn, dqv, -constants.L_v * dqv / constants.c_pd, sfc, nstep_req
 
 
 def mg2_inprecip_rain(q_r, N_r, rho, precip_frac, lamr_min, lamr_max):

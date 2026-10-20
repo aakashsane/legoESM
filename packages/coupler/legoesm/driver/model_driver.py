@@ -356,9 +356,10 @@ def solve_land_on_devices(step, args, is_col, mesh, keep):
     b_out = jax.eval_shape(body, *shapes(n_slot + 1))
     out_specs = jax.tree_util.tree_map(
         lambda a, b: P(axis) if a.shape != b.shape else P(), a_out, b_out)
-    # check_vma off: the canopy scan carries start replicated.  Risk: a
-    # shared (non-per-column) output that depends on the columns would take
-    # device 0's value; the one-call gate compares every output to catch it.
+    # check_vma off: the canopy scan carries start replicated.  Invariant:
+    # the land step has no shared output (counters recounted below); a new
+    # one that depended on the columns would differ per device.  The
+    # one-call gate reports every shared output and its device copies.
     out = shard_map(
         body, mesh=mesh,
         in_specs=tuple(P(axis) if c else P() for c in arr_col),

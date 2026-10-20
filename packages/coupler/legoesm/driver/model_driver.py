@@ -14310,11 +14310,12 @@ class ModelDriver:
                 # the correct pre-feature state (deepcu exactly 0).
                 "conv_mass_flux_up",
                 "conv_icwmr",
-                # pblh (2026-10-20, user decision on #2045): the carried PBL
-                # height ZM reads one step lagged; zero-seed = CAM's cold
-                # start (physpkg.F90:419-424), refreshed by the first
-                # turbulence call.
-                "pblh",
+                # NOT pblh (user decision 2026-10-20, oracle row 47): CAM
+                # zero-seeds PBLH only on an initial run (physpkg.F90:419-424
+                # via phys_inidat, called only if initial_run, :803); a
+                # restart without the pbuf field is an error
+                # (physics_buffer.F90.in:1591).  A pre-#2045 checkpoint is
+                # therefore INCOMPLETE below.
             })
             if _any_physstate:
                 from legoesm.atmosphere.physics.physics_state import (

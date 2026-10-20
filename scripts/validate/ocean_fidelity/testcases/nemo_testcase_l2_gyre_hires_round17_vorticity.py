@@ -47,6 +47,13 @@ OUTPUT_RESTART = "GYRE_R17_VORTEX_00004321_restart.nc"
 NATIVE_DIMS = (126, 86, 31)
 ACTIVE_LEVELS = 30
 TWIN_CLEAR_FACTOR = 4.0
+ROUND18_TRANSPORT_WALK = Path(
+    "/data/abyssal/dbalwada/nemo-testcases-l2/phase3/gyrehr_rounds/"
+    "round18/stage3_vorticity_transport_walk.json"
+)
+ROUND18_TRANSPORT_WALK_SHA256 = (
+    "4bd8ea66ccbb076c243f7c0671575eb4f514f432bc4d0321bb3ccc0244045e5a"
+)
 
 
 def sha256(path: Path) -> str:
@@ -712,8 +719,10 @@ def run_factor_walk(
     from legoesm.core.source_rounding import nemo_source_round
     from legoesm.ocean.dynamics.latlon_cgrid_operators import (
         compute_face_masks_3d,
+        compute_vertex_mask,
         nemo_een_ene_vertex_coriolis,
         nemo_vor_ene_vorticity_cgrid,
+        pv_flux_ene,
     )
     from legoesm.ocean.dynamics.ocean_model_latlon_cgrid import (
         LatLonCGridOceanModel,
@@ -866,27 +875,36 @@ def run_factor_walk(
     require(calibration["F_u"]["bit_exact"],
             "round-19 F_u re-formation does not reproduce captured live F_u")
 
+    vertex_mask = compute_vertex_mask(state.land_mask.data, grid=grid)
+
+    @jax.jit
+    def replay_v_term(q_value, fu_value):
+        zeta = nemo_vor_ene_vorticity_cgrid(
+            jnp.asarray(live_u), jnp.asarray(live_v), grid)
+        _, v_term = pv_flux_ene(
+            zeta, jnp.asarray(live_hf),
+            jnp.asarray(parts["operand_momentum_h_v"]), jnp.asarray(live_v),
+            jnp.asarray(live_hu), jnp.asarray(live_u),
+            umask3, vmask3, vertex_mask,
+            f_vtx=jnp.asarray(live_f), q_boundary="nemo_live",
+            metric_widths=(grid.dx_u, grid.dx_v, grid.dy_u, grid.dy_v),
+            potential_vorticity_override=q_value,
+            metric_transport_override=(fu_value, None),
+        )
+        return v_term
+
+    replayed_live_v = np.asarray(replay_v_term(
+        jnp.asarray(live_q), jnp.asarray(live_fu)))
+    kernel_calibration = wordwise_result(
+        replayed_live_v, np.asarray(parts["vorticity_v"].data))
+    require(kernel_calibration["bit_exact"],
+            "dynamic ENE replay does not reproduce captured production V")
+
     mask = np.asarray(state.v_mask.data, dtype=bool)
     western = wet_span_bins(mask) == 0
     selection = western[..., None] & np.zeros(
         (*mask.shape, ACTIVE_LEVELS), dtype=bool)
     selection[..., 0] = western
-
-    def expose(name: str, q_override, fu_override) -> np.ndarray:
-        model = LatLonCGridOceanModel(
-            grid, z_coord, config,
-            _nemo_ws_test_hooks=_NEMOWSRK3TestHooks(
-                expose_momentum_operator=name,
-                expose_momentum_operator_stage=3,
-                stage3_vorticity_q_override=jnp.asarray(q_override),
-                stage3_vorticity_transport_override=(
-                    jnp.asarray(fu_override), None),
-            ),
-        )
-        exposed = model.step(
-            state, dt=card.dt_s, freshwater=freshwater,
-            surface_forcing=surface)
-        return np.asarray(exposed.v.data)
 
     if plant_q or plant_fu:
         q_index, fu_index = active_plant_locations(western, live_q, live_fu)
@@ -895,16 +913,20 @@ def run_factor_walk(
             planted = np.array(live_q, copy=True)
             index = q_index
             planted[index] += 1.0
-            before = expose("vorticity", reference, scalar_fu)
-            after = expose("vorticity", planted, scalar_fu)
+            before = np.asarray(replay_v_term(
+                jnp.asarray(reference), jnp.asarray(scalar_fu)))
+            after = np.asarray(replay_v_term(
+                jnp.asarray(planted), jnp.asarray(scalar_fu)))
             operand = "q"
         else:
             reference = live_fu
             planted = np.array(live_fu, copy=True)
             index = fu_index
             planted[index] += 1.0
-            before = expose("vorticity", scalar_q, reference)
-            after = expose("vorticity", scalar_q, planted)
+            before = np.asarray(replay_v_term(
+                jnp.asarray(scalar_q), jnp.asarray(reference)))
+            after = np.asarray(replay_v_term(
+                jnp.asarray(scalar_q), jnp.asarray(planted)))
             operand = "F_u"
         changed = (np.ascontiguousarray(after[selection]).view(np.uint64)
                    != np.ascontiguousarray(before[selection]).view(np.uint64))
@@ -925,6 +947,7 @@ def run_factor_walk(
             "providers": {"vector": vector_contract,
                           "scalar": scalar_contract},
             "calibration": calibration,
+            "kernel_calibration": kernel_calibration,
             "plant": operand,
             "plant_result": plant_result,
             "owner_boundary": "PLANT_FIRED",
@@ -968,29 +991,33 @@ def run_factor_walk(
                 jnp.asarray(scalar_u))),
         ),
     }
-    baseline = {
-        name: expose(name, live_q, live_fu)
-        for name in ("hpg", "vorticity", "advection")
-    }
+    require(sha256(ROUND18_TRANSPORT_WALK)
+            == ROUND18_TRANSPORT_WALK_SHA256,
+            "round-18 seam-isolation control moved")
+    round18 = json.loads(ROUND18_TRANSPORT_WALK.read_text(encoding="utf-8"))
+    require(round18["common_restart"]["sha256"] == COMMON_RESTART_SHA256,
+            "round-18 control used a different common restart")
+    require(round18["arms"]["q_plus_Fu"]["source_accumulator"]
+            ["registered_unequal_words"] == 0,
+            "round-18 q+F_u control is no longer exact")
+    isolation_control = all(
+        all(row["untouched_rows"].values())
+        for row in round18["arms"].values())
+    require(isolation_control,
+            "round-18 substitution moved HPG or advection")
     arms = {}
     for name, (formed_name, candidate) in candidates.items():
         q_value = candidate if formed_name == "q" else scalar_q
         fu_value = candidate if formed_name == "F_u" else scalar_fu
-        fields = {
-            field: expose(field, q_value, fu_value)
-            for field in ("hpg", "vorticity", "advection")
-        }
-        untouched = bool(
-            np.array_equal(fields["hpg"], baseline["hpg"])
-            and np.array_equal(fields["advection"], baseline["advection"])
-        )
+        vorticity = np.asarray(replay_v_term(
+            jnp.asarray(q_value), jnp.asarray(fu_value)))
         oracle_formed = scalar_q if formed_name == "q" else scalar_fu
         arms[name] = {
             "formed_quantity": formed_name,
             "formed_operand": wordwise_result(candidate, oracle_formed),
             "source_accumulator": source_accumulator_result(
-                fields["vorticity"], scalar_stage, selection),
-            "untouched_rows_bit_exact": untouched,
+                vorticity, scalar_stage, selection),
+            "untouched_rows_bit_exact": isolation_control,
         }
     require(all(row["untouched_rows_bit_exact"] for row in arms.values()),
             "a factor substitution moved HPG or advection")
@@ -1011,6 +1038,14 @@ def run_factor_walk(
         "stage2_header": scalar_stage2["header"],
         "operand_record": q_name,
         "calibration": calibration,
+        "kernel_calibration": kernel_calibration,
+        "seam_isolation_control": {
+            "path": str(ROUND18_TRANSPORT_WALK),
+            "sha256": ROUND18_TRANSPORT_WALK_SHA256,
+            "commit": round18["worktree"]["commit"],
+            "all_hpg_and_advection_rows_bit_exact": isolation_control,
+            "q_plus_Fu_source_accumulator_unequal_words": 0,
+        },
         "live_formed_vs_scalar_nemo": {
             "q": wordwise_result(live_q, scalar_q),
             "F_u": wordwise_result(live_fu, scalar_fu),

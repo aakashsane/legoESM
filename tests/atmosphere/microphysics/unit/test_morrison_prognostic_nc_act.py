@@ -87,6 +87,8 @@ def test_droplet_number_budget_matches_mg2_stage():
     assert witness.any()                                         # mass limited, number not
     assert ((npc > 0) & (qc > 0) & ~neg).any() and ((npc < 0) & (qc > 0) & ~neg).any()
     assert ((npc != 0) & (qc == 0) & ~neg).any()                 # re-apply in clear air
+    capped = (qc / np.maximum(fx["col_cf"], 1e-4) > 5.0e-3) & ~neg & ~bound
+    assert capped.any()                       # MG2's 5e-3 in-cloud cap, number not limited
     assert neg.sum() < (~neg).sum()
 
 
@@ -135,6 +137,43 @@ def test_cold_riming_number_sinks_and_no_ice_riming():
     assert float(_rel(got[has_n], want[has_n]).max()) <= 1e-12
     # a cloudy cell with no droplets: the nc limiter removes nothing (MG2 :1628-1642)
     assert (c & (nc_vol == 0)).any() and np.all(got[c & (nc_vol == 0)] == 0.0)
+
+
+def _cold(fx, qcic, q_r, nc_scale=1.0):
+    qc0 = jnp.asarray(fx["col_q_c"])
+    cloudy = qc0 > 0
+    cf = jnp.maximum(jnp.asarray(fx["col_cf"]), 1e-4)
+    q_c = jnp.where(cloudy, qcic * cf, 0.0)
+    T = jnp.where(cloudy, 258.0, jnp.asarray(fx["col_T"]))
+    sol = jnp.where(cloudy, 1.0e-4, 0.0)
+    rho = jnp.asarray(fx["col_rho"])
+    N_c = jnp.asarray(fx["col_nc_kg"]) * rho * nc_scale
+    out = _run(fx, npccn_kg=jnp.zeros_like(qc0), q_c=q_c, T=T, N_c=N_c,
+               hyd_kw=dict(q_r=jnp.where(cloudy, q_r, 0.0), q_s=sol, q_g=sol, q_i=0.1 * sol,
+                           N_i=jnp.where(cloudy, 1.0e5, 0.0),
+                           N_r=jnp.where(cloudy, q_r * rho / 6.5e-8, 0.0)))
+    qb = {k: np.asarray(v) for k, v in out.qc_budget.items()}
+    ncic = W.mg2_size_bounded_nc(q_c / cf, N_c / cf, rho)
+    return out, qb, np.asarray(cloudy), np.asarray(ncic / (q_c / cf)), np.asarray(N_c), np.asarray(q_c)
+
+
+def test_cold_full_sum_and_graupel_under_the_number_cap():
+    """(1) qcic = 1e-6 with rain: autoconversion + accretion + snow + graupel riming
+    together set the number sink; (2) droplet number x 1e-6: the riming-dominated
+    sink is capped by MG2's nc limiter at N_c/dt x omsm (user decision 7a)."""
+    fx = _fx()
+    dt = float(fx["dt"])
+    out, qb, c, r, N_c, q_c = _cold(fx, 1.0e-6, 1.0e-5)
+    mass = -(qb["autoconversion"] + qb["accretion"] + qb["riming_snow"] + qb["riming_graupel"])
+    sinks = -sum(v for k, v in qb.items() if k != "condensation")
+    ok = c & (N_c > 0) & (sinks * dt < 0.99 * q_c) & (mass * r * dt < 0.99 * N_c)
+    assert ok.any() and (qb["autoconversion"][ok] < 0).all() and (qb["riming_graupel"][ok] < 0).all()
+    assert float(_rel(np.asarray(out.dN_c_dt)[ok], -(mass * r)[ok]).max()) <= 1e-12
+    out, qb, c, r, N_c, q_c = _cold(fx, 1.0e-6, 1.0e-5, nc_scale=1.0e-6)
+    mass = -(qb["autoconversion"] + qb["accretion"] + qb["riming_snow"] + qb["riming_graupel"])
+    capd = c & (N_c > 0) & (mass * r * dt > 1.01 * N_c)
+    assert capd.any() and (qb["riming_graupel"][capd] < 0).all()
+    assert np.allclose(np.asarray(out.dN_c_dt)[capd], -(N_c / dt * OMSM)[capd], rtol=1e-12, atol=0)
 
 
 def test_npccn_guards():

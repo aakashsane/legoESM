@@ -60,6 +60,11 @@ program mg2_driver
   call wv_sat_methods_init(r8, tmelt, 273.16_r8, 373.16_r8, 20._r8, rair/rh2o, err)
   open(10, file=trim(fin), status='old')
   read(10, *) ncol, nlev, dt
+#ifdef MG2_TAP
+  if (nlev > 512) then
+     print *, 'nlev > 512: the probe array nctend_stage(1,512) is too small'; stop 4
+  end if
+#endif
   allocate(inp(nlev, ninp), allout(ncol, nlev, nout), allprect(ncol))
   call alloc2(nlev)
   allocate(rndst(1,nlev,4), nacon(1,nlev,4)); rndst = 1.e-6_r8; nacon = 0._r8

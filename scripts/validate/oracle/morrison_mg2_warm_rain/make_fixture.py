@@ -22,7 +22,8 @@ size reset leaves ncic*rho below 1 m^-3.
 
 ``--prognostic-nc-act`` writes ``mg2_prognostic_nc_act.npz`` for the droplet-number
 budget (stage S10.2): the prognostic columns with per-level npccn (positive,
-negative, zero; also in clear air), plus two copies of ``trop_deep``: ``witness``
+negative, zero; also in clear air), plus three copies of ``trop_deep``: ``capped``
+(cloud fraction qc/8e-3, so in-cloud water exceeds MG2's 5e-3 cap), ``witness``
 (very high nc, so MG2's size reset LOWERS ncic, and a q_r scan, npccn = 0: the qc
 mass limiter binds where the number limiter does not) and ``limbind`` (nc x 1e-3,
 npccn = 0: the number limiter binds).  Run through the probe build ``mg2_tap``
@@ -277,7 +278,13 @@ def build_activation_columns(cols):
         wit["N_r"][k] = base["rho"][k] * qr / (math.pi / 6.0 * 1000.0 * 5.0e-4 ** 3)
     lim = dict(base, name="limbind", npccn=np.zeros_like(base["T"]),
                nc_kg=base["nc_kg"] * 1.0e-3)
-    return out + [wit, lim]
+    # in-cloud water above MG2's 5e-3 cap (micro_mg2_0.F90:1226): cf = qc/8e-3
+    cf_cap = np.where(base["q_c"] > 0, np.clip(base["q_c"] / 8.0e-3, 1e-4, 1.0), base["cf"])
+    # no rain, so accretion cannot saturate the nc limiter and the cap shows in nprc1
+    cap = dict(base, name="capped", cf=cf_cap, npccn=np.zeros_like(base["T"]),
+               q_r=np.zeros_like(base["T"]), N_r=np.zeros_like(base["T"]),
+               nc_kg=np.where(base["q_c"] > 0, base["N_c"] / base["rho"] * cf_cap, 0.0))
+    return out + [wit, lim, cap]
 
 
 def write_prognostic_column_inputs(cols, path):

@@ -110,6 +110,27 @@ module (`coupler/grid_remap.py`) and core had another (`grids/regridding.py`):
   2026-08-23): laziest working solution, reuse over rebuild, delete before
   add, shortest diff that is actually correct. Not a mode to be asked for.
 
+## RULE 5 — DIFFERENTIABILITY IS NEVER TRADED FOR ORACLE FIDELITY.
+User directive 2026-10-20, STRICT, on the Kessler port (the smooth saturation
+ramp misses the reference by up to 100 % and lets cloud water go slightly
+negative; the reference's exact step would match it): *"keep the current
+smoothing - differentiability cannot be traded off!"*
+
+- **The default is always the differentiable form.** A hard step, `max`,
+  `where` switch or hard top-level cut from a reference code is ported as a
+  smooth function whose sharpness/width is a config field; the hard limit is
+  reachable only by setting that field, never as the default.
+- **Never propose moving a default to the hard limit to close an oracle gap.**
+  Not as an ASK, not as a "pick". The gap is recorded instead.
+- **Record the gap as a KNOWN DIFFERENCE** where the code lives (docstring)
+  and in the PR body: what the reference does, what the port does, the
+  measured size at the production setting, and which field recovers the
+  reference. Oracle tests that pass only at the hard limit run AT the hard
+  limit, or are strict xfail citing this rule; never loosen the tolerance.
+- A RULE 3 "fix behind a default" question does NOT apply here: a smooth
+  default kept for differentiability is a decision, not a bug with a knob.
+- Applies to every oracle translation (CAM, IFS, WRF, ESCOMP, NEMO, FV3, ...).
+
 ## RULE 3 — A FIX WHOSE DEFAULT KEEPS THE BUG IS NOT A FIX. IT IS A BUG WITH A KNOB.
 User directive 2026-08-22, on finding non-orographic gravity waves still being
 launched at the SURFACE months after that exact defect was "fixed": *"Why does

@@ -322,6 +322,22 @@ def test_uncached_table_is_downloaded_and_cached(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
+def test_failed_download_uses_a_peer_installed_table(tmp_path, monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    good = P3.p3_lookup_table_path().read_bytes()
+    target = tmp_path / "p3" / P3.P3_LOOKUP_TABLE_NAME
+
+    def peer_wins_then_fail(*a, **k):
+        target.write_bytes(good)
+        raise urllib.error.URLError("rate limited")
+    monkeypatch.setenv("LEGOESM_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(urllib.request, "urlopen", peer_wins_then_fail)
+    assert P3.p3_lookup_table_path() == target
+    assert sorted(p.name for p in target.parent.iterdir()) == [target.name]
+
+
 def test_wrong_table_bytes_raise(tmp_path, monkeypatch):
     import io
     import urllib.request

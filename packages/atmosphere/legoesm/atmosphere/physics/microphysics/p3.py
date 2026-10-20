@@ -374,6 +374,9 @@ def p3_lookup_table_path() -> Path:
                                f"expected {P3_LOOKUP_TABLE_SHA256}")
         part.replace(path)
     except Exception as exc:
+        # another rank sharing the cache may have installed the table meanwhile
+        if path.exists() and sha(path) == P3_LOOKUP_TABLE_SHA256:
+            return path
         raise RuntimeError(
             f"P3 lookup table not cached at {path} and the download from "
             f"{P3_LOOKUP_TABLE_URL} failed ({exc!r}). Download it on a machine with "

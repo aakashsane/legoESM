@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 7129)
+Table of contents (sections, in order; flag reference table at line 7172)
 -----------------------------------------------------------------------------
   1. [line  352] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  473] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -50,7 +50,7 @@ Table of contents (sections, in order; flag reference table at line 7129)
   18. [line  5329] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  6075] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  6087] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 
@@ -5509,7 +5509,7 @@ def compute_pdf_closure(diag, wp2, wp3, rtp2, thlp2, rtpthlp, up2, vp2,
         rtpthvp=zm_trap["rtpthvp"], thlpthvp=zm_trap["thlpthvp"],
         rc_coef_zm=zm_out["rc_coef"],
         cloud_frac=cloud_frac, rcm=rcm, rcm_grid=rcm_grid,
-        rcm_zm=zm_out["rcm"],
+        rcm_zm=zm_out["rcm"], rcp2_zt=zt_out["rcp2"],
         wprcp=zm_out["wprcp"], rtprcp=zm_out["rtprcp"],
         thlprcp=zm_out["thlprcp"], uprcp=zm_out["uprcp"],
         vprcp=zm_out["vprcp"],
@@ -5550,9 +5550,21 @@ def _pdf_closure_on_grid(wm, rtm, thlm, um, vm, wp2, rtp2, thlp2,
         xprcp["thlprcp"], wpthlp, wprtp, hom["wp2thlp"], hom["wp2rtp"],
         rtpthlp, rtp2, thlp2)
 
+    # Cloud-water variance r_c'^2, pdf_closure_module.F90:1072-1074 (computed
+    # unconditionally under CLUBB_CAM; CAM hands it out as qclvar, :1798).
+    mf = comp["mixt_frac"]
+    rcp2 = jnp.maximum(
+        0.0,
+        mf * (comp["chi_1"] * comp["rc_1"]
+              + comp["cf_1"] * comp["stdev_chi_1"] ** 2)
+        + (1.0 - mf) * (comp["chi_2"] * comp["rc_2"]
+                        + comp["cf_2"] * comp["stdev_chi_2"] ** 2)
+        - comp["rcm"] ** 2)
+
     out = dict(adg1)
     out.update(hom)
     out.update(xprcp)
+    out.update(rcp2=rcp2)
     out.update(cloud_frac=comp["cloud_frac"], rcm=comp["rcm"],
                chi_1=comp["chi_1"], chi_2=comp["chi_2"],
                wpthvp=wpthvp, wp2thvp=wp2thvp, rtpthvp=rtpthvp,
@@ -5987,7 +5999,7 @@ def advance_clubb_core(state: CLUBBMomentState, forcing: CLUBBForcing, *,
 
     diagnostics = dict(
         cloud_frac=pdf_post["cloud_frac"], rcm=pdf_post["rcm"],
-        rcm_grid=pdf_post["rcm_grid"],
+        rcm_grid=pdf_post["rcm_grid"], rcp2_zt=pdf_post["rcp2_zt"],
         wpthvp=pdf_post["wpthvp"], Kh_zt=diag["Kh_zt"], Kh_zm=diag["Kh_zm"])
     return new_state, diagnostics
 
@@ -6325,6 +6337,29 @@ def virtual_potential_temperature_with_liquid(T, q_v, q_c, exner):
     ``q_c = 0``.
     """
     return (virtual_temperature(T, q_v) - T * q_c) / exner
+
+
+# --- CAM6 relative cloud-water variance for MG2 (clubb_intr.F90, cam_cesm2_1_rel_60) ---
+_CAM6_QCLVAR_MAX = 1.0        # qclvar = min(1, rcp2_zt) (:1998)
+_CAM6_RELVARMAX = 10.0        # relvarmax, deep_scheme /= 'CLUBB_SGS' (CAM6 ZM, :2418)
+_CAM6_RELVAR_MIN = 1.0e-3     # relvar lower clip (:2425)
+
+
+def cam6_relvar(rcm, rcp2):
+    """CAM6 relative cloud-water variance ``relvar`` handed to MG2.
+
+    ``clubb_intr.F90:1998, 2421-2425``: ``qclvar = min(1, rcp2_zt)``,
+    ``relvar = relvarmax`` by default and, where ``rcm /= 0`` and
+    ``qclvar /= 0``, ``min(relvarmax, max(0.001, rcm**2/qclvar))``.  ``rcm``
+    is the cloud liquid CLUBB leaves on the host (CAM's ``rcm`` after the
+    clubbtop reset, the value its ptend writes), ``rcp2`` the closure's
+    ``r_c'^2`` on the same levels.
+    """
+    qclvar = jnp.minimum(_CAM6_QCLVAR_MAX, rcp2)
+    has = (rcm != 0.0) & (qclvar != 0.0)
+    ratio = rcm ** 2 / jnp.where(has, qclvar, 1.0)
+    return jnp.where(
+        has, jnp.clip(ratio, _CAM6_RELVAR_MIN, _CAM6_RELVARMAX), _CAM6_RELVARMAX)
 
 
 # clubb_intr.F90:2043 (cam_cesm2_1_rel == cesm2_2_rel): a level whose rtp2 is
@@ -6883,6 +6918,7 @@ def clubb_turbulence_prognostic(
         clubbtop = diags.get("clubbtop")
         Kh_full = flip_vertical(diags["Kh_zt"])
         cloud_frac_a = diags["cloud_frac"]
+        rcp2_a = diags["rcp2_zt"]
         dq_c_dt = diags.get("dq_c_dt")
     else:
         dt_sub = dt / n_sub
@@ -6936,6 +6972,7 @@ def clubb_turbulence_prognostic(
         # moments being returned as the carry, not to a sub-cycle average of
         # states the host never sees.
         cloud_frac_a = diag_stk["cloud_frac"][-1]
+        rcp2_a = diag_stk["rcp2_zt"][-1]
 
     # With an injected tiled flux, report the surface diagnostics as the INJECTED
     # dynamic values directly (Louis-equivalent), rather than clubb_step's
@@ -6986,6 +7023,11 @@ def clubb_turbulence_prognostic(
         cloud_fraction_td = cloud_fraction_td * trop_cloud_top_taper(
             p_full, config.trop_cloud_top_press,
             config.trop_cloud_taper_lnp_width)
+    # MG2's relvar from the liquid CLUBB leaves on the host and the closure's
+    # rcp2 of the same (final) sub-step; only with the liquid partition, where
+    # that liquid is CLUBB's (CAM always partitions).
+    relvar = (None if dq_c_dt is None
+              else cam6_relvar(q_c + dt * dq_c_dt, flip_vertical(rcp2_a)))
     output = TurbulenceOutput(
         du_dt=du_dt, dv_dt=dv_dt, dT_dt=dT_dt, dq_v_dt=dq_v_dt,
         Km=Kh_full, Kh=Kh_full, shflx=shflx, lhflx=lhflx,
@@ -6994,7 +7036,8 @@ def clubb_turbulence_prognostic(
         # as lhflx / L_v.
         evap_sfc=surface_moisture_flux(config.surface, lhflx, T_sfc),
         ustar=ustar,
-        h_pbl=h_pbl, cloud_fraction=cloud_fraction_td, dq_c_dt=dq_c_dt)
+        h_pbl=h_pbl, cloud_fraction=cloud_fraction_td, dq_c_dt=dq_c_dt,
+        relvar=relvar)
     return output, pack_clubb_moments(new_moments)
 
 

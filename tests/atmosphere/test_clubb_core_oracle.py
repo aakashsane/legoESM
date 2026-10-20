@@ -90,7 +90,7 @@ def _state(fx, case, n):
     return st, jnp.asarray(fx[f"{case}/s{n}/rcm"])
 
 
-def _step(st, rcm, forcing, env, gr, cfg):
+def _step(st, rcm, forcing, env, gr, cfg, extra=()):
     """One step of ours from the oracle state: Lscale/N^2 as the Fortran forms
     them inside advance_clubb_core, the core, then the post-advance closure."""
     p = cfg.params
@@ -122,7 +122,8 @@ def _step(st, rcm, forcing, env, gr, cfg):
         env["p_in_Pa_zt"], env["p_sfc"], env["thv_ds_zt"], env["thv_ds_zm"],
         gr, cfg)
     out = new._asdict()
-    out.update({k: pdf[k] for k in _CARRIED[:6]}, Lscale=Lscale, Kh_zm=diag["Kh_zm"])
+    out.update({k: pdf[k] for k in _CARRIED[:6] + tuple(extra)}, Lscale=Lscale,
+               Kh_zm=diag["Kh_zm"])
     return out
 
 

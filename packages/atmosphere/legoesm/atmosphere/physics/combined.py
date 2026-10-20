@@ -825,7 +825,12 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
             make_microphysics_physics(
                 config.microphysics, model_type, _dt_sub,
                 cloud_config=config.radiation.cloud_config,
-                clubb_config=_clubb_cfg),
+                clubb_config=_clubb_cfg,
+                relvar_from_clubb=(
+                    _clubb_liquid_partition_on(config.turbulence)
+                    and getattr(getattr(config.microphysics,
+                                        config.microphysics.scheme, None),
+                                "warm_rain_scheme", None) == "kk2000_cam6")),
             False, None))
     if config.gravity_wave_drag.scheme != "none":
         tagged_fns.append((make_gwd_physics(config.gravity_wave_drag, model_type, dt), True, "gwd_spectrum"))

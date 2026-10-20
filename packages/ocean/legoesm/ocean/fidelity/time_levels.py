@@ -936,6 +936,25 @@ for _stage, _kaa, _kmm in ((1, 3, 1), (2, 2, 3), (3, 3, 2)):
         "GYRE_OMIP_L2_P3_SMW_R7STEP2 stprk3.f90:202-216 passes Naa and "
         ":313-330 writes ts/uu/vv/ssh(...,klevel)",
     )
+# The round-17 common-state writer starts from the day-180 restart at
+# nit000=4321.  Its MY_SRC stage/barotropic writers are the same lane-1
+# routines above, but the fail-closed registry binds exact basenames rather
+# than inferring semantics from a filename pattern.
+_DUMP_TIME_LEVEL["oracle_bt_frames_kt00004321.bin"] = (
+    "after",
+    "/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2/cfgs/"
+    "GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3.f90:190-192 calls "
+    "stp_2D with Kaa=Naa, then writes uu_b/vv_b at that explicit after "
+    "level before any RK stage",
+)
+for _stage, _kaa in ((1, 3), (2, 2), (3, 3)):
+    _DUMP_TIME_LEVEL[f"oracle_stage_kt00004321_s{_stage}.bin"] = (
+        "after",
+        "/home/dbalwada/oracle-builds/nemo5/nemo_5.0.2/cfgs/"
+        "GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3.f90:201-216 "
+        f"passes the stage-{_stage} Kaa={_kaa} result to l1_dump_stage; "
+        "the writer at :334-375 writes ts/uu/vv/ssh(...,klevel)",
+    )
 _DUMP_TIME_LEVEL["oracle_rhs_kt00000001.bin"] = (
     "now",
     "scripts/validate/ocean_fidelity/testcases/nemo502_MY_SRC/"

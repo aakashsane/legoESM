@@ -22,7 +22,7 @@ as a silent re-tune of an assertion.
 
     scheme          hard=False  hard=True   (RH after 1 step from RH0 = 1.4)
     kessler            1.0589      1.0000   (pre-port surrogate; now exempt)
-    seifert_beheng     1.0589      1.0000
+    seifert_beheng     1.0589      1.0000   (pre-port proxy; now exempt)
     morrison           1.0589      1.0000
     thompson           1.0589      1.0000
     p3                 1.0589      1.0000

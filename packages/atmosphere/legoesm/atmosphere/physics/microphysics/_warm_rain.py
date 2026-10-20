@@ -1258,12 +1258,14 @@ def m2005_cloud_droplet_psd(q_c, N_c, rho):
         LAMC = (pi/6 rho_w N_c/rho (PGAM+1)(PGAM+2)(PGAM+3) / q_c)^(1/3)
 
     and if ``LAMC`` leaves ``(PGAM+1)/[60 um, 1 um]`` it is set to the bound
-    and ``N_c`` reset to the number that bound carries.  ``N_c`` and
+    and ``N_c`` reset to the number that bound carries (``N_c`` is first
+    floored at 0, :1632/:2541).  ``N_c`` and
     ``N_c_adj`` are per-VOLUME [1/m^3] (the oracle's per-kg NC3D times rho);
     elsewhere ``N_c_adj = N_c`` and ``pgam``/``nu`` are not used by any rate.
     ``GAMMA(PGAM+4)/GAMMA(PGAM+1)`` is written as the exact product
     ``(PGAM+1)(PGAM+2)(PGAM+3)``.
     """
+    N_c = jnp.maximum(0.0, N_c)                       # NC3D = MAX(0., NC3D) (:1632)
     active = q_c >= _M2005_QSMALL
     qc_s = jnp.where(active, q_c, 1.0)
     pgam = _M2005_PGAM_A * (N_c * _NC_PERM3_TO_PERCM3) + _M2005_PGAM_B

@@ -58,11 +58,12 @@ def _inputs(fx, dtype=jnp.float64):
 def test_fixture_provenance_and_inputs_reproduce():
     fx = _fx()
     meta = json.loads(str(fx["meta"]))
-    assert meta["sha256"].startswith("0e9ea4a37f4d")
     assert "dofix_pgam=.false." in meta["settings"]
     spec = importlib.util.spec_from_file_location("sb2001_fixture", GENERATOR)
     gen = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(gen)
+    # The generator refuses sources whose sha256 differs from the pinned gSAM.
+    assert meta["source_sha256"] == gen.SOURCE_SHA256
     pts = gen.build_points()
     n = len(pts)
     for i, nc0 in enumerate(gen.NC0_CM3):

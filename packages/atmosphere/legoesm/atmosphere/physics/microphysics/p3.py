@@ -327,8 +327,59 @@ _G_MUR7 = math.gamma(7.0 + _MU_R)
 # trade-off only (the forward values are identical for any value).
 _SED_CHECKPOINTS = 16
 
-P3_LOOKUP_TABLE_1 = Path(__file__).with_name("p3_data") / "p3_lookup_table_1.dat-v4.1"
 P3_LOOKUP_TABLE_VERSION = "4.1"
+P3_LOOKUP_TABLE_NAME = "p3_lookup_table_1.dat-v4.1"
+# Not vendored: fetched on first use and cached.  WRF v4.2 ships the same file
+# byte for byte as the gSAM 1.8.8 tarball's RUNDATA copy (sha256 below, also
+# pinned in the oracle fixture's meta).
+P3_LOOKUP_TABLE_URL = ("https://raw.githubusercontent.com/wrf-model/WRF/v4.2/run/"
+                       + P3_LOOKUP_TABLE_NAME)
+P3_LOOKUP_TABLE_SHA256 = "5253e3a1aa7caa630a86cdbba549e256a2bbc56a608de5763db832e49cb65a7e"
+_FETCH_TIMEOUT_S = 60.0
+
+
+def p3_lookup_table_path() -> Path:
+    """Local path of the P3 lookup table, downloading it on first use.
+
+    Cache: ``$LEGOESM_CACHE_DIR/p3/`` or ``~/.cache/legoesm/p3/``.  The file is
+    sha256-checked every call; a mismatch or a failed download raises.
+    """
+    import hashlib
+    import os
+    import shutil
+    import urllib.request
+
+    root = os.environ.get("LEGOESM_CACHE_DIR") or str(Path.home() / ".cache" / "legoesm")
+    path = Path(root).expanduser() / "p3" / P3_LOOKUP_TABLE_NAME
+
+    def sha(p):
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+
+    if path.exists():
+        if sha(path) != P3_LOOKUP_TABLE_SHA256:
+            raise RuntimeError(f"P3 lookup table {path} has the wrong sha256; delete "
+                               f"it to re-download from {P3_LOOKUP_TABLE_URL}")
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    part = path.with_name(f"{path.name}.{os.getpid()}.part")
+    try:
+        with urllib.request.urlopen(P3_LOOKUP_TABLE_URL, timeout=_FETCH_TIMEOUT_S) as r, \
+                open(part, "wb") as f:
+            shutil.copyfileobj(r, f)
+        if sha(part) != P3_LOOKUP_TABLE_SHA256:
+            raise RuntimeError(f"downloaded file has sha256 {sha(part)}, "
+                               f"expected {P3_LOOKUP_TABLE_SHA256}")
+        part.replace(path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"P3 lookup table not cached at {path} and the download from "
+            f"{P3_LOOKUP_TABLE_URL} failed ({exc!r}). Download it on a machine with "
+            f"network access and copy it to {path} (sha256 {P3_LOOKUP_TABLE_SHA256}), "
+            f"or set LEGOESM_CACHE_DIR to a cache that holds p3/{P3_LOOKUP_TABLE_NAME}."
+        ) from exc
+    finally:
+        part.unlink(missing_ok=True)
+    return path
 
 # P3Config fields with NO counterpart in gSAM P3: the faithful port does not
 # read them, so a non-default value raises instead of being silently ignored.
@@ -359,13 +410,15 @@ class P3Tables(NamedTuple):
     revap: np.ndarray
 
 
-def read_p3_lookup_table_1(path=P3_LOOKUP_TABLE_1):
+def read_p3_lookup_table_1(path=None):
     """Read ``p3_lookup_table_1.dat-v4.1`` as p3_init does (module_mp_p3.f90:325-384).
 
     Raises ``ValueError`` on a version other than 4.1 (p3_init stops there for
     model='WRF') or a malformed size.  Returns ``(itab, itabcoll)``; itabcoll is
     ``log10(max(value, 1e-90))`` as in p3_init.
     """
+    if path is None:
+        path = p3_lookup_table_path()
     with open(path) as f:
         head = f.readline().split()
         if len(head) < 2 or head[1] != P3_LOOKUP_TABLE_VERSION:
@@ -426,7 +479,7 @@ def _rain_tables():
 
 
 @functools.lru_cache(maxsize=None)
-def p3_lookup_tables(path: str = str(P3_LOOKUP_TABLE_1)) -> P3Tables:
+def p3_lookup_tables(path: str | None = None) -> P3Tables:
     """All P3 tables (read and generated once per process)."""
     itab, itabcoll = read_p3_lookup_table_1(path)
     vn, vm, revap = _rain_tables()

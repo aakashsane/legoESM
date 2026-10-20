@@ -84,15 +84,15 @@ def _errors(fx, case, dt, out):
     return {k: float(v.max()) for k, v in errs.items()}
 
 
-def test_fixture_provenance_and_vendored_table():
+def test_fixture_provenance_and_fetched_table():
     fx = _fx()
     m = _meta(fx)
     assert m["tarball_sha256"] == (
         "0e9ea4a37f4daca5051cc4018cc95bbc5583159c7c27d7d05d1104fae4ed270c")
     assert m["module_mp_p3_sha256"] == (
         "b5f3021d6bab6b88b9bd6b77ae588ea0163844923acd2e95e9f23a6e8c9278e3")
-    sha = hashlib.sha256(Path(P3.P3_LOOKUP_TABLE_1).read_bytes()).hexdigest()
-    assert sha == m["lookup_table_1_sha256"]
+    sha = hashlib.sha256(P3.p3_lookup_table_path().read_bytes()).hexdigest()
+    assert sha == m["lookup_table_1_sha256"] == P3.P3_LOOKUP_TABLE_SHA256
     # the oracle's saturation stub reproduces legoesm.thermo
     assert max(m["qsat_stub_vs_thermo_max_rel"].values()) <= TOL
 
@@ -286,6 +286,35 @@ def test_lookup_table_reader_rejects_other_versions(tmp_path):
     short.write_text("VERSION 4.1\n1 2 3\n")
     with pytest.raises(ValueError, match="values"):
         P3.read_p3_lookup_table_1(short)
+
+
+def test_uncached_table_offline_raises(tmp_path, monkeypatch):
+    import urllib.error
+    import urllib.request
+
+    def offline(*a, **k):
+        raise urllib.error.URLError("offline")
+    monkeypatch.setenv("LEGOESM_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(urllib.request, "urlopen", offline)
+    with pytest.raises(RuntimeError, match="not cached"):
+        P3.p3_lookup_table_path()
+    assert not any((tmp_path / "p3").iterdir())
+
+
+def test_wrong_table_bytes_raise(tmp_path, monkeypatch):
+    import io
+    import urllib.request
+
+    monkeypatch.setenv("LEGOESM_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda *a, **k: io.BytesIO(b"VERSION 4.1\n"))
+    with pytest.raises(RuntimeError, match="sha256"):
+        P3.p3_lookup_table_path()
+    assert not any((tmp_path / "p3").iterdir())
+    cached = tmp_path / "p3" / P3.P3_LOOKUP_TABLE_NAME
+    cached.write_text("tampered")
+    with pytest.raises(RuntimeError, match="wrong sha256"):
+        P3.p3_lookup_table_path()
 
 
 @pytest.mark.parametrize("field", P3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)

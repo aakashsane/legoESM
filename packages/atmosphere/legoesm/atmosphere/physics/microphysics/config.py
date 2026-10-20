@@ -1379,7 +1379,8 @@ def apply_microphysics_experiment_flags(
             )
         scheme_config = scheme_config._replace(subgrid_autoconversion=True)
     if hard_saturation_adjustment:
-        if "hard_saturation_adjustment" not in fields:
+        if ("hard_saturation_adjustment" not in fields
+                or scheme not in HARD_SAT_GUARD_SCHEMES):
             raise ValueError(
                 f"hard_saturation_adjustment=True is not supported by the "
                 f"{scheme!r} microphysics scheme; use one of "

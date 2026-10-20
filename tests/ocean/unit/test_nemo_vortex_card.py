@@ -621,6 +621,22 @@ _CERTIFIED_CARD_DIGESTS_ROUND5 = {          # 85607c118588 + rounds 4 and 5
 # against the GYRE lane tip reports added=1 removed=0 changed=0 on GYRE, both
 # tanks and both VORTEX cards, and the companion test below asserts the added
 # field's value on each certified card.
+_CERTIFIED_CARD_DIGESTS_ORCA2 = {           # ORCA2 fold-in, 2026-09-30
+    "GYRE-zco": "5850bbcfcd351c29",
+    "LOCK_EXCHANGE-zco": "4ec82201f0fae7bf",
+    "OVERFLOW-zps": "7f1ec89b3e6578f5",
+}
+# The pins above went stale as later, explicitly carded shared configuration
+# fields were added.  They were still the active expectation at the incoming
+# gradient-gate tip d678430f3, where this test failed before the round-4 CEN2
+# change.  Re-pin the complete resolved objects here: the round-4 production
+# change is confined to ``_nemo_cen2_tracer_rhs`` and leaves card construction
+# untouched, so these values are identical before and after that change.
+_CERTIFIED_CARD_DIGESTS_GRADGATE = {        # gradient-gate tip d678430f3
+    "GYRE-zco": "99b2dfce324b0f77",
+    "LOCK_EXCHANGE-zco": "70746f41480350ec",
+    "OVERFLOW-zps": "2c562be8a7d2e793",
+}
 # re-pinned 2026-10-16 (#2009, #1910 config fields); re-pinned 2026-10-17 for
 # the ORCA2 lane's new config fields (23 appended to the lat-lon config, 32 in
 # all nested configs) and each deck's explicit

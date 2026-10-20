@@ -5,6 +5,7 @@
 #   MODE=gpu   (1 node, 2 A100, --exclusive): main ($MAIN_SHA) vs this tree on
 #              1 GPU, every checkpoint leaf BITWISE; this tree on 1 vs 2 GPUs
 #              with LEGOESM_PHASE_TIMERS=1 (land s/step), 2-GPU run finite.
+#   MODE=cpu1  (1 node): main vs this tree on 1 CPU device, BITWISE.
 #   MODE=cpu6  (1 node): this tree, 6 host devices (face layout), finite.
 #   MODE=win24 (3 nodes x 8 ranks x 4 cpus, CPU gloo, M7 harness settings):
 #              24 processes vs 1 process with 24 host devices, windows kt=2
@@ -79,7 +80,7 @@ sys.exit(1 if diff else 0)
 PYEOF
 }
 RC=0
-case "${MODE:?MODE=gpu|cpu6|win24}" in
+case "${MODE:?MODE=gpu|cpu1|cpu6|win24}" in
 gpu)
   export JAX_PLATFORMS=cuda
   nvidia-smi --query-gpu=name --format=csv,noheader | sort | uniq -c
@@ -90,6 +91,14 @@ gpu)
   arm new2 "$WT" CUDA_VISIBLE_DEVICES=0,1 LEGOESM_PHASE_TIMERS=1 -- -- || RC=1
   compare new1 main1 bitwise || RC=1
   compare new2 "" finite || RC=1
+  git -C "$WT" worktree remove --force "$MAINWT" ;;
+cpu1)       # CPU is run-to-run deterministic: main vs this tree, 1 device
+  export JAX_PLATFORMS=cpu
+  MAINWT=$OUT/wt_main
+  git -C "$WT" worktree add --detach "$MAINWT" "$MAIN_SHA" > /dev/null 2>&1 || exit 2
+  arm main1 "$MAINWT" -- -- || RC=1
+  arm new1 "$WT" -- -- || RC=1
+  compare new1 main1 bitwise || RC=1
   git -C "$WT" worktree remove --force "$MAINWT" ;;
 cpu6)
   export JAX_PLATFORMS=cpu

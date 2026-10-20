@@ -142,8 +142,8 @@ __param_spec__ = {
         "scheme_key": "atm.conv.DCAConfig",
         "excluded": {
             "cape_sharpness": "numerics: sigmoid sharpness on the CAPE gate",
-            "instability_blend_sharpness": "numerics: sigmoid sharpness on the per-pair superadiabatic blend",
-            "mixing_fraction": "numerics: per-iteration adjustment fraction (default 1.0 at domain boundary, not sigmoid-tunable)",
+            "instability_blend_sharpness": "inert: belonged to the replaced pairwise sweep; the GFDL moist_conv port has no counterpart and raises on a non-default value",
+            "mixing_fraction": "inert: belonged to the replaced pairwise sweep; the GFDL moist_conv port has no counterpart and raises on a non-default value",
         },
         "params": {
             "cape_threshold": {"units": "J/kg", "bounds": (33.0, 300.0), "tunable_tier": 2, "transform": "sigmoid", "category": "trigger", "reference": "trainable since the trigger gained a straight-through gradient (_triggers.py); was tier 0 / AD-unreachable per #1417. Original: Manabe et al. (1965) moist adjustment", "shape": None},
@@ -479,9 +479,8 @@ class DCAConfig(NamedTuple):
 
     Two variants are routed by the ``variant`` field:
 
-    * ``variant="manabe"`` (default): the Manabe-Smagorinsky-Strickler
-      (1965) pairwise moist-adiabatic adjustment (the historical legoESM
-      ``dca`` scheme).  Behaviour of all existing configs is unchanged.
+    * ``variant="manabe"`` (default): Manabe moist convective adjustment,
+      a port of GFDL atmos_phys 2021.02 ``moist_conv`` (see ``dca.py``).
     * ``variant="ahmed_neelin"``: the Ahmed-Neelin-Adames (2020)
       lower-tropospheric-buoyancy (B_L) precipitation-buoyancy closure
       (see :class:`AhmedNeelinDCAConfig`).
@@ -491,29 +490,19 @@ class DCAConfig(NamedTuple):
     variant : str
         ``"manabe"`` (default) or ``"ahmed_neelin"``.
     n_iterations : int
-        (Manabe only) Number of bottom-to-top adjustment sweeps per call
-        (default 3).  A single sweep only partially relaxes a deep column
-        toward the moist adiabat, so one call per physics step leaves the
-        free troposphere several K too cold under steady radiative
-        cooling; free-tropospheric ``mean|T - T_moist|`` falls
-        monotonically with sweeps (≈9.0/8.4/7.3/5.5 K at 1/3/5/10) with
-        the column maximum temperature unchanged (the simultaneous pair
-        solve keeps every sweep enthalpy-conserving and bounded).
+        INERT (belonged to the replaced pairwise sweep; ``moist_conv`` iterates
+        to its own tolerance).  Must stay 3; anything else raises.
     mixing_fraction : float
-        (Manabe only) Fraction of adjustment applied per iteration
-        (default 1.0).
+        INERT (replaced pairwise sweep).  Must stay 1.0; anything else raises.
     cape_threshold : float
-        (Manabe only) Minimum CAPE [J/kg] to trigger convection (default
-        100.0).  Columns with CAPE below this are not adjusted.
+        (Manabe only) Threshold [J/kg] of the CAPE gate on the adjustment
+        (default 100.0).  The gate has no counterpart in ``moist_conv``; a
+        negative threshold with a hard sharpness disables it.
     cape_sharpness : float
-        (Manabe only) Sigmoid sharpness [1/(J/kg)] for smooth CAPE gating
+        (Manabe only) Sigmoid sharpness [1/(J/kg)] of the CAPE gate
         (default 0.1).
     instability_blend_sharpness : float
-        (Manabe only) Dimensionless sigmoid sharpness on the
-        superadiabatic-instability metric controlling per-pair adjustment
-        blending inside the ``lax.scan`` sweep (default 10.0).  Lifted
-        from a hardcoded literal so the trigger transition width is
-        tunable.
+        INERT (replaced pairwise sweep).  Must stay 10.0; anything else raises.
     ahmed_neelin : AhmedNeelinDCAConfig
         Sub-configuration for the ``variant="ahmed_neelin"`` closure.
     """

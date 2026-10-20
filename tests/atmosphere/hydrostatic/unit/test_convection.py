@@ -430,9 +430,15 @@ class TestDCA:
         assert out.convective_mask.shape == (ncol,)
 
     def test_stable_small_tendency(self):
-        """Stable columns should produce much smaller tendencies than unstable."""
+        """Stable columns should produce much smaller tendencies than unstable.
+
+        moist_conv only adjusts supersaturated levels, so the unstable column is
+        saturated (1.05 q_sat); GFDL moist_conv, run on it 2026-10-19, adjusts
+        it (max |dT/dt| 6.6e-3 K/s at dt = 1800 s) and leaves the subsaturated one alone.
+        """
         T_stable, q_stable, p_full, p_half = _make_stable_columns()
-        T_unstable, q_unstable, _, _ = _make_unstable_columns()
+        T_unstable, _, _, _ = _make_unstable_columns()
+        q_unstable = 1.05 * saturation_specific_humidity(T_unstable, p_full)
         config = DCAConfig()
 
         out_stable = dca_convection(T_stable, q_stable, p_full, p_half, dt=300.0, config=config)
@@ -443,33 +449,16 @@ class TestDCA:
         assert max_stable < max_unstable
 
     def test_produces_nonzero_for_unstable(self):
-        """DCA should produce nonzero tendencies for unstable columns."""
+        """DCA should produce nonzero tendencies for saturated unstable columns
+        (moist_conv adjusts only supersaturated levels; see above)."""
         ncol, nlev = 2, 10
-        T, q_v, p_full, p_half = _make_unstable_columns(ncol, nlev)
-        config = DCAConfig(n_iterations=1)
+        T, _, p_full, p_half = _make_unstable_columns(ncol, nlev)
+        q_v = 1.05 * saturation_specific_humidity(T, p_full)
+        config = DCAConfig()
         out = dca_convection(T, q_v, p_full, p_half, dt=300.0, config=config)
 
         # Should have nonzero temperature adjustment
         assert float(jnp.max(jnp.abs(out.dT_dt))) > 1e-6
-
-    def test_upward_pair_adjustment_uses_progressive_scan_carry(self):
-        """Upper-pair instability should adjust even if bottom pair is stable."""
-        T = jnp.array([[230.0, 290.0, 291.0]])  # top -> bottom
-        q_v = jnp.full_like(T, 1e-6)
-        p_half = jnp.array([[1.0e4, 4.0e4, 8.0e4, 1.1e5]])
-        p_full = 0.5 * (p_half[:, :-1] + p_half[:, 1:])
-
-        out = dca_convection(
-            T,
-            q_v,
-            p_full,
-            p_half,
-            dt=300.0,
-            config=DCAConfig(n_iterations=1, mixing_fraction=1.0),
-        )
-
-        # Top level (index 0) belongs only to the upper pair and should adjust.
-        assert float(jnp.abs(out.dT_dt[0, 0])) > 1e-4
 
     def test_differentiable(self):
         """jax.grad should work through DCA convection."""
@@ -484,73 +473,6 @@ class TestDCA:
         grad_T = jax.grad(loss)(T)
         assert jnp.all(jnp.isfinite(grad_T))
         assert grad_T.shape == T.shape
-
-    def test_moist_static_energy_conservation(self):
-        """DCA must conserve moist static energy column-wise.
-
-        Adjustment imposes the moist-adiabatic lapse rate and removes
-        super-saturation; the latent heat released by condensation
-        must warm the column so that
-
-            c_p · ⟨ΔT⟩ + L_v · ⟨Δq⟩ = 0   (column mean, dp-weighted)
-
-        holds layer-pair by layer-pair.  The Physical_Consistency
-        cycle iter-1 fix added this latent-heat term — without it,
-        DCA conserved only dry static energy and biased the column
-        cool by ~2.5 K per g/kg condensed.
-        """
-        from legoesm import constants
-        from legoesm.thermo import saturation_specific_humidity
-        from legoesm.atmosphere.physics.convection.dca import (
-            _adjust_one_iteration,
-        )
-
-        ncol, nlev = 4, 10
-        T, q_v, p_full, p_half = _make_unstable_columns(ncol, nlev)
-        # Saturate the column so removing super-saturation actually
-        # condenses water (otherwise q_adj == q_v and the test is
-        # vacuous on stable / dry columns).
-        q_v = saturation_specific_humidity(T, p_full) * 1.05
-
-        # Bypass CAPE-gating by calling the inner adjustment loop
-        # directly: the conservation property we are testing is a
-        # property of ``_adjust_one_iteration``, not of the cape
-        # threshold.
-        dp = p_half[:, 1:] - p_half[:, :-1]
-        T_new, q_new, _ = _adjust_one_iteration(
-            T, q_v, p_full, dp, mixing_fraction=1.0,
-            instability_blend_sharpness=DCAConfig().instability_blend_sharpness,
-        )
-
-        # Column mean tendencies, mass-weighted by dp.
-        dT = T_new - T  # K
-        dq = q_new - q_v  # kg/kg
-        dT_col = jnp.sum(dT * dp, axis=-1) / jnp.sum(dp, axis=-1)
-        dq_col = jnp.sum(dq * dp, axis=-1) / jnp.sum(dp, axis=-1)
-
-        # Sanity: the column actually condensed water (negative ⟨Δq⟩
-        # at meaningful magnitude).  Without this check the test
-        # would pass vacuously on a column where no adjustment fired.
-        assert float(jnp.min(-dq_col)) > 1e-4, (
-            f"test setup did not produce real condensation; "
-            f"<Δq> = {float(jnp.min(dq_col)):.2e}"
-        )
-
-        # Moist static energy invariant: c_p · ⟨ΔT⟩ + L_v · ⟨Δq⟩ = 0
-        # since dq is negative (condensation) and dT positive (latent
-        # heat release), the residual should be near zero.
-        residual = constants.c_pd * dT_col + constants.L_v * dq_col
-        scale = jnp.maximum(constants.c_pd * jnp.abs(dT_col), 1e-12)
-        max_rel = float(jnp.max(jnp.abs(residual) / scale))
-        # Per-pair conservation is exact; the residual at the column
-        # level comes only from successive scan steps each seeing a
-        # slightly updated T.  Empirically max_rel ~ 3e-6 with f64.
-        # Codex review tightened from 0.10 to 1e-4 on grounds that
-        # the looser bound let a regression slip past undetected.
-        assert max_rel < 1e-4, (
-            f"DCA moist-static-energy residual = {max_rel:.3e}; "
-            "iter-1 latent-heat fix should keep this small."
-        )
 
 
 # ===========================================================================
@@ -736,11 +658,10 @@ class TestIntegration:
         grad_T = jax.grad(loss)(state.T.data)
         assert jnp.all(jnp.isfinite(grad_T))
 
-    def test_scheme_selection_sbm(self):
-        """scheme='sbm' should select SBM backend."""
-        ncol, nlev = 2, 8
-        T, q_v, p_full, p_half = _make_unstable_columns(ncol, nlev)
-
+    def test_scheme_selection_sbm_and_dca_on_isothermal_rest_state(self):
+        """scheme='sbm' and scheme='dca' run through the factory; on the
+        isothermal Held-Suarez rest state both oracles (Isca SBM: no CAPE;
+        GFDL moist_conv: no supersaturated unstable pair) leave it alone."""
         config_sbm = ConvectionConfig(scheme="sbm")
         config_dca = ConvectionConfig(scheme="dca")
 
@@ -758,8 +679,8 @@ class TestIntegration:
         tend_sbm, _ = fn_sbm(state, grid, sigma)
         tend_dca, _ = fn_dca(state, grid, sigma)
 
-        # Both should produce nonzero but different tendencies
-        assert not jnp.allclose(tend_sbm.dT_dt.data, tend_dca.dT_dt.data, atol=1e-10)
+        assert bool(jnp.all(tend_sbm.dT_dt.data == 0.0))
+        assert bool(jnp.all(tend_dca.dT_dt.data == 0.0))
 
     def test_none_scheme_gives_zeros(self):
         """scheme='none' should produce zero tendencies."""

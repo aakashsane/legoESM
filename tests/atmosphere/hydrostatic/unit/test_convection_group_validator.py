@@ -606,9 +606,9 @@ def _scalar_loss(out):
 _GRAD_CASES = {
     "sbm": (7200.0, lambda T, q, pf, ph, u, v, w, mc, x:
             _scalar_loss(_run_sbm(T, q, pf, ph, tau_c=x))),                 # tau_c [s]
-    "dca_manabe": (10.0, lambda T, q, pf, ph, u, v, w, mc, x:
-                   _scalar_loss(_run_dca_manabe(
-                       T, q, pf, ph, instability_blend_sharpness=x))),       # blend sharpness
+    # dca_manabe is not probed: GFDL moist_conv adjusts to a tolerance and has
+    # no rate or slope prefactor; its only float is the CAPE gate, whose
+    # gradient tests/unit/test_cape_trigger_gradient.py covers.
     "dca_ahmed_neelin": (0.6, lambda T, q, pf, ph, u, v, w, mc, x:
                          _scalar_loss(_run_dca_ahmed(T, q, pf, ph, a_mm_per_hr=x))),  # slope a
     "zhang_mcfarlane": (3600.0, lambda T, q, pf, ph, u, v, w, mc, x:

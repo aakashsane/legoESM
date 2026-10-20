@@ -43,10 +43,18 @@ SCALAR_ROOT = Path(
 )
 RHS_RECORD = "oracle_rhs_kt00000001.bin"
 BT_RECORD = "oracle_bt_frames_kt00004321.bin"
+RHS_FAMILY_RECORD = "oracle_r20_stage1_rhs_kt00004321.bin"
 STEP = 4321
 ACTIVE_LEVELS = 30
 TWIN_CLEAR_FACTOR = 4.0
 FACE_ORDER = ("u", "v")
+SOURCE_BOUNDARIES = (
+    ("after_hpg", "hydrostatic_pressure_gradient"),
+    ("after_ldf", "lateral_diffusion"),
+    ("after_vor", "total_vorticity_coriolis"),
+    ("after_keg", "kinetic_energy_gradient"),
+    ("after_adv", "vertical_advection"),
+)
 
 
 def _xyz(values: np.ndarray, nx: int, ny: int, nz: int) -> np.ndarray:
@@ -116,6 +124,43 @@ def read_bt_handoff(path: Path) -> dict[str, object]:
     return {"header": header, **fields}
 
 
+def read_stage1_rhs_family(path: Path) -> dict[str, object]:
+    """Read cumulative stage-1 RHS boundaries in executed NEMO order."""
+    raw = path.read_bytes()
+    require(len(raw) >= 88, f"{path}: short RHS-family record")
+    magic = raw[:16].decode("ascii").rstrip()
+    header_values = struct.unpack("=8i", raw[16:48])
+    keys = ("version", "kt", "Kbb", "Krhs", "nx", "ny", "nz", "bits")
+    header = dict(zip(keys, header_values, strict=True))
+    require(magic == "NEMO_L2_R20RHS_1", f"{path}: bad magic {magic!r}")
+    require(
+        (header["version"], header["kt"], header["nx"], header["ny"],
+         header["nz"], header["bits"])
+        == (1, STEP, *NATIVE_DIMS, 64),
+        f"{path}: bad header {header}",
+    )
+    sizes = struct.unpack("=10i", raw[48:88])
+    count = header["nx"] * header["ny"] * header["nz"]
+    require(sizes == (count,) * 10,
+            f"{path}: bad array-size contract {sizes}")
+    values = np.frombuffer(raw, dtype=np.float64, offset=88)
+    require(values.size == 10 * count, f"{path}: malformed RHS-family payload")
+    fields: dict[str, object] = {"header": header}
+    cursor = 0
+    for boundary, _term in SOURCE_BOUNDARIES:
+        for face in FACE_ORDER:
+            fields[f"{boundary}_{face}"] = _xyz(
+                values[cursor:cursor + count], header["nx"],
+                header["ny"], header["nz"])
+            cursor += count
+    for name, field in fields.items():
+        if name == "header":
+            continue
+        require(np.all(np.isfinite(field[..., :ACTIVE_LEVELS])),
+                f"{path}: non-finite active {name} RHS word")
+    return fields
+
+
 def envelope_score(
     candidate: np.ndarray,
     scalar: np.ndarray,
@@ -160,6 +205,22 @@ def first_clearing_stage(stages: list[dict[str, object]]) -> dict | None:
     return None
 
 
+def first_clearing_source_boundary(
+    boundaries: list[dict[str, object]],
+) -> dict | None:
+    """Return the first cumulative source boundary outside the twin floor."""
+    for boundary in boundaries:
+        for face in FACE_ORDER:
+            if boundary["rows"][face]["clears_four_times_twin"]:
+                return {
+                    "boundary": boundary["boundary"],
+                    "term": boundary["term"],
+                    "field": face,
+                    "score": boundary["rows"][face],
+                }
+    return None
+
+
 def _face_fields(values: tuple) -> dict[str, np.ndarray]:
     return {
         "u": np.asarray(values[0], dtype=np.float64)[:, 1:, :],
@@ -173,6 +234,16 @@ def _active_levels(field: np.ndarray) -> np.ndarray:
     require(field.ndim == 3 and field.shape[-1] == NATIVE_DIMS[-1],
             f"oracle field has unexpected shape {field.shape}")
     return field[..., :ACTIVE_LEVELS]
+
+
+def _trace_source_boundary(operands: dict, boundary: str) -> dict[str, np.ndarray]:
+    """Return native legoESM face arrays from production accumulator barriers."""
+    return {
+        "u": np.asarray(operands[f"{boundary}_u"].data,
+                        dtype=np.float64)[:, 1:, :],
+        "v": np.asarray(operands[f"{boundary}_v"].data,
+                        dtype=np.float64)[1:, :, :],
+    }
 
 
 def _plant_one_ulp(field: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -205,6 +276,8 @@ def run(
     vector_root: Path,
     scalar_root: Path,
     *,
+    rhs_family_vector_root: Path | None = None,
+    rhs_family_scalar_root: Path | None = None,
     plant: str = "none",
 ) -> dict[str, object]:
     import jax
@@ -232,6 +305,14 @@ def run(
         "vector": manifest_contract(vector_root, "vector-math-conda"),
         "scalar": manifest_contract(scalar_root, "scalar-math-conda"),
     }
+    require((rhs_family_vector_root is None)
+            == (rhs_family_scalar_root is None),
+            "both scalar and vector RHS-family providers are required")
+    if rhs_family_vector_root is not None:
+        providers["rhs_family_vector"] = manifest_contract(
+            rhs_family_vector_root, "vector-math-conda")
+        providers["rhs_family_scalar"] = manifest_contract(
+            rhs_family_scalar_root, "scalar-math-conda")
     card = common_card()
     state = common_state(card)
     freshwater, surface = gyre_surface_forcings(card, state, STEP)
@@ -307,6 +388,36 @@ def run(
         bt_rows[face] = envelope_score(
             candidate, scalar_bt[name], vector_bt[name], active)
 
+    source_boundaries = None
+    first_source_boundary = None
+    if rhs_family_vector_root is not None:
+        scalar_family = read_stage1_rhs_family(
+            rhs_family_scalar_root / "instrumented" / RHS_FAMILY_RECORD)
+        vector_family = read_stage1_rhs_family(
+            rhs_family_vector_root / "instrumented" / RHS_FAMILY_RECORD)
+        live_operands = trace.operator_operands[0]
+        source_boundaries = []
+        for boundary, term in SOURCE_BOUNDARIES:
+            live = _trace_source_boundary(live_operands, boundary)
+            rows = {}
+            for face in FACE_ORDER:
+                candidate = live[face]
+                if plant == f"{boundary}-{face}":
+                    candidate = _plant_one_ulp(candidate, masks[face])
+                rows[face] = envelope_score(
+                    candidate,
+                    _active_levels(scalar_family[f"{boundary}_{face}"]),
+                    _active_levels(vector_family[f"{boundary}_{face}"]),
+                    masks[face],
+                )
+            source_boundaries.append({
+                "boundary": boundary,
+                "term": term,
+                "rows": rows,
+            })
+        first_source_boundary = first_clearing_source_boundary(
+            source_boundaries)
+
     first_stage = first_clearing_stage(stages)
     rhs_clears = any(
         rhs_rows[face]["clears_four_times_twin"] for face in FACE_ORDER)
@@ -314,8 +425,12 @@ def run(
         bt_rows[face]["clears_four_times_twin"] for face in FACE_ORDER)
     if first_stage is None:
         next_boundary = "NO_STAGE_BOUNDARY_CLEARS_TWIN"
-    elif first_stage["stage"] == 1 and rhs_clears:
+    elif first_stage["stage"] == 1 and rhs_clears and source_boundaries is None:
         next_boundary = "STAGE1_SOURCE_ORDERED_RHS_ACQUISITION_REQUIRED"
+    elif first_stage["stage"] == 1 and rhs_clears:
+        require(first_source_boundary is not None,
+                "completed RHS clears but no cumulative source boundary does")
+        next_boundary = "STAGE1_FACTOR_WALK_REQUIRED"
     elif first_stage["stage"] == 1 and bt_clears:
         next_boundary = "STAGE1_EXTERNAL_MODE_WALK_REQUIRED"
     elif first_stage["stage"] == 1:
@@ -329,6 +444,9 @@ def run(
             planted_rows.extend(stage["rows"].values())
         planted_rows.extend(rhs_rows.values())
         planted_rows.extend(bt_rows.values())
+        if source_boundaries is not None:
+            for boundary in source_boundaries:
+                planted_rows.extend(boundary["rows"].values())
         require(any(row["legoesm_minus_scalar"]["unequal_words"] > 0
                     for row in planted_rows),
                 "active one-ULP plant did not fire")
@@ -352,6 +470,8 @@ def run(
         "plant": plant,
         "stages": stages,
         "completed_stage1_rhs": rhs_rows,
+        "source_ordered_stage1_rhs": source_boundaries,
+        "first_source_boundary_beyond_twin": first_source_boundary,
         "external_mode_handoff": bt_rows,
         "first_stage_beyond_twin": first_stage,
         "next_boundary": next_boundary,
@@ -362,18 +482,31 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--vector-root", type=Path, default=VECTOR_ROOT)
     parser.add_argument("--scalar-root", type=Path, default=SCALAR_ROOT)
+    parser.add_argument("--rhs-family-vector-root", type=Path)
+    parser.add_argument("--rhs-family-scalar-root", type=Path)
     parser.add_argument("--plant", default="none", choices=(
         "none", "stage1-u", "stage1-v", "stage2-u", "stage2-v",
         "rhs-u", "rhs-v", "bt-u", "bt-v",
+        "after_hpg-u", "after_hpg-v", "after_ldf-u", "after_ldf-v",
+        "after_vor-u", "after_vor-v", "after_keg-u", "after_keg-v",
+        "after_adv-u", "after_adv-v",
     ))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    report = run(args.vector_root, args.scalar_root, plant=args.plant)
+    report = run(
+        args.vector_root,
+        args.scalar_root,
+        rhs_family_vector_root=args.rhs_family_vector_root,
+        rhs_family_scalar_root=args.rhs_family_scalar_root,
+        plant=args.plant,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True)
                            + "\n", encoding="utf-8")
     print(json.dumps({
         "first_stage_beyond_twin": report["first_stage_beyond_twin"],
+        "first_source_boundary_beyond_twin": (
+            report["first_source_boundary_beyond_twin"]),
         "next_boundary": report["next_boundary"],
         "output": str(args.output),
     }, sort_keys=True))

@@ -12,6 +12,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_DIR = ROOT / "scripts/validate/ocean_fidelity/testcases"
 SCRIPT = SCRIPT_DIR / "nemo_testcase_l2_gyre_hires_round20_stage1.py"
+ACQUISITION_DIR = (
+    SCRIPT_DIR / "nemo_testcase_l2_gyre_hires_round20_stage1")
 
 
 def _load_module():
@@ -71,6 +73,35 @@ def test_first_clearing_stage_respects_stage_and_face_order():
     assert (result["stage"], result["field"]) == (1, "v")
 
 
+def test_first_clearing_source_boundary_respects_executed_order():
+    module = _load_module()
+
+    def row(clears):
+        return {"clears_four_times_twin": clears}
+
+    boundaries = [
+        {
+            "boundary": "after_hpg",
+            "term": "hydrostatic_pressure_gradient",
+            "rows": {"u": row(False), "v": row(False)},
+        },
+        {
+            "boundary": "after_ldf",
+            "term": "lateral_diffusion",
+            "rows": {"u": row(False), "v": row(True)},
+        },
+        {
+            "boundary": "after_vor",
+            "term": "total_vorticity_coriolis",
+            "rows": {"u": row(True), "v": row(True)},
+        },
+    ]
+    result = module.first_clearing_source_boundary(boundaries)
+    assert result is not None
+    assert (result["boundary"], result["term"], result["field"]) == (
+        "after_ldf", "lateral_diffusion", "v")
+
+
 def test_active_level_mapping_drops_only_nemo_closed_jpk(monkeypatch):
     module = _load_module()
     monkeypatch.setattr(module, "NATIVE_DIMS", (6, 5, 4))
@@ -120,3 +151,81 @@ def test_bt_reader_rejects_truncation(tmp_path, monkeypatch):
     path.write_bytes(payload[:-8])
     with pytest.raises(Exception, match="malformed"):
         module.read_bt_handoff(path)
+
+
+def test_rhs_family_reader_enforces_header_layout_and_source_order(
+    tmp_path, monkeypatch,
+):
+    module = _load_module()
+    monkeypatch.setattr(module, "NATIVE_DIMS", (6, 5, 2))
+    monkeypatch.setattr(module, "ACTIVE_LEVELS", 1)
+    count = 6 * 5 * 2
+    payload = np.arange(10 * count, dtype=np.float64)
+    path = tmp_path / module.RHS_FAMILY_RECORD
+    path.write_bytes(
+        b"NEMO_L2_R20RHS_1"
+        + struct.pack("=8i", 1, module.STEP, 1, 3, 6, 5, 2, 64)
+        + struct.pack("=10i", *((count,) * 10))
+        + payload.tobytes()
+    )
+    result = module.read_stage1_rhs_family(path)
+    assert result["after_hpg_u"].shape == (1, 2, 2)
+    first = payload[:count].reshape((6, 5, 2), order="F")[
+        2:-2, 2:-2].transpose(1, 0, 2)
+    np.testing.assert_array_equal(result["after_hpg_u"], first)
+    last = payload[-count:].reshape((6, 5, 2), order="F")[
+        2:-2, 2:-2].transpose(1, 0, 2)
+    np.testing.assert_array_equal(result["after_adv_v"], last)
+
+    changed = bytearray(path.read_bytes())
+    changed[48:52] = struct.pack("=i", count - 1)
+    path.write_bytes(changed)
+    with pytest.raises(Exception, match="array-size contract"):
+        module.read_stage1_rhs_family(path)
+
+
+def test_trace_source_boundary_maps_owned_faces():
+    module = _load_module()
+
+    class Field:
+        def __init__(self, data):
+            self.data = data
+
+    operands = {
+        "after_hpg_u": Field(np.arange(2 * 4 * 2).reshape(2, 4, 2)),
+        "after_hpg_v": Field(np.arange(3 * 3 * 2).reshape(3, 3, 2)),
+    }
+    mapped = module._trace_source_boundary(operands, "after_hpg")
+    assert mapped["u"].shape == (2, 3, 2)
+    assert mapped["v"].shape == (2, 3, 2)
+
+
+def test_operator_acquisition_is_single_rank_passive_and_creates_parent():
+    run = (ACQUISITION_DIR / "run.sh").read_text(encoding="utf-8")
+    assert "RANKS must be 1" in run
+    assert "mkdir -p \"$(dirname -- \"$EVIDENCE\")\"" in run
+    assert "./makenemo -r \"$SOURCE_NAME\" -n \"$TARGET_NAME\" -d 'OCE'" in run
+    assert "export GYRE_R20_WRITE=$enabled" in run
+    assert "run_nemo control 0" in run
+    assert "run_nemo instrumented 1" in run
+    assert "REFUSE_WRITER_MOVED_TRAJECTORY" in run
+    assert "mpirun -np 1" in run
+    assert "rg " not in run
+
+
+def test_writer_patch_has_five_source_ordered_cumulative_frames():
+    patch = (ACQUISITION_DIR / "stp2d_round20.patch").read_text(
+        encoding="utf-8")
+    assert patch.count(
+        "WRITE(r20_unit) uu(:,:,:,Krhs), vv(:,:,:,Krhs)") == 5
+    # Zero-context insertions are safe here because run.sh pins the exact
+    # engine-source hash and the preflight separately compiles the result.
+    assert "4bfe31a332c3782b2701db0e6cff689876dc5cdd3af91b546ac46369e2e3dc8b" in (
+        ACQUISITION_DIR / "run.sh").read_text(encoding="utf-8")
+    # The patch inserts immediately after the five pinned source call lines;
+    # prove those line-number boundaries remain strictly ordered.
+    headers = ["@@ -128,0", "@@ -131,0", "@@ -146,0", "@@ -163,0",
+               "@@ -165,0"]
+    positions = [patch.find(header) for header in headers]
+    assert all(position >= 0 for position in positions)
+    assert positions == sorted(positions)

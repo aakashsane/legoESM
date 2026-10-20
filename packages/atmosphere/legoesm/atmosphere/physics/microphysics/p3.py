@@ -50,7 +50,12 @@ with the INPUT ``rho``; P3 itself uses its own dry density ``p/(R_d T)``, as WRF
 P3 does), ``N_i`` per kg in both; potential temperature uses P3's ``rd/cp``; the
 beginning-of-step state equals the input state (``th_old = th``,
 ``qv_old = qv``: this operator-split interface carries no previous-step state),
-and the step is not the first (``it = 2``).  The thermodynamic constants
+and the step is not the first (``it = 2``).  KNOWN DEVIATION in a coupled run:
+WRF carries ``th_old`` / ``qv_old`` as state from the previous microphysics
+call, so its supersaturation-forcing term (``aaa``) includes the dynamics
+tendency since then; here that part is zero and only its Bergeron part
+remains.  The oracle match certifies the port under the same zero forcing,
+not this term.  The thermodynamic constants
 (``cp``, ``g``, ``rd``, ``rv``, the latent heats) and the saturation curves are
 legoESM's (``legoesm.constants``, ``legoesm.thermo`` specific humidity), fed to
 the oracle by the fixture harness; ``e0`` (melting, wet growth) stays the
@@ -66,7 +71,9 @@ condition (piecewise differentiable, exactly the oracle).  The three gates that
 already had a smoothing field keep it and reduce to the oracle at their hard
 limit: the nucleation temperature gate (``ice_sigmoid_sharpness``), the
 nucleation ice-supersaturation gate (``cooper_supi_sharpness``) and the melting
-temperature gate (``melt_sharpness``).  The oracle's data-dependent
+temperature gate (``melt_sharpness``).  At exactly a gate's threshold a
+sigmoid is 0.5 at every sharpness while WRF's strict comparison is 0 or 1, so
+the hard-limit match holds off the thresholds (measure-zero inputs).  The oracle's data-dependent
 sedimentation sub-step loop runs on the Morrison scheme's fixed-maximum
 machinery (``MorrisonConfig`` default ``sed_cfl_substeps_max``, chunked
 ``fori_loop``, the strict path's ``equinox.error_if`` + NaN poison): a column

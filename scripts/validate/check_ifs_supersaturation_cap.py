@@ -79,6 +79,8 @@ GSAM_QCI_GATE = 1.0e-8
 # allowance (that is SAM cloud.f90), and P3Config.homogeneous_ice_supersaturation
 # raises when changed (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART).
 ICE_SCHEMES = ("morrison", "thompson")
+# The liquid guard (opt-in post-step adjustment) is still carried by p3.
+LIQUID_SCHEMES = ICE_SCHEMES + ("p3",)
 ICE_FIELD = "homogeneous_ice_supersaturation"
 LIQUID_FIELD = "hard_saturation_adjustment"
 
@@ -305,7 +307,7 @@ def section_2_load_bearing() -> list[str]:
     print(f"  warm cell: T={WARM_T_K} K, p={WARM_P_PA / 100:.0f} hPa, "
           f"q_sat_liq={q_sat_l:.3e} kg/kg, RH_liq={WARM_RH_LIQ:.2f}; "
           f"control at RH_liq={LIQUID_NOOP_RH:.2f}")
-    for scheme in ICE_SCHEMES:
+    for scheme in LIQUID_SCHEMES:
         q_vw, restw = _column(WARM_T_K, WARM_P_PA, WARM_RH_LIQ * q_sat_l)
         on, off = _on_off(scheme, LIQUID_FIELD, q_vw, restw)
         delta = _report(f"{scheme}: super-saturated", on, off)
@@ -462,7 +464,7 @@ def section_3_reachable() -> list[str]:
     print(f"  {'lane':32s} {'scheme':10s} {'ice(default)':14s} "
           f"{'liquid(default)':16s} liquid(requested ON)")
     for label, fn in LANES:
-        for scheme in ICE_SCHEMES:
+        for scheme in LIQUID_SCHEMES:
             try:
                 sub = fn(scheme)
                 sub_on = fn(scheme, guard=True)

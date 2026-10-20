@@ -598,6 +598,70 @@ def saturation_adjustment(T, q_v, p_full, dt, sharpness=_DEFAULT_SAT_SHARPNESS, 
     return condensation, q_sat
 
 
+# --- gSAM liquid saturation adjustment (SRC/MICRO_M2005/microphysics.f90
+# satadj_liquid, :1638-1720, called by micro_proc :743 before the M2005 kernel).
+_GSAM_SATADJ_P_MIN = 5000.0      # no adjustment where pres < 5000 Pa (:1664) [Pa]
+_GSAM_SATADJ_THRESH_K = 0.01     # convergence: |dT| <= min(0.01, 0.01*fac_cond*qsat) (:1683) [K]
+_GSAM_SATADJ_THRESH_QFRAC = 0.01  # ... 0.01 of the saturation value (:1683) [-]
+# Newton iteration limit (maxiter, :1650) -- a loop count, never tunable.
+_GSAM_SATADJ_MAXITER = 20
+
+
+def saturation_adjustment_gsam(T, q_v, q_c, p_full):
+    """gSAM liquid saturation adjustment: the adjusted ``(T, q_v, q_c)``.
+
+    Port of gSAM 1.8.8 ``satadj_liquid`` (SRC/MICRO_M2005/microphysics.f90
+    :1638-1720) as ``micro_proc`` calls it (:743): on total water
+    ``q_t = q_v + q_c`` and liquid-water temperature ``T_l = T - (L_v/c_pd) q_c``
+    the state is put back on the liquid saturation curve, condensing or
+    evaporating cloud as needed.  Per cell::
+
+        q_c = 0;  skip where p < 5000 Pa or q_t <= q_sat(T_l)   (q_v = q_t, T = T_l)
+        dT  = (L/c_p) max(0, q_t - q_sat(T_l)) / (1 + L^2 q_sat/(c_p R_v T_l^2))
+        Newton  dT = f/f',  f = T_l - T1 + (L/c_p) max(0, q_t - q_sat(T1)),
+                f' = 1 + L^2 q_sat(T1)/(c_p R_v T1^2)
+        while |dT| > min(0.01, 0.01 (L/c_p) q_sat(T_l)) and niter < 20
+        if niter > 19: leave the cell unadjusted (q_c = 0, q_v = q_t, T = T_l)
+        q_c = max(0, T1 - T_l)/(L/c_p);  q_v = q_t - q_c;  T = T1
+
+    The iteration count and the convergence test are reproduced exactly (a
+    fixed 19-step masked loop), so the result is the oracle's iterate, not
+    the exact root.  The saturation curve is legoESM's
+    :func:`legoesm.thermo.saturation_specific_humidity` (the oracle fixture is
+    built with the same curve).  Piecewise differentiable: the branch and
+    convergence masks are ``jnp.where`` and the gradient is that of the
+    iterate.  Computed in the state dtype.
+    """
+    fac = constants.L_v / constants.c_pd
+    cp_rv = constants.c_pd * constants.R_v
+    lv2 = constants.L_v ** 2
+    tabs = T - fac * q_c
+    q_t = q_v + q_c
+    qsat1 = saturation_specific_humidity(tabs, p_full)
+    sat = (p_full >= _GSAM_SATADJ_P_MIN) & (q_t > qsat1)
+    dtabs = fac * jnp.maximum(0.0, q_t - qsat1) / (1.0 + lv2 * qsat1 / (cp_rv * tabs ** 2))
+    tabs1 = tabs + dtabs
+    niter = jnp.ones_like(tabs)
+    thresh = jnp.minimum(_GSAM_SATADJ_THRESH_K,
+                         _GSAM_SATADJ_THRESH_QFRAC * fac * qsat1)
+
+    def body(_, carry):
+        dtabs, tabs1, niter = carry
+        go = (jnp.abs(dtabs) > thresh) & (niter < _GSAM_SATADJ_MAXITER)
+        qs = saturation_specific_humidity(tabs1, p_full)
+        fff = tabs - tabs1 + fac * jnp.maximum(0.0, q_t - qs)
+        dfff = 1.0 + lv2 * qs / (cp_rv * tabs1 ** 2)
+        step = fff / dfff
+        return (jnp.where(go, step, dtabs), jnp.where(go, tabs1 + step, tabs1),
+                niter + go.astype(niter.dtype))
+
+    dtabs, tabs1, niter = jax.lax.fori_loop(
+        0, _GSAM_SATADJ_MAXITER - 1, body, (dtabs, tabs1, niter))
+    ok = sat & (niter <= _GSAM_SATADJ_MAXITER - 1)
+    q_c_new = jnp.where(ok, jnp.maximum(0.0, tabs1 - tabs) / fac, 0.0)
+    return (jnp.where(ok, tabs1, tabs), jnp.where(ok, q_t - q_c_new, q_t), q_c_new)
+
+
 def effective_Nc(N_c, Nc_0, *, predict_Nc=True, nc_specified_field=False):
     """Effective cloud-droplet number for the size distribution / autoconversion.
 

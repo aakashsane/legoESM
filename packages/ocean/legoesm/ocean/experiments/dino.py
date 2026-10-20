@@ -868,7 +868,7 @@ class DINOConfig:
     rigid_lid_dt_mom_ratio: float = 9.0
     # Barotropic averaging filter (explicit_substep only): "cosine"
     # (legacy) | "power_law" | "box" | "nemo_boxcar_centred" (dynspg_ts
-    # ln_bt_fw=F + nn_bt_flt=1 — the DINO namelist selection).
+    # ln_bt_fw=F + nn_bt_flt=2 — the DINO namelist selection).
     barotropic_time_filter: str = "cosine"
     # NEMO namdyn_spg rn_bt_alpha.  The NEMO DINO cards state the deck's 0.0
     # explicitly even though nn_bt_flt=2 takes the hard-coded coefficient arm.

@@ -4616,6 +4616,11 @@ def surface_stress_faces(
                 * jnp.maximum(tm[-1], tm_halo))
             tau_j_v = tau_j_v.at[-1].set(top)
         return tau_i_u, tau_j_v, dz_0_u, dz_0_v
+    if nemo_fold_vector_sign and _sf_tau_x is not None and (
+            _native_i is None or not use_native):
+        raise ValueError(
+            "nemo_fold_vector_sign needs the on-grid tau_i_native/tau_j_native "
+            "path; geographic tau_x/tau_y would skip the fold sign")
     if surface_forcing is None or _sf_tau_x is None or _sf_tau_y is None:
         return None
     tau_e_T = -jnp.asarray(_sf_tau_x, dtype=u_dtype)
@@ -5541,6 +5546,15 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
     _vorticity_scheme = getattr(
         _vorticity_selection, "scheme", _vorticity_selection)
     _nemo_ene_operands = None
+    if getattr(config, "een_nemo_relative_vorticity", False) and (
+            _mom_adv == "flux_form" or _vorticity_scheme != "een_total"):
+        # Only the vector-form een_total triad reads np_CRV's relative
+        # vorticity; every other arm would silently ignore the switch.
+        raise ValueError(
+            "een_nemo_relative_vorticity requires vector-form "
+            "vorticity_scheme='een_total'; got "
+            f"momentum_advection={_mom_adv!r}, "
+            f"vorticity_scheme={_vorticity_scheme!r}")
     if _mom_adv == "flux_form":
         # NEMO dynadv_up3 consumes ONE face thickness -- e3u(Kmm) =
         # e3u_0*(1+r3u(Kmm)) (domzgr_substitute.h90:127; domqco.F90:219-220)

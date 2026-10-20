@@ -6,6 +6,7 @@ checkpointing into a single reusable class.
 """
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import sys
@@ -46,6 +47,9 @@ from legoesm.driver.mpas_diff_step import mpas_cadence, pick_physics_fn
 from legoesm.driver.restart import save_restart, load_restart
 
 logger = logging.getLogger("legoesm.driver")
+
+# Set once an MPAS run has frozen its long-lived objects (gc.freeze).
+_GC_FROZEN = [False]
 
 # Keeps a seeded soil moisture strictly inside the van-Genuchten retention
 # range: psi_from_theta is singular at saturation and at the residual.
@@ -703,7 +707,9 @@ _HARD_SAT_LOG_QV_EPS = 1.0e-9        # [kg/kg] count a point as "drained" above 
 
 def _mpas_zenith_ocean_albedo(lat, day, orbit=None):
     """Briegleb (1992) open-ocean albedo at the daytime-effective daily-mean
-    solar cosine, per cell.
+    solar cosine, per cell -- the MPAS ``dynamic_albedo`` path for the
+    single-albedo (non-rrtmgp) radiation schemes.  With rrtmgp the lane uses
+    the CESM2.1 direct/diffuse split instead (integration.cesm_ocean_albedo_direct).
 
     ``mu = Q_day / (S_0 * f_day)`` is the cosine a column sees AVERAGED OVER
     ITS SUNLIT HOURS, which is the right weighting for an albedo that is held
@@ -1621,7 +1627,8 @@ class ModelDriver:
     """
 
     def __init__(self, config: ExperimentConfig, output_dir: str | Path | None = None,
-                 *, expected_resolved_physics: dict | None = None):
+                 *, expected_resolved_physics: dict | None = None,
+                 manifest_runner_tag: str | None = None):
         # Defensive canonical-name normalization at the driver entry:
         # callers that bypass run_amip's argparse postprocessor (direct
         # test fixtures, ad-hoc scripts, older YAML loaders) might still
@@ -1653,6 +1660,12 @@ class ModelDriver:
         # ``legoesm reproduce`` passes the reference run's resolved physics;
         # the run refuses to start if its own resolves differently.
         self._expected_resolved_physics = expected_resolved_physics
+        # The runner that drives this atmosphere, recorded in its manifest
+        # (run_coupled: so its atmosphere record is not replayed alone).
+        self._manifest_runner_tag = manifest_runner_tag
+        # The final-state digest THIS run recorded in its manifest (None
+        # until then, or when it could not); the coupled record pairs it.
+        self.final_state_digest = None
         # export_mpas_step's hand-off dict; None = a normal run (review F9).
         self._mpas_step_export = None
         self._mpas_step_exported = False   # export consumes the driver
@@ -5048,6 +5061,12 @@ class ModelDriver:
             p_s = self._gather_spmd_tree_to_host(p_s)
         return p_s, lat
 
+    def _owned_lon(self):
+        """Longitude [rad] in the ``_owned_p_s_and_lat`` layout."""
+        if self._owned_face_ids is not None:
+            return self._physics_lon
+        return self._grid_lon
+
     def _owned_temp(self):
         """Grid-point air temperature in the ``_owned_p_s_and_lat`` layout;
         None when the state carries no grid-point ``T`` (e.g. spectral)."""
@@ -5058,8 +5077,11 @@ class ModelDriver:
             return temp[self._owned_face_ids]
         return self._gather_spmd_tree_to_host(temp)
 
-    def _precompute_external_forcing(self, day, p_s, lat, temp=None):
-        """Pre-compute ozone/aerosol/GHG fields outside JIT boundary."""
+    def _precompute_external_forcing(self, day, p_s, lat, temp=None, lon=None):
+        """Pre-compute ozone/aerosol/GHG fields outside JIT boundary.
+
+        ``lon`` [rad] matches ``lat``; None -> :meth:`_owned_lon` (the layout
+        of :meth:`_owned_p_s_and_lat`, which every caller but spectral uses)."""
         from legoesm.forcing.external import (
             get_ozone_at_time, get_aerosol_at_time, get_aerosol_lw_at_time,
             get_aerosol_sw_volcanic_at_time,
@@ -5169,10 +5191,15 @@ class ModelDriver:
                 ) * w_strat
                 ).astype(aerosol_od.dtype)
             # AOD->CCN input: TROPOSPHERIC column in the visible (550 nm)
-            # band, volcanic excluded, from ``ccn_path`` (fine mode) if set.
+            # band, volcanic excluded, from ``ccn_path`` if set, read at each
+            # column's own longitude (the Andreae 2009 fit is local total
+            # AOT; a zonal mean gave polluted E China and the clean N Pacific
+            # one droplet number).
+            lon_col = jnp.asarray(
+                self._owned_lon() if lon is None else lon).reshape(ncol)
             self._aerosol_ccn_aod = jnp.asarray(get_aerosol_at_time(
                 _trop_cfg._replace(path=_acfg.ccn_path or _acfg.path),
-                day, lat_grid=lat_col, band="vis",
+                day, lat_grid=lat_col, band="vis", lon_grid=lon_col,
             )).reshape(ncol).astype(p_s.dtype)
 
         # Volcanic stratospheric LONGWAVE aerosol (gap #9): same (ncol,
@@ -5713,6 +5740,9 @@ class ModelDriver:
           (a legitimate resume/retry of the same run). An existing manifest that
           is invalid, or written for a *different* config, is fatal — one output
           directory holds one run; mixing two runs' provenance is refused.
+          Exception: an atmosphere driven by a runner with a replay spec
+          (run_coupled) continues when only that runner's ``atmosphere.*``
+          continuation controls differ (:meth:`_continue_driving_runner`).
         * **Required, not best-effort:** a write failure aborts ``setup()``.
           This is cheap — setup() has not yet entered the time loop — and upholds
           the A1 guarantee that a run which proceeds is always reconstructible.
@@ -5766,18 +5796,19 @@ class ModelDriver:
         # Atomic-exclusive create: wins the race against a concurrent start into
         # the same directory.  The winner creates the manifest; everyone else
         # (this run on retry/resume, or a racing process) takes the validate path.
+        manifest_kwargs = dict(
+            rng_seeds={"master": self._input_config.seed},
+            dataset_provenance=datasets,
+            # #1509: the --params values this run actually applied, so the
+            # manifest does not depend on the referenced file surviving
+            # unmodified. Absent (-> {}) when no --params were given.
+            params_applied=getattr(self, "_params_applied", None),
+            **({"runner_tag": self._manifest_runner_tag}
+               if getattr(self, "_manifest_runner_tag", None) else {}),
+        )
         try:
-            write_run_manifest(
-                self._output_dir,
-                self._input_config,
-                exclusive=True,
-                rng_seeds={"master": self._input_config.seed},
-                dataset_provenance=datasets,
-                # #1509: the --params values this run actually applied, so the
-                # manifest does not depend on the referenced file surviving
-                # unmodified. Absent (-> {}) when no --params were given.
-                params_applied=getattr(self, "_params_applied", None),
-            )
+            write_run_manifest(self._output_dir, self._input_config,
+                               exclusive=True, **manifest_kwargs)
             return
         except FileExistsError:
             pass
@@ -5794,20 +5825,81 @@ class ModelDriver:
                 f"refusing to start a run without valid run-start provenance. "
                 f"Remove or repair it to continue."
             ) from exc
+        tag = self._manifest_runner_tag or ""
+        old_tag = (existing.get("reproducibility") or {}).get("runner_tag") or ""
+        # An untagged record beside a coupled record is a coupled run's
+        # atmosphere written before the tag existed: still this run.
+        # It belongs to run_coupled, so it is not a standalone run's either.
+        coupled_beside = not old_tag and (
+            self._output_dir / "coupled" / manifest_file.name).exists()
+        owner = "run_coupled" if coupled_beside else old_tag
+        same_runner = tag == owner
         if not config_hash_matches(
                 existing["config"]["config_hash"],
                 existing["config"].get("resolved_config") or {},
                 self._input_config):
+            if same_runner and self._continue_driving_runner(
+                    existing, manifest_file, manifest_kwargs):
+                return
             raise RuntimeError(
                 f"Output directory {self._output_dir} already holds a run "
                 f"manifest written for a DIFFERENT config; refusing to mix two "
                 f"runs' provenance in one directory. Use a fresh output "
                 f"directory, or remove the existing run_manifest.json."
             )
+        if not same_runner:
+            # One output directory holds one run: a record another runner (or
+            # a standalone run) wrote is not this run's, even at equal config.
+            raise RuntimeError(
+                f"{manifest_file} was written by the {owner or 'standalone'!r} "
+                f"runner, this run is {tag or 'standalone'!r}; one output "
+                f"directory holds one run. Use a fresh output directory.")
         logger.info(
             f"Run manifest already present at {manifest_file}; preserving it "
             f"(same config — resume/retry)."
         )
+
+    def _continue_driving_runner(self, existing: dict, manifest_file: Path,
+                                 manifest_kwargs: dict) -> bool:
+        """A continuation of the run that drives this atmosphere (run_coupled):
+        when the existing record differs only in the atmosphere keys that
+        runner's continuation controls name (run length, checkpoint
+        frequency, wallclock budget), archive it by a hard link and write
+        this run's record.  False (caller refuses) otherwise."""
+        from datetime import datetime, timezone
+
+        from legoesm.driver.restart import (
+            RUNNER_REPLAY_SPECS,
+            config_drift_rows,
+            resolved_config_record,
+            write_run_manifest,
+        )
+        spec = RUNNER_REPLAY_SPECS.get(self._manifest_runner_tag or "")
+        prefix = "atmosphere."
+        keys = [k[len(prefix):] for k in (spec.continuation_keys if spec else ())
+                if k.startswith(prefix)]
+        if not keys:        # (the caller checked the record is this runner's)
+            return False
+        rows = [r for r in config_drift_rows(
+                    existing["config"].get("resolved_config") or {},
+                    resolved_config_record(self._input_config))
+                if not any(r[0] == k or r[0].startswith(k + ".") for k in keys)]
+        if rows:
+            return False
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        prev = manifest_file.with_name(
+            f"{manifest_file.stem}.prev-{stamp}-{os.getpid()}.json")
+        os.link(manifest_file, prev)       # the old record stays live until
+        try:                               # the new one replaces it
+            write_run_manifest(self._output_dir, self._input_config,
+                               **manifest_kwargs)
+        except BaseException:
+            prev.unlink(missing_ok=True)
+            raise
+        logger.info(f"Run manifest at {manifest_file} continued "
+                    f"({self._manifest_runner_tag}); previous record kept at "
+                    f"{prev.name}")
+        return True
 
     def _lane_builds_own_physics(self) -> bool:
         """True on the lanes that build the scheme configs their kernels use
@@ -5971,6 +6063,7 @@ class ModelDriver:
             from legoesm.grids.halo import traced_corner_fill_modes
             record_state_digest(manifest_file, digest,
                                 corner_fill_traced=traced_corner_fill_modes())
+            self.final_state_digest = digest
         except Exception as exc:  # pragma: no cover - provenance best-effort
             logger.warning(f"Could not record final state digest: {exc}")
 
@@ -8450,21 +8543,12 @@ class ModelDriver:
         there means the writing code is unknown, which counts as drift.
         """
         from legoesm.driver.restart import (
-            RUN_MANIFEST_FILENAME,
             collective_version_drift_gate,
-            manifest_file_version_drift,
+            restart_version_drift,
         )
-        manifest_file = path.parent / RUN_MANIFEST_FILENAME
-
-        def reasons():
-            if not path.exists():
-                return []  # the loader reports the missing checkpoint itself
-            if manifest_file.is_file():
-                return manifest_file_version_drift(manifest_file)
-            return [f"no {RUN_MANIFEST_FILENAME} beside the checkpoint, so the "
-                    f"code that wrote it is unknown (copy the writing run's "
-                    f"{RUN_MANIFEST_FILENAME} next to it)"]
-        collective_version_drift_gate(reasons, f"checkpoint {path}")
+        collective_version_drift_gate(
+            lambda: restart_version_drift(path, [path.parent]),
+            f"checkpoint {path}")
 
     def load_checkpoint(self, path: str | Path) -> tuple[int, float]:
         """Load state from a checkpoint using unified restart API.
@@ -13293,6 +13377,9 @@ class ModelDriver:
         from legoesm.forcing.surface_utils import (
             blend_surface_property, blended_surface_albedo,
         )
+        from legoesm.atmosphere.physics.radiation.integration import (
+            OCEAN_ALBEDO_DIFFUSE_CESM,
+        )
         # dynamic_albedo is a REAL ExperimentConfig option that the FV lane
         # honours (physics_pipeline applies a zenith-angle-dependent ocean
         # albedo). The MPAS blend below is static, so selecting it here would
@@ -13306,18 +13393,18 @@ class ModelDriver:
         # shortwave bias, i.e. the surface reflects too little, and a flat
         # ocean albedo is one of three candidate causes.
         #
-        # Cadence: the MPAS surface albedo is assembled ONCE PER FORCING DAY
-        # (with the SST/sea-ice sample), not per radiation call, so the cosine
-        # used here is the DAYTIME-EFFECTIVE daily mean
-        # ``mu = Q_day / (S_0 * f_day)`` -- exactly the quantity the FV lane
-        # uses on its non-diurnal path, and consistent with the daily cadence
-        # of the field it feeds.  Under a diurnal cycle this is an average over
-        # the sunlit day rather than the instantaneous value; that is an
-        # approximation of the ALBEDO, not of the insolation, and it is stated
-        # rather than hidden.
+        # rrtmgp: CESM2.1 form (cime5.6.47 seq_flux_mct.F90 L881-894): the
+        # DIRECT beam takes the zenith curve at the radiation time's own
+        # cos(zenith) (orbit-consistent: the radiation call's cosine), the
+        # DIFFUSE beam a fixed 0.06.  The daily blend below is the diffuse
+        # albedo; radiation forms the direct one per call from
+        # ``open_ocean_frac`` (integration.cesm_ocean_albedo_direct).
+        # Single-albedo schemes (gray) keep the daily-mean-cosine curve
+        # (_mpas_zenith_ocean_albedo) on both beams, unchanged.
         _zenith_ocean_alb = bool(getattr(cfg, "dynamic_albedo", False))
+        _cesm_ocean_alb = _zenith_ocean_alb and _rad_scheme == "rrtmgp"
         _alb_lat = None
-        if _zenith_ocean_alb:
+        if _zenith_ocean_alb and not _cesm_ocean_alb:
             _, _alb_lat_np = self._owned_p_s_and_lat()
             _alb_lat = jnp.asarray(_alb_lat_np).reshape(-1)
         _albedo_ocean = float(cfg.albedo_ocean)
@@ -14223,6 +14310,11 @@ class ModelDriver:
                 # the correct pre-feature state (deepcu exactly 0).
                 "conv_mass_flux_up",
                 "conv_icwmr",
+                # pblh (2026-10-20, user decision on #2045): the carried PBL
+                # height ZM reads one step lagged; zero-seed = CAM's cold
+                # start (physpkg.F90:419-424), refreshed by the first
+                # turbulence call.
+                "pblh",
                 # relvar (2026-10-19): CAM6 MG2 relative cloud-water variance;
                 # seeds at its fresh init (CAM pbuf value 2) and is rewritten
                 # by CLUBB before the microphysics reads it in every sub-step.
@@ -14818,8 +14910,15 @@ class ModelDriver:
                         # to the scalar config albedo (0.06 = open ocean) for
                         # EVERY column, land included.
                         if _sfc_albedo_on:
+                            # dynamic_albedo (CESM2.1 seq_flux_mct): this
+                            # daily blend is the DIFFUSE albedo (open ocean
+                            # 0.06); radiation swaps the open-ocean part of
+                            # the DIRECT beam for the zenith curve at each
+                            # call's own cos(zenith), via open_ocean_frac.
                             _alb_ocean_day = _albedo_ocean
-                            if _zenith_ocean_alb:
+                            if _cesm_ocean_alb:
+                                _alb_ocean_day = OCEAN_ALBEDO_DIFFUSE_CESM
+                            elif _zenith_ocean_alb:
                                 _alb_ocean_day = _mpas_zenith_ocean_albedo(
                                     _alb_lat, _force_day_canonical,
                                     getattr(self, "orbit", None))
@@ -14829,6 +14928,10 @@ class ModelDriver:
                                 blended_surface_albedo(
                                     _sic_day, _alb_f_land, _albedo_ice,
                                     _alb_ocean_day, _albedo_land_static))
+                            if _cesm_ocean_alb:
+                                _forcing_daily["open_ocean_frac"] = (
+                                    (1.0 - _sic_day) if _alb_f_land is None
+                                    else (1.0 - _alb_f_land) * (1.0 - _sic_day))
                     if _ext_forcing:
                         _ext_p_s, _ext_lat = self._owned_p_s_and_lat()
                         _o3, _aer, _ghg = self._precompute_external_forcing(
@@ -15412,10 +15515,22 @@ class ModelDriver:
             # Flux means keep their independent per-step sums and diagnostic cadence.
             _sample_day = START_DAY + (step + 1) * DT / 86400.0
             _previous_day = START_DAY + step * DT / 86400.0
-            if (self._mpas_cmip_feed_on
-                    and int(np.floor(_sample_day * 24.0 + 1e-9))
-                    > int(np.floor(_previous_day * 24.0 + 1e-9))):
+            _hour_crossed = (int(np.floor(_sample_day * 24.0 + 1e-9))
+                             > int(np.floor(_previous_day * 24.0 + 1e-9)))
+            if self._mpas_cmip_feed_on and _hour_crossed:
                 self._feed_mpas_cmip_accumulators(_sample_day, state_only=True)
+            if (_hour_crossed and not _GC_FROZEN[0]
+                    and not self.config.dycore.column_lane):
+                # By the first hourly output step every compiled step,
+                # radiation and output path exists and lives for the run.
+                # Frozen, the full collections skip it; unfrozen, each one
+                # scanned it all and paused one rank for 0.7-0.9 s while the
+                # other 127 waited at the next exchange (8 nodes: about one
+                # hourly output step in four).  Collect first so no dead
+                # cycle is frozen; once per process.
+                gc.collect()
+                gc.freeze()
+                _GC_FROZEN[0] = True
 
             # Diagnostics at intervals — phased by DIAG_PHASE (= start_step
             # for a real periodic cadence, 0 for the once-at-the-end
@@ -16327,6 +16442,8 @@ class ModelDriver:
         else:
             _lat_2d_loop = self._grid_lat
         _lat_col_loop = _lat_2d_loop.reshape(-1)
+        _lon_2d_loop = (jnp.broadcast_to(self._grid_lon[None, :], shape_2d)
+                        if self._grid_lon.ndim == 1 else self._grid_lon)
 
         # Light-weight time series for AMIP / validation.  The spectral
         # path is otherwise diagnostic-free; without these arrays the
@@ -16457,7 +16574,7 @@ class ModelDriver:
                         # daily_forcing_bucket / FIX_RESTART_TIME).
                         _o3, _aer, _ghg = self._precompute_external_forcing(
                             float(_fd_int), _f_now['p_s'], _lat_2d_loop,
-                            temp=_f_now['T'],
+                            temp=_f_now['T'], lon=_lon_2d_loop,
                         )
                         _ext_daily = {"o3_vmr": _o3, "aerosol_od": _aer}
                         # Volcanic LONGWAVE aerosol (gap #9): only when active

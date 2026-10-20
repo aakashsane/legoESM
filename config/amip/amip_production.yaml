@@ -288,7 +288,12 @@ clubb_liquid_partition: true       # CAM6 clubb_intr: the closure's diagnosed
 # are pinned to 0 here.  Not in the user's three-row table: REQUIRED BY ROW 1.
 cloud_q_c_diagnostic: 0.0
 conv_cloud_condensate: 0.0
-clubb_trop_cloud_top_press: 15000.0
+# CLUBB upper domain limit = CAM6's trop_cloud_top_press 1.D2 (100 Pa;
+# cam_cesm2_1_rel_60 namelist_defaults_cam.xml:1295).  User decision
+# 2026-10-20 ("use cam6 rule"), was 15000 Pa.  Offline 1/3-day A/B on a
+# day-105 production checkpoint: stable, sparse stratospheric CLUBB cloud
+# (scripts/validate/oracle/clubb_glue/top_press_scm_ab.py).
+clubb_trop_cloud_top_press: 100.0
 # CLUBB tunables written explicitly (values = the port's CLUBBParams defaults,
 # the CAM6 clubb namelist).  clubb_c_K10h (0.3) is read by the eddy-scalar
 # rtm/thlm diffusion (CAM l_do_expldiff_rtm_thlm) but has no deck key, so the
@@ -309,10 +314,17 @@ clubb_c_k10: 0.5
 # So no non-orographic member here (the Sundqvist/L36 deck carries the
 # e3sm_cam
 # background source; that row is dropped on purpose).
-gravity_wave_drag: mcfarlane            # orographic member: McFarlane (decision
-                                        # pending: CAM6 gw_oro port via e3sm_cam
-                                        # 'orographic', effgw_oro 0.125,
-                                        # gw_polar_taper true on fv, lndscl_sgh)
+gravity_wave_drag: mcfarlane            # orographic member = CAM6 gw_oro port
+                                        # (cam_cesm2_1_rel_60, oracle-matched;
+                                        # user decision 2026-10-19): effgw_oro
+                                        # 0.125 x landfrac, sgh/sqrt(landfrac),
+                                        # interface N with n2min 5e-5, no launch
+                                        # clip, tndmax 400 m/s/day, limiter
+                                        # remainder carried down, gw eddy
+                                        # diffusion of dse + tracers.  These are
+                                        # the McFarlaneConfig code defaults (no
+                                        # deck rows exist for them); the fv3duo
+                                        # deck inherits this row.
 hines_launch_p: 70000.0                 # inert (hines not selected); kept equal
                                         # to the Sundqvist/L36 deck.  The e3sm_cam_*
                                         # rows
@@ -323,7 +335,8 @@ hines_launch_p: 70000.0                 # inert (hines not selected); kept equal
 
 # ---- surface ------------------------------------------------------------------
 surface_bulk_scheme: large_yeager_cesm  # CAM6/CESM shr_flux_atmOcn (LY04)
-surface_gustiness_zi: 300.0
+# (surface_gustiness_zi: 300 removed, user 2026-10-19: inert on this scheme --
+# CESM2.1 runs gust_fac = 0, and the large_yeager_cesm law never reads it.)
 surface_tiled: false
 surface_z0_land: 0.1
 mpas_land_lapse_K_per_km: 6.5
@@ -377,6 +390,10 @@ mpas_land_beta_soil: true
 # the ocean bulk law (user 2026-10-03: "a major default"; Dec 2001 45-70N land:
 # the boundary layer received 0.04 Pa vs land model 0.23 vs ERA5 0.26).
 mpas_land_stress_from_land: true
+# Coastal cells: the non-land fraction's bulk fluxes on the ocean/ice surface,
+# not on the land-blended T_sfc/q_sfc (#1320; CESM computes atm-ocn fluxes on
+# ocean points only).  User 2026-10-19.
+ocean_flux_on_ocean_surface: true
 mpas_land_params_refresh: true  # seasonal LAI / canopy height / wet-soil
                                 # albedo rebuilt every land step, as the
                                 # offline calibration runs the tables (user

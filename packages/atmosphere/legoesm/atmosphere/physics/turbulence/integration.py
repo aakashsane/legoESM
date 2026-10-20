@@ -476,19 +476,22 @@ def _carry_update_with_cloud_fraction(carry_field, carry_val, turb_out):
     (``carry_field`` -> ``carry_val``: tke / qke / clubb_moments) is co-located
     under its own key so it still evolves across the step.
 
-    Schemes with no PDF cloud closure leave ``cloud_fraction=None`` -> we return
-    the plain ``carry_val``, byte-identical to the pre-existing (bare value, not
-    dict) contract.  combined.py only merges the dict when ``field_name`` (the
-    registered carry field) is not None, which holds for every cf-producing
-    scheme today (CLUBB carries ``tke``); a diagnostic scheme that ever set cf
-    with ``carry_field=None`` would need combined.py's ``field_name is not None``
-    guard relaxed for the dict branch first.
+    The diagnosed PBL height ``turb_out.h_pbl`` is always published as
+    ``pblh`` (CAM's pbuf ``pblh``, written by clubb_intr.F90:2616): deep
+    convection reads it one step lagged for its launch-level bound
+    (convect_deep.F90:266).  Schemes with no PDF cloud closure leave
+    ``cloud_fraction=None`` and publish only ``pblh`` plus their carry; a PDF
+    closure that also returns ``relvar`` (prognostic CLUBB) publishes it next
+    to ``cloud_fraction`` for MG2.
+    combined.py only merges the dict when ``field_name`` (the registered carry
+    field) is not None, which holds for every scheme (turbulence_carry_field
+    never returns None).
     """
-    if turb_out.cloud_fraction is None:
-        return carry_val
-    updates = {"cloud_fraction": turb_out.cloud_fraction}
-    if turb_out.relvar is not None:
-        updates["relvar"] = turb_out.relvar
+    updates = {"pblh": turb_out.h_pbl}
+    if turb_out.cloud_fraction is not None:
+        updates["cloud_fraction"] = turb_out.cloud_fraction
+        if turb_out.relvar is not None:
+            updates["relvar"] = turb_out.relvar
     if carry_field is not None and carry_val is not None:
         updates[carry_field] = carry_val
     return updates
@@ -993,11 +996,17 @@ def _make_mpas_turbulence(
         if getattr(_surf, "ocean_q_sfc_saline", False):
             # Sea water at the SURFACE pressure (the coupled lane's convention)
             # for the ocean fraction: replace that fraction's fresh-water share
-            # of the blend; the land share is untouched.
+            # of the blend; the land share is untouched.  SPECIFIC humidity,
+            # like the air humidity it is differenced with (CESM ssq = 0.98 x
+            # saturation specific humidity): the saturation curve's MIXING
+            # RATIO is converted before the salinity factor.
             from legoesm.core.bulk_flux import ocean_surface_q_sat
-            _q_ocean = ocean_surface_q_sat(
-                T_sfc, p_s.reshape(nCells), thermo_convention=_surf.thermo_convention,
-                bulk_scheme=_surf.bulk_scheme, saline_factor=_Q_SAT_SALINE_FACTOR)
+            from legoesm.thermo import mixing_ratio_to_specific_humidity
+            _q_ocean = _Q_SAT_SALINE_FACTOR * mixing_ratio_to_specific_humidity(
+                ocean_surface_q_sat(
+                    T_sfc, p_s.reshape(nCells),
+                    thermo_convention=_surf.thermo_convention,
+                    bulk_scheme=_surf.bulk_scheme))
             _fo = (1.0 - jnp.asarray(f_land, dtype=q_sfc.dtype).reshape(nCells)
                    if f_land is not None else 1.0)
             q_sfc = q_sfc + _fo * (_q_ocean - _q_sfc_fresh)
@@ -1050,12 +1059,14 @@ def _make_mpas_turbulence(
             else:
                 _T_bulk = jnp.asarray(_T_oc, dtype=T_sfc.dtype).reshape(nCells)
                 if getattr(_surf, "ocean_q_sfc_saline", False):
+                    # Specific humidity, as the blended path's ocean share.
                     from legoesm.core.bulk_flux import ocean_surface_q_sat
-                    _q_bulk = ocean_surface_q_sat(
-                        _T_bulk, p_s.reshape(nCells),
-                        thermo_convention=_surf.thermo_convention,
-                        bulk_scheme=_surf.bulk_scheme,
-                        saline_factor=_Q_SAT_SALINE_FACTOR)
+                    from legoesm.thermo import mixing_ratio_to_specific_humidity
+                    _q_bulk = _Q_SAT_SALINE_FACTOR * mixing_ratio_to_specific_humidity(
+                        ocean_surface_q_sat(
+                            _T_bulk, p_s.reshape(nCells),
+                            thermo_convention=_surf.thermo_convention,
+                            bulk_scheme=_surf.bulk_scheme))
                 else:
                     _q_bulk = saturation_specific_humidity(_T_bulk, p_full_col[:, -1])
             # Through the shared helper rather than an inline copy: this

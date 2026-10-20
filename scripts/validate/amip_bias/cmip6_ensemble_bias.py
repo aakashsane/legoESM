@@ -203,7 +203,7 @@ def window_mean(files, var, window):
     if not files:
         raise LookupError("no file covers the window")
     want = set(window)
-    slices, seen, lat = [], [], None
+    slices, seen, lat, lon = [], [], None, None
     for path in files:              # no dask here: read only the window slices
         with xr.open_dataset(path, decode_times=xr.coders.CFDatetimeCoder(
                 use_cftime=True)) as ds:

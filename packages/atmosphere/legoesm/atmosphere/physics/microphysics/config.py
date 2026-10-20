@@ -546,13 +546,13 @@ class MorrisonConfig(NamedTuple):
     #     sigmoid autoconv + bilinear k_ac·rho·q_c·q_r accretion). NOT the
     #     published universal functions — only the au/x_* number closure is
     #     SB-faithful.
-    #   "seifert_beheng_sb2001" = the PUBLISHED SB2001 universal functions —
-    #     the gSAM IRAIN=1 MASS closures (module_mp_graupel.f90:1835-1844,
-    #     :1960-1962): phi_au=600·tau^0.68·(1−tau^0.68)^3 with the q_c^4·N_c^-2
-    #     rate, phi_ac=(tau/(tau+5e-4))^4 with the fixed 5.78 kernel, plus the
-    #     au/x_* rain-number source. Faithful for a SUPPLIED nu; the default
-    #     fixed nu (0.4315) is an approximation of gSAM's spatially-diagnosed
-    #     pgam, and the SB2001-specific cloud-NUMBER sinks are not represented.
+    #   "seifert_beheng_sb2001" = Seifert & Beheng (2001) as gSAM M2005 runs
+    #     it (IRAIN=1, module_mp_graupel.f90:1830-1844, :1955-1962): the
+    #     phi_au / phi_ac universal-function rates with gSAM's gates, the
+    #     droplet shape nu diagnosed from N_c (gSAM default dofix_pgam=.false.)
+    #     and the droplet-slope clamp on N_c, plus the au/x_* rain-number
+    #     source. Oracle-pinned at predict_Nc=False; the SB2001-specific
+    #     cloud-NUMBER sinks (predict_Nc=True only) are not represented.
     warm_rain_scheme: str = "kk2000"
     predict_Nc: bool = False         # SAM M2005 dopredictNc. False (SAM DEFAULT) =
                                      # SPECIFIED constant droplet number Nc_0: the
@@ -1127,11 +1127,19 @@ class ThompsonConfig(NamedTuple):
 class P3Config(NamedTuple):
     """Configuration for P3 (Predicted Particle Properties) microphysics.
 
-    Single ice category with predicted rime mass (q_rim) and rime volume
-    (B_rim). Liquid phase uses Seifert-Beheng warm-rain helpers.
-
-    Ice particle properties (fall speed, density) are diagnosed from
-    (q_i, N_i, q_rim, B_rim) rather than assumed from a fixed habit.
+    ``p3.py`` is a faithful port of gSAM 1.8.8 P3 v3.1.14 (one ice
+    category, lookup table 1 v4.1, Meyers nucleation, KK2000 warm rain,
+    specified droplet number), oracle-tested to 1e-10 at the hard limit.
+    Fields it reads: ``Nc_0`` (specified droplet number [1/m^3], gSAM
+    ``Nc0``), ``N_i_nuc_max`` (Meyers cap), ``cooper_T_nuc`` /
+    ``cooper_supi_min`` (nucleation gate), ``rho_rim_min`` /
+    ``rho_rim_max`` and the three smoothing fields ``ice_sigmoid_sharpness``,
+    ``cooper_supi_sharpness``, ``melt_sharpness`` (oracle at 1e6 / 1e9 /
+    1e6).  The opt-in ``hard_saturation_adjustment`` guard (not part of gSAM
+    P3, default off) is applied after the P3 step as for ml_emulator.  Every
+    other field belonged to the former surrogate and has no gSAM
+    counterpart: ``p3.check_p3_config`` raises if one is changed from its
+    default (``P3_FIELDS_WITHOUT_ORACLE_COUNTERPART``).
 
     Slot reuse in HydrometeorState
     --------------------------------

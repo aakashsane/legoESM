@@ -204,11 +204,18 @@ class CoupledESMDriver:
         lake_config=None,
         ocean_grid=None,
         output_dir=None,
+        *,
+        expected_resolved_physics: dict | None = None,
+        atm_manifest_runner_tag: str | None = None,
     ):
         self.atm_config = atm_config
         self.coupled_cfg = coupled_config or CoupledConfig()
         validate_air_sea_consistency(atm_config, coupler_config)
-        self._atm = ModelDriver(atm_config, output_dir=output_dir)
+        # expected_resolved_physics: the atmosphere record a reproduce rerun
+        # must resolve to (ModelDriver refuses before stepping otherwise).
+        self._atm = ModelDriver(atm_config, output_dir=output_dir,
+                                expected_resolved_physics=expected_resolved_physics,
+                                manifest_runner_tag=atm_manifest_runner_tag)
         # This driver's _build_atm_forcing READS held_sw_net_sfc /
         # held_lw_net_sfc / seg_precip out of the atmosphere's _carry_aux, so
         # atmosphere lanes that never write them must refuse to run rather
@@ -2899,6 +2906,22 @@ class CoupledESMDriver:
     #       behavior (explicit in load_coupled_checkpoint, not silent).
     _CKPT_VERSION = 3
 
+    def resolved_component_configs(self) -> dict:
+        """The component configs this driver resolved in ``setup()`` (the run
+        manifest's ``config.resolved_physics`` for a coupled run)."""
+        from legoesm.coupler.lake.config import LakeConfig
+        from legoesm.ice.config import SeaIceConfig
+        ocean_model = getattr(self, "_ocean_model", None)
+        return {
+            "ocean": (ocean_model.config if ocean_model is not None
+                      else self.coupled_cfg.ocean_config),
+            "land": getattr(self, "_land_cfg", None),
+            "tile": getattr(self, "_tile_config", None),
+            "coupler": getattr(self, "_coupler_cfg", None),
+            "sea_ice": self._ice_config or SeaIceConfig(),
+            "lake": self._lake_config or LakeConfig(),
+        }
+
     def save_checkpoint(self, step: int, day: float) -> None:
         """Save atmosphere + ocean + surface + CO2 state."""
         self._atm.save_checkpoint(step, day)
@@ -2906,6 +2929,14 @@ class CoupledESMDriver:
         # Save coupled state alongside the atmosphere checkpoint.
         elapsed_day = day - self.atm_config.start_day
         coupled_path = self.output_dir / f"coupled_day_{int(elapsed_day):04d}.npz"
+        arrays = self.coupled_checkpoint_arrays()
+        if arrays:
+            np.savez(coupled_path, **arrays)
+            logger.info(f"  Coupled checkpoint: {coupled_path.name}")
+
+    def coupled_checkpoint_arrays(self) -> dict:
+        """Every non-atmosphere array a coupled checkpoint saves (also what the
+        coupled run manifest's final digest covers)."""
         arrays = {}
         # Provenance for load-time validation (version + ocean grid shape so a
         # checkpoint from a different ocean_grid / config is caught, not silently
@@ -2964,13 +2995,11 @@ class CoupledESMDriver:
         if self._sst_mean_init is not None:
             arrays["sst_mean_init"] = np.asarray(
                 self._sst_mean_init, dtype=np.float64)
-
-        if arrays:
-            np.savez(coupled_path, **arrays)
-            logger.info(f"  Coupled checkpoint: {coupled_path.name}")
+        return arrays
 
     def load_coupled_checkpoint(self, step_day: float,
-                               checkpoint_dir: str | Path | None = None) -> None:
+                               checkpoint_dir: str | Path | None = None,
+                               *, required: bool = False) -> None:
         """Load coupled state saved alongside an atmosphere checkpoint.
 
         Parameters
@@ -2986,6 +3015,13 @@ class CoupledESMDriver:
         base = Path(checkpoint_dir) if checkpoint_dir is not None else self.output_dir
         coupled_path = base / f"coupled_day_{int(step_day):04d}.npz"
         if not coupled_path.exists():
+            if required:
+                # A resume without it would restart ocean/land/ice/CO2 from
+                # their initial state under a continued atmosphere.
+                raise RuntimeError(
+                    f"No coupled checkpoint at {coupled_path} for the "
+                    f"atmosphere checkpoint being resumed; refusing to resume "
+                    f"with freshly initialised ocean/surface state.")
             logger.warning(f"No coupled checkpoint at {coupled_path}")
             return
 

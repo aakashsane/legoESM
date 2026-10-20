@@ -42,13 +42,13 @@ WRF_RV = " rv     = 461.51\n"  # const-ok: WRF P3 source text (anchor), equals l
 WRF_XXLV = "       xxlv(i,k)    = 3.1484e6-2370.*273.15 !t(i,k), use constant Lv\n"  # const-ok: WRF source text
 WRF_XXLS = "       xxls(i,k)    = xxlv(i,k)+0.3337e6\n"
 assert orig.count(WRF_RV) == 1 and abs(float(WRF_RV.split("=")[1]) - C.R_v) == 0.0
-assert orig.count(WRF_XXLS) == 1 and float("0.3337e6") == C.L_f
+assert orig.count(WRF_XXLS) == 1 and float("0.3337e6") == C.L_f  # latent-ok: WRF P3 oracle constant
 
 REPL = [
     (WRF_CP, f" cp     = {C.c_pd!r} !ORACLE-FIXTURE legoESM c_pd (WRF P3: 1005.)\n"),
     (WRF_G, f" g      = {C.g!r} !ORACLE-FIXTURE legoESM g (WRF P3: 9.816)\n"),
     (WRF_RD, f" rd     = {C.R_d!r} !ORACLE-FIXTURE legoESM R_d (WRF P3: 287.15)\n"),
-    (WRF_XXLV, f"       xxlv(i,k)    = {C.L_v!r} !ORACLE-FIXTURE legoESM L_v "
+    (WRF_XXLV, f"       xxlv(i,k)    = {C.L_v!r} !ORACLE-FIXTURE legoESM L_v "  # latent-ok: WRF P3 oracle constant
                "(WRF P3: 3.1484e6-2370.*T0)\n"),
     ("#else\n  e_pres = polysvp1(t_atm,i_wrt)\n  qv_sat = ep_2*e_pres/max(1.e-3,(p_atm-e_pres))\n",
      "#else\n!ORACLE-FIXTURE: legoESM saturation SPECIFIC humidity (thermo.py) fed to the oracle\n"

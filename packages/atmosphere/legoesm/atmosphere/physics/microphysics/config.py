@@ -59,7 +59,7 @@ HARD_SAT_GUARD_DEFAULTS = {
 # Schemes carrying the guard (kept sorted; used in the fail-loud messages below
 # and asserted against the factory by the ratchet).
 HARD_SAT_GUARD_SCHEMES = (
-    "kessler", "ml_emulator", "morrison", "p3", "seifert_beheng",
+    "ml_emulator", "morrison", "p3", "seifert_beheng",
     "sundqvist", "thompson",
 )
 # SHRINK-ONLY exemptions.  Each reason was verified in the scheme's own source,
@@ -95,6 +95,15 @@ HARD_SAT_GUARD_EXEMPT = {
         "dm_k/dt = B_k*s. The bin spectrum IS the adjustment; forcing q_v onto "
         "the bulk saturation curve on top of it would be inconsistent with the "
         "resolved spectrum and break the WRF FSBM-2 oracle match."
+    ),
+    "kessler": (
+        "Kessler is the faithful port of ESCOMP atmos_phys0_31_000 "
+        "kessler_run (user decision 2026-10-19: the scheme named Kessler must "
+        "BE the oracle). The oracle has no hard-adjustment guard: its own "
+        "Durran-Klemp (1983) adjustment max(prod, -q_c) removes the full "
+        "linearised supersaturation in every CFL subcycle. KesslerConfig keeps "
+        "the three guard fields only so an old deck fails loudly: "
+        "kessler.py::_require_oracle_defaults raises on any non-default value."
     ),
     "none": (
         "microphysics='none' has NO scheme function at all -- "

@@ -39,7 +39,6 @@ from legoesm.grids.polar_filter import (
     fourier_filter_3d,
 )
 from legoesm.ocean.vertical import (
-    static_card_flag,
     OceanZStarCoordinate,
     OceanPartialCellCoordinate,
     compute_layer_thickness,
@@ -1834,7 +1833,7 @@ def _nemo_ws_qco_stage_faces(
     raw_face_bundle = (
         None if z_coord is None
         # only a card that selects NEMO's raw stage face mesh takes it
-        or not static_card_flag(z_coord, "nemo_stage_faces_raw_mesh")
+        or getattr(z_coord, "nemo_stage_faces_raw_mesh", False) is not True
         else getattr(z_coord, "nemo_een_barotropic", None)
     )
     ops = (

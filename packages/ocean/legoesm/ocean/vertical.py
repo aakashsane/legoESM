@@ -18,7 +18,6 @@ from __future__ import annotations
 import math
 from typing import NamedTuple
 
-import jax
 from jax import lax
 import jax.numpy as jnp
 import numpy as np
@@ -1700,8 +1699,8 @@ def create_partial_cell_coordinate(
         nemo_e2u=getattr(z_coord, "nemo_e2u", None),
         nemo_e1v=getattr(z_coord, "nemo_e1v", None),
         nemo_een_barotropic=getattr(
-            z_coord, "nemo_een_barotropic", None), nemo_r3t_stored_product=static_card_flag(z_coord, "nemo_r3t_stored_product"),  # noqa: E501
-        nemo_stage_faces_raw_mesh=static_card_flag(z_coord, "nemo_stage_faces_raw_mesh"),  # noqa: E501
+            z_coord, "nemo_een_barotropic", None), nemo_r3t_stored_product=getattr(z_coord, "nemo_r3t_stored_product", False) is True,  # noqa: E501
+        nemo_stage_faces_raw_mesh=getattr(z_coord, "nemo_stage_faces_raw_mesh", False) is True,  # noqa: E501
     )
 
 
@@ -1783,8 +1782,8 @@ def create_full_step_coordinate(
         nemo_e2u=getattr(z_coord, "nemo_e2u", None),
         nemo_e1v=getattr(z_coord, "nemo_e1v", None),
         nemo_een_barotropic=getattr(
-            z_coord, "nemo_een_barotropic", None), nemo_r3t_stored_product=static_card_flag(z_coord, "nemo_r3t_stored_product"),  # noqa: E501
-        nemo_stage_faces_raw_mesh=static_card_flag(z_coord, "nemo_stage_faces_raw_mesh"),  # noqa: E501
+            z_coord, "nemo_een_barotropic", None), nemo_r3t_stored_product=getattr(z_coord, "nemo_r3t_stored_product", False) is True,  # noqa: E501
+        nemo_stage_faces_raw_mesh=getattr(z_coord, "nemo_stage_faces_raw_mesh", False) is True,  # noqa: E501
     )
 
 
@@ -3094,21 +3093,6 @@ def flux_form_vertical_tracer_advection_tvd(
     return vert_flux_div
 
 
-def static_card_flag(z_coord, name: str) -> bool:
-    """A card-selected coordinate switch, read as a static Python bool.
-
-    The coordinate is a NamedTuple, so jitting it as an argument turns these
-    flags into tracers; an identity test would then silently select the off
-    path.  Refuse instead.
-    """
-    value = getattr(z_coord, name, False)
-    if isinstance(value, jax.core.Tracer):
-        raise TypeError(
-            f"z_coord.{name} is traced; card switches must stay static "
-            "(close over the coordinate or mark it static)")
-    return value is True
-
-
 def _nemo_r3t_product(product, z_coord):
     """NEMO's T-point thickness ratio as the STORED product it is.
 
@@ -3120,6 +3104,6 @@ def _nemo_r3t_product(product, z_coord):
     record).  ``OceanPartialCellCoordinate.nemo_r3t_stored_product`` selects
     the rounded product; otherwise ``product`` is returned unchanged.
     """
-    if not static_card_flag(z_coord, "nemo_r3t_stored_product"):
-        return product
+    if getattr(z_coord, "nemo_r3t_stored_product", False) is not True:
+        return product      # identity test: a traced flag reads as off, never raises
     return nemo_source_round(product)

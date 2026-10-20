@@ -2661,12 +2661,6 @@ def _bc_pv_flux(
         raise ValueError(
             "een_nemo_relative_vorticity requires een_metric_weighting='nemo'"
         )
-    if een_nemo_zeta and vorticity_scheme not in ("een_total", "een_planetary"):
-        # een_planetary zeroes the relative vorticity, so the switch is inert
-        # by construction there; any other scheme would silently ignore it.
-        raise ValueError(
-            "een_nemo_relative_vorticity is implemented only for een_total; "
-            f"got vorticity_scheme={vorticity_scheme!r}")
     if een_nemo_top_f_u_halo and not een_nemo_zeta:
         raise ValueError(
             "een_nemo_top_f_u_halo requires een_nemo_relative_vorticity"
@@ -4527,10 +4521,11 @@ def surface_stress_faces(
                 * jnp.maximum(tm[-1], tm_halo))
             tau_j_v = tau_j_v.at[-1].set(top)
         return tau_i_u, tau_j_v, dz_0_u, dz_0_v
-    if nemo_fold_vector_sign and _native_i is None and _sf_tau_x is not None:
+    if nemo_fold_vector_sign and _sf_tau_x is not None and (
+            _native_i is None or not use_native):
         raise ValueError(
-            "nemo_fold_vector_sign needs on-grid tau_i_native/tau_j_native; "
-            "geographic tau_x/tau_y would skip the fold sign")
+            "nemo_fold_vector_sign needs the on-grid tau_i_native/tau_j_native "
+            "path; geographic tau_x/tau_y would skip the fold sign")
     if surface_forcing is None or _sf_tau_x is None or _sf_tau_y is None:
         return None
     tau_e_T = -jnp.asarray(_sf_tau_x, dtype=u_dtype)
@@ -5452,6 +5447,15 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
     _vorticity_selection = getattr(config, "vorticity_scheme", "al81")
     _vorticity_scheme = getattr(
         _vorticity_selection, "scheme", _vorticity_selection)
+    if getattr(config, "een_nemo_relative_vorticity", False) and (
+            _mom_adv == "flux_form" or _vorticity_scheme != "een_total"):
+        # Only the vector-form een_total triad reads np_CRV's relative
+        # vorticity; every other arm would silently ignore the switch.
+        raise ValueError(
+            "een_nemo_relative_vorticity requires vector-form "
+            "vorticity_scheme='een_total'; got "
+            f"momentum_advection={_mom_adv!r}, "
+            f"vorticity_scheme={_vorticity_scheme!r}")
     if _mom_adv == "flux_form":
         # NEMO dynadv_up3 consumes ONE face thickness -- e3u(Kmm) =
         # e3u_0*(1+r3u(Kmm)) (domzgr_substitute.h90:127; domqco.F90:219-220)

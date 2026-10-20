@@ -30,6 +30,13 @@ def test_fold_vector_sign_refuses_bypassed_native_stress():
                              nemo_fold_vector_sign=True, use_native=False)
 
 
+def test_fold_vector_sign_refuses_half_geographic_stress():
+    with pytest.raises(ValueError, match="tau_i_native"):
+        surface_stress_faces(SimpleNamespace(tau_y=jnp.zeros((2, 2))),
+                             jnp.float64, None, None, None,
+                             nemo_fold_vector_sign=True)
+
+
 def test_fold_vector_sign_without_any_stress_is_still_none():
     assert surface_stress_faces(SimpleNamespace(), jnp.float64, None, None,
                                 None, nemo_fold_vector_sign=True) is None
@@ -38,6 +45,7 @@ def test_fold_vector_sign_without_any_stress_is_still_none():
 @pytest.mark.parametrize("over", [
     {},                                        # default al81 vector form
     {"vorticity_scheme": "een_planetary"},
+    {"vorticity_scheme": "een_total", "momentum_advection": "flux_form"},
 ])
 def test_een_relative_vorticity_refused_where_it_would_be_ignored(over):
     from legoesm.grids.latlon import create_latlon_grid

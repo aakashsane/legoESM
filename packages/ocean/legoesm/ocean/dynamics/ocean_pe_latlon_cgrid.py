@@ -4521,7 +4521,8 @@ def surface_stress_faces(
                 * jnp.maximum(tm[-1], tm_halo))
             tau_j_v = tau_j_v.at[-1].set(top)
         return tau_i_u, tau_j_v, dz_0_u, dz_0_v
-    if nemo_fold_vector_sign and _sf_tau_x is not None and (
+    if nemo_fold_vector_sign and (
+            _sf_tau_x is not None or _sf_tau_y is not None) and (
             _native_i is None or not use_native):
         raise ValueError(
             "nemo_fold_vector_sign needs the on-grid tau_i_native/tau_j_native "

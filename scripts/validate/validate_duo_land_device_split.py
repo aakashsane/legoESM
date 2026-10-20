@@ -153,10 +153,28 @@ def _gate_run(opts):
         def packed(idx):
             return gather_land_columns(full, jnp.asarray(idx), ncol)
 
-        # inputs are closed over (compile-time constants, as in the loop's
-        # land closure): the config carries non-array leaves
-        args1 = packed(cols)
-        ref = jax.device_get(jax.jit(lambda: step(*args1))())  # device 0
+        # As the loop's land closure: state, forcing, (refreshed) params and
+        # day are traced arguments; config, latitude and carbon are closed
+        # over (compile-time constants there too).
+        traced_pos = (0, 1, 3, 6)
+
+        def traced(fn, args):
+            sub = {i: jax.tree_util.tree_flatten(args[i]) for i in traced_pos}
+            is_arr = {i: [hasattr(x, "shape") and hasattr(x, "dtype")
+                          for x in sub[i][0]] for i in traced_pos}
+            dyn = [x for i in traced_pos
+                   for x, t in zip(sub[i][0], is_arr[i]) if t]
+
+            def g(*d):
+                it, a = iter(d), list(args)
+                for i in traced_pos:
+                    a[i] = sub[i][1].unflatten(
+                        [next(it) if t else x
+                         for x, t in zip(sub[i][0], is_arr[i])])
+                return fn(tuple(a))
+            return jax.device_get(jax.jit(g)(*dyn))
+
+        ref = traced(lambda a: step(*a), packed(cols))      # device 0
         report, failed = {}, False
         for nd in opts.devices:
             if jax.device_count() < nd:
@@ -164,9 +182,8 @@ def _gate_run(opts):
                                  f"{jax.device_count()}")
             slots, keep = shard_land_columns(cols, nd)
             mesh = Mesh(np.array(jax.devices()[:nd]), ("land",))
-            argsn = packed(slots)
-            got = jax.device_get(jax.jit(lambda: solve_land_on_devices(
-                step, argsn, is_col, mesh, keep))())
+            got = traced(lambda a: solve_land_on_devices(
+                step, a, is_col, mesh, keep), packed(slots))
             # whole-run counters are recounted on the split side: compare
             # the per-column results and those counts, not the step's own
             # scalars (identical by construction on the one-call side)

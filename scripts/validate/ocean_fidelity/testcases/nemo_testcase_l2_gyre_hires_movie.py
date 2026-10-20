@@ -106,7 +106,10 @@ def render_year(
         build_gyre_zco_card,
     )
 
-    require(year in (1, 5), "only preregistered years 1 and 5 may be rendered")
+    # "year" labels the two preregistered 365-day windows, days 1..365 and
+    # 1461..1825.  GYRE runs a 360-day calendar, so neither is exactly a
+    # model year; the windows are kept because they were preregistered.
+    require(year in (1, 5), "only preregistered windows 1 and 5 may be rendered")
     start = 1 + (year - 1) * 365
     providers = (
         nemo_ioipsl_provider(nemo_root, 365, start_day=start),

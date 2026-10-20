@@ -151,7 +151,9 @@ run_arm() {
       bench=scripts/bench/bench_ocean_latlon_spmd_scaling.py
       # Mesh-scaled viscosity: pinned A_h=1e4 is unstable on 1.6 km polar
       # cells at dt 600 s (user decision 2026-10-19).
-      args+=(--tripole --nlev 75 --A-h-from-mesh)
+      # 200 fixed PCG iterations: 60 left 360x the converged residual; 200 is
+      # within 10x in f32 (user decision 2026-10-21, both precisions).
+      args+=(--tripole --nlev 75 --A-h-from-mesh --pcg-fixed-iters 200)
       if [[ "$mode" == strong ]]; then
         args+=(--mode strong --n-lat "$res" --n-lon "$NLON_TRIPOLE")
       else

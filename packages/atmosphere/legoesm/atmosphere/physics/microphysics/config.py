@@ -270,42 +270,38 @@ __param_spec__ = {
             "melt_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "rho_rim_min": "numerics: solver/smoothing/tolerance/iteration parameter",
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
+            "k_au": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "k_ac": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "x_star": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "k_sc": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "D_eq": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "evap_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "a_v_r": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "b_v_r": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "cooper_T_act": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "dep_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "q_i_min_growth": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "rime_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "rain_rime_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "agg_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "melt_rate": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "a_v_i": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "b_v_i": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "c_rim_fallspeed": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "rho_rim_accrete": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
+            "rho_ice_ref": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
         },
         "params": {
-            # --- Warm rain (Seifert-Beheng liquid phase) ---
-            "k_au": {"units": "m^3 kg^-1 s^-1", "bounds": (50.0, 5000.0), "tunable_tier": 1, "transform": "sigmoid", "category": "autoconversion", "reference": "Seifert & Beheng (2001)", "shape": None},
-            "k_ac": {"units": "m^3 kg^-1 s^-1", "bounds": (1.0, 20.0), "tunable_tier": 1, "transform": "sigmoid", "category": "accretion", "reference": "Seifert & Beheng (2001)", "shape": None},
-            "x_star": {"units": "kg", "bounds": (5e-11, 1e-9), "tunable_tier": 2, "transform": "sigmoid", "category": "autoconversion", "reference": "Seifert & Beheng (2001)", "shape": None},
+            # --- Specified droplet number (WRF P3 nccnst) ---
             "Nc_0": {"units": "1/m^3", "bounds": (1e7, 1e9), "tunable_tier": 2, "transform": "sigmoid", "category": "number_concentration", "reference": "Seifert & Beheng (2001)", "shape": None},
-            "k_sc": {"units": "m^3 kg^-1 s^-1", "bounds": (0.0001, 0.01), "tunable_tier": 2, "transform": "sigmoid", "category": "size_distribution", "reference": "Seifert & Beheng (2001)", "shape": None},
-            "D_eq": {"units": "m", "bounds": (0.0003, 0.0033), "tunable_tier": 3, "transform": "sigmoid", "category": "size_distribution", "reference": "Seifert & Beheng (2001)", "shape": None},
-            "evap_coeff": {"units": "1", "bounds": (0.1, 5.0), "tunable_tier": 2, "transform": "sigmoid", "category": "evaporation", "reference": "Seifert & Beheng (2001)", "shape": None},
-            "a_v_r": {"units": "m^(1-b)/s", "bounds": (40.0, 400.0), "tunable_tier": 2, "transform": "sigmoid", "category": "fall_speed", "reference": "Seifert & Beheng (2001)", "shape": None},
-            "b_v_r": {"units": "1", "bounds": (0.15, 1.5), "tunable_tier": 3, "transform": "sigmoid", "category": "fall_speed", "reference": "Seifert & Beheng (2001)", "shape": None},
             # --- Ice nucleation (Cooper 1986) ---
             "N_i0": {"units": "1/m^3", "bounds": (1.0, 50.0), "tunable_tier": 2, "transform": "sigmoid", "category": "ice_nucleation", "reference": "Cooper (1986)", "shape": None},
-            "N_i_nuc_max": {"units": "1/m^3", "bounds": (2e4, 5e6), "tunable_tier": 3, "transform": "sigmoid", "category": "ice_nucleation", "reference": "gSAM P3 scheme-1 cap 100/L (module_mp_p3.f90:3090)", "shape": None},
+            "N_i_nuc_max": {"units": "1/m^3", "bounds": (2e4, 5e6), "tunable_tier": 3, "transform": "sigmoid", "category": "ice_nucleation", "reference": "WRF v4.8.0 P3 cap 100/L (module_mp_p3.F:3276)", "shape": None},
             "cooper_a": {"units": "1/K", "bounds": (0.1, 0.9), "tunable_tier": 2, "transform": "sigmoid", "category": "ice_nucleation", "reference": "Cooper (1986)", "shape": None},
-            "cooper_T_act": {"units": "K", "bounds": (255.0, 273.0), "tunable_tier": 2, "transform": "sigmoid", "category": "ice_nucleation", "reference": "Cooper (1986)", "shape": None},
-            "cooper_T_nuc": {"units": "K", "bounds": (248.0, 266.0), "tunable_tier": 2, "transform": "sigmoid", "category": "ice_nucleation", "reference": "gSAM P3 scheme-1 gate T<-15C (module_mp_p3.f90:3084)", "shape": None},
-            "cooper_supi_min": {"units": "1", "bounds": (0.0, 0.2), "tunable_tier": 2, "transform": "sigmoid", "category": "ice_nucleation", "reference": "gSAM P3 scheme-1 gate supi>=0.05 (module_mp_p3.f90:3084)", "shape": None},
-            # --- Ice depositional growth ---
-            "dep_coeff": {"units": "1/s", "bounds": (0.0001, 0.01), "tunable_tier": 2, "transform": "sigmoid", "category": "condensation", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            "q_i_min_growth": {"units": "kg/kg", "bounds": (3e-10, 3e-09), "tunable_tier": 3, "transform": "sigmoid", "category": "condensation", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            # --- Riming (collection efficiencies) ---
-            "rime_coeff": {"units": "1", "bounds": (0.0, 1.0), "tunable_tier": 2, "transform": "sigmoid", "category": "riming", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            "rain_rime_coeff": {"units": "1", "bounds": (0.0, 1.0), "tunable_tier": 2, "transform": "sigmoid", "category": "riming", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            # --- Aggregation / melting ---
-            "agg_coeff": {"units": "1/s", "bounds": (0.0001, 0.01), "tunable_tier": 2, "transform": "sigmoid", "category": "aggregation", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            "melt_rate": {"units": "1/s", "bounds": (0.0005, 0.05), "tunable_tier": 2, "transform": "sigmoid", "category": "melting", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            # --- Ice fall speed (predicted-property power law) ---
-            "a_v_i": {"units": "m^(1-b)/s", "bounds": (13.0, 120.0), "tunable_tier": 2, "transform": "sigmoid", "category": "fall_speed", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            "b_v_i": {"units": "1", "bounds": (0.1, 0.9), "tunable_tier": 3, "transform": "sigmoid", "category": "fall_speed", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            "c_rim_fallspeed": {"units": "1", "bounds": (0.1, 1.2), "tunable_tier": 3, "transform": "sigmoid", "category": "fall_speed", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
+            "cooper_T_nuc": {"units": "K", "bounds": (248.0, 266.0), "tunable_tier": 2, "transform": "sigmoid", "category": "ice_nucleation", "reference": "WRF v4.8.0 P3 gate T<-15C (module_mp_p3.F:3272)", "shape": None},
+            "cooper_supi_min": {"units": "1", "bounds": (0.0, 0.2), "tunable_tier": 2, "transform": "sigmoid", "category": "ice_nucleation", "reference": "WRF v4.8.0 P3 gate supi>=0.05 (module_mp_p3.F:3272)", "shape": None},
             # --- Rime density properties ---
             "rho_rim_max": {"units": "kg/m^3", "bounds": (300.0, 917.0), "tunable_tier": 3, "transform": "sigmoid", "category": "size_distribution", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            "rho_rim_accrete": {"units": "kg/m^3", "bounds": (132.0, 900.0), "tunable_tier": 3, "transform": "sigmoid", "category": "riming", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
-            "rho_ice_ref": {"units": "kg/m^3", "bounds": (165.0, 917.0), "tunable_tier": 3, "transform": "sigmoid", "category": "fall_speed", "reference": "Morrison & Milbrandt (2015) P3", "shape": None},
             "hard_sat_adjust_threshold": {"units": "1", "bounds": (1.0, 2.0), "tunable_tier": 2, "transform": "sigmoid", "category": "condensation", "reference": "hard saturation-adjustment guard", "shape": None},
             "hard_sat_max_heating_K": {"units": "K", "bounds": (0.5, 50.0), "tunable_tier": 2, "transform": "sigmoid", "category": "condensation", "reference": "hard saturation-adjustment guard", "shape": None},
         },
@@ -1165,17 +1161,16 @@ class P3Config(NamedTuple):
     evap_coeff: float = 1.0
     saturation_sharpness: float = 100.0
     autoconversion_sharpness: float = 10.0
-    # --- Ice nucleation (Cooper 1986, gSAM P3 scheme-1 semantics) ---
+    # --- Ice nucleation (Cooper 1986, as WRF v4.8.0 P3 runs it) ---
     # Was 5e3 — 1000x the canonical Cooper base (0.005/L = 5/m³, = MorrisonConfig).
     N_i0: float = 5.0               # Cooper base ice crystal number [1/m³] (= 0.005/L)
     cooper_a: float = 0.304         # Cooper exponent
-    # ORACLE cap: gSAM P3 scheme-1 100 L⁻¹·SCF with SCF=1 (module_mp_p3.f90:3090;
-    # scheme 2 uses 150 L⁻¹). Also bounds the Cooper exponential so cold
+    # ORACLE cap: WRF P3 100 L⁻¹·SCF with SCF=1 (module_mp_p3.F:3276). Also bounds the Cooper exponential so cold
     # tropopause temperatures cannot overflow fp32 (mirrors Morrison).
     # (Was 5e5 = M2005's 500/L — a documented departure, closed 2026-07-17.)
     N_i_nuc_max: float = 1.0e5      # [1/m³] = 100 /L
     cooper_T_act: float = 265.0     # Mixed-phase process gate (dep/riming/agg) [K]
-    # Nucleation-specific ORACLE gate (module_mp_p3.f90:3084): T < −15 °C AND
+    # Nucleation-specific ORACLE gate (WRF module_mp_p3.F:3272): T < −15 °C AND
     # supi >= 0.05, smoothed by ice_sigmoid_sharpness / cooper_supi_sharpness.
     cooper_T_nuc: float = 258.15    # Nucleation activation temperature [K] (−15 °C)
     cooper_supi_min: float = 0.05   # Min ice supersaturation for nucleation [-]

@@ -397,7 +397,11 @@ def section_2b_target_isolation() -> list[str]:
     they are held to that: a nonzero residual there is a regression, and the
     bound is the measurement rather than a round number.
 
-    p3 does NOT reduce to it, and that is an OPEN measured fact rather than a
+    The p3 row is the gSAM P3 port that preceded the WRF port (#2077); the WRF
+    port has no rh_homo allowance, so this section now iterates morrison and
+    thompson only and the paragraph below is historical.
+
+    p3 did NOT reduce to it, and that was an OPEN measured fact rather than a
     tolerance to widen.  Silencing Cooper removed morrison's 237748 % residual
     entirely but left p3's 35 % untouched, so p3 carries a second
     q_v-dependent term at this cell that the allowance does not pass through.

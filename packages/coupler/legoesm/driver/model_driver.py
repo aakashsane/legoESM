@@ -14121,6 +14121,11 @@ class ModelDriver:
                 # the correct pre-feature state (deepcu exactly 0).
                 "conv_mass_flux_up",
                 "conv_icwmr",
+                # pblh (2026-10-20, user decision on #2045): the carried PBL
+                # height ZM reads one step lagged; zero-seed = CAM's cold
+                # start (physpkg.F90:419-424), refreshed by the first
+                # turbulence call.
+                "pblh",
             })
             if _any_physstate:
                 from legoesm.atmosphere.physics.physics_state import (

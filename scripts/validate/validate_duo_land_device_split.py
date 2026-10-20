@@ -7,11 +7,11 @@ inputs are the loop's land call on that checkpoint: the packed land columns,
 the checkpoint's pending forcing window meaned as the loop means it, the land
 tile's config/params/lat/carbon.  Each N in ``--devices`` runs on the first N
 devices; the reference is the same step compiled on one device.  Exit 1 when
-any leaf's max|split - one| / max|one| exceeds ``--tol``.
+any leaf is outside ``TOL_REL`` / ``TOL_ABS`` or a counter differs.
 
     XLA_FLAGS=--xla_force_host_platform_device_count=6 JAX_PLATFORMS=cpu \\
     python scripts/validate/validate_duo_land_device_split.py \\
-        --checkpoint CKPT --tol T --devices 2 6 -- <run_amip args>
+        --checkpoint CKPT --devices 2 6 -- <run_amip args>
 """
 from __future__ import annotations
 
@@ -22,11 +22,61 @@ from pathlib import Path
 
 import numpy as np
 
+# One land call on the day-60 C24 state, #2039's contiguous split emulated on
+# one A100 at 2 and 6 shards (user-approved rule: 10x the worst measured): the
+# worst leaf relative to its peak was 1.6e-11; the two energy-budget residual
+# diagnostics are themselves rounding (peak ~1e-13) and are bounded in
+# absolute terms (worst measured 3.4e-13).
+TOL_REL = 1.6e-10
+TOL_ABS = {"residual_int": 3.4e-12, "residual_ext": 3.4e-12}
+
+
+def _finite_pair(a, b):
+    """``(fin, mismatch)``: entries finite on both sides, and whether the
+    non-finite entries differ in placement or value (NaN vs inf, sign)."""
+    fa, fb = np.isfinite(a), np.isfinite(b)
+    bad = bool(np.any(fa != fb)) or not np.array_equal(
+        a[~fa], b[~fb], equal_nan=True)
+    return fa & fb, bad
+
+
+def leaf_abs(ref, got) -> dict:
+    """``{leaf path: max|got-ref|}`` over entries finite on both sides
+    (``inf`` when the non-finite entries differ)."""
+    import jax
+    out = {}
+    for (path, a), b in zip(jax.tree_util.tree_flatten_with_path(ref)[0],
+                            jax.tree_util.tree_leaves(got)):
+        a, b = np.asarray(a, float), np.asarray(b, float)
+        fin, bad = _finite_pair(a, b)
+        d = float(np.max(np.abs(a[fin] - b[fin]))) if fin.any() else 0.0
+        out[jax.tree_util.keystr(path)] = float("inf") if bad else d
+    return out
+
+
+def _leaf_name(path: str) -> str:
+    """Last field name of a pytree key path (``"[3].residual_int"``)."""
+    return path.rsplit(".", 1)[-1].strip("[]'")
+
+
+def over_tolerance(rel: dict, absd: dict) -> dict:
+    """Leaves outside the gate: residual diagnostics against their absolute
+    bound, every other leaf against ``TOL_REL``."""
+    bad = {}
+    for k, r in rel.items():
+        name = _leaf_name(k)
+        if name in TOL_ABS:
+            if absd[k] > TOL_ABS[name]:
+                bad[k] = absd[k]
+        elif r > TOL_REL:
+            bad[k] = r
+    return bad
+
 
 def leaf_rel(ref, got) -> dict:
-    """``{leaf path: max|got-ref| / max|ref|}`` over floating leaves, finite
-    entries only; a NaN-mask mismatch or a nonzero diff on a zero-peak leaf
-    is ``inf`` (never passes a tolerance)."""
+    """``{leaf path: max|got-ref| / max|ref|}`` over floating leaves, entries
+    finite on both sides; differing non-finite entries or a nonzero diff on a
+    zero-peak leaf is ``inf`` (never passes a tolerance)."""
     import jax
     out = {}
     for (path, a), b in zip(jax.tree_util.tree_flatten_with_path(ref)[0],
@@ -39,13 +89,11 @@ def leaf_rel(ref, got) -> dict:
             out[jax.tree_util.keystr(path)] = (0.0 if np.array_equal(a, b)
                                                else float("inf"))
             continue
-        na, nb = np.isnan(a), np.isnan(b)
-        fin = ~(na | nb)
+        fin, bad = _finite_pair(a, b)
         peak = float(np.max(np.abs(a[fin]))) if fin.any() else 0.0
         d = float(np.max(np.abs(a[fin] - b[fin]))) if fin.any() else 0.0
         rel = d / peak if peak > 0 else (0.0 if d == 0 else float("inf"))
-        out[jax.tree_util.keystr(path)] = (float("inf") if np.any(na != nb)
-                                           else rel)
+        out[jax.tree_util.keystr(path)] = float("inf") if bad else rel
     return out
 
 
@@ -96,63 +144,70 @@ def _gate_run(opts):
                 st, a, c, umin, dt_land, lat=la, doy=d, land_params=p,
                 carbon_state=cb)
 
-        def packed(idx):
-            j = jnp.asarray(idx)
-            pk = lambda t: gather_land_columns(t, j, ncol)  # noqa: E731
-            carb = ph.land_ml_carbon
-            return (pk(self._land_ml_state), pk(a2s), pk(ph.land_ml_cfg),
-                    pk(params), pk(ph.land_ml_lat),
-                    pk(carb) if carb is not None else None, doy)
+        full = (self._land_ml_state, a2s, ph.land_ml_cfg, params,
+                ph.land_ml_lat, ph.land_ml_carbon, doy)
+        is_col = jax.tree_util.tree_map(
+            lambda x: (hasattr(x, "shape") and len(x.shape) >= 1
+                       and x.shape[0] == ncol), full)
 
-        ref = jax.device_get(jax.jit(step)(*packed(cols)))   # device 0
-        report, worst = {}, 0.0
+        def packed(idx):
+            return gather_land_columns(full, jnp.asarray(idx), ncol)
+
+        # inputs are closed over (compile-time constants, as in the loop's
+        # land closure): the config carries non-array leaves
+        args1 = packed(cols)
+        ref = jax.device_get(jax.jit(lambda: step(*args1))())  # device 0
+        report, failed = {}, False
         for nd in opts.devices:
             if jax.device_count() < nd:
                 raise SystemExit(f"gate: need {nd} devices, have "
                                  f"{jax.device_count()}")
             slots, keep = shard_land_columns(cols, nd)
             mesh = Mesh(np.array(jax.devices()[:nd]), ("land",))
-            got = jax.device_get(jax.jit(
-                lambda *a: solve_land_on_devices(step, a, mesh, keep,
-                                                 slots.size))(*packed(slots)))
+            argsn = packed(slots)
+            got = jax.device_get(jax.jit(lambda: solve_land_on_devices(
+                step, argsn, is_col, mesh, keep))())
             # whole-run counters are recounted on the split side: compare
             # the per-column results and those counts, not the step's own
             # scalars (identical by construction on the one-call side)
-            rel = leaf_rel(ref[:3], got[:3])
-            rel.update({f"surface.{k}": v for k, v in leaf_rel(
-                ref[3]._replace(n_held=None, n_fallback=None,
-                                n_fallback_rejected=None),
-                got[3]._replace(n_held=None, n_fallback=None,
-                                n_fallback_rejected=None)).items()})
+            strip = lambda t: t[:3] + (t[3]._replace(  # noqa: E731
+                n_held=None, n_fallback=None, n_fallback_rejected=None),)
+            rel = leaf_rel(strip(ref), strip(got))
+            absd = leaf_abs(strip(ref), strip(got))
+            bad = over_tolerance(rel, absd)
+            # the recounted whole-run counters must match exactly
             for k in ("n_held", "n_fallback", "n_fallback_rejected"):
                 a, b = getattr(ref[3], k), getattr(got[3], k)
-                if a is not None:
-                    rel[f"surface.{k}"] = (0.0 if int(a) == int(b)
-                                           else float("inf"))
-            report[nd] = rel
-            worst = max(worst, max(rel.values()))
-            bad = {k: v for k, v in rel.items() if v > opts.tol}
-            print(f"GATE devices={nd}: {len(rel)} leaves, worst "
-                  f"{max(rel.values()):.3e} (tol {opts.tol:.1e}) "
+                if (a is None) != (b is None) or (
+                        a is not None and int(a) != int(b)):
+                    bad[f"surface.{k}"] = float("inf")
+            report[nd] = {"rel": rel, "abs": absd, "bad": bad}
+            failed = failed or bool(bad)
+            res = {k for k in rel if _leaf_name(k) in TOL_ABS}
+            print(f"GATE devices={nd}: {len(rel)} leaves, worst rel "
+                  f"{max(v for k, v in rel.items() if k not in res):.3e} "
+                  f"(tol {TOL_REL:.1e}), residuals worst abs "
+                  f"{max((absd[k] for k in res), default=0.0):.3e} "
+                  f"(tol {max(TOL_ABS.values()):.1e}): "
                   f"{'PASS' if not bad else 'FAIL ' + json.dumps(bad)}",
                   flush=True)
         if opts.out:
             Path(opts.out).write_text(json.dumps(
-                {"tol": opts.tol, "checkpoint": opts.checkpoint,
+                {"tol_rel": TOL_REL, "tol_abs": TOL_ABS,
+                 "checkpoint": opts.checkpoint,
                  "devices": {str(k): v for k, v in report.items()}},
                 indent=1))
-        raise SystemExit(0 if worst <= opts.tol else 1)
+        raise SystemExit(1 if failed else 0)
     return run
 
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if "--" not in argv:
-        raise SystemExit("usage: ... --checkpoint C --tol T -- <run_amip args>")
+        raise SystemExit("usage: ... --checkpoint C -- <run_amip args>")
     cut = argv.index("--")
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", required=True)
-    p.add_argument("--tol", type=float, required=True)
     p.add_argument("--devices", type=int, nargs="+", default=[2, 6])
     p.add_argument("--out", default=None)
     opts = p.parse_args(argv[:cut])

@@ -27,16 +27,17 @@ class _Sfc(NamedTuple):
 
 class _Cfg(NamedTuple):
     scale: jax.Array      # per column, as the packed land config carries
+    layers: jax.Array     # per LAYER, deliberately as long as the slot vector
     name: str             # non-array config leaf
 
 
 def _step(st, cfg, d):
     """Column-local stand-in for the land step: (state, response, carbon,
     surface) with per-column masks and whole-run counters."""
-    T = st * cfg.scale + d
+    T = st * cfg.scale + d + jnp.sum(cfg.layers) * 1e-3
     held = T > 1.0
-    fb = T < 0.2
-    rej = held & fb
+    fb = T < 0.6
+    rej = (T > 0.8) & (T < 1.2)
     return (T, T * 2.0, None,
             _Sfc(held, fb, rej, jnp.sum(held.astype(jnp.int32)),
                  jnp.sum(fb.astype(jnp.int32)), jnp.sum(rej.astype(jnp.int32))))
@@ -59,16 +60,19 @@ def test_sharded_solve_is_the_one_call_solve(n_dev):
     cols = np.sort(rng.choice(100, 37, replace=False))   # uneven shares
     st_full = jnp.asarray(rng.uniform(0.0, 1.0, 100))
     scale_full = jnp.asarray(rng.uniform(0.5, 1.5, 100))
-    # compiled on both sides (eager vs jit differs by FMA fusion alone)
-    ref = jax.jit(lambda s, c, d: _step(s, _Cfg(c, "x"), d))(
-        st_full[cols], scale_full[cols], jnp.asarray(0.25))
     slots, keep = shard_land_columns(cols, n_dev)
+    layers = jnp.asarray(rng.uniform(0.0, 1.0, slots.size))  # decoy size
+    # compiled on both sides (eager vs jit differs by FMA fusion alone)
+    ref = jax.jit(lambda s, c, d: _step(s, _Cfg(c, layers, "x"), d))(
+        st_full[cols], scale_full[cols], jnp.asarray(0.25))
+    for nm in ("held", "fallback", "fallback_rejected"):
+        assert 0 < int(np.sum(np.asarray(getattr(ref[3], nm)))) < cols.size
     mesh = Mesh(np.array(jax.devices()[:n_dev]), ("land",))
+    is_col = (True, _Cfg(True, False, False), False)
     got = jax.jit(lambda s, c, d: solve_land_on_devices(
-        _step, (s, _Cfg(c, "x"), d), mesh, keep, slots.size))(
+        _step, (s, _Cfg(c, layers, "x"), d), is_col, mesh, keep))(
         st_full[slots], scale_full[slots], jnp.asarray(0.25))
     for a, b in zip(jax.tree_util.tree_leaves(ref),
                     jax.tree_util.tree_leaves(got)):
         assert np.asarray(a).dtype == np.asarray(b).dtype
         np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
-    assert int(got[3].n_held) == int(np.sum(np.asarray(ref[3].held)))

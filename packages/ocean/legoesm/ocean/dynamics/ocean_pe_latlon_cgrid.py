@@ -4522,7 +4522,8 @@ def surface_stress_faces(
             tau_j_v = tau_j_v.at[-1].set(top)
         return tau_i_u, tau_j_v, dz_0_u, dz_0_v
     if nemo_fold_vector_sign and (
-            _sf_tau_x is not None or _sf_tau_y is not None) and (
+            _sf_tau_x is not None or _sf_tau_y is not None
+            or _native_i is not None) and (
             _native_i is None or not use_native):
         raise ValueError(
             "nemo_fold_vector_sign needs the on-grid tau_i_native/tau_j_native "
@@ -5978,6 +5979,12 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
             )
     _sf_implicit = bool(getattr(config, "surface_forcing_implicit", False))
     _stress_implicit = bool(getattr(config, "surface_stress_implicit", False))
+    if (getattr(config, "surface_stress_nemo_fold_vector_sign", False)
+            and not _stress_implicit):
+        # The explicit stage-10b' deposit never reads the fold sign.
+        raise ValueError(
+            "surface_stress_nemo_fold_vector_sign requires "
+            "surface_stress_implicit=True")
     # Two selectors reach the external-forcing shortwave path: the NEMO qsr
     # identities live on physics.shortwave_penetration.scheme (the shared
     # pipeline consumes the same field), every other choice on

@@ -240,6 +240,10 @@ def validate_gyre_namelist(namelist: GyreResolvedNamelist) -> None:
         raise ValueError(
             "GYRE Smagorinsky fields currently implement exactly "
             "rn_csmc=3.5 and rn_minfac=rn_maxfac=1.0 (inert in mode 0)")
+    for _name in ("nn_it000", "nn_itend", "nn_stock", "nn_write", "ptimincr"):
+        _value = getattr(namelist, _name)
+        if not isinstance(_value, int) or isinstance(_value, bool):
+            raise ValueError(f"GYRE {_name} must be an integer, got {_value!r}")
     if namelist.nn_it000 != 1 or namelist.nn_itend < namelist.nn_it000:
         raise ValueError("GYRE card supports nn_it000=1 and nn_itend >= 1")
     if namelist.nn_stock < 1 or namelist.nn_write < 1:

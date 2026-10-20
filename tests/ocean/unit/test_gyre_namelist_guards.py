@@ -25,3 +25,10 @@ def test_laplacian_mode_refuses_inert_smagorinsky_edits(field):
     assert GYRE_SHIPPED_NAMELIST.ln_dynldf_lap
     with pytest.raises(ValueError, match="inert in mode 0"):
         validate_gyre_namelist(GYRE_SHIPPED_NAMELIST._replace(**{field: 9.0}))
+
+
+@pytest.mark.parametrize("field", ["nn_itend", "nn_stock", "nn_write", "ptimincr"])
+def test_run_controls_must_be_integers(field):
+    value = getattr(GYRE_R4_NAMELIST, field) + 0.5
+    with pytest.raises(ValueError, match="must be an integer"):
+        validate_gyre_namelist(GYRE_R4_NAMELIST._replace(**{field: value}))

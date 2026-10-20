@@ -194,21 +194,36 @@ def test_default_smoothing_gap_is_reported():
         print(case, dt, "default-smoothing max rel err", _errors(fx, case, dt, out))
 
 
-@pytest.mark.parametrize("case,dt", [
-    pytest.param(c, dt, marks=pytest.mark.xfail(
-        strict=True, reason="XLA FMA in legoesm.thermo's ice-saturation "
-        "polynomial moves q_sat_i by 6.5e-11 at 200 K under jit; Meyers "
-        "amplifies it to 1.1e-9 (pending tolerance decision)"))
-    if (c, dt) in (("nuc", 20.0), ("trop_deep", 20.0)) else (c, dt)
-    for c, dt in _cases()])
-def test_jit_matches_oracle(case, dt):
+# Under jit, XLA's FMA contraction in legoesm.thermo's ice-saturation polynomial
+# moves q_sat_i by 6.5e-11 relative at 200 K; the Meyers exponential amplifies
+# that to 1.1e-9 in the nucleated ice (pending tolerance decision).  Only the
+# ice fields of these two cases are exempted, and only from the 1e-10 bound.
+JIT_ICE_GAP = (("nuc", 20.0), ("trop_deep", 20.0))
+JIT_ICE_FIELDS = ("q_i", "N_i", "prt_sol")
+
+
+def _jit_errors(case, dt):
     fx = _fx()
     g, hyd = _inputs(fx, case)
     f = jax.jit(lambda T, qv: P3.p3_step(T, qv, hyd, g["p"], g["rho"], g["dz"],
                                          float(dt), HARD))
-    worst = _errors(fx, case, dt, f(g["T"], g["q_v"]))
+    return _errors(fx, case, dt, f(g["T"], g["q_v"]))
+
+
+@pytest.mark.parametrize("case,dt", _cases())
+def test_jit_matches_oracle(case, dt):
+    worst = _jit_errors(case, dt)
     print(case, dt, "jit max rel err", worst)
+    if (case, dt) in JIT_ICE_GAP:
+        worst = {k: v for k, v in worst.items() if k not in JIT_ICE_FIELDS}
     assert max(worst.values()) <= TOL, worst
+
+
+@pytest.mark.xfail(strict=True, reason="jit ice-number gap, see JIT_ICE_GAP")
+@pytest.mark.parametrize("case,dt", JIT_ICE_GAP)
+def test_jit_ice_number_gap_cases(case, dt):
+    worst = _jit_errors(case, dt)
+    assert max(worst[k] for k in JIT_ICE_FIELDS) <= TOL, worst
 
 
 @pytest.mark.parametrize("case", _meta(_fx())["cases"])

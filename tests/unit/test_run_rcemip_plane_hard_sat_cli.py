@@ -78,10 +78,10 @@ def test_float_override_without_the_gate_is_refused():
     rcp = _load()
     with pytest.raises(ValueError, match="requires --hard-saturation-adjustment"):
         rcp._build_microphysics_config(
-            "kessler", hard_sat_adjust_threshold=1.2)
+            "sundqvist", hard_sat_adjust_threshold=1.2)
     with pytest.raises(ValueError, match="requires --hard-saturation-adjustment"):
         rcp._build_microphysics_config(
-            "kessler", hard_sat_max_heating_K=8.0)
+            "sundqvist", hard_sat_max_heating_K=8.0)
 
 
 # kessler: faithful ESCOMP kessler_run port, no guard (its kernel raises).

@@ -1784,7 +1784,6 @@ def test_prognostic_clubb_accepts_prescribed_surface_fluxes():
     tv = jnp.maximum(virtual_temperature(T_f, q_f), cfg.T0 * 0.5)
     rho = kw["p_full"] / (constants.R_d * tv)
     rho_sfc = np.asarray(rho)[:, -1]
-    exner_sfc = (np.asarray(kw["p_full"])[:, -1] / constants.p_ref) ** constants.kappa
 
     wpthlp = jnp.full((ncol,), 0.06)    # upward kinematic heat flux [K m/s]
     wprtp = jnp.full((ncol,), 4.0e-5)   # upward kinematic moisture flux [kg/kg m/s]
@@ -1799,9 +1798,10 @@ def test_prognostic_clubb_accepts_prescribed_surface_fluxes():
     out, _ = run(T_f[:, -1] + 1.0, q_f[:, -1])
     assert np.all(np.isfinite(np.asarray(out.dT_dt)))   # non-degenerate state
 
-    # (1) Round-trip the kinematic BC to the reported W/m^2 surface fluxes + ustar.
+    # (1) Round-trip the kinematic BC to the reported W/m^2 surface fluxes + ustar
+    # (CAM host convention, clubb_intr.F90:1781: shf = cpair*rho*wpthlp_sfc).
     assert np.allclose(np.asarray(out.shflx),
-                       np.asarray(wpthlp) * rho_sfc * constants.c_pd * exner_sfc,
+                       np.asarray(wpthlp) * rho_sfc * constants.c_pd,
                        rtol=1e-6)
     assert np.allclose(np.asarray(out.lhflx),
                        np.asarray(wprtp) * rho_sfc * constants.L_v, rtol=1e-6)
@@ -2195,7 +2195,7 @@ def test_clubb_prognostic_injected_flux_equals_kinematic_prescription():
     (``latent_enthalpy_correction``).  The expectation used to invert with the
     constant L_v and no correction -- the convention that decision replaced."""
     from legoesm.atmosphere.physics.turbulence.clubb import (
-        exner_function, init_clubb_moments, pack_clubb_moments,
+        init_clubb_moments, pack_clubb_moments,
     )
     from legoesm.atmosphere.physics.turbulence.surface_layer import (
         latent_enthalpy_correction, surface_moisture_flux,
@@ -2208,11 +2208,11 @@ def test_clubb_prognostic_injected_flux_equals_kinematic_prescription():
     sf = _injected_surface_flux(ncol, kw["T"].dtype)
     tau_x, tau_y, shflx, lhflx, _ = sf
     rho_sfc = kw["rho"][:, -1]
-    exner_sfc = exner_function(kw["p_full"][:, -1])
-    # The exact inverse map clubb_turbulence_prognostic applies internally.
+    # The exact inverse map clubb_turbulence_prognostic applies internally
+    # (CAM host convention, clubb_intr.F90:1781: no exner).
     evap = surface_moisture_flux(cfg.surface, lhflx, kw["T_sfc"])
     sfc_wpthlp = ((shflx + latent_enthalpy_correction(lhflx, evap))
-                  / (rho_sfc * constants.c_pd * exner_sfc))
+                  / (rho_sfc * constants.c_pd))
     sfc_wprtp = evap / rho_sfc
     sfc_upwp = tau_x / rho_sfc
     sfc_vpwp = tau_y / rho_sfc

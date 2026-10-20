@@ -182,6 +182,7 @@ def make_microphysics_physics(
     model_type: str = "hydrostatic",
     dt: float = 300.0,  # coeff-ok: default physics timestep [s]
     cloud_config=None,
+    relvar_from_clubb: bool = False,
 ) -> Callable:
     """Create a physics function for microphysics matching a model's signature.
 
@@ -196,6 +197,10 @@ def make_microphysics_physics(
     cloud_config : CloudConfig, optional
         The run's cloud config (scheme ``cam6_clubb``); read only by Morrison
         ``warm_rain_incloud`` for the CAM6 ice-stratus fraction ``aist``.
+    relvar_from_clubb : bool
+        Read the per-cell ``PhysicsState.relvar`` CLUBB wrote in the same
+        macmic sub-step (CAM6 pbuf RELVAR) into Morrison ``kk2000_cam6``.
+        hydrostatic/mpas lanes only.
 
     Returns
     -------
@@ -210,7 +215,8 @@ def make_microphysics_physics(
     if model_type in ("hydrostatic", "mpas"):
         return _make_hydrostatic_microphysics(microphysics_config, dt,
                                               cloud_config=cloud_config,
-                                              model_type=model_type)
+                                              model_type=model_type,
+                                              relvar_from_clubb=relvar_from_clubb)
     elif model_type == "nonhydrostatic":
         return _make_nonhydrostatic_microphysics(microphysics_config, dt)
     elif model_type == "plane":
@@ -236,6 +242,7 @@ def _make_hydrostatic_microphysics(
     dt: float,
     cloud_config=None,
     model_type: str = "hydrostatic",
+    relvar_from_clubb: bool = False,
 ) -> Callable:
     """Create microphysics physics_fn for PrimitiveEquationModel.
 
@@ -449,6 +456,10 @@ def _make_hydrostatic_microphysics(
                     p_half_col[:, :-1])
                 _kw["cloud_fraction"] = jnp.maximum(
                     jnp.clip(_cf.reshape(ncol, nlev), 0.0, 1.0), _aist)
+            if relvar_from_clubb:
+                # CAM6 MG2 reads pbuf RELVAR, set by clubb_tend_cam in the same
+                # macmic iteration (clubb_intr.F90:2416-2425).
+                _kw["relvar"] = phys_state.relvar.reshape(ncol, nlev)
             micro_out = micro_fn(
                 T_col, q_v_col, hydrometeors,
                 p_full_col, p_half_col, rho, dz, dt, scheme_config, **_kw,
@@ -540,7 +551,7 @@ def _make_hydrostatic_microphysics(
     # with the legacy 3-arg signature).
     if _nc_from_aerosol:
         physics_fn._wants_forcing = True
-    if _incloud:
+    if _incloud or relvar_from_clubb:
         physics_fn._wants_phys_state_ro = True
     return physics_fn
 

@@ -255,7 +255,6 @@
   "lw_diff_factor": 1.66,
   "mcfarlane_directional_spread": 1.0,
   "mcfarlane_k_wave": 6.283185307179586e-05,
-  "mcfarlane_tau_max": 10.0,
   "micro_substeps": 1,
   "microphysics": "none",
   "moisture_advection": false,
@@ -391,5 +390,6 @@
   "zm_dmpdz": null,
   "zm_ke": null,
   "zm_land_fraction": "required",
-  "zm_tau": null
+  "zm_tau": null,
+  "zm_transport_cloud_tracers": true
 }

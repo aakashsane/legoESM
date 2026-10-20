@@ -189,7 +189,9 @@ def build_points():
 
 
 def write_column_inputs(cols, path, relvar):
+    """``relvar``: a scalar, or a per-level ``(nlev,)`` profile."""
     nlev = len(cols[0]["T"])
+    relvar = np.broadcast_to(np.asarray(relvar, dtype=np.float64), (nlev,))
     with open(path, "w") as f:
         f.write(f"{len(cols)} {nlev} {DT!r}\n")
         for c in cols:
@@ -202,7 +204,7 @@ def write_column_inputs(cols, path, relvar):
                 row = [c["T"][k], c["q_v"][k], c["q_c"][k], 0.0,
                        ncnst / rho[k] * lcl[k] if c["q_c"][k] > 0 else 0.0, 0.0,
                        c["q_r"][k], 0.0, c["N_r"][k] / rho[k], 0.0,
-                       relvar, 1.0, c["p_full"][k], pdel[k],
+                       relvar[k], 1.0, c["p_full"][k], pdel[k],
                        c["cf"][k], c["cf"][k], c["cf"][k], 1.0]
                 f.write(" ".join(f"{x:.17e}" for x in row) + "\n")
 

@@ -185,12 +185,12 @@ def test_evaporation_saturation_is_the_cam_qsat_table():
         e0 = float(saturation_vapor_pressure_trans(jnp.asarray(tmin + k)))
         e1 = float(saturation_vapor_pressure_trans(jnp.asarray(tmin + k + 1)))
         assert float(saturation_specific_humidity_cam_table(
-            jnp.asarray(tmin + k), p)) == pytest.approx(q(e0), rel=TOL)
+            jnp.asarray(tmin + k), p)) == pytest.approx(q(e0), rel=TOL, abs=0.0)
         assert float(saturation_specific_humidity_cam_table(
-            jnp.asarray(tmin + k + 0.25), p)) == pytest.approx(q(0.75 * e0 + 0.25 * e1), rel=TOL)
+            jnp.asarray(tmin + k + 0.25), p)) == pytest.approx(q(0.75 * e0 + 0.25 * e1), rel=TOL, abs=0.0)
     e_lo = float(saturation_vapor_pressure_trans(jnp.asarray(tmin)))
     assert float(saturation_specific_humidity_cam_table(jnp.asarray(100.0), p)) == pytest.approx(
-        q(e_lo), rel=TOL)
+        q(e_lo), rel=TOL, abs=0.0)
 
 
 def _bridge(fx, pblh):

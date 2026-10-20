@@ -414,6 +414,21 @@ def test_missing_latitude_or_troplev_raises():
         _step(c, _ON, unpack_clubb_moments(carry))
 
 
+def test_default_top_is_cam6_and_needs_latitudes():
+    """The default CLUBBConfig carries CAM6's trop_cloud_top_press (100 Pa,
+    namelist_defaults_cam.xml:1295), so the default prognostic path needs the
+    column latitudes like CAM's chemistry tropopause does."""
+    cfg = CLUBBConfig(prognostic=True, clubb_dt=300.0)
+    assert cfg.trop_cloud_top_press == 100.0
+    c = _column(0.0)
+    ncol, nlev = c["T"].shape
+    carry = pack_clubb_moments(init_clubb_moments(ncol, nlev, cfg))
+    with pytest.raises(ValueError, match="latitudes"):
+        clubb_turbulence_prognostic(
+            *_args(c), carry, c["p_full"], c["p_half"], c["z_full"],
+            c["z_half"], c["T_sfc"], c["q_sfc"], c["rho"], _DT, cfg)
+
+
 # --------------------------------------------------------------------------
 # Every lane hands prognostic CLUBB its own latitudes
 # --------------------------------------------------------------------------

@@ -143,14 +143,16 @@ def test_snow_kernels_match_mg2():
     mn, nn = W.rain_freezing_bigg_mg2(q_ric, N_ric, lamr, T, rho, pf, cfg)
     errs["mnuccr"] = _rel(mn, o["mnuccr"] * pf)
     errs["nnuccr"] = _rel(nn / rho, o["nnuccr"] * pf)
-    # Ferrier on the MG2 ice slope where it is inside MG2's bounds
-    # (1/[2 dcs, 1 um]); legoESM's own slope is unclamped (separate finding).
-    lami = (cfg.rho_cloud_ice * jnp.pi * i["ni"]
-            / jnp.where(i["qi"] > 0, i["qi"], 1.0)) ** (1.0 / 3.0)
-    prci, nprci = W.ice_autoconversion_mg2(i["qi"], i["ni"], lami, float(fx["dcs"]), T)
-    inb = np.asarray(o["niic"] == fx["pt_in_ni"])
-    errs["prci"] = _rel(prci, o["prci"])[inb]
-    errs["nprci"] = _rel(nprci, o["nprci"])[inb]
+    # Ferrier on MG2's ice slope, held inside 1/[2 dcs, 1 um] with the number
+    # re-adjusted, at every point (in and out of bounds).
+    niic, lami = W.mg2_ice_slope(i["qi"], i["ni"], cfg.rho_cloud_ice, float(fx["dcs"]))
+    errs["lami"] = _rel(lami, o["lami"])
+    errs["niic"] = _rel(niic, o["niic"])
+    prci, nprci = W.ice_autoconversion_mg2(i["qi"], niic, lami, float(fx["dcs"]), T)
+    errs["prci"] = _rel(prci, o["prci"])
+    errs["nprci"] = _rel(nprci, o["nprci"])
+    oob = np.asarray(o["niic"] != fx["pt_in_ni"])
+    assert np.count_nonzero(oob & (np.asarray(o["prci"]) > 0)) > 5  # bound binds
     worst = {k: float(np.max(v)) for k, v in errs.items()}
     print("snow kernel max rel err", worst)
     assert max(worst.values()) <= TOL, worst
@@ -302,3 +304,43 @@ def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
         fn(state._replace(tracers=tr), mesh, sigma, phys_state=ps)
     dns = np.asarray(with_ns.tracer_tendencies["N_s"].data)
     assert np.all(np.isfinite(dns)) and np.any(dns != 0.0)
+
+
+@pytest.mark.parametrize("ice_to_snow", ["m2005_autoconv", "mg_ferrier"])
+def test_mg2_ice_conservation_credits_same_step_sources(ice_to_snow):
+    """MG2 conservation of qi (micro_mg2_0.F90:1717-1735): ice->snow
+    autoconversion + sublimation may take q_i PLUS this step's ice sources
+    (deposition here), x omsm.  Single-level cold cells at RH_ice 0.8-1.4 with
+    big ice whose unlimited conversion overdraws q_i: the cell keeps only the
+    omsm margin of (q_i + sources), never goes negative, and supersaturated
+    cells do not keep the deposited ice the old q_i-only donor clamp left."""
+    from legoesm import constants as C
+    from legoesm.thermo import saturation_mixing_ratio_ice
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    from legoesm.atmosphere.physics.microphysics.morrison import morrison_microphysics
+    from legoesm.atmosphere.physics.microphysics.output import HydrometeorState
+    cfg = _production_morrison()._replace(warm_rain_scheme="kk2000_cam6",
+                                          ice_to_snow_scheme=ice_to_snow)
+    assert cfg.warm_rain_incloud
+    n, dt = 4, 600.0
+    T = jnp.full((n, 1), 235.0)
+    p = jnp.full((n, 1), 30000.0)
+    ph = jnp.concatenate([p - 500.0, p + 500.0], axis=1)
+    rho = p / (C.R_d * T)
+    dz = (ph[:, 1:] - ph[:, :-1]) / (C.g * rho)
+    rhi = jnp.asarray([0.8, 1.0, 1.2, 1.4])[:, None]
+    qv = rhi * saturation_mixing_ratio_ice(T, p)
+    qi = jnp.full((n, 1), 2.0e-5)
+    Ni = jnp.full((n, 1), 2.0e3)
+    z = jnp.zeros_like(T)
+    ni, lam = W.mg2_ice_slope(qi, Ni, cfg.rho_cloud_ice, cfg.ice_snow_d_auto)
+    prci, _ = W.ice_autoconversion_mg2(qi, ni, lam, cfg.ice_snow_d_auto, T)
+    assert np.all(np.asarray(prci) * dt > 2.0 * np.asarray(qi))  # limit binds
+    hyd = HydrometeorState(q_c=z, q_r=z, q_i=qi, q_s=z, q_g=z, N_c=z + 5.0e7,
+                           N_r=z, N_i=Ni, N_s=z)
+    out = morrison_microphysics(T, qv, hyd, p, ph, rho, dz, dt, cfg,
+                                cloud_fraction=z + 1.0)
+    qi_new = np.asarray(qi + dt * out.dq_i_dt)[:, 0]
+    print("qi_new / qi", qi_new / 2.0e-5)
+    assert np.all(qi_new >= -1.0e-14 * 2.0e-5), qi_new
+    assert np.all(qi_new <= 1.0e-4 * 2.0e-5), qi_new

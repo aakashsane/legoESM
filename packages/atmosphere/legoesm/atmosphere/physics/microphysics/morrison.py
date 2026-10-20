@@ -84,6 +84,7 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     rain_freezing_bigg,
     rain_freezing_bigg_mg2,
     ice_autoconversion_mg2,
+    mg2_ice_slope,
     mg2_size_dist_liq,
     mg2_inprecip_snow,
     mg2_snow_slope,
@@ -934,8 +935,11 @@ def morrison_microphysics(
         # UNDERFLOWS float32 → Inf·0 = NaN when N_i→0; codex precision review),
         # is identical for N_i>0, and stays finite at LAMI=0 (→ q_i/180, the
         # bare 180-s timescale).
+        # On MG2's own ice slope: held inside 1/[2 dcs, 1 um] with the number
+        # re-adjusted (size_dist_param_basic, micro_mg2_0.F90:1333).
+        _ni_mg2, _lami_mg2 = mg2_ice_slope(q_i, N_i, config.rho_cloud_ice, dcs)
         aggregation, nprci_ferrier = ice_autoconversion_mg2(
-            q_i, N_i, lami_ac, dcs, T)
+            q_i, _ni_mg2, _lami_mg2, dcs, T)
     elif config.ice_to_snow_scheme == "heuristic":
         aggregation = config.agg_coeff * jnp.clip(q_i, 0.0) * f_ice
     else:
@@ -1059,38 +1063,24 @@ def morrison_microphysics(
     # pieces preserves the budget.  dq_i_dep's negative (sublimation) branch
     # is FINAL here: the later qv clamp only rescales its positive
     # (deposition) branch, so max(-dq_i_dep, 0) is the true sublimation sink.
+    # CAM6 MG2 mode: aggregation + sublimation are limited by MG2's own
+    # conservation of qi after the q_c limiter (below); melt_ice, which MG2
+    # does not carry, keeps the donor clamp here on its own.
     ice_subl_sink = jnp.maximum(-dq_i_dep, 0.0)
-    qi_sink_total = aggregation + melt_ice + ice_subl_sink
+    if config.warm_rain_incloud:
+        qi_sink_total = melt_ice
+    else:
+        qi_sink_total = aggregation + melt_ice + ice_subl_sink
     qi_avail = jnp.clip(q_i, 0.0)
     qi_scale = donor_clamp_scale(qi_avail, qi_sink_total, dt)
-    aggregation = aggregation * qi_scale
     melt_ice = melt_ice * qi_scale
-    # Scale ONLY the sublimation (negative) branch of dq_i_dep; deposition
-    # (positive, a q_i SOURCE) is unaffected.  The matching vapour source
-    # (-dq_i_dep in dq_v_dt) and L_s heating read this same scaled value, so
-    # mass + energy stay closed.
-    dq_i_dep = jnp.where(dq_i_dep < 0.0, dq_i_dep * qi_scale, dq_i_dep)
-    # Ice-number transfer of the ice->snow autoconversion (an N_i sink and,
-    # under double-moment snow, the N_s source), from the FINAL (clamped)
-    # aggregation.
-    if mg2_snow and config.ice_to_snow_scheme == "mg_ferrier":
-        # MG2 ice_autoconversion NUMBER (micro_mg_utils.F90:884):
-        # nprci = n0i/(lami*180) exp(-lami*dcs) = N_i/180 exp(-lami*dcs) where
-        # the Ferrier mass rate is active, scaled with it by the q_i donor
-        # clamp, capped at N_i/dt like the other branches.
-        dN_i_autoconv = jnp.minimum(nprci_ferrier * qi_scale,
-                                    jnp.clip(N_i, 0.0) / jnp.clip(dt, 1.0))
-    elif config.ice_to_snow_scheme in ("m2005_autoconv", "mg_ferrier"):
-        _cons22 = (
-            jnp.pi * config.rho_cloud_ice
-            * config.ice_snow_d_auto ** 3 / 6.0
-        )
-        dN_i_autoconv = jnp.minimum(
-            aggregation / _cons22,
-            jnp.clip(N_i, 0.0) / jnp.clip(dt, 1.0),
-        )
-    else:
-        dN_i_autoconv = aggregation * jnp.clip(N_i, 0.0) / jnp.clip(q_i, 1.0e-15)
+    if not config.warm_rain_incloud:
+        aggregation = aggregation * qi_scale
+        # Scale ONLY the sublimation (negative) branch of dq_i_dep; deposition
+        # (positive, a q_i SOURCE) is unaffected.  The matching vapour source
+        # (-dq_i_dep in dq_v_dt) and L_s heating read this same scaled value,
+        # so mass + energy stay closed.
+        dq_i_dep = jnp.where(dq_i_dep < 0.0, dq_i_dep * qi_scale, dq_i_dep)
 
     # Snow vapour deposition / sublimation PRDS must be known BEFORE the q_s
     # donor clamp so snow sublimation can be reserved against q_s jointly
@@ -1322,6 +1312,45 @@ def morrison_microphysics(
         freeze_to_graupel = jnp.zeros_like(freeze_rain)
         freeze_to_snow = freeze_rain
         freeze_N_to_snow = freeze_N_r
+
+    if config.warm_rain_incloud:
+        # MG2 conservation of qi (micro_mg2_0.F90:1717-1735), after the q_c
+        # and rain limiters: ice autoconversion + sublimation may take q_i
+        # (less the donor-clamped melt_ice) plus this step's ice sources,
+        # x omsm, where they would overdraw.  Grid-mean rates, so MG2's
+        # lcldm/icldm/precip_frac weights are already folded in.  MG2's prai
+        # (ice accreted by snow) has no counterpart here.
+        _isrc = (jnp.maximum(dq_i_dep, 0.0) + dq_i_nuc + bergeron + riming_i
+                 + homo_freeze_c + freeze_to_ice)
+        _isnk = aggregation + jnp.maximum(-dq_i_dep, 0.0)
+        _iav = jnp.clip(jnp.clip(q_i, 0.0) - melt_ice * dt, 0.0)
+        _ilim = (_isnk - _isrc) * dt > _iav
+        qi_scale = jnp.where(
+            _ilim, (_iav / dt + _isrc) / jnp.where(_ilim, _isnk, 1.0) * _MG2_OMSM,
+            1.0)
+        aggregation = aggregation * qi_scale
+        dq_i_dep = jnp.where(dq_i_dep < 0.0, dq_i_dep * qi_scale, dq_i_dep)
+    # Ice-number transfer of the ice->snow autoconversion (an N_i sink and,
+    # under double-moment snow, the N_s source), from the FINAL (clamped)
+    # aggregation.
+    if mg2_snow and config.ice_to_snow_scheme == "mg_ferrier":
+        # MG2 ice_autoconversion NUMBER (micro_mg_utils.F90:884):
+        # nprci = n0i/(lami*180) exp(-lami*dcs) = N_i/180 exp(-lami*dcs) where
+        # the Ferrier mass rate is active, scaled with it by the q_i donor
+        # clamp, capped at N_i/dt like the other branches.
+        dN_i_autoconv = jnp.minimum(nprci_ferrier * qi_scale,
+                                    jnp.clip(N_i, 0.0) / jnp.clip(dt, 1.0))
+    elif config.ice_to_snow_scheme in ("m2005_autoconv", "mg_ferrier"):
+        _cons22 = (
+            jnp.pi * config.rho_cloud_ice
+            * config.ice_snow_d_auto ** 3 / 6.0
+        )
+        dN_i_autoconv = jnp.minimum(
+            aggregation / _cons22,
+            jnp.clip(N_i, 0.0) / jnp.clip(dt, 1.0),
+        )
+    else:
+        dN_i_autoconv = aggregation * jnp.clip(N_i, 0.0) / jnp.clip(q_i, 1.0e-15)
 
     if mg2_snow:
         # MG2 conservation of snow mixing ratio (micro_mg2_0.F90:1769-1781):

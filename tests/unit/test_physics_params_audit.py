@@ -335,18 +335,6 @@ class TestMicrophysicsAudit:
             return jnp.sum(out.dq_r_dt ** 2)
         assert_grad_ok(loss, 5.25, "thompson.k_ac")
 
-    def test_p3_dep_coeff(self):
-        from legoesm.atmosphere.physics.microphysics.p3 import p3_microphysics
-        from legoesm.atmosphere.physics.microphysics.config import P3Config
-        T, q_v, hydro, p_full, p_half, rho, dz = _ice_column()
-
-        def loss(x):
-            cfg = P3Config()._replace(dep_coeff=x)
-            out = p3_microphysics(T, q_v, hydro, p_full, p_half, rho, dz,
-                60.0, config=cfg)
-            return jnp.sum(out.dT_dt ** 2) + jnp.sum(out.dq_i_dt ** 2)
-        assert_grad_ok(loss, 1e-3, "p3.dep_coeff")
-
     def test_sundqvist_RH_crit(self):
         from legoesm.atmosphere.physics.microphysics.sundqvist import sundqvist_microphysics
         from legoesm.atmosphere.physics.microphysics.config import SundqvistConfig

@@ -308,13 +308,14 @@ def morrison_microphysics(
     _prog_nc = bool(getattr(config, "prognostic_droplet_number", False))
     if _prog_nc:
         # Start-up guards (static config; user decisions 2026-10-19 2a, Q-I/10a,
-        # Q-B 3a, 18a): CAM6 MG2 droplet number lives only on the MG2 warm-rain
+        # Q-B 3a, 18a; 2026-10-20 Q4): CAM6 MG2 droplet number lives only on the MG2 warm-rain
         # path and replaces both other droplet-number modes.
         _bad = [msg for ok, msg in (
             (config.warm_rain_incloud, "warm_rain_incloud=True"),
             (config.warm_rain_scheme == "kk2000_cam6", 'warm_rain_scheme="kk2000_cam6"'),
             (not getattr(config, "predict_Nc", False), "predict_Nc=False"),
             (not getattr(config, "nc_from_aerosol", False), "nc_from_aerosol=False"),
+            (config.liquid_from_closure, "liquid_from_closure=True"),
             (relvar is not None and jnp.shape(relvar) == T.shape,
              f"CLUBB's per-cell relvar passed as relvar= with shape {T.shape}"),
         ) if not ok]

@@ -1045,8 +1045,9 @@ class MorrisonConfig(NamedTuple):
 
     # CAM6 prognostic cloud-droplet number (MG2's nc budget on this scheme's
     # state).  APPENDED AT THE TUPLE END (positional ABI).  Needs
-    # warm_rain_incloud=True, warm_rain_scheme="kk2000_cam6", predict_Nc=False
-    # and nc_from_aerosol=False (start-up errors); the call must pass CLUBB's
+    # warm_rain_incloud=True, warm_rain_scheme="kk2000_cam6", predict_Nc=False,
+    # nc_from_aerosol=False and liquid_from_closure=True (start-up errors); the
+    # call must pass CLUBB's
     # per-cell ``relvar``.  Under it the warm rain reads the prognostic number
     # (max(N_c, 0), divided by lcldm, no 1 m^-3 floor) and CLUBB's relvar.
     # False = every pre-existing behaviour, bit for bit

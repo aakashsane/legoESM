@@ -116,7 +116,8 @@ def test_guards():
     for kw, msg in ((dict(warm_rain_incloud=False), "warm_rain_incloud=True"),
                     (dict(warm_rain_scheme="kk2000"), 'warm_rain_scheme="kk2000_cam6"'),
                     (dict(predict_Nc=True), "predict_Nc=False"),
-                    (dict(nc_from_aerosol=True), "nc_from_aerosol=False")):
+                    (dict(nc_from_aerosol=True), "nc_from_aerosol=False"),
+                    (dict(liquid_from_closure=False), "liquid_from_closure=True")):
         with pytest.raises(ValueError, match=msg):
             _run(fx, base._replace(**kw))
     g, dz = _inputs(fx)

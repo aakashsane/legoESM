@@ -891,7 +891,10 @@ def run_factor_walk(
             potential_vorticity_override=q_value,
             metric_transport_override=(fu_value, None),
         )
-        return v_term
+        # ``return_nemo_operator_components`` publishes ``_mv(term)`` after
+        # the common diagnostic mask, not the unmasked kernel return
+        # (ocean_pe_latlon_cgrid.py:6234-6238,6296-6301).
+        return v_term * vmask3
 
     replayed_live_v = np.asarray(replay_v_term(
         jnp.asarray(live_q), jnp.asarray(live_fu)))

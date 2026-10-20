@@ -65,12 +65,14 @@ deliberate departures / version choices (canaries in
   ``config.use_discrete_ke_heating=True`` for the discrete closure (the
   DEFAULT since 2026-07-17; ``False`` = the legacy continuous-rate
   identity, which over-heats by
-  ``0.5*dt*(du²+dv²)/c_pd`` per step).  STRUCTURAL DEPARTURE kept: E3SM's
-  closure runs once over the ACCUMULATED ptend of all GW sources ("includes
-  spectrum"); our per-source calls close each source independently.  (The
-  alternative ``use_gw_energy_fix`` branch, :916-937, deposits a
-  column-UNIFORM dE — code default ``.false.``, phys_control.F90:174 — and is
-  not implemented.  E3SM divides the closure by the spatially-varying
+  ``0.5*dt*(du²+dv²)/c_pd`` per step).  As in E3SM the closure runs over the
+  ACCUMULATED ptend of all GW sources ("includes spectrum") against the
+  un-updated wind.  NOT IMPLEMENTED: the ``use_gw_energy_fix`` branch
+  (:916-937), which deposits a column-UNIFORM dE.  Its code default is
+  ``.false.`` (phys_control.F90:174), but the E3SM v3 default physics
+  namelist sets it ``.true.`` (namelist_defaults_eam.xml:1886), so E3SM v3
+  default runs heat the orographic member uniformly over the whole column
+  (open question, orographic source only).  E3SM divides the closure by the spatially-varying
   ``cpairv(:,k,lchnk)`` (gw_drag.F90:914); we use the scalar
   ``constants.c_pd`` — the declared required-inputs departure, legoESM has
   no spatially-varying heat capacity.)
@@ -84,10 +86,14 @@ deliberate departures / version choices (canaries in
   ``frontal.latitude_taper=False``; the DEFAULT ``True`` (legacy) tapers
   frontal drag → 0 toward the poles — a first-order high-latitude
   difference.  Config-selectable, flip per grid family (AMIP-gated).
-* **Newtonian alpha profile (default OFF).** ``config.use_newtonian_profile``
-  defaults to ``False``; E3SM uses a Newtonian-cooling vertical ``alpha(z)``
-  profile in the spectral saturation / WKB damping (with an orographic floor).
-  Enabling it changes the drag.
+* **Newtonian alpha profile and level indices on ``pref_edge``.** As in
+  E3SM (gw_drag.F90:313-346, :417-420, :453-456) the spectral sources, and the
+  orographic member of a spectral suite, interpolate the ``alpha0`` table onto
+  the REFERENCE interfaces ``p_ref_half`` and take kbotbg / kfront / k700 from
+  them (``config.use_newtonian_profile`` defaults ``True``; ``False`` is a
+  legacy non-E3SM opt-out with uniform ``alpha_newtonian``).  The
+  orographic-only path keeps the uniform ``alpha_newtonian`` (default 0.0;
+  E3SM uses 1e-6 there, gw_drag.F90:343, NOT-YET-FAITHFUL).
 * **Beres source heating: TOTAL convective, not deep-only** (coupled runs):
   E3SM feeds ``gw_beres_src`` the DEEP-only ``pbuf TTEND_DP``
   (gw_drag.F90:766-778); the coupled pipeline threads the convection
@@ -96,7 +102,8 @@ deliberate departures / version choices (canaries in
   decomposition exists in our convection interface.
 * **Beres (2004) convective source: TABLE not bundled.** ``source="convective"``
   RUNS, but on a clearly-labelled analytic STAND-IN spectrum
-  (``build_stand_in_mfcc``, explicitly NOT bit-faithful to Beres); the real
+  (``build_stand_in_mfcc``, NOT-YET-FAITHFUL: not Beres, and it launches
+  ~1e-12 Pa at realistic heating, i.e. effectively nothing); the real
   offline ``mfcc`` lookup table (``newmfspectra*.nc``) is not vendored. Pass a
   real ``mfcc_table`` (``beres.use_stand_in_table=False``) for faithfulness.
 * **Smoothing.** The genuine Fortran kinks (critical level, saturation cap,
@@ -813,15 +820,22 @@ def gw_beres_src(
     # Adjust magnitude by q0^2/AL.
     tau0 = tau0 * (q0 * q0 / beres.al)[:, None]
 
-    # Critical-level filtering: zero tau0 for Umini <= l <= Umaxi.
+    # Critical-level filtering: zero tau0 for Umini <= l <= Umaxi (bounds
+    # guard below).
     umini = jnp.maximum(_nint(umin / dc), -pgwv).astype(jnp.int32)  # (ncol,)
     umaxi = jnp.minimum(_nint(umax / dc), pgwv).astype(jnp.int32)
     ls = jnp.arange(-pgwv, pgwv + 1)[None, :]              # (1, nwav) wave index
-    # Fortran ``tau0(Umini:Umaxi) = 0`` is a non-empty slice for Umini <= Umaxi
-    # (equal bounds zero ONE bin); only Umini > Umaxi is empty (codex review:
-    # the earlier ``>`` skipped the equal-bounds bin).
+    # E3SM gw_convect.F90:293-295 guards the slice with ``if (Umaxi > Umini)``,
+    # so equal bounds zero NOTHING; CAM6 gw_convect.F90:285 slices
+    # unconditionally, and ``tau0(Umini:Umaxi) = 0`` with equal bounds zeroes
+    # ONE bin.  The E3SM rule goes with the E3SM ``cshift`` spectrum
+    # (spectrum_shift="circular"), the CAM6 rule with ``eoshift``.
+    if beres.spectrum_shift == "circular":
+        bounds_ok = umaxi[:, None] > umini[:, None]
+    else:
+        bounds_ok = umaxi[:, None] >= umini[:, None]
     crit_mask = (
-        (umaxi[:, None] >= umini[:, None])
+        bounds_ok
         & (ls >= umini[:, None])
         & (ls <= umaxi[:, None])
     )                                                      # (ncol, nwav)
@@ -914,27 +928,44 @@ def load_mfcc_table(path: str, pgwv: int):
     return tbl
 
 
-def _source_level_index(pmid, pint, p_target, rule):
-    """0-based midpoint index of the Beres source wind level.
+def _ref_level_index(p_ref_half, p_target, lo, hi):
+    """E3SM gw_init level rule on the REFERENCE interfaces ``pref_edge``.
 
-    ``"nearest_midpoint"``: the midpoint whose column-mean pressure is nearest
-    ``p_target`` (E3SM).  ``"interface_below_p"``: CAM6 ``gw_drag.F90:871-874``
-    — the LOWEST midpoint whose top interface has ``p < p_target`` (the layer
-    straddling ``p_target``).  Static ``rule``; raises on an unknown one.
+    The 0-based index of the LAST reference interface with ``pref < p_target``
+    (``p_ref_half`` increases top-down).  That is E3SM's ``kbotbg =
+    maxloc(pref_edge, pref_edge < 50000) - 1`` (gw_drag.F90:346) as an
+    interface index, and, read as a 0-based MIDPOINT index, E3SM's 1-based
+    ``kfront`` / ``k700`` (``if (pref_edge(k+1) < p) kidx = k+1``,
+    gw_drag.F90:417-420, :453-456; CAM6 gw_drag.F90:871-874 is the same
+    rule).  ``[lo, hi]`` is the pre-existing index clip (never binds on a
+    grid whose top interface is above ``p_target``).  Static per grid, so
+    the index carries no gradient, as in E3SM.
     """
-    nlev = pmid.shape[1]
+    k = jnp.sum(p_ref_half < p_target) - 1
+    return jnp.clip(k, lo, hi).astype(jnp.int32)
+
+
+def _source_level_index(p_ref_half, nlev, p_target, rule):
+    """0-based midpoint index of the Beres source wind level (E3SM ``k700``).
+
+    ``"interface_below_p"`` (E3SM gw_drag.F90:453-456 and CAM6
+    gw_drag.F90:871-874, the same rule): the LOWEST midpoint whose top
+    reference interface has ``pref < p_target``.  The former
+    ``"nearest_midpoint"`` option (column-mean pressure nearest
+    ``p_target``) has no counterpart in either oracle and now raises.
+    """
     if rule == "nearest_midpoint":
-        pmean = jnp.mean(pmid, axis=0)
-        k = jnp.argmin(jnp.abs(pmean - p_target))
-    elif rule == "interface_below_p":
-        pint_mean = jnp.mean(pint, axis=0)                 # (nlev+1,) top-down
-        k = jnp.sum(pint_mean < p_target) - 1
-    else:
+        raise ValueError(
+            "E3SMBeresConfig.source_level_rule='nearest_midpoint' is not an "
+            "E3SM or CAM6 rule (both pick the last reference interface above "
+            "source_wind_p, gw_drag.F90:453-456); use 'interface_below_p'."
+        )
+    if rule != "interface_below_p":
         raise ValueError(
             f"Unknown E3SMBeresConfig.source_level_rule {rule!r}; expected "
-            "'nearest_midpoint' (E3SM) or 'interface_below_p' (CAM6)."
+            "'interface_below_p'."
         )
-    return jnp.clip(k, 0, nlev - 1).astype(jnp.int32)
+    return _ref_level_index(p_ref_half, p_target, 0, nlev - 1)
 
 
 def _cshift_rows(a: jax.Array, shift: jax.Array) -> jax.Array:
@@ -1424,8 +1455,9 @@ def gw_diff_tend(
     """Implicit GW eddy-diffusion tendency of a scalar ``q`` (``gw_diff_tend``).
 
     Solves the tridiagonal implicit-diffusion system ``M q_new = q`` (zero-flux
-    BCs) via the shared Thomas solver and returns ``dq = (q_new - q)/dt``.
-    Faithful to ``gw_diffusion.F90`` / ``vd_lu_solve``.
+    BCs) via the shared Thomas solver in E3SM's ``vd_lu_solve`` operation
+    order and returns ``dq = (q_new - q)/dt``.  Faithful to
+    ``gw_diffusion.F90`` / ``vdiff_lu_solver.F90``.
 
     Pivot note (codex ediff-1 #4)
     -----------------------------
@@ -1440,7 +1472,11 @@ def gw_diff_tend(
     event of a singular pivot, which the E3SM system does not reach either.
     """
     from legoesm.timestepping.tridiagonal import thomas_solve
-    q_new = thomas_solve(a, b, c, q)
+    # E3SM's own LU arithmetic (vd_lu_decomp/vd_lu_solve: bottom-up
+    # elimination, reciprocal pivots).  dq = (q_new - q)/dt cancels ~5 digits
+    # of dse, so the solve order decides the last ulps of q_new, i.e.
+    # ulp(dse)/dt ~ 5e-13 W/kg at dt = 112.5 s.
+    q_new = thomas_solve(a, b, c, q, "e3sm_vd_lu")
     return (q_new - q) / dt
 
 
@@ -1601,6 +1637,7 @@ def e3sm_cam_gwd(
     netdt_col: jax.Array | None = None,
     mfcc_table: jax.Array | None = None,
     land_frac_col: jax.Array | None = None,
+    p_ref_half: jax.Array | None = None,
 ) -> GWDOutput:
     """Faithful E3SM/CAM gravity-wave drag; ``config.source`` may be one
     source or a ``+``-joined set (CAM6 f09: ``"orographic+frontal+convective"``).
@@ -1622,9 +1659,9 @@ def e3sm_cam_gwd(
       spreads ``energy_fixer(de - flx_heat)`` uniformly below ``tend_level``
       (gw_drag.F90:1798-1817).  Column budgets agree, the vertical profile
       of the orographic heating does not.
-    * the Beres source level and the frontal launch/trigger levels come from
-      the COLUMN-MEAN actual pressure, not CAM's fixed ``pref_edge`` reference
-      profile (identical when p_s == p_ref; rank-dependent under MPI).
+    * (removed) the Beres source level, the frontal launch/trigger levels,
+      the ediff bottom and the Newtonian alpha profile now all come from the
+      reference interfaces ``p_ref_half`` (E3SM ``pref_edge``), as in E3SM.
     * the compiled cube pipeline feeds Beres THIS step's convective heating,
       the MPAS/hydrostatic factories the previous step's (``conv_heating``
       carry); both are the TOTAL heating, not CAM's deep-only ``TTEND_DP``.
@@ -1633,13 +1670,20 @@ def e3sm_cam_gwd(
     sources = config.source.split("+")
     if len(set(sources)) != len(sources):
         raise ValueError(f"Duplicate E3SM GWD source in {config.source!r}.")
+    # E3SM gw_drag.F90:287-288: do_spectral_waves = pgwv > 0 .and. (front .or.
+    # convect); orographic_only = use_gw_oro .and. .not. do_spectral_waves.
+    # The orographic member of a spectral suite therefore runs the spectral
+    # gw_drag_prof semantics (tndmax 400, no ubtlsat cap, alpha profile).
+    orographic_only = not (
+        config.pgwv > 0 and any(x != "orographic" for x in sources))
     if len(sources) == 1:
         return _e3sm_cam_gwd_one_source(
             u, v, T, p_full, p_half, z_full, z_half, rho, lat, dt,
             config._replace(effgw=_effgw_for_source(config, sources[0])),
             h_topo_col=h_topo_col, frontgf_col=frontgf_col,
             netdt_col=netdt_col, mfcc_table=mfcc_table,
-            land_frac_col=land_frac_col,
+            land_frac_col=land_frac_col, p_ref_half=p_ref_half,
+            orographic_only=orographic_only,
         )
     unknown = [x for x in sources if x not in _CAM_SOURCE_ORDER]
     if unknown:
@@ -1654,7 +1698,8 @@ def e3sm_cam_gwd(
             config._replace(source=src, effgw=_effgw_for_source(config, src)),
             h_topo_col=h_topo_col, frontgf_col=frontgf_col,
             netdt_col=netdt_col, mfcc_table=mfcc_table,
-            land_frac_col=land_frac_col,
+            land_frac_col=land_frac_col, p_ref_half=p_ref_half,
+            orographic_only=orographic_only,
             du_prior=du, dv_prior=dv,
         )
         du = out.du_dt if du is None else du + out.du_dt
@@ -1683,6 +1728,8 @@ def _e3sm_cam_gwd_one_source(
     land_frac_col: jax.Array | None = None,
     du_prior: jax.Array | None = None,
     dv_prior: jax.Array | None = None,
+    p_ref_half: jax.Array | None = None,
+    orographic_only: bool = True,
 ) -> GWDOutput:
     """Faithful E3SM/CAM gravity-wave drag (gw_drag_prof solver), ONE source.
 
@@ -1728,12 +1775,38 @@ def _e3sm_cam_gwd_one_source(
         only; spectral (frontal/convective) sources ignore this argument,
         matching the oracle.  ``None`` -> no scaling (legacy behaviour,
         bit-identical).
+    p_ref_half : (nlev+1,) or None
+        Reference interface pressures [Pa], E3SM ``pref_edge`` (the vertical
+        coordinate's interfaces at ``constants.p_ref``).  E3SM takes every
+        spectral level index (kbotbg, kfront, k700) and the Newtonian
+        ``alpha`` profile from it (gw_drag.F90:313-346, :417-420,
+        :453-456).  REQUIRED for a frontal / background / convective
+        source, and for the orographic source inside a spectral suite.
+    orographic_only : bool
+        E3SM's suite-level flag (gw_drag.F90:287-288), set by
+        :func:`e3sm_cam_gwd`: ``False`` when spectral waves run in the same
+        call, which switches the orographic member to the spectral
+        ``gw_drag_prof`` semantics and the alpha profile.
 
     Returns
     -------
     GWDOutput
     """
     ncol, nlev = u.shape
+    needs_ref = config.source != "orographic" or (
+        not orographic_only and config.use_newtonian_profile)
+    if needs_ref and p_ref_half is None:
+        raise ValueError(
+            f"e3sm_cam_gwd source {config.source!r} needs p_ref_half (E3SM "
+            "pref_edge: the coordinate's interfaces at constants.p_ref): "
+            "E3SM takes its spectral level indices and Newtonian alpha "
+            "profile from the reference interfaces (gw_drag.F90:313-346).")
+    if p_ref_half is not None:
+        p_ref_half = jnp.asarray(p_ref_half, dtype=u.dtype).reshape(-1)
+        if p_ref_half.shape != (nlev + 1,):
+            raise ValueError(
+                f"p_ref_half has shape {p_ref_half.shape}, expected "
+                f"({nlev + 1},) reference interfaces.")
     cpair = constants.c_pd
     rair = constants.R_d
     gravit = constants.g
@@ -1760,7 +1833,6 @@ def _e3sm_cam_gwd_one_source(
             rair, config.kwv, config.fcrit2,
             config.orographic.oro_min_h, config.orographic.oro_min_wind,
         )
-        orographic_only = True
         do_taper = False
     elif config.source in ("frontal", "background"):
         if config.source == "background":
@@ -1770,21 +1842,12 @@ def _e3sm_cam_gwd_one_source(
             if frontgf_col is None:
                 frontgf_col = jnp.zeros((ncol, nlev), dtype=u.dtype)
             frontgfc = config.frontal.frontgfc
-        # E3SM picks kbot (launch, ~500 hPa) and kfront (trigger, ~600 hPa)
-        # from the reference pressure grid — NOT a fixed fraction of nlev
-        # (codex iter-1 #1/#2).  We locate the level whose column-mean
-        # pressure is closest to the configured threshold.  The index stays a
-        # 0-d TRACED integer (jnp.argmin, NOT int(...)) so the kernel is
-        # jit-safe (codex iter-2 #1); gw_cm_src consumes it via dynamic
-        # gathers / a one-hot launch mask.  The level choice itself is not
-        # differentiated (argmin), matching E3SM's static init-time selection.
-        pmean = jnp.mean(pmid, axis=0)                  # (nlev,)
-        kbot = jnp.clip(
-            jnp.argmin(jnp.abs(pmean - config.frontal.launch_p)), 1, nlev - 1
-        ).astype(jnp.int32)
-        kfront = jnp.clip(
-            jnp.argmin(jnp.abs(pmean - config.frontal.front_p)), 0, nlev - 1
-        ).astype(jnp.int32)
+        # E3SM picks kbotbg (launch, 500 hPa) and kfront (trigger, 600 hPa)
+        # on the REFERENCE interfaces pref_edge (gw_drag.F90:346, :417-420).
+        # The index stays a 0-d TRACED integer so the kernel is jit-safe;
+        # gw_cm_src consumes it via dynamic gathers / a one-hot launch mask.
+        kbot = _ref_level_index(p_ref_half, config.frontal.launch_p, 1, nlev - 1)
+        kfront = _ref_level_index(p_ref_half, config.frontal.front_p, 0, nlev - 1)
         tau0, src_level, tend_level, xv, yv, c, ubm, ubi = gw_cm_src(
             u, v, frontgf_col, config.pgwv, config.dc,
             config.frontal.c0, config.frontal.taubgnd,
@@ -1829,7 +1892,7 @@ def _e3sm_cam_gwd_one_source(
         # k700: 0-based midpoint index nearest the source-wind pressure
         # (~700 hPa; config.beres.source_wind_p).  Traced int, jit-safe.
         k700 = _source_level_index(
-            pmid, pint, config.beres.source_wind_p,
+            p_ref_half, nlev, config.beres.source_wind_p,
             config.beres.source_level_rule,
         )
         (tau0, src_level, tend_level, xv, yv, c, ubm, ubi,
@@ -1846,9 +1909,13 @@ def _e3sm_cam_gwd_one_source(
             "Choose 'orographic', 'frontal', 'background', or 'convective'."
         )
 
-    # Newtonian-cooling profile (spectral path only; orographic uses uniform).
-    if config.use_newtonian_profile and config.source != "orographic":
-        alpha_iface = newtonian_alpha_profile(pint)
+    # Newtonian-cooling profile: E3SM interpolates alpha0 onto pref_edge
+    # whenever the suite is not orographic_only (gw_drag.F90:313-341), so the
+    # orographic member of a spectral suite gets it too; orographic_only
+    # keeps the uniform alpha_newtonian (E3SM: 1e-6, gw_drag.F90:343).
+    if config.use_newtonian_profile and not orographic_only:
+        alpha_iface = newtonian_alpha_profile(
+            jnp.broadcast_to(p_ref_half[None, :], pint.shape))
     else:
         alpha_iface = None
 
@@ -1921,9 +1988,13 @@ def _e3sm_cam_gwd_one_source(
     # ``-ubm*gwut`` term.  Set ``config.dttke_use_intrinsic`` to switch.
     if config.source == "orographic":
         if config.use_discrete_ke_heating:
+            # gw_drag.F90:903-913: the closure runs over the ACCUMULATED
+            # ptend (spectral sources + oro) against the un-updated state
+            # wind, ``-(ptend%u*(u + 0.5*dt*ptend%u) + ...)``.
+            dut = du_dt if du_prior is None else du_prior + du_dt
+            dvt = dv_dt if dv_prior is None else dv_prior + dv_dt
             dT_dt = -(
-                du_dt * (u_ke + 0.5 * dt * du_dt)
-                + dv_dt * (v_ke + 0.5 * dt * dv_dt)
+                dut * (u + 0.5 * dt * dut) + dvt * (v + 0.5 * dt * dvt)
             ) / cpair
         else:
             dT_dt = -(u_ke * du_dt + v_ke * dv_dt) / cpair
@@ -1944,11 +2015,8 @@ def _e3sm_cam_gwd_one_source(
         # convention as gw_ediff's egwdffm mask (E3SM 1-based midpoints
         # ktop+1..kbot -> ours ktop..kbot-1, i.e. ``k < kbot``).
         if config.use_e3sm_spectral_heating:
-            pmean_b0 = jnp.mean(pmid, axis=0)
-            kbot_bg = jnp.clip(
-                jnp.argmin(jnp.abs(pmean_b0 - config.ediff_kbot_p)),
-                1, nlev - 1,
-            ).astype(jnp.int32)
+            kbot_bg = _ref_level_index(
+                p_ref_half, config.ediff_kbot_p, 1, nlev - 1)
             band = (jnp.arange(nlev)[None, :] < kbot_bg).astype(u.dtype)
             dttke = dttke * band
         dT_dt = dttke / cpair
@@ -1980,10 +2048,7 @@ def _e3sm_cam_gwd_one_source(
             # Keep the index a 0-d TRACED int32 (jnp.argmin, NOT int(...)) so the
             # ediff path is jit-safe; gw_ediff / the coeff builder consume it via
             # comparison masks (no static slicing on kbot).
-            pmean_b = jnp.mean(pmid, axis=0)
-            kbot = jnp.clip(
-                jnp.argmin(jnp.abs(pmean_b - config.ediff_kbot_p)), 1, nlev - 1
-            ).astype(jnp.int32)
+            kbot = _ref_level_index(p_ref_half, config.ediff_kbot_p, 1, nlev - 1)
             # Recalculate rhoi "kludge" exactly as E3SM (preserve answers).
             rhoi_kludge = jnp.zeros((ncol, nlev + 1), dtype=u.dtype)
             rhoi_kludge = rhoi_kludge.at[:, 0].set(

@@ -16,8 +16,9 @@
 >    withdrawn where cloud ice already exists (`thermo.
 >    homogeneous_freezing_rh_factor`, on the deposition target of
 >    morrison/thompson, ON by default; the WRF P3 port has none). Liquid: the in-scheme iterated
->    saturation adjustment, opt-in, now carried by every factory-reachable
->    scheme. `scripts/validate/check_ifs_supersaturation_cap.py` verifies both
+>    saturation adjustment, opt-in, carried by the schemes in
+>    `HARD_SAT_GUARD_SCHEMES` (the faithful kessler / seifert_beheng ports
+>    refuse it). `scripts/validate/check_ifs_supersaturation_cap.py` verifies both
 >    in all three lanes (plane CRM, SCM campaign, global model).
 > 3. **Microphysics is `morrison` (SAM M2005 flavour), not `kessler`.**
 >    Kessler is warm-rain only, so the ice allowance is inert under it and the

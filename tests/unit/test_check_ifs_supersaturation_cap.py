@@ -232,6 +232,8 @@ def test_section_3_fails_when_a_lane_turns_the_ice_allowance_off(checker):
         checker.LANES = real_lanes
     assert failures, "a lane with the ice allowance disabled passed"
     assert all(checker.ICE_FIELD in f for f in failures), failures
+    # p3 carries the ice field only to refuse it: its value is not certified.
+    assert not any("/p3:" in f for f in failures), failures
 
 
 def test_section_2b_reports_the_target_isolation_residual(checker, capsys):

@@ -280,12 +280,16 @@ def test_gradients_finite_on_fixture_columns(case, dtype, cfg):
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.float64])
 def test_gradients_finite_dry_column_and_extreme_supersaturation(dtype):
-    """Inactive rain breakup on a dry column, and nucleation at supi ~ 7
-    (Cooper exponential above the cap); d/d(T, q_v, rho) finite."""
+    """Inactive rain breakup on a dry column, nucleation at supi ~ 7
+    (Cooper exponential above the cap), and the temperature where the
+    inactive wet-growth denominator L_f + c_pw (T - T0) is zero;
+    d/d(T, q_v, rho) finite."""
     from legoesm.thermo import saturation_specific_humidity_ice
     q8 = 8.0 * float(saturation_specific_humidity_ice(jnp.asarray(230.0),
                                                       jnp.asarray(6.0e4)))
-    for T, qv, p, rho in ((290.0, 5.0e-3, 9.0e4, 1.0), (230.0, q8, 6.0e4, 0.9)):
+    t_wet0 = C.T_freeze - C.L_f / C.c_pw
+    for T, qv, p, rho in ((290.0, 5.0e-3, 9.0e4, 1.0), (230.0, q8, 6.0e4, 0.9),
+                          (t_wet0, 1.0e-7, 1.0e5, 1.0)):
         f = lambda x: jnp.full((1, 1), x, dtype)  # noqa: E731
         z = f(0.0)
         hyd = HydrometeorState(q_c=z, q_r=z, q_i=z, q_s=z, q_g=z, N_c=z, N_r=z, N_i=z)
@@ -294,8 +298,12 @@ def test_gradients_finite_dry_column_and_extreme_supersaturation(dtype):
             s, _, _ = P3.p3_step(T, qv, hyd, f(p), rho, f(200.0), 20.0, HARD)
             return jnp.sum(s["T"]) + 1e3 * jnp.sum(s["q_v"]) + 1e-6 * jnp.sum(s["N_i"])
 
-        g = jax.jit(jax.grad(loss, argnums=(0, 1, 2)))(f(T), f(qv), f(rho))
-        assert all(bool(jnp.all(jnp.isfinite(x))) for x in g), (T, g)
+        # eager as well as jit: XLA simplifies an unselected 0/0 away under
+        # jit, so only the eager gradient shows it.
+        grad = jax.grad(loss, argnums=(0, 1, 2))
+        for fn in (grad, jax.jit(grad)):
+            g = fn(f(T), f(qv), f(rho))
+            assert all(bool(jnp.all(jnp.isfinite(x))) for x in g), (T, g)
 
 
 def test_div_custom_jvp_check_grads():

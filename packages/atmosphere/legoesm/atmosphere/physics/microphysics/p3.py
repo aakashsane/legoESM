@@ -874,8 +874,11 @@ def p3_step(T, q_v, hydrometeors: HydrometeorState, p_full, rho, dz, dt,
 
     # --- wet growth and shedding (2873-2894) ---
     wet = imask & (qc + qr >= _WETGROWTH_QMIN) & (t < _T0)
+    # Unit denominator outside the oracle's branch: L_f + c_pw (T - T0) is 0
+    # near 194 K, and an unselected 0/0 would still poison reverse-mode AD.
+    den_w = jnp.where(wet, _XLF + _CPW * (t - _T0), 1.0)
     qwgrth = ((vent * 2.0 * _P3_PI * (rho_p * _XXLV * dv * (qsat0 - qv_cld) - (t - _T0) * kap)
-               / (_XLF + _CPW * (t - _T0))) * nitot)
+               / den_w) * nitot)
     qwgrth = jnp.where(wet, jnp.maximum(qwgrth, 0.0), 0.0)
     dumw = jnp.maximum(0.0, (qccol + qrcol) - qwgrth)
     shed = wet & (dumw >= _SHED_MIN)

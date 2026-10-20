@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render common-scale NEMO/legoESM GYRE movies for years 1 and 5."""
+"""Render common-scale NEMO/legoESM GYRE movies for days 1..365 and 1461..1825."""
 
 from __future__ import annotations
 
@@ -170,7 +170,7 @@ def main(argv=None) -> int:
         for year in args.years:
             reports.append(render_year(
                 args.nemo_root, args.legoesm_run_label,
-                args.output / f"gyre_r4_smag_year{year}.mp4", year=year, fps=args.fps,
+                args.output / f"gyre_r4_smag_days{1 + (year - 1) * 365}_{365 * year}.mp4", year=year, fps=args.fps,
                 registry_path=args.run_registry,
             ))
         report = {"schema": "gyre-r4-smag-side-by-side-movies-v1",

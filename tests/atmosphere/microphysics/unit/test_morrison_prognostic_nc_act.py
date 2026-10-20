@@ -74,7 +74,7 @@ def test_droplet_number_budget_matches_mg2_stage():
     dN = np.asarray(out.dN_c_dt) / fx["col_rho"]          # per kg, as MG2
     _, _, bound = _mg2_masks(fx)
     nc = fx["col_nc_kg"]
-    clear = fx["col_q_c"] + fx["ora_qctend"] * dt < 1e-18
+    clear = fx["col_q_c"] + fx["ora_qctend"] * dt < W.MG2_QSMALL
     neg = ~clear & (nc + fx["ora_nctend_sed"] * dt < 0.0)
     keep = ~clear & ~neg
     err = _rel(dN[keep], fx["ora_nctend_sed"][keep])
@@ -170,7 +170,7 @@ def _with_sedimentation(fx, out, q_c, N_c, dN_pre, T):
         q_c + dqc_pre * dt, (N_c + dN_pre * dt) / rho, cf, T, rho,
         jnp.asarray(fx["col_p_half"]), dt, _cfg().sed_cfl_substeps_max)
     dN = dN_pre + sed_n * rho
-    return np.asarray(jnp.where(q_c + out.dq_c_dt * dt < 1e-18, -N_c / dt, dN))
+    return np.asarray(jnp.where(q_c + out.dq_c_dt * dt < W.MG2_QSMALL, -N_c / dt, dN))
 
 
 def _cold(fx, qcic, q_r, nc_scale=1.0):

@@ -17,6 +17,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 jax.config.update("jax_enable_x64", True)
 
@@ -61,7 +62,10 @@ def _gross(fx, out):
     fc, _ = W.mg2_droplet_fall_coefficients(
         q, jnp.asarray(fx["col_nc_kg"]), jnp.maximum(jnp.asarray(fx["col_cf"]), 1e-4),
         jnp.asarray(fx["col_T"]), rho)
-    return np.abs(np.asarray(q0 * fc)) / np.diff(fx["col_p_half"], axis=1)
+    gross = np.abs(np.asarray(q0 * fc)) / np.diff(fx["col_p_half"], axis=1)
+    # only where MG2's cloud-water limiter binds (the residue cells); plain
+    # relative error everywhere else
+    return np.where(fx["ora_qcrat"] < 1.0, gross, 0.0)
 
 
 def test_sedimentation_matches_mg2():
@@ -79,7 +83,7 @@ def test_sedimentation_matches_mg2():
         "precip": _rel(out.precipitation,
                        fx["ora_rflx_bot"][:, -1] + fx["ora_lflx_bot"][:, -1]),
     }
-    clear = fx["col_q_c"] + fx["ora_qctend"] * dt < 1e-18
+    clear = fx["col_q_c"] + fx["ora_qctend"] * dt < W.MG2_QSMALL
     neg = ~clear & (nc + fx["ora_nctend_sed"] * dt < 0.0)
     keep = ~clear & ~neg
     dN = np.asarray(out.dN_c_dt) / rho
@@ -133,3 +137,55 @@ def test_gradients_through_sedimentation():
 def test_switch_cap_is_the_shared_one():
     cfg = _cfg()
     assert cfg.sed_cfl_substeps and int(cfg.sed_cfl_substeps_max) >= int(_fx()["ora_nstepc"].max())
+
+
+def _thin(fx):
+    """The fixture restricted to the thin-layer column (MG2 nstep 17)."""
+    i = list(fx["col_names"]).index("thin")
+    return {k: (v[i:i + 1] if k.startswith(("col_", "ora_")) else v) for k, v in fx.items()}
+
+
+def test_cap_overflow_is_reported_and_strict_aborts():
+    """Autoconversion off, so the step makes no rain (whose 4 m-layer count, 73,
+    would otherwise set the maximum) and only the droplets can exceed the cap."""
+    fx = _thin(_fx())
+    n_mg2 = int(fx["ora_nstepc"][0, 0])
+    base = _cfg()._replace(autocon_fact=0.0)
+    out = A._run(fx, cfg=base)
+    assert int(np.asarray(out.sed_substeps_required)[0]) == n_mg2   # droplet count, as MG2
+    out = A._run(fx, cfg=base._replace(sed_cfl_substeps_max=4))
+    assert int(np.asarray(out.sed_substeps_required)[0]) == n_mg2 > 4
+    with pytest.raises(Exception, match="cloud-droplet sedimentation"):
+        A._run(fx, cfg=base._replace(sed_cfl_substeps_max=4, sed_cfl_substeps_strict=True))
+
+
+def test_substeps_off_is_one_pass():
+    """sed_cfl_substeps=False: one pass (user decision 2026-10-20), checked against
+    an independent single-pass evaluation of MG2's loop body on the same state."""
+    fx = _thin(_fx())
+    out = A._run(fx, cfg=_cfg()._replace(sed_cfl_substeps=False))
+    assert out.sed_substeps_required is None
+    dt = float(fx["dt"])
+    rho = jnp.asarray(fx["col_rho"])
+    lcl = np.maximum(fx["col_cf"], 1e-4)
+    sed = np.asarray(out.qc_budget["sedimentation"])
+    q = jnp.asarray(fx["col_q_c"]) + (out.dq_c_dt - out.qc_budget["sedimentation"]) * dt
+    # droplet number before sedimentation: no activation, no rain, so only the
+    # (tiny) autoconversion number sink acts; recover it from the published
+    # autoconversion with the oracle-tested size reset
+    qcic = np.asarray(fx["col_q_c"]) / lcl
+    r_ic = np.asarray(W.mg2_size_bounded_nc(jnp.asarray(np.minimum(qcic, 5e-3)),
+                                            jnp.asarray(fx["col_nc_kg"] / lcl) * rho, rho))
+    r = np.where(qcic >= W.MG2_QSMALL, r_ic / np.where(qcic > 0, np.minimum(qcic, 5e-3), 1.0), 0.0)
+    n_pre = fx["col_nc_kg"] + np.asarray(out.qc_budget["autoconversion"]) * r / fx["col_rho"] * dt
+    fc, _ = W.mg2_droplet_fall_coefficients(q, jnp.asarray(n_pre), jnp.asarray(lcl),
+                                            jnp.asarray(fx["col_T"]), rho)
+    F = np.asarray(fc * q)
+    pdel = np.diff(fx["col_p_half"], axis=1)
+    d = np.c_[np.zeros((1, 1)), np.minimum(lcl[:, 1:] / lcl[:, :-1], 1.0)]
+    Fup = np.c_[np.zeros((1, 1)), F[:, :-1]]
+    want = -(F - d * Fup) / pdel
+    assert float(_rel(sed, want).max()) <= 1e-12
+    # and it is not the sub-stepped answer
+    full = np.asarray(A._run(fx).qc_budget["sedimentation"])
+    assert float(_rel(sed, full).max()) > 1e-3

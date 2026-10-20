@@ -126,6 +126,8 @@ def test_guards():
     args = (g["T"], g["q_v"], hyd, g["p_full"], g["p_half"], g["rho"], dz, float(fx["dt"]))
     with pytest.raises(ValueError, match="relvar passed as relvar="):
         morrison_microphysics(*args, base, cloud_fraction=g["cf"])
+    with pytest.raises(ValueError, match="per-cell relvar"):
+        morrison_microphysics(*args, base, cloud_fraction=g["cf"], relvar=jnp.asarray(1.0))
     with pytest.raises(ValueError, match="read only under"):
         morrison_microphysics(*args, base._replace(prognostic_droplet_number=False),
                               cloud_fraction=g["cf"], relvar=g["relvar"])
@@ -143,3 +145,19 @@ def test_gradients_finite_through_zero_number_cell():
     gn, gq = jax.grad(f, argnums=(0, 1))(g["nc_kg"] * g["rho"], g["q_c"])
     assert np.isfinite(np.asarray(gn)).all() and np.isfinite(np.asarray(gq)).all()
     assert np.abs(np.asarray(gn)).max() > 0.0
+
+
+def test_switch_on_call_drops_the_floor(monkeypatch):
+    """The Morrison call site passes nc_floor=False under the switch (the
+    whole-call fixture has no cell of low enough density for the floor to bind)."""
+    import legoesm.atmosphere.physics.microphysics.morrison as M
+    seen = []
+    real = M.autoconversion_kk2000_cam6
+
+    def spy(*a, **kw):
+        seen.append(kw.get("nc_floor", True))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(M, "autoconversion_kk2000_cam6", spy)
+    _run(_fx(), _cfg())
+    assert seen == [False]

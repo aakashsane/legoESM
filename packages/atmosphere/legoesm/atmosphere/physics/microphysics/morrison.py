@@ -315,7 +315,8 @@ def morrison_microphysics(
             (config.warm_rain_scheme == "kk2000_cam6", 'warm_rain_scheme="kk2000_cam6"'),
             (not getattr(config, "predict_Nc", False), "predict_Nc=False"),
             (not getattr(config, "nc_from_aerosol", False), "nc_from_aerosol=False"),
-            (relvar is not None, "CLUBB's relvar passed as relvar="),
+            (relvar is not None and jnp.shape(relvar) == T.shape,
+             f"CLUBB's per-cell relvar passed as relvar= with shape {T.shape}"),
         ) if not ok]
         if _bad:
             raise ValueError("MorrisonConfig.prognostic_droplet_number=True needs "

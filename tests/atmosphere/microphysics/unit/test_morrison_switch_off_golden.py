@@ -2,7 +2,7 @@
 
 Golden ``oracle_fixtures/morrison_switch_off_golden.npz`` = every output leaf of
 ``morrison_microphysics`` for four switch-off configurations on the MG2 oracle
-columns and a cold copy, written by
+columns, a cold copy and a frozen copy (homogeneous freezing active), written by
 ``scripts/validate/oracle/morrison_mg2_warm_rain/make_switch_off_golden.py`` at the
 commit recorded in its meta (before the switch existed).  Compared bitwise.
 """
@@ -51,6 +51,9 @@ def test_switch_off_is_bit_identical(config):
             assert np.array_equal(got[k], v), f"{sname}/{config}/{k} differs. {hint}"
             n += 1
     assert n > 20
+    # the frozen set must exercise homogeneous freezing, the process whose ice
+    # number reads the droplet number (otherwise its bit identity is vacuous)
+    assert np.abs(gold[f"frozen/{config}/['qc_budget']['homogeneous_freezing']"]).max() > 1e-12
 
 
 def test_switch_defaults_off():

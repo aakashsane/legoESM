@@ -2,7 +2,8 @@
 
 Runs ``morrison_microphysics`` at the CURRENT commit on the MG2 oracle columns
 (``tests/atmosphere/microphysics/oracle_fixtures/mg2_warm_rain.npz``) and on a cold
-copy of them (T - 25 K, cloud ice and snow where there is cloud water) for four
+copy of them (T - 25 K, cloud ice and snow where there is cloud water) and a frozen
+copy (T - 60 K, below the -40 C homogeneous-freezing threshold, same ice/snow) for four
 switch-off configurations, and stores every output leaf.  The test
 ``tests/atmosphere/microphysics/unit/test_morrison_switch_off_golden.py`` compares
 them bitwise.  Regenerating this file is itself a reviewed change: run it at the
@@ -36,7 +37,7 @@ CONFIGS = {
 
 
 def column_sets():
-    """``{name: inputs}``: the oracle columns and their cold copy."""
+    """``{name: inputs}``: the oracle columns and their cold and frozen copies."""
     fx = dict(np.load(FIXTURE))
     g = {k: fx[f"col_{k}"] for k in
          ("T", "q_v", "q_c", "cf", "q_r", "N_r", "N_c", "p_full", "p_half", "rho")}
@@ -45,7 +46,8 @@ def column_sets():
     cold = dict(g, T=g["T"] - 25.0, q_i=np.where(g["q_c"] > 0, 1.0e-5, 0.0),
                 q_s=np.where(g["q_c"] > 0, 1.0e-5, 0.0),
                 N_i=np.where(g["q_c"] > 0, 1.0e5, 0.0))
-    return {"warm": warm, "cold": cold}, float(fx["dt"])
+    frozen = dict(cold, T=g["T"] - 60.0)
+    return {"warm": warm, "cold": cold, "frozen": frozen}, float(fx["dt"])
 
 
 def run(cfg_kw, g, dt):

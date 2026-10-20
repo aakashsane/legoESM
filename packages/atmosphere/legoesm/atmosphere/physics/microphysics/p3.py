@@ -374,7 +374,9 @@ def p3_lookup_table_path() -> Path:
                                f"expected {P3_LOOKUP_TABLE_SHA256}")
         part.replace(path)
     except Exception as exc:
-        # another rank sharing the cache may have installed the table meanwhile
+        # another rank sharing the cache may have installed the table meanwhile.
+        # ponytail: one re-check, no lock; a rank failing while a peer is still
+        # downloading raises.  Multi-rank jobs should start with a warm cache.
         if path.exists() and sha(path) == P3_LOOKUP_TABLE_SHA256:
             return path
         raise RuntimeError(

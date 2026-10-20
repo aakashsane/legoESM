@@ -305,7 +305,8 @@ def test_uncached_table_is_downloaded_and_cached(tmp_path, monkeypatch):
     import io
     import urllib.request
 
-    good = P3.p3_lookup_table_path().read_bytes()
+    good = b"VERSION 4.1\nsynthetic\n"
+    monkeypatch.setattr(P3, "P3_LOOKUP_TABLE_SHA256", hashlib.sha256(good).hexdigest())
     calls = []
 
     def serve(url, **k):
@@ -326,7 +327,8 @@ def test_failed_download_uses_a_peer_installed_table(tmp_path, monkeypatch):
     import urllib.error
     import urllib.request
 
-    good = P3.p3_lookup_table_path().read_bytes()
+    good = b"VERSION 4.1\nsynthetic\n"
+    monkeypatch.setattr(P3, "P3_LOOKUP_TABLE_SHA256", hashlib.sha256(good).hexdigest())
     target = tmp_path / "p3" / P3.P3_LOOKUP_TABLE_NAME
 
     def peer_wins_then_fail(*a, **k):

@@ -301,6 +301,27 @@ def test_uncached_table_offline_raises(tmp_path, monkeypatch):
     assert not any((tmp_path / "p3").iterdir())
 
 
+def test_uncached_table_is_downloaded_and_cached(tmp_path, monkeypatch):
+    import io
+    import urllib.request
+
+    good = P3.p3_lookup_table_path().read_bytes()
+    calls = []
+
+    def serve(url, **k):
+        calls.append(url)
+        return io.BytesIO(good)
+    monkeypatch.setenv("LEGOESM_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(urllib.request, "urlopen", serve)
+    path = P3.p3_lookup_table_path()
+    assert path == tmp_path / "p3" / P3.P3_LOOKUP_TABLE_NAME
+    assert path.read_bytes() == good
+    assert calls == [P3.P3_LOOKUP_TABLE_URL]
+    assert sorted(p.name for p in path.parent.iterdir()) == [path.name]
+    P3.p3_lookup_table_path()
+    assert len(calls) == 1
+
+
 def test_wrong_table_bytes_raise(tmp_path, monkeypatch):
     import io
     import urllib.request

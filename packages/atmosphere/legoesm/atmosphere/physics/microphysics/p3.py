@@ -347,6 +347,7 @@ def p3_lookup_table_path() -> Path:
     import hashlib
     import os
     import shutil
+    import tempfile
     import urllib.request
 
     root = os.environ.get("LEGOESM_CACHE_DIR") or str(Path.home() / ".cache" / "legoesm")
@@ -361,7 +362,9 @@ def p3_lookup_table_path() -> Path:
                                f"it to re-download from {P3_LOOKUP_TABLE_URL}")
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
-    part = path.with_name(f"{path.name}.{os.getpid()}.part")
+    # unique temp name: ranks on different nodes sharing the cache may share a PID
+    with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".part", delete=False) as f:
+        part = Path(f.name)
     try:
         with urllib.request.urlopen(P3_LOOKUP_TABLE_URL, timeout=_FETCH_TIMEOUT_S) as r, \
                 open(part, "wb") as f:

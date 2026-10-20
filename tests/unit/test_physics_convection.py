@@ -720,7 +720,10 @@ def test_drying_in_unstable_column(scheme):
     )
 
 
-@pytest.mark.parametrize("scheme", ["sbm", "dca", "mass_flux", "edmf"])
+# sbm is not listed: on this column Isca's qe_moist_convection (run on it,
+# 2026-10-19) takes the "shallower" branch and leaves the upper half untouched;
+# the SBM port matches it (tests/atmosphere/test_sbm_qe_oracle.py).
+@pytest.mark.parametrize("scheme", ["dca", "mass_flux", "edmf"])
 def test_upper_trop_warming_in_unstable_column(scheme):
     """Convection in an unstable column should warm SOMEWHERE in the column.
 

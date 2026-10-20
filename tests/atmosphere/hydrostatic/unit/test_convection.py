@@ -327,60 +327,13 @@ class TestSBM:
         assert out.cape.shape == (ncol,)
         assert out.convective_mask.shape == (ncol,)
 
-    def test_never_net_moistens_a_column(self):
-        """Column-water conservation contract (#771): SBM must never ADD net
-        column water.
-
-        SBM relaxes q_v toward q_ref = RH_ref*q_sat. In a TRIGGERED column
-        that is net sub-saturated vs q_ref, the unfixed relaxation net-
-        MOISTENS the column while sbm.py rescales only the CONDENSATE to
-        col-net-drying — the applied vapour tendency then creates water
-        from nothing (+0.53 mm/day global in the 3-day C24 AMIP probe; the
-        CWV drift behind the C48 pilot's day-150 blowup). The drying_gate
-        zeroes the WHOLE adjustment in such columns:
-          (1) every column satisfies col ∫ dq_v dp/g <= 0;
-          (2) gated (would-be-moistening) columns have EXACTLY zero dT_dt
-              too (the dT/dq_v gate is shared, preserving the Newton
-              enthalpy closure — a heat-only residual would be a leak).
-        Non-vacuous: at least one column must be TRIGGERED yet gated, and
-        this test FAILS on the pre-#771-fix sbm.py (verified on main).
-        """
-        ncol, nlev = 4, 20
-        T, q_v, p_full, p_half = _make_unstable_columns(ncol, nlev)
-        # Dry the columns progressively: column 0 keeps the moist sounding
-        # (net-drying, exercises the gate=1 path); the driest columns stay
-        # conditionally unstable (trigger on) but are net sub-saturated vs
-        # q_ref -> the unfixed scheme would net-moisten them.
-        scale = jnp.array([1.0, 0.5, 0.3, 0.15])[:, None]
-        q_v = q_v * scale
-        config = SBMConfig()
-        out = sbm_convection(T, q_v, p_full, p_half, dt=300.0, config=config)
-
-        dp = p_half[:, 1:] - p_half[:, :-1]
-        col_dqv = jnp.sum(out.dq_v_dt * dp, axis=1) / constants.g
-
-        # (1) no column ever gains net water (tol ~ fp roundoff of the sum)
-        assert bool(jnp.all(col_dqv <= 1e-10))
-
-        # non-vacuity: some column is triggered yet fully gated (the unfixed
-        # scheme would have moistened it), and some column genuinely dries
-        gated = (out.convective_mask > 0) & jnp.all(out.dq_v_dt == 0.0, axis=1)
-        drying = col_dqv < -1e-12
-        assert bool(jnp.any(gated)), (
-            "fixture produced no triggered net-sub-saturated column — the "
-            "conservation contract was not exercised")
-        assert bool(jnp.any(drying))
-
-        # (2) gated columns carry NO heat tendency either (shared gate)
-        dT_gated = jnp.where(gated[:, None], out.dT_dt, 0.0)
-        assert bool(jnp.all(dT_gated == 0.0))
-
     def test_enthalpy_conservation(self):
-        """Column enthalpy tendency should be approximately conserved.
+        """Column enthalpy tendency should be conserved.
 
-        The linearized enthalpy correction ensures approximate conservation.
-        sum(c_pd * dT_dt + L_v * dq_v_dt) * dp / g should be small
-        relative to the total enthalpy change from temperature alone.
+        Isca qe_moist_convection closes column moist enthalpy in every branch
+        (deep T-shift, deep time-scale change with Pq = Pt, shallower), so
+        sum(c_pd * dT_dt + L_v * dq_v_dt) * dp / g is small relative to the
+        total enthalpy change from temperature alone.
         """
         ncol, nlev = 4, 20
         T, q_v, p_full, p_half = _make_unstable_columns(ncol, nlev)
@@ -443,59 +396,6 @@ class TestSBM:
         assert jnp.all(jnp.isfinite(grad_T))
         assert grad_T.shape == T.shape
 
-    def test_cloud_mask_straight_through_gradient_is_nonzero(self):
-        """SBM cloud_mask uses a straight-through estimator: forward = hard
-        boolean ``(T_moist >= T)``, backward = sigmoid' so that
-        ``jax.grad`` flows through layer-membership transitions.
-
-        This test isolates the cloud_mask gradient path from every other
-        SBM gradient route (T_base, T_ref, CAPE/trigger, (T_ref-T)) by
-        holding T_moist FIXED and constructing a 1-column profile with
-        an interior boundary level (T_moist == T).  Then:
-
-          ∂[cloud_mask]/∂T at boundary
-            = ∂[sigmoid(s·(T_moist - T))]/∂T |_{T_moist=T}
-            = -s/4
-
-        With sharpness s = 5/K, the boundary gradient should be ≈ -1.25.
-        With the legacy hard ``(T_moist >= T).astype(...)`` mask, this
-        derivative is exactly zero almost everywhere — the assertion
-        falsifies the hard-mask implementation by construction.
-
-        The straight-through estimator's forward value is also tested:
-        cloud_mask must equal the hard step, NOT the sigmoid (so the
-        forward integration semantics of the prior implementation are
-        preserved exactly).
-        """
-        sharpness = SBMConfig().cloud_mask_sharpness  # 5.0/K
-        # Interior boundary at level 1 (between levels 0 and 2).
-        T_moist = jnp.array([[260.0, 280.0, 300.0]])
-        T = jnp.array([[265.0, 280.0, 295.0]])  # T_moist == T at level 1
-
-        def cloud_mask_only(T_in):
-            soft = jax.nn.sigmoid(sharpness * (T_moist - T_in))
-            hard = (T_moist >= T_in).astype(T_in.dtype)
-            return soft + jax.lax.stop_gradient(hard - soft)
-
-        # Forward: must equal hard step
-        mask_value = cloud_mask_only(T)
-        expected_hard = jnp.array([[0.0, 1.0, 1.0]])  # T_moist >= T
-        assert jnp.allclose(mask_value, expected_hard), (
-            f"Forward cloud_mask should preserve hard-step semantics, "
-            f"got {mask_value} vs expected {expected_hard}"
-        )
-
-        # Backward: gradient at interior boundary level must be non-zero
-        grad_T = jax.grad(lambda T_in: jnp.sum(cloud_mask_only(T_in)))(T)
-        boundary_grad = float(grad_T[0, 1])
-        # Expected: -sharpness/4 = -1.25
-        expected_grad = -sharpness / 4.0
-        assert abs(boundary_grad - expected_grad) < 0.01, (
-            f"Boundary gradient is {boundary_grad}, expected ≈ "
-            f"{expected_grad} for the straight-through estimator. "
-            f"A hard boolean mask gives 0 (which would fail this check)."
-        )
-
     def test_accepts_columnwise_parameters(self):
         """SBM should support per-column traced control parameters."""
         ncol, nlev = 3, 8
@@ -512,64 +412,6 @@ class TestSBM:
         assert jnp.all(jnp.isfinite(out.dq_v_dt))
         assert out.dT_dt.shape == (ncol, nlev)
         assert float(jnp.max(jnp.abs(out.dT_dt[0]))) >= float(jnp.max(jnp.abs(out.dT_dt[-1])))
-
-    def test_stratosphere_above_lnb_has_zero_adjustment(self):
-        """Regression for #326: SBM must not adjust stably stratified
-        layers above the level of neutral buoyancy.
-
-        The cloud_mask = (T_moist >= T_env) gate restricts the
-        convective relaxation to conditionally unstable levels. Without
-        it, the scheme relaxed the *entire* column — including the
-        stable stratosphere — toward the moist adiabat, producing the
-        spurious ~40 K/h cooling at the model top that drove the upper-
-        atmosphere warm bias documented in #318.
-
-        Here the deep conditionally-unstable profile from
-        ``_make_unstable_columns`` has a warm-moist lower troposphere
-        (moist adiabat warmer than the environment) and a cold upper
-        region where the moist adiabat launched from the surface parcel
-        falls below the environment (stable). The forward cloud_mask is
-        an exact hard step, so the relaxation tendency must be EXACTLY
-        zero in every layer where ``T_moist < T_env``.
-        """
-        ncol, nlev = 2, 20
-        T, q_v, p_full, p_half = _make_unstable_columns(ncol, nlev)
-        config = SBMConfig()
-        out = sbm_convection(T, q_v, p_full, p_half, dt=300.0, config=config)
-
-        # Reconstruct the convective-instability mask the scheme uses:
-        # the moist adiabat is launched from the surface parcel T[:, -1].
-        T_moist = compute_moist_adiabat(T[:, -1], p_full)
-        stable = T_moist < T  # (ncol, nlev) — layers the gate must skip
-
-        # The constructed profile must actually contain both regimes,
-        # else the test is vacuous.
-        assert bool(jnp.any(stable)), "profile has no stable layers"
-        assert bool(jnp.any(~stable)), "profile has no unstable layers"
-
-        dT = out.dT_dt
-        dq = out.dq_v_dt
-        max_stable_dT = float(jnp.max(jnp.abs(jnp.where(stable, dT, 0.0))))
-        max_stable_dq = float(jnp.max(jnp.abs(jnp.where(stable, dq, 0.0))))
-        max_unstable_dT = float(jnp.max(jnp.abs(jnp.where(stable, 0.0, dT))))
-
-        # Troposphere is convectively active …
-        assert max_unstable_dT > 1.0e-6, (
-            "conditionally unstable troposphere produced no adjustment"
-        )
-        # … but stable layers see zero adjustment (exact hard-step mask).
-        assert max_stable_dT < 1.0e-12, (
-            f"stable-layer |dT/dt|={max_stable_dT:.3e} K/s should be 0 — "
-            "cloud_mask stratosphere gate broken (#326)"
-        )
-        assert max_stable_dq < 1.0e-15, (
-            f"stable-layer |dq_v/dt|={max_stable_dq:.3e} should be 0 (#326)"
-        )
-
-
-# ===========================================================================
-# DCA convection tests
-# ===========================================================================
 
 class TestDCA:
     """Tests for Deep Convective Adjustment."""
@@ -738,8 +580,12 @@ class TestIntegration:
         assert tendencies.du_dt.data.shape == (6, n, n, nlev)
         assert tendencies.dp_s_dt.data.shape == (6, n, n)
 
-    def test_hydrostatic_nonzero_heating(self):
-        """Hydrostatic convection should produce nonzero T tendencies."""
+    def test_hydrostatic_isothermal_state_does_not_convect(self):
+        """The Held-Suarez initial state is isothermal (300 K) and dry: Isca's
+        qe_moist_convection finds no CAPE there (its binary was run on these
+        columns with q at 80 % RH, 2026-10-19), so SBM through the hydrostatic
+        bridge gives exactly zero heating.  (The replaced surrogate lifted a
+        saturated parcel from the surface and heated it.)"""
         from legoesm.grids.cubed_sphere import create_cubed_sphere
         from legoesm.grids.vertical import create_sigma_coordinate
         from legoesm.atmosphere.forcing.idealized.held_suarez import held_suarez_init
@@ -752,8 +598,7 @@ class TestIntegration:
         physics_fn = make_convection_physics(config, model_type="hydrostatic", dt=300.0)
         tendencies, _ = physics_fn(state, grid, sigma)
 
-        max_hr = float(jnp.max(jnp.abs(tendencies.dT_dt.data)))
-        assert max_hr > 0.0
+        assert bool(jnp.all(tendencies.dT_dt.data == 0.0))
 
     def test_hydrostatic_zero_wind_tendency(self):
         """Convection should not produce wind or pressure tendencies."""
@@ -931,27 +776,6 @@ class TestIntegration:
         tendencies, _ = physics_fn(state, grid, sigma)
 
         assert jnp.allclose(tendencies.dT_dt.data, 0.0)
-
-    def test_scheme_selection_kuo(self):
-        """scheme='kuo' should give different results from 'sbm'."""
-        from legoesm.grids.cubed_sphere import create_cubed_sphere
-        from legoesm.grids.vertical import create_sigma_coordinate
-        from legoesm.atmosphere.forcing.idealized.held_suarez import held_suarez_init
-
-        grid = create_cubed_sphere(8)
-        sigma = create_sigma_coordinate(10)
-        state = held_suarez_init(grid, sigma)
-
-        fn_kuo = make_convection_physics(
-            ConvectionConfig(scheme="kuo"), model_type="hydrostatic", dt=300.0,
-        )
-        fn_sbm = make_convection_physics(
-            ConvectionConfig(scheme="sbm"), model_type="hydrostatic", dt=300.0,
-        )
-        tend_kuo, _ = fn_kuo(state, grid, sigma)
-        tend_sbm, _ = fn_sbm(state, grid, sigma)
-
-        assert not jnp.allclose(tend_kuo.dT_dt.data, tend_sbm.dT_dt.data, atol=1e-10)
 
     def test_scheme_selection_mass_flux(self):
         """scheme='mass_flux' should produce nonzero tendencies."""

@@ -834,7 +834,7 @@ def _step_multilayer_land_impl(
                 return _snow_skin(pack._replace(T=T_s), T_g[:, 0], f_snow)
             if _snow_node:
                 # Ground = cover-blended skin of the tentative node + soil solve
-                # (start-of-step snow mass and cover).  A pack cannot be warmer
+                # (start-of-step snow mass; cover including this step's snowfall).  A pack cannot be warmer
                 # than freezing: heat that would lift it above T_freeze is melt
                 # (taken from the node's enthalpy at the next step start).
                 _Ts, _Tg = solve_snow_node_soil_thermal(

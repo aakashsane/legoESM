@@ -7,7 +7,6 @@ tracks the switch-off one."""
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 from legoesm import constants
 from legoesm.core.coupling_fields import AtmToSurface

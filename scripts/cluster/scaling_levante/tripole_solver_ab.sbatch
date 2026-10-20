@@ -15,8 +15,8 @@
 # under test.
 #
 # PHASE=accuracy: multicontroller at ACC_ND GPUs (default 16 = 4 nodes),
-#   same grid and 75 levels, --record-true-residual: ACC_STEPS extra untimed
-#   solves after timing; each one's TRUE global relative residual
+#   same grid and 75 levels, --record-true-residual: ACC_STEPS untimed solves
+#   from the initial state, before timing; each one's TRUE global relative residual
 #   ||rhs - A eta||/||rhs|| of the returned eta (same unweighted norm for
 #   every arm, working precision) lands in the receipt as
 #   true_residual{median,max,min,n_solves}. Its timings are perturbed by the
@@ -96,6 +96,9 @@ arm() {  # arm <nd> <variant> <precond> <degree> <iters> <x64> <pass>
   (( deg > 0 )) && a+=(--cheb-degree "$deg")
   local launch
   a+=(--multicontroller --nlev 75)
+  # Pinned A_h=1e4 is explicitly unstable on 1.6 km polar cells at dt 600 s
+  # (NaN by step 9); mesh-scaled viscosity, user decision 2026-10-19.
+  a+=(--A-h-from-mesh)
   if [[ "$PHASE" == accuracy ]]; then
     a+=(--record-true-residual --steps "${ACC_STEPS:-10}" --warmup 2)
   else

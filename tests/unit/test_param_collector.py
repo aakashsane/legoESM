@@ -325,3 +325,17 @@ def test_unset_dcs_seed_follows_the_run_flavour(cfg_kw, expect) -> None:
         scheme_configs=None if cfg_kw is None else {key: MorrisonConfig(**cfg_kw)})
     np.testing.assert_allclose(
         float(p.as_dict()[f"{key}.ice_snow_d_auto"]), expect, rtol=1e-5)
+
+
+def test_scheme_configs_refuses_wrong_type_and_unreached_scheme() -> None:
+    from legoesm.atmosphere.physics.microphysics.config import (
+        MorrisonConfig, ThompsonConfig)
+    key = "atm.micro.MorrisonConfig"
+    with pytest.raises(TypeError, match="not the MorrisonConfig"):
+        build_trainable_params(tier="extended", active_scheme_keys={key},
+                               scheme_configs={key: ThompsonConfig()})
+    with pytest.raises(ValueError, match="reached no trainable"):
+        build_trainable_params(
+            tier="extended", active_scheme_keys={key},
+            scheme_configs={key: MorrisonConfig(),
+                            "atm.micro.ThompsonConfig": ThompsonConfig()})

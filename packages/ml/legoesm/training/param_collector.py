@@ -227,10 +227,17 @@ def _unset_seed(meta: ParamMeta, cfg) -> float | None:
     """The run's value of an unset-able field (``__param_unset_defaults__``),
     through the same resolver the scheme uses: by the run config's selection,
     or its explicit value.  None for every other field."""
-    res = getattr(importlib.import_module(meta.module),
-                  "__param_unset_defaults__", {}).get(
-                      meta.config_class, {}).get(meta.field)
-    return None if res is None else float(getattr(res(cfg), meta.field))
+    mod = importlib.import_module(meta.module)
+    res = getattr(mod, "__param_unset_defaults__", {}).get(
+        meta.config_class, {}).get(meta.field)
+    if res is None:
+        return None
+    cls = getattr(mod, meta.config_class)
+    if not isinstance(cfg, cls):
+        raise TypeError(
+            f"scheme_configs[{meta.scheme_key!r}] is a {type(cfg).__name__}, "
+            f"not the {meta.config_class} that seeds {meta.qualified_name}")
+    return float(getattr(res(cfg), meta.field))
 
 
 def _seed_raw(meta: ParamMeta, shape: tuple[int, ...], dtype,
@@ -441,6 +448,16 @@ def build_trainable_params(
                 field=meta.field,
             )
         )
+    if scheme_configs:
+        # like init_values: a run config for a scheme this selection does not
+        # carry would silently seed nothing
+        _scope = (set(active_scheme_keys) if active_scheme_keys is not None
+                  else {m.scheme_key for m in registry})
+        unreached_cfg = sorted(set(scheme_configs) - _scope)
+        if unreached_cfg:
+            raise ValueError(
+                f"scheme_configs for {unreached_cfg} reached no trainable "
+                "parameter: not an active (or registered) scheme")
     if init_values:
         # An init value naming a parameter this selection does not carry is a
         # SILENT no-op otherwise: the deck says "start Bechtold's mass-flux cap

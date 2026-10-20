@@ -4661,8 +4661,9 @@ def _source_revision_drift_note(parent_sha, this_sha) -> str | None:
     SHA describes only part of the running code, so equality of two such
     strings is not equality of the code.
 
-    Pure function of the two strings so it is directly testable; ``main`` only
-    prints the result.
+    Pure function of the two strings so it is directly testable; ``main``
+    hands the result to ``_refuse_restart_source_drift``, which refuses the
+    resume on it (a warning with ``LEGOESM_ALLOW_VERSION_DRIFT=1``).
     """
     unknown = {None, "", _SOURCE_REV_UNAVAILABLE}
     if parent_sha in unknown or this_sha in unknown:
@@ -4674,14 +4675,26 @@ def _source_revision_drift_note(parent_sha, this_sha) -> str | None:
         return (f"[warn] --restart-from was written at source revision "
                 f"{parent_sha[:20]} but this leg is running {this_sha[:20]}: "
                 "the model code changed between legs.  The state and "
-                "configuration still validated, so the resume proceeds — but "
-                "attribute results to BOTH revisions.")
+                "configuration validated, but the resume is refused unless "
+                "LEGOESM_ALLOW_VERSION_DRIFT=1; if allowed, attribute results "
+                "to BOTH revisions.")
     why = _revision_ambiguity(this_sha)
     if why:
         return (f"[warn] both legs report {this_sha}, but that string does not "
                 f"pin the code: {why}  Matching markers do not prove matching "
                 "source.")
     return None
+
+
+def _refuse_restart_source_drift(parent_sha, this_sha, path) -> None:
+    """Version-drift rule for ``--restart-from`` (reproducibility decision 3):
+    a restart written by other or unidentifiable code (unknown, mismatched,
+    dirty or mixed-tree revision) is refused on every process unless
+    ``LEGOESM_ALLOW_VERSION_DRIFT`` is set, which downgrades it to a warning."""
+    from legoesm.driver.restart import collective_version_drift_gate
+    note = _source_revision_drift_note(parent_sha, this_sha)
+    collective_version_drift_gate(lambda: [note] if note else [],
+                                  f"restart {path}")
 
 
 def _revision_ambiguity(rev) -> str | None:
@@ -9299,13 +9312,13 @@ def main() -> int:
     # resumes silently.  Recorded always, via _source_revision() — which scopes
     # the query to THIS script's checkout, marks a dirty tree, and returns
     # _SOURCE_REV_UNAVAILABLE instead of silently omitting the field.
-    # DELIBERATELY A WARNING, NOT AN ABORT: chaining a multi-day production run
-    # across a bug fix is a legitimate and expected workflow, and a hard error
-    # would make the feature unusable exactly when it matters.  The state
-    # itself is still validated by the config fingerprint; this line makes the
-    # code drift visible in the log and in the archive so a scorecard is never
-    # attributed to the wrong revision.  It is provenance, NOT a proof of
-    # identical code — see ocean.restart's SCOPE OF THE GUARANTEE.
+    # A resume across a source change is REFUSED (reproducibility decision 3,
+    # approved 2026-10-12; it was a warning before): chaining a production run
+    # across a bug fix stays possible, but explicitly, with
+    # LEGOESM_ALLOW_VERSION_DRIFT=1 (then a warning).  The state itself is
+    # still validated by the config fingerprint.  The revision is provenance,
+    # NOT a proof of identical code — see ocean.restart's SCOPE OF THE
+    # GUARANTEE.
     _restart_src_sha = None
     if args.restart_save or args.restart_from:
         _restart_src_sha = _source_revision()
@@ -9370,10 +9383,8 @@ def main() -> int:
         # Source-revision drift: three DISTINCT outcomes (unknown / mismatch /
         # equal-but-dirty), decided by the pure helper so the logic is unit
         # tested rather than only exercised by a full driver run.
-        _drift_note = _source_revision_drift_note(_rs_meta.get("sha"),
-                                                  _restart_src_sha)
-        if _drift_note:
-            print(_drift_note, flush=True)
+        _refuse_restart_source_drift(_rs_meta.get("sha"), _restart_src_sha,
+                                     _rs_path)
         start_step = int(_rs_meta["step"])
         if start_step >= n_steps:
             # Never exit silently "already at target" (CLAUDE.md run-target

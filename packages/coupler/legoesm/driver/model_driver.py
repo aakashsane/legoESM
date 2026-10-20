@@ -6,6 +6,7 @@ checkpointing into a single reusable class.
 """
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import sys
@@ -46,6 +47,9 @@ from legoesm.driver.mpas_diff_step import mpas_cadence, pick_physics_fn
 from legoesm.driver.restart import save_restart, load_restart
 
 logger = logging.getLogger("legoesm.driver")
+
+# Set once an MPAS run has frozen its long-lived objects (gc.freeze).
+_GC_FROZEN = [False]
 
 # Keeps a seeded soil moisture strictly inside the van-Genuchten retention
 # range: psi_from_theta is singular at saturation and at the residual.
@@ -217,6 +221,80 @@ def _exchange_halo_cell_fields(halo_ex, fields):
         col = out[:, k]
         result[i] = (col > 0.5) if a.dtype == bool else col.astype(a.dtype)
     return tuple(result)
+
+
+def split_land_columns(idx, n_proc, proc):
+    """Split the packed land columns ``idx`` into ``n_proc`` near-equal
+    contiguous shares.  Returns ``(mine, padded)``: this process's columns,
+    and the ``(n_proc, L)`` table of every share padded to one length L by
+    repeating the share's last column (a duplicate write of the same value),
+    so the gather is one fixed-shape collective on every process."""
+    shares = np.array_split(np.asarray(idx), n_proc)
+    if min(s.size for s in shares) == 0:
+        raise ValueError(
+            f"{np.size(idx)} land columns cannot be split over {n_proc} "
+            "processes (a share would be empty)")
+    L = max(s.size for s in shares)
+    padded = np.stack([np.concatenate([s, np.full(L - s.size, s[-1])])
+                       for s in shares])
+    return shares[proc], padded
+
+
+def gather_land_step(run, ncol, padded, proc, allgather):
+    """Run this process's share of the land step and rebuild the full output
+    on every process (shares from ``split_land_columns``).  ``run()`` returns
+    the land step tuple ``(state, 8 per-cell fields, 5 counts, iter max)``;
+    every per-column leaf (leading axis ``ncol``) takes each column from the
+    process that solved it, counts are summed, the iteration max is maxed.
+
+    ``allgather(tree)`` stacks a pytree across processes on a new axis 0 and
+    is a collective: every process calls it twice per land call.  All local
+    work that can fail (the step, the payload) runs BEFORE the first one, a
+    success flag, so a failure on one process raises on every process
+    instead of leaving the others blocked in the payload gather."""
+    err = None
+    try:
+        out = run()
+        mine = jnp.asarray(padded[proc])
+        flat = jnp.asarray(padded.reshape(-1))
+        leaves, tdef = jax.tree_util.tree_flatten(out[:9])
+        # A leaf that is not per column would keep only this process's
+        # share's update and silently differ across processes: refuse it.
+        bad = [np.shape(x) for x in leaves
+               if not (hasattr(x, "shape") and x.ndim >= 1
+                       and x.shape[0] == ncol)]
+        if bad:
+            raise ValueError(
+                f"land step output leaves {bad} are not per-column "
+                f"(ncol={ncol}); the split land solve cannot gather them")
+        # ONE (L, K) float64 buffer for every per-column leaf (exact for the
+        # float/bool/small-int leaves the land carries).
+        rows = [jnp.asarray(x)[mine].reshape(mine.shape[0], -1)
+                for x in leaves]
+        widths = [r.shape[1] for r in rows]
+        payload = jax.block_until_ready(
+            (jnp.concatenate([r.astype(jnp.float64) for r in rows], axis=1),
+             jnp.stack([jnp.asarray(x, jnp.float64) for x in out[9:]])))
+    except Exception as exc:  # noqa: BLE001 - agreed across processes below
+        err = exc
+    flags = allgather(jnp.asarray(0.0 if err is None else 1.0))
+    if err is not None:
+        raise err
+    if float(np.max(np.asarray(flags))) != 0.0:
+        raise RuntimeError("split land solve failed on another process "
+                           "(see its traceback); stopping in lockstep")
+    g_rows, g_cnt = allgather(payload)
+    g_rows = jnp.asarray(g_rows).reshape(flat.shape[0], -1)
+    full, k = [], 0
+    for x, w in zip(leaves, widths):
+        blk = g_rows[:, k:k + w].reshape((-1,) + x.shape[1:])
+        full.append(jnp.asarray(x).at[flat].set(blk.astype(x.dtype)))
+        k += w
+    g_cnt = jnp.asarray(g_cnt)
+    counts = tuple(jnp.sum(g_cnt[:, i]).astype(jnp.asarray(out[9 + i]).dtype)
+                   for i in range(len(out) - 10))
+    return (tuple(jax.tree_util.tree_unflatten(tdef, full)) + counts
+            + (jnp.max(g_cnt[:, -1]).astype(jnp.asarray(out[-1]).dtype),))
 
 
 def _map_flat_column_leaves(tree, n_tile, global_ncol, fn):
@@ -1549,7 +1627,8 @@ class ModelDriver:
     """
 
     def __init__(self, config: ExperimentConfig, output_dir: str | Path | None = None,
-                 *, expected_resolved_physics: dict | None = None):
+                 *, expected_resolved_physics: dict | None = None,
+                 manifest_runner_tag: str | None = None):
         # Defensive canonical-name normalization at the driver entry:
         # callers that bypass run_amip's argparse postprocessor (direct
         # test fixtures, ad-hoc scripts, older YAML loaders) might still
@@ -1581,6 +1660,12 @@ class ModelDriver:
         # ``legoesm reproduce`` passes the reference run's resolved physics;
         # the run refuses to start if its own resolves differently.
         self._expected_resolved_physics = expected_resolved_physics
+        # The runner that drives this atmosphere, recorded in its manifest
+        # (run_coupled: so its atmosphere record is not replayed alone).
+        self._manifest_runner_tag = manifest_runner_tag
+        # The final-state digest THIS run recorded in its manifest (None
+        # until then, or when it could not); the coupled record pairs it.
+        self.final_state_digest = None
         # export_mpas_step's hand-off dict; None = a normal run (review F9).
         self._mpas_step_export = None
         self._mpas_step_exported = False   # export consumes the driver
@@ -4976,6 +5061,12 @@ class ModelDriver:
             p_s = self._gather_spmd_tree_to_host(p_s)
         return p_s, lat
 
+    def _owned_lon(self):
+        """Longitude [rad] in the ``_owned_p_s_and_lat`` layout."""
+        if self._owned_face_ids is not None:
+            return self._physics_lon
+        return self._grid_lon
+
     def _owned_temp(self):
         """Grid-point air temperature in the ``_owned_p_s_and_lat`` layout;
         None when the state carries no grid-point ``T`` (e.g. spectral)."""
@@ -4986,8 +5077,11 @@ class ModelDriver:
             return temp[self._owned_face_ids]
         return self._gather_spmd_tree_to_host(temp)
 
-    def _precompute_external_forcing(self, day, p_s, lat, temp=None):
-        """Pre-compute ozone/aerosol/GHG fields outside JIT boundary."""
+    def _precompute_external_forcing(self, day, p_s, lat, temp=None, lon=None):
+        """Pre-compute ozone/aerosol/GHG fields outside JIT boundary.
+
+        ``lon`` [rad] matches ``lat``; None -> :meth:`_owned_lon` (the layout
+        of :meth:`_owned_p_s_and_lat`, which every caller but spectral uses)."""
         from legoesm.forcing.external import (
             get_ozone_at_time, get_aerosol_at_time, get_aerosol_lw_at_time,
             get_aerosol_sw_volcanic_at_time,
@@ -5097,10 +5191,15 @@ class ModelDriver:
                 ) * w_strat
                 ).astype(aerosol_od.dtype)
             # AOD->CCN input: TROPOSPHERIC column in the visible (550 nm)
-            # band, volcanic excluded, from ``ccn_path`` (fine mode) if set.
+            # band, volcanic excluded, from ``ccn_path`` if set, read at each
+            # column's own longitude (the Andreae 2009 fit is local total
+            # AOT; a zonal mean gave polluted E China and the clean N Pacific
+            # one droplet number).
+            lon_col = jnp.asarray(
+                self._owned_lon() if lon is None else lon).reshape(ncol)
             self._aerosol_ccn_aod = jnp.asarray(get_aerosol_at_time(
                 _trop_cfg._replace(path=_acfg.ccn_path or _acfg.path),
-                day, lat_grid=lat_col, band="vis",
+                day, lat_grid=lat_col, band="vis", lon_grid=lon_col,
             )).reshape(ncol).astype(p_s.dtype)
 
         # Volcanic stratospheric LONGWAVE aerosol (gap #9): same (ncol,
@@ -5641,6 +5740,9 @@ class ModelDriver:
           (a legitimate resume/retry of the same run). An existing manifest that
           is invalid, or written for a *different* config, is fatal — one output
           directory holds one run; mixing two runs' provenance is refused.
+          Exception: an atmosphere driven by a runner with a replay spec
+          (run_coupled) continues when only that runner's ``atmosphere.*``
+          continuation controls differ (:meth:`_continue_driving_runner`).
         * **Required, not best-effort:** a write failure aborts ``setup()``.
           This is cheap — setup() has not yet entered the time loop — and upholds
           the A1 guarantee that a run which proceeds is always reconstructible.
@@ -5694,18 +5796,19 @@ class ModelDriver:
         # Atomic-exclusive create: wins the race against a concurrent start into
         # the same directory.  The winner creates the manifest; everyone else
         # (this run on retry/resume, or a racing process) takes the validate path.
+        manifest_kwargs = dict(
+            rng_seeds={"master": self._input_config.seed},
+            dataset_provenance=datasets,
+            # #1509: the --params values this run actually applied, so the
+            # manifest does not depend on the referenced file surviving
+            # unmodified. Absent (-> {}) when no --params were given.
+            params_applied=getattr(self, "_params_applied", None),
+            **({"runner_tag": self._manifest_runner_tag}
+               if getattr(self, "_manifest_runner_tag", None) else {}),
+        )
         try:
-            write_run_manifest(
-                self._output_dir,
-                self._input_config,
-                exclusive=True,
-                rng_seeds={"master": self._input_config.seed},
-                dataset_provenance=datasets,
-                # #1509: the --params values this run actually applied, so the
-                # manifest does not depend on the referenced file surviving
-                # unmodified. Absent (-> {}) when no --params were given.
-                params_applied=getattr(self, "_params_applied", None),
-            )
+            write_run_manifest(self._output_dir, self._input_config,
+                               exclusive=True, **manifest_kwargs)
             return
         except FileExistsError:
             pass
@@ -5722,20 +5825,81 @@ class ModelDriver:
                 f"refusing to start a run without valid run-start provenance. "
                 f"Remove or repair it to continue."
             ) from exc
+        tag = self._manifest_runner_tag or ""
+        old_tag = (existing.get("reproducibility") or {}).get("runner_tag") or ""
+        # An untagged record beside a coupled record is a coupled run's
+        # atmosphere written before the tag existed: still this run.
+        # It belongs to run_coupled, so it is not a standalone run's either.
+        coupled_beside = not old_tag and (
+            self._output_dir / "coupled" / manifest_file.name).exists()
+        owner = "run_coupled" if coupled_beside else old_tag
+        same_runner = tag == owner
         if not config_hash_matches(
                 existing["config"]["config_hash"],
                 existing["config"].get("resolved_config") or {},
                 self._input_config):
+            if same_runner and self._continue_driving_runner(
+                    existing, manifest_file, manifest_kwargs):
+                return
             raise RuntimeError(
                 f"Output directory {self._output_dir} already holds a run "
                 f"manifest written for a DIFFERENT config; refusing to mix two "
                 f"runs' provenance in one directory. Use a fresh output "
                 f"directory, or remove the existing run_manifest.json."
             )
+        if not same_runner:
+            # One output directory holds one run: a record another runner (or
+            # a standalone run) wrote is not this run's, even at equal config.
+            raise RuntimeError(
+                f"{manifest_file} was written by the {owner or 'standalone'!r} "
+                f"runner, this run is {tag or 'standalone'!r}; one output "
+                f"directory holds one run. Use a fresh output directory.")
         logger.info(
             f"Run manifest already present at {manifest_file}; preserving it "
             f"(same config — resume/retry)."
         )
+
+    def _continue_driving_runner(self, existing: dict, manifest_file: Path,
+                                 manifest_kwargs: dict) -> bool:
+        """A continuation of the run that drives this atmosphere (run_coupled):
+        when the existing record differs only in the atmosphere keys that
+        runner's continuation controls name (run length, checkpoint
+        frequency, wallclock budget), archive it by a hard link and write
+        this run's record.  False (caller refuses) otherwise."""
+        from datetime import datetime, timezone
+
+        from legoesm.driver.restart import (
+            RUNNER_REPLAY_SPECS,
+            config_drift_rows,
+            resolved_config_record,
+            write_run_manifest,
+        )
+        spec = RUNNER_REPLAY_SPECS.get(self._manifest_runner_tag or "")
+        prefix = "atmosphere."
+        keys = [k[len(prefix):] for k in (spec.continuation_keys if spec else ())
+                if k.startswith(prefix)]
+        if not keys:        # (the caller checked the record is this runner's)
+            return False
+        rows = [r for r in config_drift_rows(
+                    existing["config"].get("resolved_config") or {},
+                    resolved_config_record(self._input_config))
+                if not any(r[0] == k or r[0].startswith(k + ".") for k in keys)]
+        if rows:
+            return False
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        prev = manifest_file.with_name(
+            f"{manifest_file.stem}.prev-{stamp}-{os.getpid()}.json")
+        os.link(manifest_file, prev)       # the old record stays live until
+        try:                               # the new one replaces it
+            write_run_manifest(self._output_dir, self._input_config,
+                               **manifest_kwargs)
+        except BaseException:
+            prev.unlink(missing_ok=True)
+            raise
+        logger.info(f"Run manifest at {manifest_file} continued "
+                    f"({self._manifest_runner_tag}); previous record kept at "
+                    f"{prev.name}")
+        return True
 
     def _lane_builds_own_physics(self) -> bool:
         """True on the lanes that build the scheme configs their kernels use
@@ -5899,6 +6063,7 @@ class ModelDriver:
             from legoesm.grids.halo import traced_corner_fill_modes
             record_state_digest(manifest_file, digest,
                                 corner_fill_traced=traced_corner_fill_modes())
+            self.final_state_digest = digest
         except Exception as exc:  # pragma: no cover - provenance best-effort
             logger.warning(f"Could not record final state digest: {exc}")
 
@@ -8378,21 +8543,12 @@ class ModelDriver:
         there means the writing code is unknown, which counts as drift.
         """
         from legoesm.driver.restart import (
-            RUN_MANIFEST_FILENAME,
             collective_version_drift_gate,
-            manifest_file_version_drift,
+            restart_version_drift,
         )
-        manifest_file = path.parent / RUN_MANIFEST_FILENAME
-
-        def reasons():
-            if not path.exists():
-                return []  # the loader reports the missing checkpoint itself
-            if manifest_file.is_file():
-                return manifest_file_version_drift(manifest_file)
-            return [f"no {RUN_MANIFEST_FILENAME} beside the checkpoint, so the "
-                    f"code that wrote it is unknown (copy the writing run's "
-                    f"{RUN_MANIFEST_FILENAME} next to it)"]
-        collective_version_drift_gate(reasons, f"checkpoint {path}")
+        collective_version_drift_gate(
+            lambda: restart_version_drift(path, [path.parent]),
+            f"checkpoint {path}")
 
     def load_checkpoint(self, path: str | Path) -> tuple[int, float]:
         """Load state from a checkpoint using unified restart API.
@@ -13468,6 +13624,18 @@ class ModelDriver:
             # not repack.
             _land_pack_idx_np = np.nonzero(
                 np.asarray(self._f_land).reshape(-1) > 0.0)[0]
+            # Multi-controller SPMD (the FV3 duo lane): every process holds
+            # the whole globe's land, so each solves only its share of the
+            # land columns and one gather per land call rebuilds the full
+            # copy.  All processes take this branch (config + process count
+            # only), so the gather is reached by every one of them.
+            _land_split = None
+            if (self._is_spmd_multiprocess()
+                    and str(getattr(cfg, "land_surface_scheme", "")) != "clm_ml"
+                    and _land_pack_idx_np.size >= jax.process_count()):
+                _land_pack_idx_np, _land_split = split_land_columns(
+                    _land_pack_idx_np, jax.process_count(),
+                    jax.process_index())
             _land_pack_on = (
                 str(getattr(cfg, "land_surface_scheme", "")) != "clm_ml"
                 and 0 < _land_pack_idx_np.size < _f_land_cols.shape[0])
@@ -13681,6 +13849,22 @@ class ModelDriver:
             # surface blend never runs land-free for a whole interval.
             _land_step_boot_fn = (
                 _land_step_fn if _LAND_K == 1 else _make_land_step(DT))
+            if _land_split is not None:
+                from jax.experimental import multihost_utils as _mhu
+                _proc = jax.process_index()
+
+                def _with_gather(step):
+                    def _step(*a):
+                        return gather_land_step(
+                            lambda: step(*a), _land_ncol_full, _land_split,
+                            _proc, _mhu.process_allgather)
+                    return _step
+                _land_step_boot_fn = (
+                    _with_gather(_land_step_boot_fn)
+                    if _land_step_boot_fn is not _land_step_fn else None)
+                _land_step_fn = _with_gather(_land_step_fn)
+                if _land_step_boot_fn is None:
+                    _land_step_boot_fn = _land_step_fn
 
             # Phase 2b (#1312): per-cell root-zone beta_soil -> the traced
             # ``forcing["beta_land"]`` the turbulence surface flux consumes.
@@ -14126,6 +14310,11 @@ class ModelDriver:
                 # the correct pre-feature state (deepcu exactly 0).
                 "conv_mass_flux_up",
                 "conv_icwmr",
+                # pblh (2026-10-20, user decision on #2045): the carried PBL
+                # height ZM reads one step lagged; zero-seed = CAM's cold
+                # start (physpkg.F90:419-424), refreshed by the first
+                # turbulence call.
+                "pblh",
             })
             if _any_physstate:
                 from legoesm.atmosphere.physics.physics_state import (
@@ -15322,10 +15511,22 @@ class ModelDriver:
             # Flux means keep their independent per-step sums and diagnostic cadence.
             _sample_day = START_DAY + (step + 1) * DT / 86400.0
             _previous_day = START_DAY + step * DT / 86400.0
-            if (self._mpas_cmip_feed_on
-                    and int(np.floor(_sample_day * 24.0 + 1e-9))
-                    > int(np.floor(_previous_day * 24.0 + 1e-9))):
+            _hour_crossed = (int(np.floor(_sample_day * 24.0 + 1e-9))
+                             > int(np.floor(_previous_day * 24.0 + 1e-9)))
+            if self._mpas_cmip_feed_on and _hour_crossed:
                 self._feed_mpas_cmip_accumulators(_sample_day, state_only=True)
+            if (_hour_crossed and not _GC_FROZEN[0]
+                    and not self.config.dycore.column_lane):
+                # By the first hourly output step every compiled step,
+                # radiation and output path exists and lives for the run.
+                # Frozen, the full collections skip it; unfrozen, each one
+                # scanned it all and paused one rank for 0.7-0.9 s while the
+                # other 127 waited at the next exchange (8 nodes: about one
+                # hourly output step in four).  Collect first so no dead
+                # cycle is frozen; once per process.
+                gc.collect()
+                gc.freeze()
+                _GC_FROZEN[0] = True
 
             # Diagnostics at intervals — phased by DIAG_PHASE (= start_step
             # for a real periodic cadence, 0 for the once-at-the-end
@@ -16237,6 +16438,8 @@ class ModelDriver:
         else:
             _lat_2d_loop = self._grid_lat
         _lat_col_loop = _lat_2d_loop.reshape(-1)
+        _lon_2d_loop = (jnp.broadcast_to(self._grid_lon[None, :], shape_2d)
+                        if self._grid_lon.ndim == 1 else self._grid_lon)
 
         # Light-weight time series for AMIP / validation.  The spectral
         # path is otherwise diagnostic-free; without these arrays the
@@ -16367,7 +16570,7 @@ class ModelDriver:
                         # daily_forcing_bucket / FIX_RESTART_TIME).
                         _o3, _aer, _ghg = self._precompute_external_forcing(
                             float(_fd_int), _f_now['p_s'], _lat_2d_loop,
-                            temp=_f_now['T'],
+                            temp=_f_now['T'], lon=_lon_2d_loop,
                         )
                         _ext_daily = {"o3_vmr": _o3, "aerosol_od": _aer}
                         # Volcanic LONGWAVE aerosol (gap #9): only when active

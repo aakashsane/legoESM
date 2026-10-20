@@ -546,13 +546,13 @@ class MorrisonConfig(NamedTuple):
     #     sigmoid autoconv + bilinear k_ac·rho·q_c·q_r accretion). NOT the
     #     published universal functions — only the au/x_* number closure is
     #     SB-faithful.
-    #   "seifert_beheng_sb2001" = the PUBLISHED SB2001 universal functions —
-    #     the gSAM IRAIN=1 MASS closures (module_mp_graupel.f90:1835-1844,
-    #     :1960-1962): phi_au=600·tau^0.68·(1−tau^0.68)^3 with the q_c^4·N_c^-2
-    #     rate, phi_ac=(tau/(tau+5e-4))^4 with the fixed 5.78 kernel, plus the
-    #     au/x_* rain-number source. Faithful for a SUPPLIED nu; the default
-    #     fixed nu (0.4315) is an approximation of gSAM's spatially-diagnosed
-    #     pgam, and the SB2001-specific cloud-NUMBER sinks are not represented.
+    #   "seifert_beheng_sb2001" = Seifert & Beheng (2001) as gSAM M2005 runs
+    #     it (IRAIN=1, module_mp_graupel.f90:1830-1844, :1955-1962): the
+    #     phi_au / phi_ac universal-function rates with gSAM's gates, the
+    #     droplet shape nu diagnosed from N_c (gSAM default dofix_pgam=.false.)
+    #     and the droplet-slope clamp on N_c, plus the au/x_* rain-number
+    #     source. Oracle-pinned at predict_Nc=False; the SB2001-specific
+    #     cloud-NUMBER sinks (predict_Nc=True only) are not represented.
     warm_rain_scheme: str = "kk2000"
     predict_Nc: bool = False         # SAM M2005 dopredictNc. False (SAM DEFAULT) =
                                      # SPECIFIED constant droplet number Nc_0: the
@@ -603,6 +603,12 @@ class MorrisonConfig(NamedTuple):
     #     for larger drops (→ active breakup as dum<0). Uses the prognostic N_r.
     #     (legoESM's legacy k_sc=1e-3 self-collected ~5580× too WEAKLY.)
     #   "legacy" = the sigmoid-breakup form (k_sc, breakup_sharpness, D_eq).
+    #   "mg2" = CAM6 MG2 Beheng (1994) self-collection, nragg = -8 nric qric
+    #     rho on the in-precip rain (micro_mg_utils.F90:1343-1364), times
+    #     precip_frac.  morrison_flavor="mg" (the global default) RESOLVES the
+    #     "sb2001" default to it in ``resolve_morrison_flavor`` (an explicit
+    #     "legacy"/"mg2" is kept); SB2001 itself is selected with
+    #     morrison_flavor="sam".
     rain_selfcoll_scheme: str = "sb2001"
     rain_selfcoll_k: float = 5.78        # SAM/SB2001 self-collection coeff
     rain_breakup_d0: float = 300.0e-6    # SB2001 breakup onset mean size [m]
@@ -804,7 +810,7 @@ class MorrisonConfig(NamedTuple):
     # Standard air density at 850 mb (SAM RHOSU = 85000/(R_d·273.15)); the
     # (ρ_su/ρ)^0.54 factor accelerates fall speeds in thin upper-trop air.
     rho_su: float = 8.5e4 / (constants.R_d * constants.T_freeze)
-    lamr_min: float = 1.0 / 2800.0e-6   # SAM LAMMINR (slope floor) [1/m]
+    lamr_min: float = 1.0 / 2800.0e-6   # SAM LAMMINR (slope floor) [1/m]; morrison_flavor="mg" resolves 1/500 um (MG2)
     lamr_max: float = 1.0 / 20.0e-6     # SAM LAMMAXR (slope cap) [1/m]
     lami_min: float = 1.0 / 600.0e-6    # SAM LAMMINI=1/(2·DCS+100µm), DCS=250µm
     lami_max: float = 1.0 / 1.0e-6      # SAM LAMMAXI [1/m]
@@ -961,6 +967,11 @@ class MorrisonConfig(NamedTuple):
     # aist ice-stratus fraction) (micro_mg2_0.F90:878, :1224-1322;
     # micro_mg_cam.F90:1809-1810; clubb_intr.F90:2575).  Needs that cloud
     # fraction at the call (``cloud_fraction=``); raises without it.
+    # It is the CAM6 MG2 warm-rain mode, so it also selects (oracle audit
+    # 2026-10-19): MG2's 'in_cloud' precip_frac for the in-precip rain; rain
+    # evaporation only in the precipitating clear air (precip_frac - lcldm,
+    # with rain_evap_scheme="m2005"); rain mass+number sedimenting the
+    # POST-source state; and MG2's two-sided rain-number re-adjustment.
     # False = rates on the grid-mean state (the pre-existing behaviour).
     warm_rain_incloud: bool = False
 
@@ -982,14 +993,17 @@ class MorrisonConfig(NamedTuple):
     # :2718 the gated residual) leaves MG2 with NO vapour-to-liquid
     # condensation at all in a CLUBB configuration.
     #
-    # POSITIVE BRANCH ONLY.  An earlier version said "both signs"; that was
-    # wrong twice.  CAM's block is guarded by ``qtmp > qvn``
-    # (micro_mg2_0.F90:2700), so it fires on positive supersaturation and has
-    # no evaporation branch to switch off.  And our default
-    # ``wbf_scheme="emergent"`` has no explicit Bergeron rate: the mixed-phase
-    # cloud-water sink IS that negative branch.  Every genuine sink
-    # (autoconversion, accretion, the emergent WBF, riming, sedimentation) is
-    # untouched.
+    # BOTH SIGNS (user decision 2026-10-19, oracle audit tier 1).  An
+    # intermediate version kept the negative (cloud-water evaporation) branch
+    # as the emergent WBF sink; MG2 under CLUBB has no such term (every qctend
+    # write in micro_mg2_0.F90 is a process sink, droplet sedimentation, melt,
+    # homogeneous freezing or the CLUBB-disabled residual), and that branch
+    # existed only through the smoothing tail (0 at the hard limit), removing
+    # up to 29 % of q_c per 600 s step at the production sharpness.  With
+    # ``wbf_scheme="emergent"`` this scheme therefore has no in-microphysics
+    # WBF liquid sink under this flag (the closure's next liquid diagnosis
+    # still sees the vapour that ice deposition removed).  Every other sink (autoconversion, accretion, riming,
+    # sedimentation) is untouched.
     #
     # WHY IT MATTERS: the adjustment removes the whole supersaturation on every
     # call, so running microphysics N times inside one physics step adjusts N
@@ -1111,11 +1125,19 @@ class ThompsonConfig(NamedTuple):
 class P3Config(NamedTuple):
     """Configuration for P3 (Predicted Particle Properties) microphysics.
 
-    Single ice category with predicted rime mass (q_rim) and rime volume
-    (B_rim). Liquid phase uses Seifert-Beheng warm-rain helpers.
-
-    Ice particle properties (fall speed, density) are diagnosed from
-    (q_i, N_i, q_rim, B_rim) rather than assumed from a fixed habit.
+    ``p3.py`` is a faithful port of gSAM 1.8.8 P3 v3.1.14 (one ice
+    category, lookup table 1 v4.1, Meyers nucleation, KK2000 warm rain,
+    specified droplet number), oracle-tested to 1e-10 at the hard limit.
+    Fields it reads: ``Nc_0`` (specified droplet number [1/m^3], gSAM
+    ``Nc0``), ``N_i_nuc_max`` (Meyers cap), ``cooper_T_nuc`` /
+    ``cooper_supi_min`` (nucleation gate), ``rho_rim_min`` /
+    ``rho_rim_max`` and the three smoothing fields ``ice_sigmoid_sharpness``,
+    ``cooper_supi_sharpness``, ``melt_sharpness`` (oracle at 1e6 / 1e9 /
+    1e6).  The opt-in ``hard_saturation_adjustment`` guard (not part of gSAM
+    P3, default off) is applied after the P3 step as for ml_emulator.  Every
+    other field belonged to the former surrogate and has no gSAM
+    counterpart: ``p3.check_p3_config`` raises if one is changed from its
+    default (``P3_FIELDS_WITHOUT_ORACLE_COUNTERPART``).
 
     Slot reuse in HydrometeorState
     --------------------------------

@@ -821,6 +821,7 @@ class DiagnosticCollector:
                 *_, T_2m = compute_sam_oceflx_fluxes(
                     u_low, v_low, T_low, q_low, T_sfc, q_sfc, rho_low,
                     z_bot=10.0, variant="cesm", return_2m=True,
+                    t_bot=T_low,
                 )
                 return T_2m
             *_, T_2m = compute_most_fluxes(

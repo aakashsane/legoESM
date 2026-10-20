@@ -72,6 +72,21 @@ def _column(ncol=4, nlev=24, dtheta_dz=4e-3, seed=0):
                 config=CLUBBConfig())
 
 
+def _hydrostatic_heights(col):
+    """Replace the fixture's heights with the model's own hydrostatic ones.
+
+    ``_column``'s linear z_full does not lie between its z_half for most
+    levels (zm outside its zt bracket), so CLUBB's zt->zm interpolation of
+    Lscale becomes an extrapolation and can go negative, which the
+    prognostic core turns into tau = 0.  Every model lane builds z_full as
+    the midpoint of the hydrostatic z_half (compute_heights_from_sigma).
+    """
+    from legoesm.atmosphere.physics._shared import compute_heights_from_sigma
+    z_full, z_half = compute_heights_from_sigma(col["T"], col["p_half"],
+                                                q_v=col["q_v"])
+    return dict(col, z_full=z_full, z_half=z_half)
+
+
 def test_dispatch_selects_clubb():
     name, fn, cfg = get_turbulence_fn(TurbulenceConfig(scheme="clubb"))
     assert name == "clubb"
@@ -1769,7 +1784,6 @@ def test_prognostic_clubb_accepts_prescribed_surface_fluxes():
     tv = jnp.maximum(virtual_temperature(T_f, q_f), cfg.T0 * 0.5)
     rho = kw["p_full"] / (constants.R_d * tv)
     rho_sfc = np.asarray(rho)[:, -1]
-    exner_sfc = (np.asarray(kw["p_full"])[:, -1] / constants.p_ref) ** constants.kappa
 
     wpthlp = jnp.full((ncol,), 0.06)    # upward kinematic heat flux [K m/s]
     wprtp = jnp.full((ncol,), 4.0e-5)   # upward kinematic moisture flux [kg/kg m/s]
@@ -1784,9 +1798,10 @@ def test_prognostic_clubb_accepts_prescribed_surface_fluxes():
     out, _ = run(T_f[:, -1] + 1.0, q_f[:, -1])
     assert np.all(np.isfinite(np.asarray(out.dT_dt)))   # non-degenerate state
 
-    # (1) Round-trip the kinematic BC to the reported W/m^2 surface fluxes + ustar.
+    # (1) Round-trip the kinematic BC to the reported W/m^2 surface fluxes + ustar
+    # (CAM host convention, clubb_intr.F90:1781: shf = cpair*rho*wpthlp_sfc).
     assert np.allclose(np.asarray(out.shflx),
-                       np.asarray(wpthlp) * rho_sfc * constants.c_pd * exner_sfc,
+                       np.asarray(wpthlp) * rho_sfc * constants.c_pd,
                        rtol=1e-6)
     assert np.allclose(np.asarray(out.lhflx),
                        np.asarray(wprtp) * rho_sfc * constants.L_v, rtol=1e-6)
@@ -2180,12 +2195,12 @@ def test_clubb_prognostic_injected_flux_equals_kinematic_prescription():
     (``latent_enthalpy_correction``).  The expectation used to invert with the
     constant L_v and no correction -- the convention that decision replaced."""
     from legoesm.atmosphere.physics.turbulence.clubb import (
-        exner_function, init_clubb_moments, pack_clubb_moments,
+        init_clubb_moments, pack_clubb_moments,
     )
     from legoesm.atmosphere.physics.turbulence.surface_layer import (
         latent_enthalpy_correction, surface_moisture_flux,
     )
-    kw = _column(ncol=3, nlev=18)
+    kw = _hydrostatic_heights(_column(ncol=3, nlev=18))
     kw.pop("tke")
     ncol, nlev = kw["T"].shape
     cfg = CLUBBConfig(prognostic=True, clubb_dt=300.0)
@@ -2193,11 +2208,11 @@ def test_clubb_prognostic_injected_flux_equals_kinematic_prescription():
     sf = _injected_surface_flux(ncol, kw["T"].dtype)
     tau_x, tau_y, shflx, lhflx, _ = sf
     rho_sfc = kw["rho"][:, -1]
-    exner_sfc = exner_function(kw["p_full"][:, -1])
-    # The exact inverse map clubb_turbulence_prognostic applies internally.
+    # The exact inverse map clubb_turbulence_prognostic applies internally
+    # (CAM host convention, clubb_intr.F90:1781: no exner).
     evap = surface_moisture_flux(cfg.surface, lhflx, kw["T_sfc"])
     sfc_wpthlp = ((shflx + latent_enthalpy_correction(lhflx, evap))
-                  / (rho_sfc * constants.c_pd * exner_sfc))
+                  / (rho_sfc * constants.c_pd))
     sfc_wprtp = evap / rho_sfc
     sfc_upwp = tau_x / rho_sfc
     sfc_vpwp = tau_y / rho_sfc
@@ -2383,7 +2398,7 @@ def test_prognostic_surface_theta_l_variance_is_physical():
         unpack_clubb_moments,
     )
 
-    col = _column(ncol=2, nlev=24)
+    col = _hydrostatic_heights(_column(ncol=2, nlev=24))
     cfg = CLUBBConfig(prognostic=True)
     moments = pack_clubb_moments(
         init_clubb_moments(2, 24, cfg, dtype=col["T"].dtype))

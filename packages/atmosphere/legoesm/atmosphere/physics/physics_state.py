@@ -256,6 +256,15 @@ class PhysicsState(NamedTuple):
     # Appended LAST so positional constructors keep their field order.
     conv_mass_flux_up: jnp.ndarray = None
     conv_icwmr: jnp.ndarray = None
+    # PBL height [m above the surface], shape (ncol,): CAM's pbuf ``pblh``.
+    # Written by the turbulence scheme each call (CAM6: clubb_intr.F90:2616
+    # after the CLUBB sub-steps, the last sub-step's value persists) and read
+    # one physics step LAGGED by Zhang-McFarlane deep convection, which runs
+    # first in the step and bounds its launch-level search at the PBL top
+    # (convect_deep.F90:266 -> zm_conv.F90:738-741).  Zeros before the first
+    # turbulence call = CAM's cold start when the initial file has no PBLH
+    # (physpkg.F90:419-424).  Appended LAST with a default.
+    pblh: jnp.ndarray = None
 
 
 # State fields that are run-level INPUTS rather than physics memory.
@@ -453,6 +462,7 @@ def init_physics_state(
         conv_heating=jnp.zeros((ncol, nlev), dtype=dtype),
         conv_mass_flux_up=jnp.zeros((ncol, nlev + 1), dtype=dtype),
         conv_icwmr=jnp.zeros((ncol, nlev), dtype=dtype),
+        pblh=jnp.zeros((ncol,), dtype=dtype),
     )
 
 
@@ -542,4 +552,5 @@ def update_physics_state(phys_state, updates):
         conv_mass_flux_up=updates.get(
             "conv_mass_flux_up", phys_state.conv_mass_flux_up),
         conv_icwmr=updates.get("conv_icwmr", phys_state.conv_icwmr),
+        pblh=updates.get("pblh", phys_state.pblh),
     )

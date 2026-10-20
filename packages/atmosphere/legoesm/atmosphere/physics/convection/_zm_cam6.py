@@ -33,9 +33,10 @@ Departures from the oracle (all documented, measured where numeric):
 * Divisions the Fortran performs only on gathered deep columns are guarded
   (``_safe_div``) so non-deep columns stay finite under reverse-mode AD;
   the guarded branch is never selected on a deep column.
-* The Fortran ``pblt`` needs ``pblh``; when the host cannot supply it the
-  launch-level search is bounded by ``pbl_top_pa`` instead (see
-  ``zm_convr``).
+* The Fortran ``pblt`` needs ``pblh``; the hydrostatic/MPAS bridge passes
+  the turbulence scheme's lagged ``PhysicsState.pblh`` as CAM does.  A caller
+  without that carry (``pblh=None``) gets the launch-level search bounded by
+  ``pbl_top_pa`` instead (see ``zm_convr``).
 * ``limcnv``: CAM fixes the 40 hPa cap from the REFERENCE interface
   pressures once at init; hosts without a reference vertical coordinate
   (``pref_edge=None``) get it from each column's own interfaces instead.
@@ -903,7 +904,8 @@ def zm_convr(t, qh, p_full, p_half, z, zf, landfrac, dt, *, pblh, tpert,
 
     ``pblh`` is the PBL height [m] (``None`` -> the launch-level search is
     bounded by ``pbl_top_pa`` [Pa] instead of the Fortran ``pblt``, a
-    documented departure because the host does not carry ``pblh``).
+    documented departure for callers without the ``PhysicsState.pblh``
+    carry).
 
     ``pref_edge`` are the REFERENCE interface pressures [Pa] (``nlev+1``, top
     first): CAM caps deep convection at the interface where they cross

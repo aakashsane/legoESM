@@ -300,7 +300,7 @@ def test_unread_spatial_fields_do_not_change_the_surface_fluxes(bulk):
     rho = jnp.full((4,), 1.2)
     other = cfg._replace(**{f: getattr(cfg, f) * jnp.asarray([3.0, 0.2, 7.0, 0.5])
                             for f in unread})
-    a = compute_surface_fluxes(u, v, T, q, T_sfc, q_sfc, rho, cfg)
-    b = compute_surface_fluxes(u, v, T, q, T_sfc, q_sfc, rho, other)
+    a = compute_surface_fluxes(u, v, T, q, T_sfc, q_sfc, rho, cfg, t_bot=T)
+    b = compute_surface_fluxes(u, v, T, q, T_sfc, q_sfc, rho, other, t_bot=T)
     for x, y in zip(a, b):
         np.testing.assert_array_equal(np.asarray(x), np.asarray(y))

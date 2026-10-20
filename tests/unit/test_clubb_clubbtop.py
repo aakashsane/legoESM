@@ -45,7 +45,7 @@ from legoesm.atmosphere.physics.turbulence.clubb import (  # noqa: E402
 
 _CUT_PA = 15000.0                       # a mid-column CLUBB top (150 hPa) that cuts inside the L32 grid
 _ON = CLUBBConfig(prognostic=True, clubb_dt=300.0, trop_cloud_top_press=_CUT_PA)
-_OFF = CLUBBConfig(prognostic=True, clubb_dt=300.0)
+_OFF = CLUBBConfig(trop_cloud_top_press=0.0, prognostic=True, clubb_dt=300.0)
 _DT = 300.0
 _TROP_LAPSE = 6.5e-3                    # test profile: tropospheric lapse [K/m]
 _STRAT_LAPSE = -2.5e-3                  # test profile: stratospheric warming [K/m]

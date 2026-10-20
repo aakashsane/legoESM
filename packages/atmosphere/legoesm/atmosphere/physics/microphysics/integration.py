@@ -182,6 +182,7 @@ def make_microphysics_physics(
     model_type: str = "hydrostatic",
     dt: float = 300.0,  # coeff-ok: default physics timestep [s]
     cloud_config=None,
+    clubb_config=None,
 ) -> Callable:
     """Create a physics function for microphysics matching a model's signature.
 
@@ -196,6 +197,9 @@ def make_microphysics_physics(
     cloud_config : CloudConfig, optional
         The run's cloud config (scheme ``cam6_clubb``); read only by Morrison
         ``warm_rain_incloud`` for the CAM6 ice-stratus fraction ``aist``.
+    clubb_config : CLUBBConfig, optional
+        The run's CLUBB config; ``warm_rain_incloud`` requires it (raises if
+        None): aist is zeroed above CLUBB's top (clubb_intr.F90:2535).
 
     Returns
     -------
@@ -210,7 +214,8 @@ def make_microphysics_physics(
     if model_type in ("hydrostatic", "mpas"):
         return _make_hydrostatic_microphysics(microphysics_config, dt,
                                               cloud_config=cloud_config,
-                                              model_type=model_type)
+                                              model_type=model_type,
+                                              clubb_config=clubb_config)
     elif model_type == "nonhydrostatic":
         return _make_nonhydrostatic_microphysics(microphysics_config, dt)
     elif model_type == "plane":
@@ -236,6 +241,7 @@ def _make_hydrostatic_microphysics(
     dt: float,
     cloud_config=None,
     model_type: str = "hydrostatic",
+    clubb_config=None,
 ) -> Callable:
     """Create microphysics physics_fn for PrimitiveEquationModel.
 
@@ -264,6 +270,11 @@ def _make_hydrostatic_microphysics(
             "warm_rain_incloud=True uses CAM6's ast = max(alst, aist); the "
             "ice-stratus fraction needs the cam6_clubb cloud config, got "
             f"{getattr(cloud_config, 'scheme', None)!r}.")
+    if _incloud and clubb_config is None:
+        raise ValueError(
+            "warm_rain_incloud=True needs the run's CLUBBConfig "
+            "(clubb_config): CAM zeroes aist above CLUBB's top_lev "
+            "(clubb_intr.F90:2535); got None.")
     if _incloud and model_type != "mpas":
         # Checked at build time, not the first step: aist's tropopause
         # switch needs MPAS cell latitudes (mesh.latCell).
@@ -446,7 +457,10 @@ def _make_hydrostatic_microphysics(
                 _aist = cam6_ice_stratus_fraction(
                     q_v_col, T_col, p_full_col, hydrometeors.q_i,
                     jnp.asarray(grid.latCell).reshape(ncol), cloud_config,
-                    p_half_col[:, :-1])
+                    p_half_col[:, :-1],
+                    trop_cloud_top_press=clubb_config.trop_cloud_top_press,
+                    trop_cloud_taper_lnp_width=(
+                        clubb_config.trop_cloud_taper_lnp_width))
                 _kw["cloud_fraction"] = jnp.maximum(
                     jnp.clip(_cf.reshape(ncol, nlev), 0.0, 1.0), _aist)
             micro_out = micro_fn(

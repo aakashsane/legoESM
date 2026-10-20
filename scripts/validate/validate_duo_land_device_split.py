@@ -126,55 +126,47 @@ def _gate_run(opts):
         a2s = jax.tree_util.tree_map(lambda s: s / n, a2s_sum)
         a2s = a2s._replace(cos_zenith=cz / w)
         doy, _ = self._calendar_for_radiation(float(start_day))
-        params = ph.land_ml_params
-        if bool(getattr(cfg, "land_params_refresh", False)):
+        refresh = bool(getattr(cfg, "land_params_refresh", False))
+        upd = None
+        if refresh:
             upd = getattr(ph, "land_ml_params_update", None)
             if upd is None:
                 upd = ph.land_ml_params_update_factory()
-            year0 = float(getattr(cfg, "start_year", 0.0) or 0.0)
-            params = mpas_land_step_params(
-                upd, params, self._land_ml_state.theta_soil[:, 0],
-                jnp.asarray(doy - 1.0), jnp.asarray(year0 + start_day / 365.0))
+        year0 = float(getattr(cfg, "start_year", 0.0) or 0.0)
         umin = float(getattr(ph, "land_ml_u_min", 1.0))
         dt_land = land_k * dt
-        doy = jnp.asarray(doy, jnp.float64)
 
         def step(st, a, c, p, la, cb, d):
             return step_multilayer_land_with_diagnostics(
                 st, a, c, umin, dt_land, lat=la, doy=d, land_params=p,
                 carbon_state=cb)
 
-        full = (self._land_ml_state, a2s, ph.land_ml_cfg, params,
-                ph.land_ml_lat, ph.land_ml_carbon, doy)
-        is_col = jax.tree_util.tree_map(
-            lambda x: (hasattr(x, "shape") and len(x.shape) >= 1
-                       and x.shape[0] == ncol), full)
+        # As the loop's land closure: one jit over the FULL state, forcing
+        # and day; params refreshed inside it when the run refreshes them,
+        # then packed to the slots; config, latitude, carbon closed over.
+        def call(idx, split=None):
+            idx = jnp.asarray(idx)
 
-        def packed(idx):
-            return gather_land_columns(full, jnp.asarray(idx), ncol)
+            def g(st, a, d, lai_doy, lai_year):
+                p = (mpas_land_step_params(upd, ph.land_ml_params,
+                                           st.theta_soil[:, 0], lai_doy,
+                                           lai_year)
+                     if refresh else ph.land_ml_params)
+                full = (st, a, ph.land_ml_cfg, p, ph.land_ml_lat,
+                        ph.land_ml_carbon, d)
+                args = gather_land_columns(full, idx, ncol)
+                if split is None:
+                    return step(*args)
+                is_col = jax.tree_util.tree_map(
+                    lambda x: (hasattr(x, "shape") and len(x.shape) >= 1
+                               and x.shape[0] == ncol), full)
+                return solve_land_on_devices(step, args, is_col, *split)
+            return jax.device_get(jax.jit(g)(
+                self._land_ml_state, a2s, jnp.asarray(doy, jnp.float64),
+                jnp.asarray(doy - 1.0),
+                jnp.asarray(year0 + start_day / 365.0)))
 
-        # As the loop's land closure: state, forcing, (refreshed) params and
-        # day are traced arguments; config, latitude and carbon are closed
-        # over (compile-time constants there too).
-        traced_pos = (0, 1, 3, 6)
-
-        def traced(fn, args):
-            sub = {i: jax.tree_util.tree_flatten(args[i]) for i in traced_pos}
-            is_arr = {i: [hasattr(x, "shape") and hasattr(x, "dtype")
-                          for x in sub[i][0]] for i in traced_pos}
-            dyn = [x for i in traced_pos
-                   for x, t in zip(sub[i][0], is_arr[i]) if t]
-
-            def g(*d):
-                it, a = iter(d), list(args)
-                for i in traced_pos:
-                    a[i] = sub[i][1].unflatten(
-                        [next(it) if t else x
-                         for x, t in zip(sub[i][0], is_arr[i])])
-                return fn(tuple(a))
-            return jax.device_get(jax.jit(g)(*dyn))
-
-        ref = traced(lambda a: step(*a), packed(cols))      # device 0
+        ref = call(cols)      # device 0
         report, failed = {}, False
         for nd in opts.devices:
             if jax.device_count() < nd:
@@ -182,8 +174,7 @@ def _gate_run(opts):
                                  f"{jax.device_count()}")
             slots, keep = shard_land_columns(cols, nd)
             mesh = Mesh(np.array(jax.devices()[:nd]), ("land",))
-            got = traced(lambda a: solve_land_on_devices(
-                step, a, is_col, mesh, keep), packed(slots))
+            got = call(slots, (mesh, keep))
             # whole-run counters are recounted on the split side: compare
             # the per-column results and those counts, not the step's own
             # scalars (identical by construction on the one-call side)

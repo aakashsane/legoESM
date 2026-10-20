@@ -35,6 +35,9 @@ def _step(st, cfg, d):
     """Column-local stand-in for the land step: (state, response, carbon,
     surface) with per-column masks and whole-run counters."""
     T = st * cfg.scale + d + jnp.sum(cfg.layers) * 1e-3
+    # scan whose carry starts replicated, as the canopy stability iteration
+    T, _ = jax.lax.scan(lambda c, _: (0.5 * (c + T), None),
+                        jnp.zeros_like(T), None, length=2)
     held = T > 1.0
     fb = T < 0.6
     rej = (T > 0.8) & (T < 1.2)

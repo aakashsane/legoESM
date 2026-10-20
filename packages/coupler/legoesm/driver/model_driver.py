@@ -356,10 +356,13 @@ def solve_land_on_devices(step, args, is_col, mesh, keep):
     b_out = jax.eval_shape(body, *shapes(n_slot + 1))
     out_specs = jax.tree_util.tree_map(
         lambda a, b: P(axis) if a.shape != b.shape else P(), a_out, b_out)
+    # check_vma off: the canopy scan carries start replicated.  Risk: a
+    # shared (non-per-column) output that depends on the columns would take
+    # device 0's value; the one-call gate compares every output to catch it.
     out = shard_map(
         body, mesh=mesh,
         in_specs=tuple(P(axis) if c else P() for c in arr_col),
-        out_specs=out_specs)(*arrs)
+        out_specs=out_specs, check_vma=False)(*arrs)
     keep = jnp.asarray(keep)
     out = jax.tree_util.tree_map(
         lambda o, sp: o[keep] if sp != P() else o, out, out_specs)

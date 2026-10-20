@@ -936,10 +936,19 @@ def morrison_microphysics(
         # is identical for N_i>0, and stays finite at LAMI=0 (→ q_i/180, the
         # bare 180-s timescale).
         # On MG2's own ice slope: held inside 1/[2 dcs, 1 um] with the number
-        # re-adjusted (size_dist_param_basic, micro_mg2_0.F90:1333).
-        _ni_mg2, _lami_mg2 = mg2_ice_slope(q_i, N_i, config.rho_cloud_ice, dcs)
+        # re-adjusted (size_dist_param_basic, micro_mg2_0.F90:1333), from the
+        # in-cloud ice (capped at 5 g/kg) in CAM6 MG2 mode, rates x icldm.
+        if config.warm_rain_incloud:
+            _qi_ac, _ni_ac, _cf_ac = (q_iic, jnp.clip(N_i, 0.0) / cf_eff,
+                                      cf_eff)
+        else:
+            _qi_ac, _ni_ac, _cf_ac = q_i, N_i, 1.0
+        _ni_mg2, _lami_mg2 = mg2_ice_slope(_qi_ac, _ni_ac,
+                                           config.rho_cloud_ice, dcs)
         aggregation, nprci_ferrier = ice_autoconversion_mg2(
-            q_i, _ni_mg2, _lami_mg2, dcs, T)
+            _qi_ac, _ni_mg2, _lami_mg2, dcs, T)
+        aggregation = aggregation * _cf_ac
+        nprci_ferrier = nprci_ferrier * _cf_ac
     elif config.ice_to_snow_scheme == "heuristic":
         aggregation = config.agg_coeff * jnp.clip(q_i, 0.0) * f_ice
     else:

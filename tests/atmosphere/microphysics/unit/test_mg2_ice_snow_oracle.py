@@ -143,16 +143,14 @@ def test_snow_kernels_match_mg2():
     mn, nn = W.rain_freezing_bigg_mg2(q_ric, N_ric, lamr, T, rho, pf, cfg)
     errs["mnuccr"] = _rel(mn, o["mnuccr"] * pf)
     errs["nnuccr"] = _rel(nn / rho, o["nnuccr"] * pf)
-    # Ferrier on MG2's ice slope, held inside 1/[2 dcs, 1 um] with the number
-    # re-adjusted, at every point (in and out of bounds).
+    # Ferrier on MG2's ice slope (no fixture point reaches its bounds; see
+    # test_mg2_ice_slope_bounds).
     niic, lami = W.mg2_ice_slope(i["qi"], i["ni"], cfg.rho_cloud_ice, float(fx["dcs"]))
     errs["lami"] = _rel(lami, o["lami"])
     errs["niic"] = _rel(niic, o["niic"])
     prci, nprci = W.ice_autoconversion_mg2(i["qi"], niic, lami, float(fx["dcs"]), T)
     errs["prci"] = _rel(prci, o["prci"])
     errs["nprci"] = _rel(nprci, o["nprci"])
-    oob = np.asarray(o["niic"] != fx["pt_in_ni"])
-    assert np.count_nonzero(oob & (np.asarray(o["prci"]) > 0)) > 5  # bound binds
     worst = {k: float(np.max(v)) for k, v in errs.items()}
     print("snow kernel max rel err", worst)
     assert max(worst.values()) <= TOL, worst
@@ -304,6 +302,33 @@ def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
         fn(state._replace(tracers=tr), mesh, sigma, phys_state=ps)
     dns = np.asarray(with_ns.tracer_tendencies["N_s"].data)
     assert np.all(np.isfinite(dns)) and np.any(dns != 0.0)
+
+
+def test_mg2_ice_slope_bounds():
+    """MG2 size_dist_param_basic on mg_ice_props (micro_mg_utils.F90:294,
+    481-516): N <= q/1e-20 kg, then lami held inside 1/[2 dcs, 1 um] with the
+    number re-adjusted; Ferrier prci/nprci on that slope equal MG2's own
+    m_ip * nprci * poly form with n0i = niic*lami (micro_mg_utils.F90:880-894)."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    rhoi, dcs = 500.0, 500.0e-6
+    q = jnp.asarray([1.0e-5, 1.0e-5, 1.0e-5, 1.0e-12])
+    n = jnp.asarray([1.0, 1.0e5, 1.0e20, 1.0e12])   # big, inside, tiny, mean mass < 1e-20
+    ni, lam = W.mg2_ice_slope(q, n, rhoi, dcs)
+    lo, hi = 1.0 / (2.0 * dcs), 1.0e6
+    raw = (rhoi * np.pi * np.asarray(n) / np.asarray(q)) ** (1.0 / 3.0)
+    assert raw[0] < lo and lo < raw[1] < hi and raw[2] > hi
+    np.testing.assert_allclose(lam, [lo, raw[1], hi, hi], rtol=1e-13)
+    np.testing.assert_allclose(
+        ni, [lo ** 3 * 1e-5 / (rhoi * np.pi), 1.0e5, hi ** 3 * 1e-5 / (rhoi * np.pi),
+             hi ** 3 * 1e-12 / (rhoi * np.pi)], rtol=1e-13)
+    assert float(ni[3]) <= 1.0e-12 / 1.0e-20
+    T = jnp.full(4, 250.0)
+    prci, nprci = W.ice_autoconversion_mg2(q, ni, lam, dcs, T)
+    d = np.asarray(lam) * dcs
+    nprci_mg2 = np.asarray(ni) * np.asarray(lam) / (np.asarray(lam) * 180.0) * np.exp(-d)
+    prci_mg2 = (rhoi * np.pi / 6.0) / np.asarray(lam) ** 3 * nprci_mg2 * (((d + 3) * d + 6) * d + 6)
+    np.testing.assert_allclose(nprci[:3], nprci_mg2[:3], rtol=1e-12)  # [3]: below the 1e-14 gate
+    np.testing.assert_allclose(prci[:3], prci_mg2[:3], rtol=1e-12)
 
 
 @pytest.mark.parametrize("ice_to_snow", ["m2005_autoconv", "mg_ferrier"])

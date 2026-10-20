@@ -8651,6 +8651,26 @@ class ModelDriver:
                                else "kg/kg"))
                     for _k in _names
                 })
+                # Schema-growth migration (grow-only allowlist, as for the
+                # PhysicsState fields): tracers ADDED after a checkpoint
+                # format was in production.  N_s (CAM6 MG2 two-moment snow,
+                # user decision 2026-10-20): zero, so MG2's snow size limit
+                # treats the carried snow as the largest allowed flakes until
+                # new snow adds number.  Without the seed the restart silently
+                # ran single-moment snow.
+                _NEW_OPTIONAL_TRACERS = frozenset({"N_s"})
+                _seed = [n for n in self.tracer_registry.names
+                         if n not in _names and n in _NEW_OPTIONAL_TRACERS]
+                if _seed:
+                    logger.info(
+                        "  MPAS restart checkpoint predates tracer(s) %s — "
+                        "seeding them with zeros.", _seed)
+                    _ref = self.state.tracers[_names[0]].data
+                    self.state = self.state._replace(tracers={
+                        **self.state.tracers,
+                        **{_k: Field(data=jnp.zeros_like(_ref), name=_k,
+                                     dims=("nCells", "nlev"), units="1/kg")
+                           for _k in _seed}})
             # Multilayer (Richards) land columns (MPAS port): stage the
             # ``land_ml_<field>`` arrays into carry_aux and reuse the shared
             # fail-loud restore (#730 exact-field-set contract).  Under MPI the

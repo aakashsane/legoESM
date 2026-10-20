@@ -107,7 +107,7 @@ def test_ice_schemes_publish_their_frozen_fall(name):
     np.testing.assert_array_equal(np.asarray(warm.precip_frozen), 0.0)
 
 
-@pytest.mark.parametrize("name", ["kessler", "sundqvist", "seifert_beheng"])
+@pytest.mark.parametrize("name", ["kessler", "seifert_beheng"])
 def test_lv_only_schemes_publish_zero_frozen(name):
     """L_v-only heating: every kg they precipitate is liquid energetically."""
     out = _run(name, _column(262.0, rain=1e-3))

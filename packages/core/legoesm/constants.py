@@ -60,6 +60,9 @@ T_min_atmosphere = 200.0        # Lower-bound floor for atmospheric temperature 
                                 # to avoid division by near-zero T in clear-sky columns.
                                 # Matches Held-Suarez T_MIN and DCMIP lower bounds.
 T_freeze_ocean = 271.35         # Freezing point of seawater [K] (~-1.8 C)
+T_zero_zhao_carr = 273.16       # [K] Zhao-Carr precpd temperature origin: NCAR/ccpp-physics
+                                # v7.0.1 (da75531b) zhaocarr_precpd.f:348 ``tmt0 = t - 273.16``
+                                # (oracle-literal; NOT T_freeze)
 # Saturation specific humidity over sea water, as a fraction of the value over
 # fresh water at the same temperature: the water activity of salt water at the
 # ocean's typical salinity (S ~ 35 psu) lowers the saturation vapour pressure

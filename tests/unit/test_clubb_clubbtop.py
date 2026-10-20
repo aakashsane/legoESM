@@ -43,7 +43,7 @@ from legoesm.atmosphere.physics.turbulence.clubb import (  # noqa: E402
     unpack_clubb_moments,
 )
 
-_CUT_PA = 15000.0                       # the production CLUBB top (150 hPa)
+_CUT_PA = 15000.0                       # a mid-column CLUBB top (150 hPa) that cuts inside the L32 grid
 _ON = CLUBBConfig(prognostic=True, clubb_dt=300.0, trop_cloud_top_press=_CUT_PA)
 _OFF = CLUBBConfig(prognostic=True, clubb_dt=300.0)
 _DT = 300.0

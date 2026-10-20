@@ -110,8 +110,10 @@ _SCHEMES = {
 # Schemes whose DEFAULT (smooth) branch leaves the column still super-saturated
 # after one step. Sundqvist is excluded because it OVERSHOOTS instead (see the
 # module docstring); it gets its own, stricter assertion below.
+# seifert_beheng is not guarded (it runs gSAM's exact satadj_liquid every call
+# and refuses the opt-in guard; HARD_SAT_GUARD_EXEMPT).
 _DEFAULT_LEAVES_SUPERSATURATED = tuple(
-    s for s in _SCHEMES if s != "sundqvist")
+    s for s in _SCHEMES if s != "sundqvist" and s in HARD_SAT_GUARD_SCHEMES)
 
 
 def _column():

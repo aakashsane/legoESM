@@ -59,7 +59,7 @@ HARD_SAT_GUARD_DEFAULTS = {
 # Schemes carrying the guard (kept sorted; used in the fail-loud messages below
 # and asserted against the factory by the ratchet).
 HARD_SAT_GUARD_SCHEMES = (
-    "kessler", "ml_emulator", "morrison", "p3", "seifert_beheng",
+    "kessler", "ml_emulator", "morrison", "p3",
     "sundqvist", "thompson",
 )
 # SHRINK-ONLY exemptions.  Each reason was verified in the scheme's own source,
@@ -95,6 +95,16 @@ HARD_SAT_GUARD_EXEMPT = {
         "dm_k/dt = B_k*s. The bin spectrum IS the adjustment; forcing q_v onto "
         "the bulk saturation curve on top of it would be inconsistent with the "
         "resolved spectrum and break the WRF FSBM-2 oracle match."
+    ),
+    "seifert_beheng": (
+        "The scheme is gSAM 1.8.8 M2005 (liquid only, SB2001 warm rain): "
+        "seifert_beheng.py calls saturation_adjustment_gsam (gSAM's "
+        "satadj_liquid, a Newton solve onto the liquid saturation curve that "
+        "condenses AND evaporates) on EVERY call before any process rate, so "
+        "the state never leaves the call super-saturated w.r.t. liquid. The "
+        "opt-in guard has no gSAM counterpart: setting it raises (oracle port "
+        "2026-10-20; the guard fields stay on SeifertBehengConfig at their "
+        "standard defaults)."
     ),
     "none": (
         "microphysics='none' has NO scheme function at all -- "
@@ -499,7 +509,13 @@ class SundqvistConfig(NamedTuple):
 
 
 class SeifertBehengConfig(NamedTuple):
-    """Configuration for Seifert-Beheng two-moment warm rain."""
+    """Configuration for Seifert-Beheng two-moment warm rain.
+
+    The scheme is gSAM 1.8.8 M2005 (liquid only, SB2001 warm rain, specified
+    droplet number), which reads ONLY ``Nc_0`` (gSAM's NDCNST, per-volume).
+    Every other field belonged to the former proxy rates and has no gSAM
+    counterpart: ``seifert_beheng_microphysics`` raises if one is set.
+    """
     k_au: float = 6e2                # Autoconversion rate [1/(kg*s)]
     x_star: float = 2.6e-10          # Separation mass [kg]
     # ``N_c`` per-volume: see ``_warm_rain.effective_Nc`` Notes.
@@ -542,10 +558,11 @@ class MorrisonConfig(NamedTuple):
     #   "kk2000" (default) = Khairoutdinov-Kogan 2000, the SAM M2005
     #     DEFAULT (IRAIN=0): PRC=1350·qc^2.47·(Nc[#/cm³])^-1.79,
     #     PRA=67·(qc·qr)^1.15. Faithful to the gSAM oracle.
-    #   "seifert_beheng" = the legacy simplified SB proxy (k_au·q_c^2·onset
-    #     sigmoid autoconv + bilinear k_ac·rho·q_c·q_r accretion). NOT the
-    #     published universal functions — only the au/x_* number closure is
-    #     SB-faithful.
+    #   "seifert_beheng" = the same law as "seifert_beheng_sb2001" (below);
+    #     it was a simplified proxy (k_au·q_c^2 onset sigmoid + bilinear
+    #     k_ac accretion) until the 2026-10 oracle port.  The proxy fields
+    #     k_au / x_star / k_ac / autoconversion_sharpness have no gSAM
+    #     counterpart and raise if set under it.
     #   "seifert_beheng_sb2001" = Seifert & Beheng (2001) as gSAM M2005 runs
     #     it (IRAIN=1, module_mp_graupel.f90:1830-1844, :1955-1962): the
     #     phi_au / phi_ac universal-function rates with gSAM's gates, the
@@ -585,8 +602,9 @@ class MorrisonConfig(NamedTuple):
     subgrid_autoconversion: bool = False
     subgrid_rh_crit: float = 0.7     # critical RH for the in-cloud cf (Sundqvist)
     subgrid_cf_min: float = 0.1      # cf floor (caps enhancement at cf_min^-1.47)
-    # Warm rain (Seifert-Beheng knobs; consumed only when
-    # warm_rain_scheme="seifert_beheng")
+    # Former Seifert-Beheng PROXY knobs: k_au / x_star / k_ac are read by no
+    # law (warm_rain_scheme="seifert_beheng" now runs SB2001 as gSAM does and
+    # raises if they are set); Nc_0 is the specified droplet number.
     k_au: float = 6e2
     x_star: float = 2.6e-10
     Nc_0: float = 1e8

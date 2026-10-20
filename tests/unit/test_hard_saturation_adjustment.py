@@ -535,13 +535,14 @@ def test_experiment_float_overrides_thread_and_raise():
 
 def test_all_guarded_configs_carry_the_fields():
     """Every scheme in HARD_SAT_GUARD_SCHEMES -- now including the Sundqvist
-    diagnostic scheme and the ML emulator, not just the five bulk warm-rain
-    schemes -- carries the three fields with the SAME defaults."""
+    diagnostic scheme and the ML emulator -- carries the three fields with the
+    SAME defaults.  seifert_beheng left the list: it runs gSAM's exact
+    satadj_liquid (HARD_SAT_GUARD_EXEMPT) and refuses the fields."""
     from legoesm.atmosphere.physics.microphysics.config import (
         HARD_SAT_GUARD_SCHEMES, MicrophysicsConfig,
     )
     top = MicrophysicsConfig()
-    assert len(HARD_SAT_GUARD_SCHEMES) == 7
+    assert len(HARD_SAT_GUARD_SCHEMES) == 6
     for name in HARD_SAT_GUARD_SCHEMES:
         cfg = getattr(top, name)
         assert cfg.hard_saturation_adjustment is False, name

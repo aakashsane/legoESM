@@ -891,6 +891,8 @@ FILES = {
         NEMO / "cfgs/GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3_stg.f90"),
     "GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3.f90"),
+    "GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stp2d.f90": (
+        NEMO / "cfgs/GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stp2d.f90"),
     "GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/dynvor.f90": (
         NEMO / "cfgs/GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/dynvor.f90"),
     "round64/oracle_krhs_split/ocean.output": Path(
@@ -1635,6 +1637,24 @@ FILES = {
 # recurring symbol is refused now, and every multi-line citation states its
 # length a SECOND time so widening the key without widening the extent fails.
 CITATION_MAP = {
+    # --- GYRE high-resolution round 20: common-state stage-1 boundary ---
+    'GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stp2d.f90:136-163': [
+        '!*  hydrostatic pressure gradient (HPG))  *!',
+        'CALL dyn_zad( kt, Kbb, uu, vv, Krhs )', 28],
+    'GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stp2d.f90:266-267': [
+        'IF( ln_dynspg_ts )',
+        'CALL dyn_spg_ts( kt, Kbb, Kbb, Krhs', 2],
+    'GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3_stg.f90:482-485': [
+        'IF( ln_dynadv_vec .OR. lk_linssh ) THEN',
+        'vv(ji,jj,jk,Kaa) = ( vv(ji,jj,jk,Kbb)', 4],
+    'GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3_stg.f90:521': (
+        'IF( kstg == 3 )   CALL dyn_zdf', 1),
+    'GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3_stg.f90:524-549': [
+        '!==  All stages: correct the barotropic component ==!',
+        'vv(ji,jj,jk,Kaa) = vv(ji,jj,jk,Kaa) + zvb', 26],
+    'GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3.f90:201-215': [
+        'CALL stp_RK3_stg( 1, kstp, Nbb, Nbb, Nrhs, Naa )',
+        'CALL stp_RK3_stg( 3, kstp, Nbb, Nnn, Nrhs, Naa )', 15],
     # --- GYRE high-resolution round 19: formed q/F_u factor walk ---
     'GYRE_OMIP_L2_P3_R17VORS/BLD/ppsrc/nemo/stprk3.f90:207-215': [
         'CALL stp_RK3_stg( 2, kstp, Nbb, Nnn, Nrhs, Naa )',

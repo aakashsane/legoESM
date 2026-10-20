@@ -336,6 +336,7 @@ def run(
     require(passive, f"live-stage trace moved {passive_bytes} state bytes")
 
     masks = expected_masks(card)
+    planted_control = None
     stages = []
     for stage_index in (1, 2):
         scalar = read_stage(
@@ -350,11 +351,14 @@ def run(
         rows = {}
         for face in FACE_ORDER:
             candidate = live[face]
+            scalar_active = _active_levels(scalar[face])
             if plant == f"stage{stage_index}-{face}":
-                candidate = _plant_one_ulp(candidate, masks[face])
+                candidate = _plant_one_ulp(scalar_active, masks[face])
             rows[face] = envelope_score(
-                candidate, _active_levels(scalar[face]),
+                candidate, scalar_active,
                 _active_levels(vector[face]), masks[face])
+            if plant == f"stage{stage_index}-{face}":
+                planted_control = rows[face]
         stages.append({"stage": stage_index, "rows": rows})
 
     scalar_rhs = read_completed_rhs(
@@ -365,11 +369,14 @@ def run(
     rhs_rows = {}
     for face in FACE_ORDER:
         candidate = live_rhs[face]
+        scalar_active = _active_levels(scalar_rhs[face])
         if plant == f"rhs-{face}":
-            candidate = _plant_one_ulp(candidate, masks[face])
+            candidate = _plant_one_ulp(scalar_active, masks[face])
         rhs_rows[face] = envelope_score(
-            candidate, _active_levels(scalar_rhs[face]),
+            candidate, scalar_active,
             _active_levels(vector_rhs[face]), masks[face])
+        if plant == f"rhs-{face}":
+            planted_control = rhs_rows[face]
 
     scalar_bt = read_bt_handoff(
         scalar_root / "instrumented" / BT_RECORD)
@@ -384,9 +391,11 @@ def run(
         active = masks[face][..., 0]
         candidate = live_bt[face]
         if plant == f"bt-{face}":
-            candidate = _plant_one_ulp(candidate, active)
+            candidate = _plant_one_ulp(scalar_bt[name], active)
         bt_rows[face] = envelope_score(
             candidate, scalar_bt[name], vector_bt[name], active)
+        if plant == f"bt-{face}":
+            planted_control = bt_rows[face]
 
     source_boundaries = None
     first_source_boundary = None
@@ -402,14 +411,18 @@ def run(
             rows = {}
             for face in FACE_ORDER:
                 candidate = live[face]
+                scalar_active = _active_levels(
+                    scalar_family[f"{boundary}_{face}"])
                 if plant == f"{boundary}-{face}":
-                    candidate = _plant_one_ulp(candidate, masks[face])
+                    candidate = _plant_one_ulp(scalar_active, masks[face])
                 rows[face] = envelope_score(
                     candidate,
-                    _active_levels(scalar_family[f"{boundary}_{face}"]),
+                    scalar_active,
                     _active_levels(vector_family[f"{boundary}_{face}"]),
                     masks[face],
                 )
+                if plant == f"{boundary}-{face}":
+                    planted_control = rows[face]
             source_boundaries.append({
                 "boundary": boundary,
                 "term": term,
@@ -439,17 +452,10 @@ def run(
         next_boundary = "STAGE2_SOURCE_ORDERED_RHS_ACQUISITION_REQUIRED"
 
     if plant != "none":
-        planted_rows = []
-        for stage in stages:
-            planted_rows.extend(stage["rows"].values())
-        planted_rows.extend(rhs_rows.values())
-        planted_rows.extend(bt_rows.values())
-        if source_boundaries is not None:
-            for boundary in source_boundaries:
-                planted_rows.extend(boundary["rows"].values())
-        require(any(row["legoesm_minus_scalar"]["unequal_words"] > 0
-                    for row in planted_rows),
-                "active one-ULP plant did not fire")
+        require(planted_control is not None,
+                "selected one-ULP plant was not evaluated")
+        require(planted_control["legoesm_minus_scalar"]["unequal_words"] == 1,
+                "active one-ULP plant did not isolate exactly one word")
 
     return {
         "format": "gyre-r4-smag-round20-stage-boundary-v1",
@@ -468,6 +474,7 @@ def run(
             "mismatched_bytes": passive_bytes,
         },
         "plant": plant,
+        "plant_control": planted_control,
         "stages": stages,
         "completed_stage1_rhs": rhs_rows,
         "source_ordered_stage1_rhs": source_boundaries,

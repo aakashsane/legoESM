@@ -472,12 +472,15 @@ def section_3_reachable() -> list[str]:
                 failures.append(f"{label} could not build {scheme}: {exc!r}")
                 print(f"  {label:32s} {scheme:10s} ERROR: {exc!r}")
                 continue
-            ice = getattr(sub, ICE_FIELD, "<absent>")
+            # p3 keeps the ice field only to refuse it (no WRF counterpart):
+            # certifying its value would certify an inactive control.
+            ice = (getattr(sub, ICE_FIELD, "<absent>") if scheme in ICE_SCHEMES
+                   else "n/a")
             liq = getattr(sub, LIQUID_FIELD, "<absent>")
             liq_on = getattr(sub_on, LIQUID_FIELD, "<absent>")
             print(f"  {label:32s} {scheme:10s} {str(ice):14s} "
                   f"{str(liq):16s} {liq_on}")
-            if ice is not True:
+            if scheme in ICE_SCHEMES and ice is not True:
                 failures.append(
                     f"{label}/{scheme}: {ICE_FIELD} is {ice!r}, expected True "
                     "(the ice allowance ships ON)")

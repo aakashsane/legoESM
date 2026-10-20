@@ -263,6 +263,7 @@ def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
     import types
 
     from legoesm.atmosphere.physics.clouds.config import CloudConfig
+    from legoesm.atmosphere.physics.turbulence.clubb import CLUBBConfig
     from legoesm.atmosphere.physics.microphysics import integration as mi
     from legoesm.atmosphere.physics.microphysics.config import MicrophysicsConfig
     sys.path.insert(0, str(ROOT / "tests/unit"))
@@ -284,7 +285,8 @@ def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
         MicrophysicsConfig(scheme="morrison",
                            morrison=cfg._replace(nc_from_aerosol=False)),
         "mpas", 600.0,
-        cloud_config=CloudConfig(scheme="cam6_clubb"))
+        cloud_config=CloudConfig(scheme="cam6_clubb"),
+        clubb_config=CLUBBConfig())
     mesh, sigma, state = _moist_setup()
     shape = state.T.data.shape
     tr = dict(state.tracers)

@@ -89,8 +89,5 @@ def test_mpas_lane_accepts_mg2_snow():
         microphysics="morrison", morrison_warm_rain_incloud=True,
         turbulence="clubb", cloud_scheme="cam6_clubb",
         use_clubb_cloud_fraction=True, cld_macmic_num_steps=2,
-        subgrid_autoconversion=False)
-    try:
-        cfg.validate_strict()
-    except ValueError as e:
-        assert "no other lane carries the snow number" not in str(e)
+        subgrid_autoconversion=False, radiation="rrtmgp")
+    cfg.validate_strict()

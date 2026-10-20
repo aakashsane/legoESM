@@ -113,6 +113,8 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
 )
 from legoesm.atmosphere.physics._shared import safe_divide
 from legoesm.atmosphere.physics.microphysics.config import (
+    MG2_DCS_M,
+    SAM_DCS_M,
     SED_CFL_SUBSTEPS_MAX_LIMIT,
     MorrisonConfig,
 )
@@ -171,22 +173,6 @@ _NUC_RH_LIQ_THRESHOLD = 0.999    # liquid-nucleation RH_liq gate
 _MG2_OMSM = 1.0 - 1.0e-5           # MG2 limiter round-off margin omsm, micro_mg_utils.F90:117
 _MG2_ACCRETION_VARCOEF_EXP = 1.15  # MG2 accrete_cloud_water_rain var_coef(relvar, 1.15), micro_mg_utils.F90:1317
 
-# CAM6 MG2 micro_mg_dcs [m] (namelist_defaults_cam.xml:1244): the run's DCS
-# when the "mg" flavour runs and the config leaves morrison_ice_snow_d_auto
-# unset (applied where the run config is resolved, thread_morrison_scalars;
-# MorrisonConfig itself carries SAM's 250 um).
-MG2_DCS_M = 500.0e-6
-
-
-def run_ice_snow_d_auto(dcs, flavor):
-    """The run's DCS [m] from the ExperimentConfig value: an explicit value
-    always wins; unset (None) is CAM6 MG2's 500 um for the "mg" flavour and
-    None (= the MorrisonConfig leaf's SAM 250 um) otherwise."""
-    if dcs is not None:
-        return float(dcs)
-    return MG2_DCS_M if (flavor or "mg") == "mg" else None
-
-
 def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     """Resolve ``morrison_flavor`` into the concrete parameter set.
 
@@ -206,6 +192,7 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     ``rain_selfcoll_scheme`` sb2001      mg2      (Beheng -8 nr qr rho, :1359;
                                                   only replaces the sb2001
                                                   default, see below)
+    ``ice_snow_d_auto``    250 µm        500 µm   (only when unset, None)
     =====================  ============  =============
 
     The rain rows are CAM6 MG2 (cam_cesm2_1_rel_60 micro_mg_utils.F90).
@@ -213,6 +200,9 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     ``kk2000_cam6`` the CAM6 MG2 law (select it explicitly).  Ice deposition
     (``m2005``) is unchanged.
     """
+    if config.morrison_flavor in ("mg", "sam") and config.ice_snow_d_auto is None:
+        config = config._replace(ice_snow_d_auto=(
+            MG2_DCS_M if config.morrison_flavor == "mg" else SAM_DCS_M))
     if config.morrison_flavor == "mg":
         # Self-collection: the mg set replaces the SAM DEFAULT ("sb2001") by
         # MG2's Beheng form; any other selection ("legacy", "mg2", or a typo

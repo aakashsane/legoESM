@@ -107,6 +107,15 @@ def _is_namedtuple(cls: ast.ClassDef) -> bool:
     return False
 
 
+def _is_float_ann(a) -> bool:
+    """``float`` or an unset-able ``float | None`` (resolved by its scheme)."""
+    if isinstance(a, ast.Name):
+        return a.id == "float"
+    return (isinstance(a, ast.BinOp) and isinstance(a.op, ast.BitOr)
+            and isinstance(a.left, ast.Name) and a.left.id == "float"
+            and isinstance(a.right, ast.Constant) and a.right.value is None)
+
+
 def _float_default_fields(cls: ast.ClassDef) -> dict[str, float]:
     """``{field_name: folded_default}`` for every ``: float``-annotated field
     whose default folds to a number. A ``constants.X`` / nested-config / name
@@ -155,8 +164,7 @@ def all_float_field_names(src: str) -> dict[str, set[str]]:
                 for n in node.body
                 if isinstance(n, ast.AnnAssign)
                 and isinstance(n.target, ast.Name)
-                and isinstance(n.annotation, ast.Name)
-                and n.annotation.id == "float"
+                and _is_float_ann(n.annotation)
                 and n.value is not None
             }
             if names:

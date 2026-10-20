@@ -311,6 +311,8 @@ def test_issue1515_poisoned_nr_repaired_in_one_step():
 def test_build_morrison_config_resolves_dcs_as_the_driver(flavor, dcs, expect):
     """A manifest's unset DCS replays at the flavour's value (mg = CAM6 MG2
     500 um), an explicit one as recorded."""
+    from legoesm.atmosphere.physics.microphysics.morrison import (
+        resolve_morrison_flavor)
     cfg = build_morrison_config({**RESOLVED_1432, "morrison_flavor": flavor,
                                  "morrison_ice_snow_d_auto": dcs})
-    assert cfg.ice_snow_d_auto == expect
+    assert resolve_morrison_flavor(cfg).ice_snow_d_auto == expect

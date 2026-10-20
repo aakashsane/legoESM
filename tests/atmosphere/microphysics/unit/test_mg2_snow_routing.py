@@ -38,6 +38,40 @@ def test_dcs_unset_is_the_flavours_explicit_wins(flavor, dcs, expect):
     assert leaf.ice_snow_d_auto == expect
 
 
+@pytest.mark.parametrize("flavor,dcs,expect", [
+    ("mg", None, 500.0e-6), ("sam", None, 250.0e-6),
+    ("mg", 250.0e-6, 250.0e-6), ("sam", 500.0e-6, 500.0e-6)])
+def test_direct_morrison_config_resolves_dcs_by_flavour(flavor, dcs, expect):
+    """A MorrisonConfig built directly (AIMIP training, RCE/SCM scripts, AMIP
+    bias checks) resolves an unset DCS by flavour at scheme entry, exactly as
+    a production run does; an explicit value wins."""
+    from legoesm.atmosphere.physics.microphysics.config import MorrisonConfig
+    kw = {} if dcs is None else {"ice_snow_d_auto": dcs}
+    cfg = resolve_morrison_flavor(MorrisonConfig(morrison_flavor=flavor, **kw))
+    assert cfg.ice_snow_d_auto == expect
+
+
+def test_direct_mg_construction_runs_at_500um():
+    """The kernel itself resolves: an unset DCS under mg behaves exactly like
+    an explicit 500 um, not like 250 um."""
+    from legoesm.atmosphere.physics.microphysics.config import MorrisonConfig
+    hyd_cfg = dict(morrison_flavor="mg", N_i0=0.0)
+    T, p, q_i, N_i = 250.0, 4.0e4, 1.0e-4, 1.0e5
+    rho = p / (C.R_d * T)
+    one = jnp.ones((1, 1))
+    z = jnp.zeros((1, 1))
+    hyd = HydrometeorState(q_c=z, q_r=z, q_i=q_i * one, q_s=z, q_g=z,
+                           N_c=z, N_r=z, N_i=N_i * one, N_s=z)
+
+    def run(**kw):
+        return morrison_microphysics(
+            T * one, 1.0e-4 * one, hyd, p * one, jnp.array([[p - 1e3, p + 1e3]]),
+            rho * one, 1.0e9 * one, 20.0, MorrisonConfig(**hyd_cfg, **kw)).dq_s_dt
+    unset, d500, d250 = run(), run(ice_snow_d_auto=500e-6), run(ice_snow_d_auto=250e-6)
+    assert float(unset[0, 0]) == float(d500[0, 0])
+    assert float(unset[0, 0]) != float(d250[0, 0])
+
+
 def _freeze_rain(cfg, N_r_per_m3):
     """One cold, rainy, cloud-free, subsaturated level: only Bigg freezing
     (and sublimation/evaporation) act on the rain."""

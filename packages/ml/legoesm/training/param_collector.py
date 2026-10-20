@@ -163,7 +163,9 @@ def build_registry(skipped: list[str] | None = None) -> list[ParamMeta]:
             cls = getattr(mod, cls_name, None)
             if cls is None:
                 raise ValueError(f"{module_path}.{cls_name} not found for its __param_spec__")
-            defaults = getattr(cls, "_field_defaults", {})
+            defaults = {**getattr(cls, "_field_defaults", {}),
+                        **getattr(mod, "__param_unset_defaults__", {}).get(
+                            cls_name, {})}
             scheme_key = entry["scheme_key"]
             if scheme_key in seen_keys:
                 raise ValueError(

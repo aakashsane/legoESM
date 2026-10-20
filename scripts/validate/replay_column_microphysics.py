@@ -71,17 +71,12 @@ def build_morrison_config(resolved: dict):
         raise SystemExit(
             f"run used microphysics={resolved.get('microphysics')!r}; this "
             "probe replays morrison only")
-    from legoesm.atmosphere.physics.microphysics.morrison import (
-        run_ice_snow_d_auto)
     sub = MicrophysicsConfig(scheme="morrison").morrison
     scalars = {
         leaf: resolved.get(f"morrison_{leaf}")
         for leaf in ("bergeron_rate", "rime_coeff", "dep_coeff", "agg_coeff",
-                     "k_au", "fall_a_i", "hom_ice_nuc_N")
+                     "k_au", "fall_a_i", "ice_snow_d_auto", "hom_ice_nuc_N")
     }
-    # unset DCS = the flavour's, as the driver resolves it
-    scalars["ice_snow_d_auto"] = run_ice_snow_d_auto(
-        resolved.get("morrison_ice_snow_d_auto"), resolved.get("morrison_flavor"))
     return apply_microphysics_experiment_flags(
         sub, "morrison",
         nc_from_aerosol=bool(resolved.get("nc_from_aerosol", False)),

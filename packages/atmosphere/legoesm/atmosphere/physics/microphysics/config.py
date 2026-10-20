@@ -527,6 +527,17 @@ class SeifertBehengConfig(NamedTuple):
     hard_sat_max_heating_K: float = 5.0         # per-step latent-heating cap [K]
 
 
+# Unset Morrison DCS per flavour [m] (MorrisonConfig.ice_snow_d_auto=None,
+# resolved by resolve_morrison_flavor): SAM clice_snow_Dauto, CAM6 MG2
+# micro_mg_dcs (namelist_defaults_cam.xml:1244).
+SAM_DCS_M = 250.0e-6
+MG2_DCS_M = 500.0e-6
+# The value an unset (None) spec'd field takes under its class's DEFAULT
+# selection (MorrisonConfig: morrison_flavor="mg"); read by the trainable
+# collector for its default.
+__param_unset_defaults__ = {"MorrisonConfig": {"ice_snow_d_auto": MG2_DCS_M}}
+
+
 class MorrisonConfig(NamedTuple):
     """Configuration for Morrison double-moment (ice+liquid)."""
     # Reference flavor. "mg" (DEFAULT, for GLOBAL/GCM runs) = E3SM/CESM
@@ -766,7 +777,10 @@ class MorrisonConfig(NamedTuple):
     #     "dropped — single-moment snow" note here was stale).
     #   "heuristic" = the legacy constant-rate agg_coeff·q_i·f_ice.
     ice_to_snow_scheme: str = "m2005_autoconv"
-    ice_snow_d_auto: float = 250.0e-6   # SAM DCS [m] (clice_snow_Dauto); an "mg" run with the ExperimentConfig value unset gets CAM6 MG2 500 um (morrison.MG2_DCS_M)
+    # DCS [m]; None = the flavour's (resolve_morrison_flavor at scheme entry):
+    # SAM clice_snow_Dauto 250 um, mg = CAM6 MG2 micro_mg_dcs 500 um
+    # (namelist_defaults_cam.xml:1244).  An explicit value always wins.
+    ice_snow_d_auto: float | None = None
     # Aggregation (heuristic ice→snow rate)
     agg_coeff: float = 1e-3          # Ice-to-snow aggregation rate [1/s]
     # Melting
@@ -1515,7 +1529,11 @@ def apply_microphysics_experiment_flags(
         for _leaf, _val in morrison_scalars.items():
             if _val is None:
                 continue
-            _cur = float(getattr(scheme_config, _leaf))
+            _cur = getattr(scheme_config, _leaf)
+            if _cur is None:        # an unset leaf (DCS): any value applies
+                _updates[_leaf] = float(_val)
+                continue
+            _cur = float(_cur)
             # rel_tol absorbs float32-host round-trip noise
             # (float32(1e-3) != 1e-3 exactly) so a stored config that merely
             # round-tripped through a narrower dtype does not force a

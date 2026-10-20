@@ -465,11 +465,8 @@ def test_experiment_config_cli_and_threading():
     cfg.validate_strict()
     base = MorrisonConfig()
     assert thread_morrison_scalars(cfg, "morrison", base).warm_rain_incloud is True
-    from legoesm.atmosphere.physics.microphysics.morrison import MG2_DCS_M
-    # off: only the mg run's unset DCS (CAM6 MG2 500 um) reaches the leaf
     assert thread_morrison_scalars(
-        cfg._replace(morrison_warm_rain_incloud=False), "morrison", base
-    ) == base._replace(ice_snow_d_auto=MG2_DCS_M)
+        cfg._replace(morrison_warm_rain_incloud=False), "morrison", base) is base
     for bad in (dict(turbulence="tke"), dict(cld_macmic_num_steps=1),
                 dict(subgrid_autoconversion=True), dict(cloud_scheme="sundqvist")):
         with pytest.raises(ValueError, match="morrison_warm_rain_incloud"):

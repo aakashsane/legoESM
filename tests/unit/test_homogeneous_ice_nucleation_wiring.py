@@ -214,10 +214,7 @@ class TestMorrisonScalarOverlay:
         from legoesm.atmosphere.physics.microphysics.config import (
             MorrisonConfig,
         )
-        from legoesm.atmosphere.physics.microphysics.morrison import MG2_DCS_M
-        # the default (mg) run differs from the leaf only by the flavour's
-        # unset DCS, CAM6 MG2 500 um
-        assert self._leaf() == MorrisonConfig(ice_snow_d_auto=MG2_DCS_M)
+        assert self._leaf() == MorrisonConfig()
 
     def test_declared_default_matches_the_leaf(self):
         """The cause-2 defect: 1e-8 declared vs 1e-3 real.  Locked equal so
@@ -234,10 +231,9 @@ class TestMorrisonScalarOverlay:
                           ("morrison_agg_coeff", "agg_coeff"),
                           ("morrison_k_au", "k_au"),
                           ("morrison_fall_a_i", "fall_a_i"),
+                          ("morrison_ice_snow_d_auto", "ice_snow_d_auto"),
                           ("morrison_hom_ice_nuc_N", "hom_ice_nuc_N")):
             assert getattr(e, exp) == getattr(m, leaf), (exp, leaf)
-        # DCS is the one unset-by-default scalar: None = the flavor's DCS
-        assert e.morrison_ice_snow_d_auto is None
 
     @pytest.mark.parametrize("exp,leaf,val", [
         ("morrison_bergeron_rate", "bergeron_rate", 2.5e-3),
@@ -326,10 +322,7 @@ class TestMorrisonScalarOverlay:
         from legoesm.atmosphere.physics.microphysics.config import (
             MorrisonConfig,
         )
-        from legoesm.atmosphere.physics.microphysics.morrison import MG2_DCS_M
-        # the mg run's unset DCS is CAM6 MG2's 500 um; nothing else moves
-        assert self._leaf(morrison_flavor="mg") == MorrisonConfig(
-            ice_snow_d_auto=MG2_DCS_M)
+        assert self._leaf(morrison_flavor="mg") == MorrisonConfig()
 
     def test_flavor_on_non_morrison_raises(self):
         from legoesm.driver.config import ExperimentConfig
@@ -438,8 +431,7 @@ class TestRound2Findings:
         got = _resolve_microphysics(ExperimentConfig(
             microphysics="morrison",
             morrison_dep_coeff=1e-3 * (1 + 4.7e-8)))[1]   # f32 storage noise
-        from legoesm.atmosphere.physics.microphysics.morrison import MG2_DCS_M
-        assert got == MorrisonConfig(ice_snow_d_auto=MG2_DCS_M)
+        assert got == MorrisonConfig()
 
     def test_above_tolerance_retune_is_applied(self):
         from legoesm.driver.config import ExperimentConfig

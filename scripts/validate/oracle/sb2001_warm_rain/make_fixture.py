@@ -26,6 +26,7 @@ Usage (CPU node; needs gfortran and the gSAM source)::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -40,8 +41,33 @@ QC = (0.0, 1.0e-12, 5.0e-7, 1.0e-6, 2.0e-6, 1.0e-5, 1.0e-4, 5.0e-4, 2.0e-3, 5.0e
 QR = (0.0, 5.0e-9, 1.0e-8, 1.0e-7, 1.0e-5, 1.0e-4, 1.0e-3)
 RAIN_D = 300.0e-6     # mean rain diameter for N_r (PRC/PRA do not read N_r)
 DZ, DT = 1.0e9, 1.0
+# sha256 of the gSAM 1.8.8 sources the build reads (SRC/MICRO_M2005/), checked
+# before building so a fixture can only come from the pinned oracle.
+SOURCE_SHA256 = {
+    "micro_params.f90": "306923acc9cf3e80b4c8d090b2109a3553514ab865a8ac5a8734efe0d238584f",
+    "microphysics.f90": "c77dce88aaefccd9ec3bf3f7635d748e1ce36cfc40f63169409d63b1e1dcca28",
+    "module_mp_graupel.f90": "0b89c7582e76ebc88e636e2456f429943d8c5fe80102391537404abc8854cbb6",
+    "wrf_debug.f90": "261efbc8969939de94e0f61c9e470a7886d04884b6da6975961f4b2075f45bca",
+}
+GENERATOR_FILES = ("build.sh", "patch_gsam.py", "gsam_driver.F90", "gsam_stubs.F90",
+                   "satadj_mod.F90", "make_fixture.py")
 # ODIAG columns of the driver output row (12 state values precede ODIAG(1)).
 _ODIAG = dict(prc=1, nprc1=3, pra=4, nc3d=44, pgam=45, nu=46)
+
+
+def _sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def provenance(gsam):
+    """Verify the oracle sources against SOURCE_SHA256 and hash the generator."""
+    src = Path(gsam) / "SRC" / "MICRO_M2005"
+    got = {f: _sha(src / f) for f in SOURCE_SHA256}
+    assert got == SOURCE_SHA256, got
+    gfort = subprocess.run(["gfortran", "--version"], capture_output=True,
+                           text=True).stdout.splitlines()[0]
+    return dict(source_sha256=got, gfortran=gfort,
+                generator_sha256={f: _sha(HERE / f) for f in GENERATOR_FILES})
 
 
 def build_points():
@@ -88,6 +114,7 @@ def main():
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     bld = Path(a.build)
+    prov = provenance(a.gsam)
     subprocess.run(["bash", str(HERE / "build.sh"), a.gsam, str(bld)], check=True)
     exe = bld / "gsam_driver"
     pts = build_points()
@@ -100,17 +127,13 @@ def main():
         out["N_c"].append(np.full(len(pts), nc0 * 1.0e6))      # per m^3
         for k in _ODIAG:
             ora[k].append(o[k])
-    gf = subprocess.run(["gfortran", "--version"], capture_output=True,
-                        text=True).stdout.splitlines()[0]
-    sha = subprocess.run(["git", "-C", str(HERE), "rev-parse", "HEAD"],
-                         capture_output=True, text=True).stdout.strip()
     meta = dict(
         oracle="gSAM 1.8.8 SRC/MICRO_M2005 (M2005MICRO_GRAUPEL)",
         tarball="http://rossby.msrc.sunysb.edu/GSAM/gsam1.8.8.tar.gz",
         sha256="0e9ea4a37f4daca5051cc4018cc95bbc5583159c7c27d7d05d1104fae4ed270c",
         settings="IRAIN=1 (dosb_warm_rain), dofix_pgam=.false., INUM=1 (Nc0), "
                  "doicemicro=.true., raw rates before conservation limiters",
-        gfortran=gf, legoesm_sha=sha,
+        **prov,
         generator="python scripts/validate/oracle/sb2001_warm_rain/make_fixture.py "
                   "--gsam <gSAM1.8.8> --build <dir> --out sb2001_warm_rain.npz")
     arrs = {k: np.concatenate(v) for k, v in out.items()}

@@ -451,6 +451,19 @@ def build_trainable_params(
     if scheme_configs:
         # like init_values: a run config for a scheme this selection does not
         # carry would silently seed nothing
+        _cls_of = {m.scheme_key: (m.module, m.config_class) for m in registry}
+        for _k, _cfg in scheme_configs.items():
+            if _k not in _cls_of:
+                continue
+            _mod = importlib.import_module(_cls_of[_k][0])
+            # only a scheme with unset-able fields reads its config here
+            # (others may legitimately pass a wrapping sub-config)
+            if _cls_of[_k][1] in getattr(_mod, "__param_unset_defaults__", {}):
+                _cls = getattr(_mod, _cls_of[_k][1])
+                if not isinstance(_cfg, _cls):
+                    raise TypeError(
+                        f"scheme_configs[{_k!r}] is a {type(_cfg).__name__}, "
+                        f"not the {_cls_of[_k][1]} that scheme uses")
         _scope = (set(active_scheme_keys) if active_scheme_keys is not None
                   else {m.scheme_key for m in registry})
         unreached_cfg = sorted(set(scheme_configs) - _scope)

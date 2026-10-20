@@ -339,3 +339,25 @@ def test_scheme_configs_refuses_wrong_type_and_unreached_scheme() -> None:
             tier="extended", active_scheme_keys={key},
             scheme_configs={key: MorrisonConfig(),
                             "atm.micro.ThompsonConfig": ThompsonConfig()})
+
+
+def test_wrong_config_type_refused_even_when_dcs_not_seeded() -> None:
+    from legoesm.atmosphere.physics.microphysics.config import ThompsonConfig
+    key = "atm.micro.MorrisonConfig"
+    with pytest.raises(TypeError, match="not the MorrisonConfig"):
+        build_trainable_params(tier="extended", active_scheme_keys={key},
+                               exclude=(f"{key}.ice_snow_d_auto",),
+                               scheme_configs={key: ThompsonConfig()})
+
+
+def test_wb_aimip_bundle_seeds_dcs_from_the_deck_pins() -> None:
+    """scale_build's run config: a deck pinning the sam flavour seeds 250 um."""
+    from legoesm.training.scale_build import _pinned_morrison_config
+    key = "atm.micro.MorrisonConfig"
+    for pins, expect in (({}, 500.0e-6), ({"morrison_flavor": "sam"}, 250.0e-6)):
+        p = build_trainable_params(
+            tier="extended", active_scheme_keys={key},
+            scheme_configs=_pinned_morrison_config({key}, {key: pins}))
+        np.testing.assert_allclose(
+            float(p.as_dict()[f"{key}.ice_snow_d_auto"]), expect, rtol=1e-5)
+    assert _pinned_morrison_config({"atm.micro.KesslerConfig"}, {}) is None

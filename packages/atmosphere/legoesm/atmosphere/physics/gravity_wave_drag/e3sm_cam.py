@@ -634,8 +634,10 @@ def gw_beres_src(
     netdt : (ncol, nlev)  convective heating rate [K/s] (>0 where heating).
     zm : (ncol, nlev)     midpoint heights [m].
     lat : (ncol,)         latitudes [rad].
-    k700 : int            0-based midpoint index nearest 700 hPa (source-wind
-                          level).  Traced int32 ok (consumed via jnp.take).
+    k700 : int            0-based midpoint index of the source-wind level
+                          (E3SM k700: the layer whose top reference interface
+                          is the last one above 700 hPa).  Traced int32 ok
+                          (consumed via jnp.take).
     mfcc : (maxh, 2*maxuh+1, 2*pgwv+1)  mean-flux lookup table.
     pgwv, dc, beres : spectral half-width, bin width, Beres sub-config.
 
@@ -937,8 +939,9 @@ def _ref_level_index(p_ref_half, p_target, lo, hi):
     interface index, and, read as a 0-based MIDPOINT index, E3SM's 1-based
     ``kfront`` / ``k700`` (``if (pref_edge(k+1) < p) kidx = k+1``,
     gw_drag.F90:417-420, :453-456; CAM6 gw_drag.F90:871-874 is the same
-    rule).  ``[lo, hi]`` is the pre-existing index clip (never binds on a
-    grid whose top interface is above ``p_target``).  Static per grid, so
+    rule).  ``[lo, hi]`` is the pre-existing index clip: it binds only when
+    fewer than ``lo + 1`` reference interfaces lie above ``p_target`` (or
+    none lie below), which no legoESM grid reaches.  Static per grid, so
     the index carries no gradient, as in E3SM.
     """
     k = jnp.sum(p_ref_half < p_target) - 1
@@ -1895,8 +1898,9 @@ def _e3sm_cam_gwd_one_source(
                     "CAM's gw_init_beres sizes maxh/maxuh from the file — set "
                     "beres.maxh/maxuh to the table's HD and (MW-1)/2."
                 )
-        # k700: 0-based midpoint index nearest the source-wind pressure
-        # (~700 hPa; config.beres.source_wind_p).  Traced int, jit-safe.
+        # k700: 0-based midpoint of the layer whose top reference interface
+        # is the last one above source_wind_p (E3SM gw_drag.F90:453-456).
+        # Traced int, jit-safe.
         k700 = _source_level_index(
             p_ref_half, nlev, config.beres.source_wind_p,
             config.beres.source_level_rule,
@@ -1950,9 +1954,10 @@ def _e3sm_cam_gwd_one_source(
         du_dt = du_dt * lfrac
         dv_dt = dv_dt * lfrac
 
-    # Wind the energy closures see: the state plus the tendencies accumulated
-    # by earlier sources (CAM ptend accumulation); the wave physics above
-    # always used the un-updated ``u``, as in CAM.
+    # Wind the SPECTRAL energy fixer sees: the state plus the tendencies
+    # accumulated by earlier sources (E3SM ptend accumulation).  The wave
+    # physics above, and the discrete orographic closure below, use the
+    # un-updated ``u``, as in E3SM.
     u_ke = u if du_prior is None else u + dt * du_prior
     v_ke = v if dv_prior is None else v + dt * dv_prior
 
@@ -2053,7 +2058,7 @@ def _e3sm_cam_gwd_one_source(
         if config.do_eddy_diffusion or config.use_e3sm_spectral_heating:
             ktop = 0
             # E3SM kbotbg = the bottom of the background-wave region (~500 hPa).
-            # Keep the index a 0-d TRACED int32 (jnp.argmin, NOT int(...)) so the
+            # Keep the index a 0-d TRACED int32 (jnp ops, NOT int(...)) so the
             # ediff path is jit-safe; gw_ediff / the coeff builder consume it via
             # comparison masks (no static slicing on kbot).
             kbot = _ref_level_index(p_ref_half, config.ediff_kbot_p, 1, nlev - 1)

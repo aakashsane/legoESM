@@ -700,7 +700,7 @@ class TestGWDE3SMCAMGrad:
 
 
 class TestGWDE3SMExcludedKnobsGrad:
-    """Review F4: nine E3SM knobs reach the drag only through an argmin level
+    """Review F4: nine E3SM knobs reach the drag only through a level-index
     choice or a hard on/off comparison.  MEASURED identically-zero gradient
     (with a non-trivial forward, so the zero is not vacuous), and the spec
     must therefore list each as ``excluded``, never as a tunable tier."""
@@ -754,7 +754,7 @@ class TestGWDE3SMExcludedKnobsGrad:
         out = e3sm_cam_gwd(*_gwd_args(col), 1800.0, cfg_at(p0), p_ref_half=col["p_ref_half"], **kw)
         assert float(jnp.max(jnp.abs(out.du_dt))) > 0.0, "vacuous: no drag"
         assert_exactly_zero(jax.grad(loss)(p0), f"e3sm {field}",
-                            reason="argmin level index / hard threshold")
+                            reason="level index (reference-interface threshold) / hard threshold")
         spec = gcfg.__param_spec__[self._SPEC_CLASS[sub]]
         assert field in spec["excluded"] and field not in spec["params"]
 

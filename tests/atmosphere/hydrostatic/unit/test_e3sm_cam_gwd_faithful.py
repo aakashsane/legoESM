@@ -534,7 +534,9 @@ def test_spectral_heating_band_cuts_deep_beres_dttke():
                            cfg_off, netdt_col=netdt)
     out_on = e3sm_cam_gwd(u, v, T, pf, ph, zf, zh, rho, lat, 1800.0,
                           cfg_on, netdt_col=netdt)
-    kbot = int(np.argmin(np.abs(pmid_mean - cfg_on.ediff_kbot_p)))
+    # E3SM kbotbg: last reference interface above ediff_kbot_p (the wrapper
+    # passes the column's own interfaces as pref_edge).
+    kbot = int(np.sum(np.asarray(ph)[0] < cfg_on.ediff_kbot_p)) - 1
     below = np.array(out_off.dT_dt)[:, kbot:]
     assert np.max(np.abs(below)) > 0.0, (
         "fixture must deposit legacy dttke below the 500 hPa band")

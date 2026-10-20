@@ -532,12 +532,27 @@ class SeifertBehengConfig(NamedTuple):
 # micro_mg_dcs (namelist_defaults_cam.xml:1244).
 SAM_DCS_M = 250.0e-6
 MG2_DCS_M = 500.0e-6
-# The value an unset (None) spec'd field takes under its class's DEFAULT
-# selection (MorrisonConfig: morrison_flavor="mg"); read by the trainable
-# collector for its default (a SAM-flavour trainer seeds DCS through
-# build_trainable_params(init_values=...)), and it makes the param-spec gate
-# require the field.
-__param_unset_defaults__ = {"MorrisonConfig": {"ice_snow_d_auto": MG2_DCS_M}}
+
+
+def resolve_unset_ice_snow_d_auto(cfg):
+    """THE resolution of an unset Morrison DCS: by flavour (sam 250 um, mg
+    500 um); an explicit value is returned unchanged.  Used by the scheme
+    (resolve_morrison_flavor) and by the trainable collector's seed."""
+    if cfg.ice_snow_d_auto is not None:
+        return cfg
+    if cfg.morrison_flavor == "mg":
+        return cfg._replace(ice_snow_d_auto=MG2_DCS_M)
+    if cfg.morrison_flavor == "sam":
+        return cfg._replace(ice_snow_d_auto=SAM_DCS_M)
+    return cfg      # unknown flavour: resolve_morrison_flavor raises
+
+
+# Unset (None) spec'd fields -> the resolver that gives their value from a
+# config instance.  The trainable collector seeds from it (the class default
+# when no run config is passed, i.e. the default "mg" flavour), and the
+# param-spec gate requires these fields to be classified.
+__param_unset_defaults__ = {
+    "MorrisonConfig": {"ice_snow_d_auto": resolve_unset_ice_snow_d_auto}}
 
 
 class MorrisonConfig(NamedTuple):

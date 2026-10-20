@@ -113,10 +113,9 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
 )
 from legoesm.atmosphere.physics._shared import safe_divide
 from legoesm.atmosphere.physics.microphysics.config import (
-    MG2_DCS_M,
-    SAM_DCS_M,
     SED_CFL_SUBSTEPS_MAX_LIMIT,
     MorrisonConfig,
+    resolve_unset_ice_snow_d_auto,
 )
 from legoesm.atmosphere.physics.microphysics.output import (
     HydrometeorState,
@@ -200,9 +199,7 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     ``kk2000_cam6`` the CAM6 MG2 law (select it explicitly).  Ice deposition
     (``m2005``) is unchanged.
     """
-    if config.morrison_flavor in ("mg", "sam") and config.ice_snow_d_auto is None:
-        config = config._replace(ice_snow_d_auto=(
-            MG2_DCS_M if config.morrison_flavor == "mg" else SAM_DCS_M))
+    config = resolve_unset_ice_snow_d_auto(config)
     if config.morrison_flavor == "mg":
         # Self-collection: the mg set replaces the SAM DEFAULT ("sb2001") by
         # MG2's Beheng form; any other selection ("legacy", "mg2", or a typo

@@ -163,9 +163,12 @@ def build_registry(skipped: list[str] | None = None) -> list[ParamMeta]:
             cls = getattr(mod, cls_name, None)
             if cls is None:
                 raise ValueError(f"{module_path}.{cls_name} not found for its __param_spec__")
-            defaults = {**getattr(cls, "_field_defaults", {}),
-                        **getattr(mod, "__param_unset_defaults__", {}).get(
-                            cls_name, {})}
+            defaults = dict(getattr(cls, "_field_defaults", {}))
+            # an unset (None) field: the value its resolver gives the class
+            # default (the default flavour); a run config refines it at seed
+            for _f, _res in getattr(mod, "__param_unset_defaults__", {}).get(
+                    cls_name, {}).items():
+                defaults[_f] = getattr(_res(cls()), _f)
             scheme_key = entry["scheme_key"]
             if scheme_key in seen_keys:
                 raise ValueError(
@@ -218,6 +221,16 @@ def _resolve_shape(meta: ParamMeta, dims: dict[str, int] | None) -> tuple[int, .
 # seed this close to either bound does not survive the round trip, and its leaf
 # has no usable gradient; kept next to the check that enforces it.
 _SIGMOID_SEED_MARGIN = 0.001
+
+
+def _unset_seed(meta: ParamMeta, cfg) -> float | None:
+    """The run's value of an unset-able field (``__param_unset_defaults__``),
+    through the same resolver the scheme uses: by the run config's selection,
+    or its explicit value.  None for every other field."""
+    res = getattr(importlib.import_module(meta.module),
+                  "__param_unset_defaults__", {}).get(
+                      meta.config_class, {}).get(meta.field)
+    return None if res is None else float(getattr(res(cfg), meta.field))
 
 
 def _seed_raw(meta: ParamMeta, shape: tuple[int, ...], dtype,
@@ -289,6 +302,7 @@ def build_trainable_params(
     dims: dict[str, int] | None = None,
     dtype=None,
     init_values: dict[str, float] | None = None,
+    scheme_configs: dict | None = None,
 ) -> TrainablePhysicsParams:
     """Build a :class:`TrainablePhysicsParams` from the registered specs.
 
@@ -323,6 +337,11 @@ def build_trainable_params(
     dtype
         Raw-value dtype; defaults to the precision policy's compute dtype
         (guards the float64-into-float32-scan-carry hazard).
+    scheme_configs
+        ``{scheme_key: config}`` of the run: an unset-able field
+        (``__param_unset_defaults__``, e.g. Morrison DCS) is seeded from it
+        through the scheme's own resolver (its flavour, or its explicit value)
+        instead of the class default.  ``init_values`` still wins.
     """
     level = _TIER_LEVELS.get(tier, tier) if isinstance(tier, str) else int(tier)
     if not isinstance(level, int):
@@ -405,10 +424,11 @@ def build_trainable_params(
         elif not selected:
             continue
         shape = _resolve_shape(meta, dims)
-        raw[meta.qualified_name] = _seed_raw(
-            meta, shape, dtype,
-            None if init_values is None
-            else init_values.get(meta.qualified_name))
+        seed = (None if init_values is None
+                else init_values.get(meta.qualified_name))
+        if seed is None and scheme_configs and meta.scheme_key in scheme_configs:
+            seed = _unset_seed(meta, scheme_configs[meta.scheme_key])
+        raw[meta.qualified_name] = _seed_raw(meta, shape, dtype, seed)
         lo, hi = meta.bounds
         constraints.append(
             ParamConstraint(

@@ -2661,6 +2661,12 @@ def _bc_pv_flux(
         raise ValueError(
             "een_nemo_relative_vorticity requires een_metric_weighting='nemo'"
         )
+    if een_nemo_zeta and vorticity_scheme not in ("een_total", "een_planetary"):
+        # een_planetary zeroes the relative vorticity, so the switch is inert
+        # by construction there; any other scheme would silently ignore it.
+        raise ValueError(
+            "een_nemo_relative_vorticity is implemented only for een_total; "
+            f"got vorticity_scheme={vorticity_scheme!r}")
     if een_nemo_top_f_u_halo and not een_nemo_zeta:
         raise ValueError(
             "een_nemo_top_f_u_halo requires een_nemo_relative_vorticity"
@@ -4521,6 +4527,10 @@ def surface_stress_faces(
                 * jnp.maximum(tm[-1], tm_halo))
             tau_j_v = tau_j_v.at[-1].set(top)
         return tau_i_u, tau_j_v, dz_0_u, dz_0_v
+    if nemo_fold_vector_sign and _native_i is None and _sf_tau_x is not None:
+        raise ValueError(
+            "nemo_fold_vector_sign needs on-grid tau_i_native/tau_j_native; "
+            "geographic tau_x/tau_y would skip the fold sign")
     if surface_forcing is None or _sf_tau_x is None or _sf_tau_y is None:
         return None
     tau_e_T = -jnp.asarray(_sf_tau_x, dtype=u_dtype)

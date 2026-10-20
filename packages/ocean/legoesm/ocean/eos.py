@@ -956,11 +956,13 @@ def nemo_r3t_stretch(
     H = jnp.asarray(H_bathy)
     wet_H = H > 0.0
     safe_H = jnp.where(wet_H, H, 1.0)
+    from legoesm.ocean.vertical import static_card_flag
+
     if evaluation == "nemo_reciprocal":
         # domain.F90:158 stores r1_ht_0 before domqco.F90:160 multiplies it
         # by ssh.  The barrier preserves that fp64 boundary under JIT.
         r1_H = lax.optimization_barrier(1.0 / safe_H)
-        r3t = jnp.where(wet_H, nemo_source_round(jnp.asarray(eta) * r1_H) if getattr(z_coord, "nemo_r3t_stored_product", False) is True else jnp.asarray(eta) * r1_H, 0.0)  # card-selected: domqco.f90:257 stores the product  # noqa: E501
+        r3t = jnp.where(wet_H, nemo_source_round(jnp.asarray(eta) * r1_H) if static_card_flag(z_coord, "nemo_r3t_stored_product") else jnp.asarray(eta) * r1_H, 0.0)  # card-selected: domqco.f90:257 stores the product  # noqa: E501
     else:
         r3t = jnp.where(wet_H, jnp.asarray(eta) / safe_H, 0.0)
     # Safety floor on the stretch, NOT on r3t: a column driven to

@@ -532,6 +532,7 @@ def compute_two_leaf_canopy_fluxes(
     # land step accepts if the column ends unsolved); freezing it held desert
     # columns at their start-of-step soil.  Acceptance stays tied to the LAST pass.
     x_conv = jnp.full_like(initial_state, jnp.nan)
+    n_iters = None  # set by each pass; the sort reads the previous pass's
     for _picard_iter in range(n_picard):
         bundles_k = _build_bundle(Ts_bc_k)
         _fallback = initial_state if _picard_iter % 2 == 0 else cold_state

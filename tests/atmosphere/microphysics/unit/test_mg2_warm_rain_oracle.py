@@ -12,10 +12,10 @@ every existing sharpness field at its hard-switch limit.  Relative error is
 ``|a-b| / max(|a|, |b|)`` (0 where both are exactly 0); no floor.
 
 The whole-call test runs the PRODUCTION deck's Morrison config (resolved
-through the run_amip parser and the driver's own appliers) with
-``warm_rain_scheme="kk2000_cam6"`` at the fixture's relvar: the deck itself
-still selects ``kk2000`` until CLUBB's per-cell relvar reaches the
-microphysics (pending decision, see the PR).
+through the run_amip parser and the driver's own appliers; the deck selects
+``warm_rain_scheme="kk2000_cam6"``) at the fixture's uniform relvar; the
+per-cell relvar CLUBB hands the deck is tested in
+``tests/atmosphere/test_clubb_mg2_relvar_oracle.py``.
 """
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def _production_morrison():
     return thread_morrison_scalars(cfg, "morrison", m)
 
 
-def _run_columns(fx, cfg):
+def _run_columns(fx, cfg, relvar=None):
     from legoesm import constants as C
     from legoesm.atmosphere.physics.microphysics.morrison import morrison_microphysics
     from legoesm.atmosphere.physics.microphysics.output import HydrometeorState
@@ -99,7 +99,7 @@ def _run_columns(fx, cfg):
     return morrison_microphysics(
         g["T"], g["q_v"], hyd, g["p_full"], g["p_half"], g["rho"], dz,
         float(fx["dt"]), cfg._replace(publish_qc_budget=True),
-        cloud_fraction=g["cf"])
+        cloud_fraction=g["cf"], relvar=relvar)
 
 
 def test_fixture_provenance_and_inputs_reproduce():

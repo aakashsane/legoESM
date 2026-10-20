@@ -173,7 +173,7 @@ __param_spec__ = {
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "subgrid_rh_crit": "physics-fidelity sub-grid closure: in-cloud cf critical RH, mirrors the cloud scheme (no tunable knob)",
             "subgrid_cf_min": "numerics: cloud-fraction floor capping the in-cloud enhancement (AD/numeric safety)",
-            "kk2000_cam6_relvar": "physics-fidelity: CAM6 relvarmax fallback constant (clubb_intr.F90:2416-2421) for the kk2000_cam6 option; CAM6 diagnoses relvar per cell from CLUBB variance, not ported, so this is a fixed reference value, not a calibration knob",
+            "kk2000_cam6_relvar": "physics-fidelity: CAM6 relvarmax constant (clubb_intr.F90:2416-2421) used by kk2000_cam6 only when no per-cell relvar is passed; the CLUBB liquid-partition lanes pass CLUBB's per-cell relvar (clubb_intr.F90:2425), so this is a fixed reference value, not a calibration knob",
         },
         "params": {
             # --- Warm rain (Seifert-Beheng + KK2000) ---
@@ -960,6 +960,8 @@ class MorrisonConfig(NamedTuple):
     # (CAM6 ``relvar``).  10.0 = CAM6's ``relvarmax`` when deep convection is
     # not CLUBB (clubb_intr.F90:2416-2421), the value it falls back to where
     # CLUBB's qc variance is unavailable; CAM6 clips to [0.001, relvarmax].
+    # Read only when the caller passes no per-cell relvar (the CLUBB
+    # liquid-partition lane passes CLUBB's).
     kk2000_cam6_relvar: float = 10.0
     # CAM6 MG2 in-cloud warm rain: autoconversion + accretion on q_c/lcldm,
     # q_r/precip_frac (N_c/lcldm when prognostic), tendencies times lcldm,
@@ -1125,11 +1127,19 @@ class ThompsonConfig(NamedTuple):
 class P3Config(NamedTuple):
     """Configuration for P3 (Predicted Particle Properties) microphysics.
 
-    Single ice category with predicted rime mass (q_rim) and rime volume
-    (B_rim). Liquid phase uses Seifert-Beheng warm-rain helpers.
-
-    Ice particle properties (fall speed, density) are diagnosed from
-    (q_i, N_i, q_rim, B_rim) rather than assumed from a fixed habit.
+    ``p3.py`` is a faithful port of gSAM 1.8.8 P3 v3.1.14 (one ice
+    category, lookup table 1 v4.1, Meyers nucleation, KK2000 warm rain,
+    specified droplet number), oracle-tested to 1e-10 at the hard limit.
+    Fields it reads: ``Nc_0`` (specified droplet number [1/m^3], gSAM
+    ``Nc0``), ``N_i_nuc_max`` (Meyers cap), ``cooper_T_nuc`` /
+    ``cooper_supi_min`` (nucleation gate), ``rho_rim_min`` /
+    ``rho_rim_max`` and the three smoothing fields ``ice_sigmoid_sharpness``,
+    ``cooper_supi_sharpness``, ``melt_sharpness`` (oracle at 1e6 / 1e9 /
+    1e6).  The opt-in ``hard_saturation_adjustment`` guard (not part of gSAM
+    P3, default off) is applied after the P3 step as for ml_emulator.  Every
+    other field belonged to the former surrogate and has no gSAM
+    counterpart: ``p3.check_p3_config`` raises if one is changed from its
+    default (``P3_FIELDS_WITHOUT_ORACLE_COUNTERPART``).
 
     Slot reuse in HydrometeorState
     --------------------------------

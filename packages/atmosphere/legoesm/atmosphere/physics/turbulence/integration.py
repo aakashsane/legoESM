@@ -991,11 +991,17 @@ def _make_mpas_turbulence(
         if getattr(_surf, "ocean_q_sfc_saline", False):
             # Sea water at the SURFACE pressure (the coupled lane's convention)
             # for the ocean fraction: replace that fraction's fresh-water share
-            # of the blend; the land share is untouched.
+            # of the blend; the land share is untouched.  SPECIFIC humidity,
+            # like the air humidity it is differenced with (CESM ssq = 0.98 x
+            # saturation specific humidity): the saturation curve's MIXING
+            # RATIO is converted before the salinity factor.
             from legoesm.core.bulk_flux import ocean_surface_q_sat
-            _q_ocean = ocean_surface_q_sat(
-                T_sfc, p_s.reshape(nCells), thermo_convention=_surf.thermo_convention,
-                bulk_scheme=_surf.bulk_scheme, saline_factor=_Q_SAT_SALINE_FACTOR)
+            from legoesm.thermo import mixing_ratio_to_specific_humidity
+            _q_ocean = _Q_SAT_SALINE_FACTOR * mixing_ratio_to_specific_humidity(
+                ocean_surface_q_sat(
+                    T_sfc, p_s.reshape(nCells),
+                    thermo_convention=_surf.thermo_convention,
+                    bulk_scheme=_surf.bulk_scheme))
             _fo = (1.0 - jnp.asarray(f_land, dtype=q_sfc.dtype).reshape(nCells)
                    if f_land is not None else 1.0)
             q_sfc = q_sfc + _fo * (_q_ocean - _q_sfc_fresh)
@@ -1048,12 +1054,14 @@ def _make_mpas_turbulence(
             else:
                 _T_bulk = jnp.asarray(_T_oc, dtype=T_sfc.dtype).reshape(nCells)
                 if getattr(_surf, "ocean_q_sfc_saline", False):
+                    # Specific humidity, as the blended path's ocean share.
                     from legoesm.core.bulk_flux import ocean_surface_q_sat
-                    _q_bulk = ocean_surface_q_sat(
-                        _T_bulk, p_s.reshape(nCells),
-                        thermo_convention=_surf.thermo_convention,
-                        bulk_scheme=_surf.bulk_scheme,
-                        saline_factor=_Q_SAT_SALINE_FACTOR)
+                    from legoesm.thermo import mixing_ratio_to_specific_humidity
+                    _q_bulk = _Q_SAT_SALINE_FACTOR * mixing_ratio_to_specific_humidity(
+                        ocean_surface_q_sat(
+                            _T_bulk, p_s.reshape(nCells),
+                            thermo_convention=_surf.thermo_convention,
+                            bulk_scheme=_surf.bulk_scheme))
                 else:
                     _q_bulk = saturation_specific_humidity(_T_bulk, p_full_col[:, -1])
             # Through the shared helper rather than an inline copy: this

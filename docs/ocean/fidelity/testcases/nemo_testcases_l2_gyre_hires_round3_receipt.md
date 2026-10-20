@@ -153,7 +153,7 @@ series and KE spectra.
 1461..1825 (365-day windows; GYRE's model year is 360 days).  Each frame has one NEMO row and
 one legoESM row with surface relative vorticity/f, SSH, surface speed, and SST.
 It uses the shared C-grid velocity and vorticity diagnostics, scans both models
-first to establish common per-year color limits, and streams 1280x640 RGB
+first to establish common per-window color limits, and streams 1280x640 RGB
 frames to `imageio_ffmpeg.write_frames` using H.264.  The output manifest pins
 provider provenance (including NEMO tile content hashes and the legoESM run
 manifest), windows, frame count, scales, fps, and movie digests.

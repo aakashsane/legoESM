@@ -129,10 +129,32 @@ change, long run, or acquisition was introduced. No user decision is needed.
 ## Tests and review
 
 Focused factor-reader, exact-word, classification, passive-exposure, replay,
-override, ENE-kernel, momentum-closure, and NEMO-state-bridge tests pass.
-The round-specific citation gate and the complete split lane battery are run
-at the final clean receipt commit below. Independent-review status is
-**PENDING**.
+override, ENE-kernel, momentum-closure, and NEMO-state-bridge tests pass. The
+complete split CPU/x64 lane battery reports:
+
+- high-resolution acquisition/ladder/climate/movie/instrument split:
+  `122 passed, 2 deselected`;
+- affected shared ENE/diagnostics/bridge/Smagorinsky split:
+  `49 passed, 1 deselected`;
+- shared NEMO recipe, testcase recipe, and latitude/longitude C-grid split:
+  `98 passed`;
+- one-degree card reconciliation and phase-3 gate split:
+  `32 passed, 2 deselected`;
+- citation-gate self-tests: `17 passed`.
+
+`FULL_LANE_BATTERY_SPLIT_PASS: 318 passed, 5 deselected across five CPU/x64 groups`
+
+The round-specific citation gate passes all five compiled-source citations at
+the clean receipt commit with zero unmapped citations, failures, or stale map
+entries. Shifting the new `stprk3.f90:207-215` citation by two lines returns a
+failed gate and exit status 1. `git diff --check` passes.
+
+Review status is **UNREVIEWED**. The read-only Codex reviewer cannot initialize
+its local app server because that service attempts a write on the read-only
+host filesystem, including from a disposable writable review clone. The
+read-only Claude reviewer starts but terminates with `ENOTFOUND` reaching its
+API. No third reviewer binary is installed. These are service failures, not
+review verdicts or waivers. No scientific owner or physical change is landed.
 
 ## Compiled-source citations
 

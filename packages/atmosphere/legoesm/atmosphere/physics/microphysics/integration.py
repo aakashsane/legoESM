@@ -221,6 +221,11 @@ def make_microphysics_physics(
     # ``(*shape_2d, nlev)`` to ``(ncol, nlev)`` and never references
     # grid lat/lon — works identically for cubed-sphere ``(face, n, n)``,
     # lat-lon ``(n_lat, n_lon)``, and MPAS Voronoi ``(nCells,)``.
+    if relvar_from_clubb and model_type not in ("hydrostatic", "mpas"):
+        raise ValueError(
+            f"relvar_from_clubb=True on model_type={model_type!r}: only the "
+            "hydrostatic/mpas lane forwards CLUBB's per-cell relvar to "
+            "microphysics; this lane would silently use the constant.")
     if model_type in ("hydrostatic", "mpas"):
         fn = _make_hydrostatic_microphysics(microphysics_config, dt,
                                             cloud_config=cloud_config,

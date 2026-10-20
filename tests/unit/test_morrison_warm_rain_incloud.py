@@ -574,3 +574,18 @@ def test_pipeline_lanes_refuse_kk2000_cam6_and_the_column_lane_does_not():
     cfg = ExperimentConfig(grid=GridConfig(grid_type="mpas"), **kw)
     assert cfg.column_loop_lane
     assert _resolve_microphysics(cfg)[1].warm_rain_scheme == "kk2000_cam6"
+
+
+@pytest.mark.parametrize("model_type",
+                         ["nonhydrostatic", "plane", "mpas_nh", "spectral_pe"])
+def test_relvar_flag_is_refused_on_lanes_that_never_forward_it(model_type):
+    """Only the hydrostatic/mpas bridge forwards PhysicsState.relvar; elsewhere
+    relvar_from_clubb=True must not satisfy the kk2000_cam6 guard."""
+    from legoesm.atmosphere.physics.microphysics import MicrophysicsConfig
+    from legoesm.atmosphere.physics.microphysics.integration import (
+        make_microphysics_physics,
+    )
+    mc = MicrophysicsConfig(scheme="morrison",
+                            morrison=_cfg(warm_rain_scheme="kk2000_cam6"))
+    with pytest.raises(ValueError, match="only the hydrostatic/mpas lane"):
+        make_microphysics_physics(mc, model_type, 600.0, relvar_from_clubb=True)

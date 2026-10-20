@@ -1219,8 +1219,9 @@ class P3Config(NamedTuple):
     # gSAM cloud.f90 (Khairoutdinov 2023, after IFS): pristine air below
     # 235 K may stay ice-supersaturated up to rh_homo = 2.583 - T/207.8
     # (~1.45 at 235 K, ~1.67 at 190 K); the allowance is withdrawn the
-    # moment cloud ice exists. ON by default (SAM-faithful); set False to
-    # target plain ice saturation.  See thermo.homogeneous_freezing_rh_factor.
+    # moment cloud ice exists.  NOT PART OF THE WRF P3 PORT: the field stays
+    # only so an old deck that changes it fails loudly
+    # (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART); the scheme never reads it.
     homogeneous_ice_supersaturation: bool = True
 
 

@@ -20,6 +20,9 @@ Source: `scripts/tmp/_probe_supersat_guard.py`, SLURM job 9331634.
 | sundqvist | 0.2255 | 0.2256 | 0.2256 | 0.2257 | 1.0000 |
 | ml_emulator (untrained) | 1.2459 | 1.1108 | 0.7949 | 0.1604 | 1.0000 |
 
+kessler and seifert_beheng: pre-port measurements. Both are now faithful oracle
+ports that refuse the opt-in guard (`HARD_SAT_GUARD_EXEMPT`).
+
 ## What the numbers actually say
 
 **CONFIRMED.** In a CLOSED box the five bulk schemes' default smooth branch does

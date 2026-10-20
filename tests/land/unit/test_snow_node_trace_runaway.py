@@ -56,4 +56,4 @@ def test_thin_pack_does_not_overheat_the_soil():
     T_off = _top_soil_after(False, swe, 24)
     T_on = _top_soil_after(True, swe, 24)
     assert np.all(np.isfinite(T_on))
-    np.testing.assert_array_less(T_on - T_off, 3.0)
+    np.testing.assert_array_less(np.abs(T_on - T_off), 3.0)

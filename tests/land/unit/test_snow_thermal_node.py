@@ -111,7 +111,8 @@ def test_snow_node_flux_balance_uses_whole_pack_resistance(partial):
 
 @pytest.mark.parametrize("n_sub,ft,src,partial", [
     (1, False, False, False), (4, False, False, False), (1, True, False, False),
-    (4, False, True, False), (1, False, False, True), (4, True, True, True)])
+    (4, False, True, False), (1, False, False, True), (1, True, True, True),
+    (4, False, True, True)])
 def test_column_enthalpy_ledger(n_sub, ft, src, partial):
     """dE = (G + Q_geo + sum(layer_source)) dt + (swe' - swe) c_ice (T_s - Tf)."""
     T, theta = _column()

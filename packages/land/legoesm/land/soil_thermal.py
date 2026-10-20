@@ -752,8 +752,8 @@ def solve_snow_node_soil_thermal(
         layer_source=layer_source, n_substeps=n_substeps)
     swe = jnp.maximum(snow_swe, 0.0)
     rho_s = thermal_config.snow_bulk_density_kg_m3
-    covered = (snow_cover > 0.0) & (swe > 0.0)
-    swe_cov = jnp.where(covered, swe / jnp.where(covered, snow_cover, 1.0),
+    on_cover = (snow_cover > 0.0) & (swe > 0.0)
+    swe_cov = jnp.where(on_cover, swe / jnp.where(on_cover, snow_cover, 1.0),
                         empty_cover_swe)                           # [kg/m2]
     R_snow = swe_cov / rho_s / snow_thermal_conductivity(rho_s)   # [m2 K/W]
     C_snow = constants.c_pi * swe                                  # [J/m2/K]

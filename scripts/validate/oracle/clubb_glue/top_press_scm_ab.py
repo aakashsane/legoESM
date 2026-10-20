@@ -1,4 +1,4 @@
-"""Offline CLUBB-top A/B: trop_cloud_top_press 15000 Pa (production) vs 100 Pa (CAM6).
+"""Offline CLUBB-top A/B: trop_cloud_top_press 15000 Pa (old production) vs 100 Pa (CAM6).
 
 Usage: top_press_scm_ab.py CHECKPOINT DECK --steps N --stride S
 
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import numpy as np
 
-_P_CUT = 15000.0     # the production top: diagnostics split at it [Pa]
+_P_CUT = 15000.0     # the pre-2026-10-20 production top (A/B arm 1); diagnostics split at it [Pa]
 _S_PER_DAY = 86400.0
 
 
@@ -89,7 +89,7 @@ def main(argv=None):
     if bad:
         raise SystemExit(f"rebuilt config differs from the run's: {bad}")
     ccfg = materialize_sub_config(turbulence_config_for(cfg)).clubb
-    if not ccfg.prognostic or float(ccfg.trop_cloud_top_press) != _P_CUT:
+    if not ccfg.prognostic or float(ccfg.trop_cloud_top_press) not in (_P_CUT, 100.0):
         raise SystemExit(f"deck CLUBB is not the production one: {ccfg.prognostic=}, "
                          f"{ccfg.trop_cloud_top_press=}")
     phys_dt = cfg.dycore.dt * cfg.physics_update_steps

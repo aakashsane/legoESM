@@ -13,7 +13,8 @@ comparison covers exactly the host glue: the theta-l / total-water map into
 CLUBB (clubb_intr.F90:1546-1550), the surface heat-flux lower BC (:1781), the
 map back to T (:2048-2051, 2159-2160), the water reset/return above clubbtop
 and the column energy fixer (:2042-2150), for 8 RFMIP-based columns and CLUBB
-tops of 15000 Pa (production deck) and 100 Pa (CAM6 namelist).  Both sides get
+tops of 15000 Pa (old production deck) and 100 Pa (CAM6 namelist, production
+since 2026-10-20).  Both sides get
 CAM's rho_ds = pdel/(g dz).
 
 Metric: per field, max |ours - oracle| / max |oracle| over the case
@@ -196,10 +197,11 @@ def test_generator_parses_the_oracle_record(tmp_path):
         np.testing.assert_array_equal(o["cols"][0][f], i + 0.5 * np.arange(3))
 
 
-def test_top_press_probe_splits_at_the_production_top():
-    """The A/B probe's 'above the CLUBB top' diagnostics use the production
-    deck's trop_cloud_top_press."""
+def test_production_clubb_top_is_cam6_and_an_ab_arm():
+    """The production deck uses CAM6's trop_cloud_top_press (100 Pa,
+    namelist_defaults_cam.xml:1295), and the A/B probe accepts it as an arm."""
     import yaml
     deck = yaml.safe_load((Path(__file__).resolve().parents[2] / "config" / "amip"
                            / "amip_production.yaml").read_text())
-    assert _module("top_press_scm_ab")._P_CUT == deck["clubb_trop_cloud_top_press"]
+    assert deck["clubb_trop_cloud_top_press"] == 100.0
+    assert _module("top_press_scm_ab")._P_CUT == 15000.0

@@ -98,14 +98,21 @@ After both acquisitions, the already-committed scorer compares the NEMO
 cumulative arrays with legoESM's already-materialised production accumulator
 barriers in the same order. The first cumulative U/V row clearing four times
 the same-field scalar/vector maximum selects exactly one contributor for the
-next factor walk. No cumulative difference alone names a transcription owner:
-the next round must substitute one independently recorded factor and require
-the contributor plus downstream stage row to fall inside the NEMO envelope
-without moving untouched rows.
+next factor walk. Admission first requires the final ZAD frame to be
+word-identical to each flavour's inherited completed-RHS record and requires
+legoESM's final production barrier to be word-identical to its completed-RHS
+trace. No cumulative difference alone names a transcription owner: the next
+round must substitute one independently recorded factor and require the
+contributor plus downstream stage row to fall inside the NEMO envelope without
+moving untouched rows.
 
 The one-ULP control constructs a candidate from the scalar oracle, moves the
 first active word by one representable binary64 value, and requires exactly
-one unequal word. Header, array-size, truncation, non-finite-active-word,
+one unequal word. The clean artifact has one of 285,600 RHS-U words unequal,
+one maximum ULP, and maximum absolute movement
+`2.117582368135751e-22`; SHA-256
+`bac838e16802dd69f89e23c9e4109c970a5a806c203570782fab965680f2875c`.
+Header, array-size, truncation, non-finite-active-word,
 paired-provider, source-order, single-rank, passivity, and five-frame layout
 refusals are covered by the scorer/tool tests.
 
@@ -141,15 +148,27 @@ operator acquisition was performed. No user decision is needed.
 
 ## Tests and review
 
-The focused scorer/reader/acquisition contract tests, the inherited round-17
-reader and trace tests, time-level registry tests, source-citation self-tests,
-and split CPU/x64 lane battery are recorded below after the final clean commit.
-Both scalar/vector operator preflights report `PREFLIGHT_OK`. `git diff
---check` passes.
+The full high-resolution acquisition/ladder/budget/climate/divergence/movie,
+round-17, round-20, shipped-ceiling, driver, and citation split reports
+`150 passed, 2 deselected`. The time-level registry, one-degree card
+reconciliation, and phase-3 trajectory split reports
+`62 passed, 2 deselected`. Thus the two disjoint splits finish at
+`FULL_LANE_BATTERY_SPLIT_PASS: 212 passed, 4 deselected`. The focused
+round-20 plus citation-gate subset separately reports `28 passed`. Both
+scalar/vector operator preflights report `PREFLIGHT_OK`; `bash -n` and the
+actual modified-Fortran syntax compile pass; `git diff --check` passes.
 
-Review status is **HELD** pending the campaign's two independent reviewers.
-This round lands no physics claim: it reports a measured boundary and requests
-the record required to continue.
+The receipt citation gate passes all six new compiled-source citations with
+zero unmapped citations, failures, or stale map entries, and all of its
+synthetic controls fire.
+
+Review status is **HELD**. The read-only Codex reviewer cannot initialise its
+app-server because the service attempts a write on the read-only host
+filesystem. The read-only Claude reviewer starts but returns no result and was
+stopped after a bounded wait. GLM remains unavailable as recorded by the
+operator. These are service failures, not review verdicts or waivers. This
+round lands no physics claim: it reports a measured boundary and requests the
+record required to continue.
 
 ## Compiled-source citations
 

@@ -399,12 +399,32 @@ def run(
 
     source_boundaries = None
     first_source_boundary = None
+    source_order_calibration = None
     if rhs_family_vector_root is not None:
         scalar_family = read_stage1_rhs_family(
             rhs_family_scalar_root / "instrumented" / RHS_FAMILY_RECORD)
         vector_family = read_stage1_rhs_family(
             rhs_family_vector_root / "instrumented" / RHS_FAMILY_RECORD)
         live_operands = trace.operator_operands[0]
+        live_final = _trace_source_boundary(live_operands, "after_adv")
+        source_order_calibration = {}
+        for face in FACE_ORDER:
+            active = masks[face]
+            source_order_calibration[face] = {
+                "scalar_final_equals_inherited_completed_rhs": wordwise_result(
+                    _active_levels(scalar_family[f"after_adv_{face}"])[active],
+                    _active_levels(scalar_rhs[face])[active]),
+                "vector_final_equals_inherited_completed_rhs": wordwise_result(
+                    _active_levels(vector_family[f"after_adv_{face}"])[active],
+                    _active_levels(vector_rhs[face])[active]),
+                "legoesm_final_equals_completed_rhs": wordwise_result(
+                    live_final[face][active], live_rhs[face][active]),
+            }
+        require(all(
+            row[check]["bit_exact"]
+            for row in source_order_calibration.values()
+            for check in row
+        ), "source-ordered final frame does not close to completed RHS")
         source_boundaries = []
         for boundary, term in SOURCE_BOUNDARIES:
             live = _trace_source_boundary(live_operands, boundary)
@@ -478,6 +498,7 @@ def run(
         "stages": stages,
         "completed_stage1_rhs": rhs_rows,
         "source_ordered_stage1_rhs": source_boundaries,
+        "source_order_calibration": source_order_calibration,
         "first_source_boundary_beyond_twin": first_source_boundary,
         "external_mode_handoff": bt_rows,
         "first_stage_beyond_twin": first_stage,

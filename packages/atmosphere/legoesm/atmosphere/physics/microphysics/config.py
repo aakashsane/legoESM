@@ -119,16 +119,16 @@ __param_spec__ = {
         "scheme_key": "atm.micro.KesslerConfig",
         "excluded": {
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
+            "evaporation_coeff": "not in the oracle (ESCOMP atmos_phys0_31_000 kessler_run): a non-default or traced value raises",
+            "rain_fall_speed": "not in the oracle (ESCOMP atmos_phys0_31_000 kessler_run): a non-default or traced value raises",
+            "hard_sat_adjust_threshold": "not in the oracle (ESCOMP atmos_phys0_31_000 kessler_run): a non-default or traced value raises",
+            "hard_sat_max_heating_K": "not in the oracle (ESCOMP atmos_phys0_31_000 kessler_run): a non-default or traced value raises",
         },
         "params": {
             # PRIMARY warm-rain knobs (Kessler 1969).
             "autoconversion_threshold": {"units": "kg/kg", "bounds": (0.0001, 0.003), "tunable_tier": 1, "transform": "sigmoid", "category": "autoconversion", "reference": "Kessler (1969)", "shape": None},
             "autoconversion_rate": {"units": "1/s", "bounds": (0.0001, 0.01), "tunable_tier": 1, "transform": "sigmoid", "category": "autoconversion", "reference": "Kessler (1969)", "shape": None},
             "accretion_coeff": {"units": "1", "bounds": (0.5, 6.6), "tunable_tier": 1, "transform": "sigmoid", "category": "accretion", "reference": "Kessler (1969)", "shape": None},
-            "evaporation_coeff": {"units": "1", "bounds": (0.1, 5.0), "tunable_tier": 2, "transform": "sigmoid", "category": "evaporation", "reference": "Kessler (1969)", "shape": None},
-            "rain_fall_speed": {"units": "m/s", "bounds": (1.0, 15.0), "tunable_tier": 2, "transform": "sigmoid", "category": "fall_speed", "reference": "Kessler (1969)", "shape": None},
-            "hard_sat_adjust_threshold": {"units": "1", "bounds": (1.0, 2.0), "tunable_tier": 2, "transform": "sigmoid", "category": "condensation", "reference": "hard saturation-adjustment guard", "shape": None},
-            "hard_sat_max_heating_K": {"units": "K", "bounds": (0.5, 50.0), "tunable_tier": 2, "transform": "sigmoid", "category": "condensation", "reference": "hard saturation-adjustment guard", "shape": None},
         },
     },
     "MicrophysicsMLEmulatorConfig": {

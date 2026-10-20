@@ -409,7 +409,7 @@ def test_thompson_qi_does_not_go_negative_warm():
     "scheme,call",
     [
         pytest.param("kessler", kessler_microphysics, marks=pytest.mark.xfail(
-            strict=True, reason="Kessler faithful-port default gap: saturation_sharpness=100 is not the hard limit (negative cloud water, ~half adjustment); passes at the hard limit; pending the user decision on the default (Kessler port PR, ASK 1)")),
+            strict=True, reason="Kessler faithful-port default gap: saturation_sharpness=100 is not the hard limit (negative cloud water, ~half adjustment); passes at the hard limit; known difference: the smooth default is kept because differentiability is never traded for oracle fidelity (user decision 2026-10-20)")),
         ("seifert_beheng", seifert_beheng_microphysics),
         ("morrison", morrison_microphysics),
         ("thompson", thompson_microphysics),
@@ -888,7 +888,7 @@ def test_kessler_grad_finite_at_zero_qr():
     "scheme,call",
     [
         pytest.param("kessler", kessler_microphysics, marks=pytest.mark.xfail(
-            strict=True, reason="Kessler faithful-port default gap: saturation_sharpness=100 is not the hard limit (negative cloud water, ~half adjustment); passes at the hard limit; pending the user decision on the default (Kessler port PR, ASK 1)")),
+            strict=True, reason="Kessler faithful-port default gap: saturation_sharpness=100 is not the hard limit (negative cloud water, ~half adjustment); passes at the hard limit; known difference: the smooth default is kept because differentiability is never traded for oracle fidelity (user decision 2026-10-20)")),
         ("seifert_beheng", seifert_beheng_microphysics),
     ],
 )

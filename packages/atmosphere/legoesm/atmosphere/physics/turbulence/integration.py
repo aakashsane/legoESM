@@ -476,17 +476,18 @@ def _carry_update_with_cloud_fraction(carry_field, carry_val, turb_out):
     (``carry_field`` -> ``carry_val``: tke / qke / clubb_moments) is co-located
     under its own key so it still evolves across the step.
 
-    Schemes with no PDF cloud closure leave ``cloud_fraction=None`` -> we return
-    the plain ``carry_val``, byte-identical to the pre-existing (bare value, not
-    dict) contract.  combined.py only merges the dict when ``field_name`` (the
-    registered carry field) is not None, which holds for every cf-producing
-    scheme today (CLUBB carries ``tke``); a diagnostic scheme that ever set cf
-    with ``carry_field=None`` would need combined.py's ``field_name is not None``
-    guard relaxed for the dict branch first.
+    The diagnosed PBL height ``turb_out.h_pbl`` is always published as
+    ``pblh`` (CAM's pbuf ``pblh``, written by clubb_intr.F90:2616): deep
+    convection reads it one step lagged for its launch-level bound
+    (convect_deep.F90:266).  Schemes with no PDF cloud closure leave
+    ``cloud_fraction=None`` and publish only ``pblh`` plus their carry.
+    combined.py only merges the dict when ``field_name`` (the registered carry
+    field) is not None, which holds for every scheme (turbulence_carry_field
+    never returns None).
     """
-    if turb_out.cloud_fraction is None:
-        return carry_val
-    updates = {"cloud_fraction": turb_out.cloud_fraction}
+    updates = {"pblh": turb_out.h_pbl}
+    if turb_out.cloud_fraction is not None:
+        updates["cloud_fraction"] = turb_out.cloud_fraction
     if carry_field is not None and carry_val is not None:
         updates[carry_field] = carry_val
     return updates

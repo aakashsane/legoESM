@@ -67,7 +67,8 @@ def run_glue(fx, case, width, monkeypatch, T=None, q_c=None):
         z = jnp.zeros_like(state.thlm)
         return new, dict(cloud_frac=flip(jnp.minimum(c("cf_out"), 1.0)),
                          rcm=flip(c("rcm_out")), wpthvp=jnp.zeros_like(state.wp2),
-                         Kh_zt=z, Kh_zm=jnp.zeros_like(state.wp2))
+                         Kh_zt=z, Kh_zm=jnp.zeros_like(state.wp2),
+                         rcp2_zt=z)  # relvar input; not compared here
 
     monkeypatch.setattr(C, "advance_clubb_core", fake_core)
     dt = float(fx["in/dt"])
@@ -129,7 +130,8 @@ def test_heat_bc_and_energy_fixer_target_share_the_cam_convention(fix, path,
     def fake_core(state, forcing, **kw):
         z = jnp.zeros_like(state.thlm)
         return state, dict(cloud_frac=z, rcm=z, wpthvp=jnp.zeros_like(state.wp2),
-                           Kh_zt=z, Kh_zm=jnp.zeros_like(state.wp2))
+                           Kh_zt=z, Kh_zm=jnp.zeros_like(state.wp2),
+                           rcp2_zt=z)  # relvar input; not compared here
 
     monkeypatch.setattr(C, "advance_clubb_core", fake_core)
     cfg = C.CLUBBConfig(prognostic=True, trop_cloud_top_press=0.0)

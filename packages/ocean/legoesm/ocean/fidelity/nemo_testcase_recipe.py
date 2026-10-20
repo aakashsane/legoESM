@@ -238,8 +238,9 @@ def validate_gyre_namelist(namelist: GyreResolvedNamelist) -> None:
     if (namelist.rn_csmc, namelist.rn_minfac, namelist.rn_maxfac) != (
             3.5, 1.0, 1.0):
         raise ValueError(
-            "GYRE Smagorinsky fields currently implement exactly "
-            "rn_csmc=3.5 and rn_minfac=rn_maxfac=1.0 (inert in mode 0)")
+            "GYRE Smagorinsky fields must be exactly rn_csmc=3.5 and "
+            "rn_minfac=rn_maxfac=1.0 (the implemented mode-32 values; "
+            "Laplacian mode 0 does not read them)")
     for _name in ("nn_it000", "nn_itend", "nn_stock", "nn_write", "ptimincr"):
         _value = getattr(namelist, _name)
         if not isinstance(_value, int) or isinstance(_value, bool):

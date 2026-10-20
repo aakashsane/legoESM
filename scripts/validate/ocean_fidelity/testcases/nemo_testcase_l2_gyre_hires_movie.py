@@ -157,7 +157,10 @@ def main(argv=None) -> int:
         default=HERE / "gyre_hires_registered_runs.json",
     )
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--years", type=int, nargs="+", choices=(1, 5), default=(1, 5))
+    parser.add_argument(
+        "--years", type=int, nargs="+", choices=(1, 5), default=(1, 5),
+        help="window labels: 1 = days 1..365, 5 = days 1461..1825 (365-day "
+             "windows; GYRE's model year is 360 days)")
     parser.add_argument("--fps", type=int, default=15)
     args = parser.parse_args(argv)
     try:

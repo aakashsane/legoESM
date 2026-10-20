@@ -23,7 +23,7 @@ def test_nn_gyre_must_be_a_positive_int(value):
 @pytest.mark.parametrize("field", ["rn_csmc", "rn_minfac", "rn_maxfac"])
 def test_laplacian_mode_refuses_inert_smagorinsky_edits(field):
     assert GYRE_SHIPPED_NAMELIST.ln_dynldf_lap
-    with pytest.raises(ValueError, match="inert in mode 0"):
+    with pytest.raises(ValueError, match="does not read them"):
         validate_gyre_namelist(GYRE_SHIPPED_NAMELIST._replace(**{field: 9.0}))
 
 

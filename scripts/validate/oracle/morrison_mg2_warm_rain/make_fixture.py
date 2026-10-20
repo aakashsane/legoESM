@@ -20,6 +20,15 @@ Two parts, written to one ``.npz``:
 spanning [0.001, 10], npccn = 0) plus a point set at low density, where MG2's
 size reset leaves ncic*rho below 1 m^-3.
 
+``--prognostic-nc-act`` writes ``mg2_prognostic_nc_act.npz`` for the droplet-number
+budget (stage S10.2): the prognostic columns with per-level npccn (positive,
+negative, zero; also in clear air), plus two copies of ``trop_deep``: ``witness``
+(very high nc, so MG2's size reset LOWERS ncic, and a q_r scan, npccn = 0: the qc
+mass limiter binds where the number limiter does not) and ``limbind`` (nc x 1e-3,
+npccn = 0: the number limiter binds).  Run through the probe build ``mg2_tap``
+(build.sh), whose 16th output column is nctend right after the activation
+re-apply (micro_mg2_0.F90:2022).
+
 Usage (CPU node; needs gfortran and the CAM checkout)::
 
     python scripts/validate/oracle/morrison_mg2_warm_rain/make_fixture.py \\
@@ -228,6 +237,49 @@ def build_prognostic_points():
     return np.array(pts)
 
 
+ACT_NPCCN_CLOUDY = ("zero", 1.0e3, 1.0e5, "half_sink", "over_sink")
+ACT_NPCCN_CLEAR = (0.0, 1.0e3, -1.0e2)
+WITNESS_QR = (1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3)
+
+
+def build_activation_columns(cols):
+    """``--prognostic-nc-act`` columns: per-level npccn [1/kg/s] on the prognostic
+    columns, plus the ``witness`` and ``limbind`` copies of trop_deep (npccn = 0)."""
+    out = []
+    for c in cols:
+        npccn = np.zeros_like(c["T"])
+        ic = il = 0
+        for k in range(len(npccn)):
+            if c["q_c"][k] > 0:
+                m = ACT_NPCCN_CLOUDY[ic % len(ACT_NPCCN_CLOUDY)]
+                ic += 1
+                if m == "zero":
+                    npccn[k] = 0.0
+                elif m == "half_sink":
+                    npccn[k] = -0.5 * c["nc_kg"][k] / DT
+                elif m == "over_sink":
+                    npccn[k] = -2.0 * c["nc_kg"][k] / DT
+                else:
+                    npccn[k] = m
+            else:
+                npccn[k] = ACT_NPCCN_CLEAR[il % len(ACT_NPCCN_CLEAR)]
+                il += 1
+        out.append(dict(c, npccn=npccn))
+    base = next(c for c in cols if c["name"] == "trop_deep")
+    cloudy = np.flatnonzero(base["q_c"] > 0)
+    lcl = np.maximum(base["cf"], 1e-4)
+    wit = dict(base, name="witness", npccn=np.zeros_like(base["T"]),
+               nc_kg=np.where(base["q_c"] > 0, 1.0e12 * lcl, 0.0),
+               q_r=base["q_r"].copy(), N_r=base["N_r"].copy())
+    for j, k in enumerate(cloudy):
+        qr = WITNESS_QR[j % len(WITNESS_QR)]
+        wit["q_r"][k] = qr
+        wit["N_r"][k] = base["rho"][k] * qr / (math.pi / 6.0 * 1000.0 * 5.0e-4 ** 3)
+    lim = dict(base, name="limbind", npccn=np.zeros_like(base["T"]),
+               nc_kg=base["nc_kg"] * 1.0e-3)
+    return out + [wit, lim]
+
+
 def write_prognostic_column_inputs(cols, path):
     nlev = len(cols[0]["T"])
     with open(path, "w") as f:
@@ -239,7 +291,7 @@ def write_prognostic_column_inputs(cols, path):
                 row = [c["T"][k], c["q_v"][k], c["q_c"][k], 0.0, c["nc_kg"][k], 0.0,
                        c["q_r"][k], 0.0, c["N_r"][k] / c["rho"][k], 0.0,
                        c["relvar"][k], 1.0, c["p_full"][k], pdel[k],
-                       c["cf"][k], c["cf"][k], c["cf"][k], 1.0, 0.0]
+                       c["cf"][k], c["cf"][k], c["cf"][k], 1.0, c.get("npccn", np.zeros(nlev))[k]]
                 f.write(" ".join(f"{x:.17e}" for x in row) + "\n")
 
 
@@ -270,6 +322,8 @@ def load_column_outputs(path, ncol, nlev):
     body = np.array([[float(x) for x in line.split()] for line in lines[ncol:]
                      if line.strip()]).reshape(ncol, nlev, -1)
     out = {k: body[:, :, i + 2] for i, k in enumerate(ORACLE_COLS)}
+    if body.shape[-1] == len(ORACLE_COLS) + 3:      # mg2_tap: nctend after :2022
+        out["nctend_stage"] = body[:, :, -1]
     out["prect"] = prect
     return out
 
@@ -289,7 +343,8 @@ def _meta(a):
         legoesm_sha=_git(HERE, "rev-parse", "HEAD"),
         generator=("python scripts/validate/oracle/morrison_mg2_warm_rain/"
                    f"make_fixture.py --cam <CAM> --build <dir> --out {a.out.name}"
-                   + (" --prognostic-nc" if a.prognostic_nc else "")))
+                   + (" --prognostic-nc" if a.prognostic_nc else "")
+                   + (" --prognostic-nc-act" if a.prognostic_nc_act else "")))
 
 
 def main_prognostic(a):
@@ -321,17 +376,41 @@ def main_prognostic(a):
     print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
 
 
+def main_prognostic_act(a):
+    cols = build_activation_columns(build_prognostic_columns(build_columns()))
+    ncol, nlev = len(cols), len(cols[0]["T"])
+    fx = {f"col_{k}": np.stack([c[k] for c in cols])
+          for k in COL_FIELDS + ("nc_kg", "relvar", "npccn")}
+    fx["col_names"] = np.array([c["name"] for c in cols])
+    fx["dt"] = np.array(DT)
+    fin, fout = a.build / "act_col_in.txt", a.build / "act_col_out.txt"
+    write_prognostic_column_inputs(cols, fin)
+    subprocess.run([str(a.build / "mg2_tap"), str(fin), str(fout), "F", "P"], check=True)
+    o = load_column_outputs(fout, ncol, nlev)
+    for k in ORACLE_COLS + ("nctend_stage",):
+        fx[f"ora_{k}"] = o[k]
+    meta = _meta(a)
+    meta["probe"] = "build.sh tap/: micro_mg2_0.F90 + nctend_stage after :2022 (3 added lines)"
+    fx["meta"] = np.array(json.dumps(meta))
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(a.out, **fx)
+    print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--cam", required=True, type=Path)
     ap.add_argument("--build", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--prognostic-nc", action="store_true")
+    ap.add_argument("--prognostic-nc-act", action="store_true")
     a = ap.parse_args(argv)
     subprocess.run(["bash", str(HERE / "build.sh"), str(a.cam), str(a.build)],
                    check=True)
     if a.prognostic_nc:
         return main_prognostic(a)
+    if a.prognostic_nc_act:
+        return main_prognostic_act(a)
     cols = build_columns()
     ncol, nlev = len(cols), len(cols[0]["T"])
     fx = {f"col_{k}": np.stack([c[k] for c in cols]) for k in COL_FIELDS}

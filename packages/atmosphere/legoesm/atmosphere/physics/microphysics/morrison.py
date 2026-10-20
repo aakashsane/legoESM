@@ -74,6 +74,7 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     KK2000_CAM6_QC_MAX,
     MG2_QRIC_MAX,
     MG2_QSMALL,
+    mg2_size_bounded_nc,
     mg2_incloud_warm_rain_inputs,
     mg2_inprecip_rain,
     mg2_precip_frac,
@@ -281,6 +282,7 @@ def morrison_microphysics(
     config: MorrisonConfig = MorrisonConfig(),
     cloud_fraction: jax.Array | None = None,
     relvar: jax.Array | None = None,
+    npccn: jax.Array | None = None,
 ) -> MicrophysicsOutput:
     """Compute Morrison double-moment microphysics tendencies.
 
@@ -295,6 +297,11 @@ def morrison_microphysics(
         Per-cell CAM6 relative cloud-water variance ``(ncol, nlev)`` from CLUBB
         (``clubb_intr.F90:2425``), read only by ``warm_rain_scheme="kk2000_cam6"``;
         ``None`` uses the constant ``config.kk2000_cam6_relvar``.  Required under
+        ``config.prognostic_droplet_number``.
+    npccn
+        CAM6 droplet-activation tendency ``(ncol, nlev)`` per VOLUME
+        [1/(m^3 s)] (the caller converts CAM6 microp_aero's per-kg npccn with
+        this call's ``rho``); required by, and accepted only under,
         ``config.prognostic_droplet_number``.
 
     Returns
@@ -318,10 +325,16 @@ def morrison_microphysics(
             (config.liquid_from_closure, "liquid_from_closure=True"),
             (relvar is not None and jnp.shape(relvar) == T.shape,
              f"CLUBB's per-cell relvar passed as relvar= with shape {T.shape}"),
+            (npccn is not None and jnp.shape(npccn) == T.shape,
+             f"the activation tendency passed as npccn= with shape {T.shape}"),
         ) if not ok]
         if _bad:
             raise ValueError("MorrisonConfig.prognostic_droplet_number=True needs "
                              + ", ".join(_bad) + ".")
+    elif npccn is not None:
+        # user decision 2026-10-20: inputs the switch-off path never reads are refused
+        raise ValueError("npccn= is read only under "
+                         "MorrisonConfig.prognostic_droplet_number=True.")
     q_c = hydrometeors.q_c
     q_r = hydrometeors.q_r
     q_i = hydrometeors.q_i
@@ -380,9 +393,14 @@ def morrison_microphysics(
         qsat_ice_fn = _saturation_specific_humidity_ice
 
     if _prog_nc:
+        # MG2 activation pre-apply (micro_mg2_0.F90:1088-1095): every rate and
+        # the number limiter see nc + npccn*dt where there is cloud water; the
+        # tendency re-applies npccn everywhere at the end (:2019-2022).
+        N_c_act = jnp.where(q_c >= MG2_QSMALL,
+                            jnp.maximum(N_c + npccn * dt, 0.0), N_c)
         # MG2 ncic = max(nc/lcldm, 0) (micro_mg2_0.F90:1224-1236): the raw
         # prognostic number, no Nc_0 fallback.
-        N_c_eff = jnp.maximum(N_c, 0.0)
+        N_c_eff = jnp.maximum(N_c_act, 0.0)
     else:
         N_c_eff = effective_Nc(
             N_c, config.Nc_0,
@@ -491,9 +509,15 @@ def morrison_microphysics(
         # accre_enhan*var_coef(relvar, 1.15) (accrete_cloud_water_rain,
         # micro_mg_utils.F90:1316-1328).
         # Under prognostic_droplet_number: no 1 m^-3 number floor (exact CAM6, Q-I).
+        if _prog_nc:
+            # MG2's ONE droplet-number size reset (size_dist_param_liq,
+            # micro_mg2_0.F90:1296), shared by autoconversion and every
+            # droplet-number sink below.
+            N_c_ic = mg2_size_bounded_nc(q_c_ic, N_c_ic, rho)
         dq_c_au, dN_r_au, x_c = autoconversion_kk2000_cam6(
             q_c_ic, N_c_ic, rho, _relvar,
-            fact=config.autocon_fact, nc_floor=not _prog_nc)
+            fact=config.autocon_fact, nc_floor=not _prog_nc,
+            size_reset=not _prog_nc)
         dq_c_au = dq_c_au * cf_eff
         dN_r_au = dN_r_au * cf_eff
         dq_c_ac = accretion_kk2000(
@@ -906,6 +930,9 @@ def morrison_microphysics(
 
     # 4. Riming: ice/snow collect cloud water (supercooled droplets freeze on).
     riming_i = config.rime_coeff * jnp.clip(q_i, 0.0) * jnp.clip(q_c, 0.0) * f_ice
+    if _prog_nc:
+        # MG2 has no riming of cloud water by cloud ice (user decision A5).
+        riming_i = jnp.zeros_like(riming_i)
     # Snow riming: faithful SAM PSACWS (PSD collection) when double-moment;
     # else the crude bulk rate. dt=None ⇒ NO internal donor clamp — the shared
     # q_c donor clamp below caps it ONCE alongside the other q_c sinks (codex
@@ -1259,6 +1286,24 @@ def morrison_microphysics(
         homo_freeze_N = jnp.zeros_like(homo_freeze_c)
     qc_sink_total = (dq_c_au + dq_c_ac + bergeron + riming_i + riming_s
                      + riming_g + cond_evap_sink + homo_freeze_c + bergs)
+    if _prog_nc:
+        # MG2 droplet-number sinks from the UNLIMITED mass rates (nprc1, npra,
+        # npsacws = rate*ncic/qcic, micro_mg_utils.F90:728-733, :1324-1330; the
+        # qc mass limiter below scales mass only), on the size-reset in-cloud
+        # ncic and the 5e-3-capped qcic; graupel riming adds its droplet share
+        # (user decision 7a).  Grid-mean mass rates x in-cloud N/q = MG2's
+        # (sum)*lcldm.  nsubc = nnuccc = nnucct = 0 here (MG2 :1549-1552; no
+        # heterogeneous droplet freezing yet).
+        _has_c = q_c_ic >= MG2_QSMALL
+        _nc_per_qc = jnp.where(_has_c, N_c_ic / jnp.where(_has_c, q_c_ic, 1.0), 0.0)
+        nc_sink = (dq_c_au + dq_c_ac + riming_s + riming_g) * _nc_per_qc
+        # MG2 conservation of nc with omsm (micro_mg2_0.F90:1628-1642), against
+        # the post-activation grid-mean number.
+        _nclim = nc_sink * dt > N_c_act
+        nc_sink = nc_sink * jnp.where(
+            _nclim,
+            N_c_act / dt / jnp.where(_nclim, nc_sink, 1.0) * _MG2_OMSM,
+            1.0)
     qc_avail = jnp.clip(q_c, 0.0)
     if config.warm_rain_incloud:
         # CAM6 MG2 q_c limiter form (micro_mg2_0.F90:1566-1590): only where
@@ -2012,7 +2057,12 @@ def morrison_microphysics(
     # same N_c) and spuriously slow autoconversion in mixed-phase cloud.
     dN_c_riming = ((riming_i + riming_s + riming_g)
                    * jnp.clip(N_c, 0.0) / jnp.clip(q_c, 1e-15))
-    if getattr(config, "predict_Nc", False):
+    if _prog_nc:
+        # MG2 nctend (micro_mg2_0.F90:1947) + activation re-applied everywhere
+        # (:2019-2022).  The net floor below stays under the switch until the
+        # MG2 end-of-step repairs land (user decision 2026-10-20).
+        dN_c_dt = -nc_sink + npccn
+    elif getattr(config, "predict_Nc", False):
         dN_c_dt = safe_divide(-dq_c_au * rho, x_c, eps=1e-15) - dN_c_riming
     else:
         # SAM dopredictNc=.false.: droplet number is the specified constant Nc_0

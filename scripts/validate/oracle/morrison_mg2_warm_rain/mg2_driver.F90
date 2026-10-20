@@ -7,11 +7,16 @@
 ! (mg2, :1244), do_cldice=.true., use_hetfrz_classnuc=.true. (frzimm/cnt/dep=0),
 ! microp_uniform from argv(3).  Constants = legoESM's (constants.py).
 ! usage: mg2_driver in.txt out.txt [microp_uniform T|F] [P]
+! Built with -DMG2_TAP against the probe copy (build.sh, tap/) it writes a 16th column: nctend right after
+! the activation re-apply (micro_mg2_0.F90:2022).
 ! A 4th argument P = prognostic droplet number: nccons_in=.false. (ncic = max(nc/lcldm, 0)) and a 19th input
 ! column per level, npccn [1/kg/s]; without it the input has 18 columns and nccons_in=.true. as before.
 program mg2_driver
   use micro_mg_utils, only: r8
   use micro_mg2_0, only: micro_mg_init, micro_mg_tend
+#ifdef MG2_TAP
+  use micro_mg2_0, only: nctend_stage
+#endif
   use wv_sat_methods, only: wv_sat_methods_init
   implicit none
   real(r8), parameter :: g = 9.80616_r8, rair = 287.05_r8, rh2o = 461.51_r8
@@ -22,6 +27,11 @@ program mg2_driver
   character(len=512) :: fin, fout, aflag, pflag
   logical :: uni, prog
   integer :: ninp
+#ifdef MG2_TAP
+  integer, parameter :: nout = 16
+#else
+  integer, parameter :: nout = 15
+#endif
   character(128) :: err
   character(len=16) :: pfm = 'in_cloud'
   real(r8), allocatable :: inp(:,:)
@@ -50,7 +60,7 @@ program mg2_driver
   call wv_sat_methods_init(r8, tmelt, 273.16_r8, 373.16_r8, 20._r8, rair/rh2o, err)
   open(10, file=trim(fin), status='old')
   read(10, *) ncol, nlev, dt
-  allocate(inp(nlev, ninp), allout(ncol, nlev, 15), allprect(ncol))
+  allocate(inp(nlev, ninp), allout(ncol, nlev, nout), allprect(ncol))
   call alloc2(nlev)
   allocate(rndst(1,nlev,4), nacon(1,nlev,4)); rndst = 1.e-6_r8; nacon = 0._r8
   do ic = 1, ncol
@@ -106,9 +116,12 @@ program mg2_driver
      end if
      allprect(ic) = prect(1)
      do k = 1, nlev
-        allout(ic,k,:) = [tlat(1,k), qvlat(1,k), qctend(1,k), qrtend(1,k), nctend(1,k), &
+        allout(ic,k,1:15) = [tlat(1,k), qvlat(1,k), qctend(1,k), qrtend(1,k), nctend(1,k), &
              nrtend(1,k), nevapr(1,k), pratot(1,k), prctot(1,k), qrsedten(1,k), &
              qcsedten(1,k), umr(1,k), qcrat(1,k), rflx(1,k+1), lflx(1,k+1)]
+#ifdef MG2_TAP
+        allout(ic,k,16) = nctend_stage(1,k)
+#endif
      end do
   end do
   close(10)
@@ -118,7 +131,7 @@ program mg2_driver
   end do
   do ic = 1, ncol
      do k = 1, nlev
-        write(11, '(2i4,15(1x,es25.16e3))') ic, k, allout(ic,k,:)
+        write(11, '(2i4,16(1x,es25.16e3))') ic, k, allout(ic,k,:)
      end do
   end do
   close(11)

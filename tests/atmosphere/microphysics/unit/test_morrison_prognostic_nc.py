@@ -62,7 +62,8 @@ def _run(fx, cfg, N_c=None, q_c=None, relvar=None):
                            N_r=g["N_r"], N_i=z)
     return morrison_microphysics(
         g["T"], g["q_v"], hyd, g["p_full"], g["p_half"], g["rho"], dz, float(fx["dt"]), cfg,
-        cloud_fraction=g["cf"], relvar=g["relvar"] if relvar is None else relvar)
+        cloud_fraction=g["cf"], relvar=g["relvar"] if relvar is None else relvar,
+        npccn=jnp.zeros_like(g["T"]))   # S10.1 fixture: npccn = 0
 
 
 def test_whole_call_rain_matches_mg2_prognostic_nc():

@@ -286,13 +286,16 @@ def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
                            morrison=cfg._replace(nc_from_aerosol=False)),
         "mpas", 600.0,
         cloud_config=CloudConfig(scheme="cam6_clubb"),
-        clubb_config=CLUBBConfig())
+        clubb_config=CLUBBConfig(), relvar_from_clubb=True)
     mesh, sigma, state = _moist_setup()
     shape = state.T.data.shape
     tr = dict(state.tracers)
     tr["q_s"] = state.T.replace(data=jnp.full(shape, 2.0e-4), name="q_s")
     ns = jnp.full(shape, 3.0e4)
-    ps = types.SimpleNamespace(cloud_fraction=jnp.full(shape, 0.5))
+    # production kk2000_cam6 reads CLUBB's per-cell relvar; any value works,
+    # the warm-rain law is not under test here
+    ps = types.SimpleNamespace(cloud_fraction=jnp.full(shape, 0.5),
+                               relvar=jnp.ones(shape))
     with_ns = fn(state._replace(tracers={**tr, "N_s": state.T.replace(
         data=ns, name="N_s", units="1/kg")}), mesh, sigma, phys_state=ps)
     np.testing.assert_array_equal(seen[0], np.asarray(ns))

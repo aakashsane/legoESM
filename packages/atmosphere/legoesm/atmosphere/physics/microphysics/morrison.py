@@ -25,6 +25,17 @@ ADDRESSED
 - Melt/freeze number-routing comments made to agree with the double-moment
   branches (freeze_N_to_graupel = SAM NNUCCR; dN_g_melt = NGMLTG).
 
+SATURATION ADJUSTMENT (sam flavour, oracle port 2026-10-19)
+- ``morrison_flavor="sam"`` runs gSAM's ``satadj_liquid`` (exact two-sided
+  liquid adjustment, :func:`_warm_rain.saturation_adjustment_gsam`) BEFORE the
+  process rates, as gSAM's micro_proc does; every rate sees the adjusted
+  state.  Oracle-pinned (adjustment points and the whole-call T, q_v of five
+  warm columns) by tests/atmosphere/microphysics/unit/
+  test_gsam_satadj_liquid_oracle.py.  The rest of the sam flavour is NOT YET
+  FAITHFUL to M2005 as a whole: the departures below, no cloud-droplet
+  settling, no small-amount removal, no number reset at clamped slopes, the
+  smooth ice-phase switches, and Bigg rain freezing above -4 C.
+
 KNOWN, DELIBERATE departures (documented where they occur)
 - Sedimentation acts on the PRE-source pools: every species is sedimented
   from its input mixing ratio with the same-step in-column sinks RESERVED
@@ -62,6 +73,7 @@ from legoesm.thermo import saturation_specific_humidity_ice as _saturation_speci
 from legoesm.thermo import homogeneous_freezing_rh_factor as _homogeneous_freezing_rh_factor
 from legoesm.atmosphere.physics.microphysics._warm_rain import (
     saturation_adjustment,
+    saturation_adjustment_gsam,
     effective_Nc,
     autoconversion_sb,
     autoconversion_sb2001,
@@ -157,6 +169,25 @@ _NUC_RH_LIQ_THRESHOLD = 0.999    # liquid-nucleation RH_liq gate
 _FERRIER_ICE_NUMBER_DENOM = 1080.0  # Ferrier ice-number diagnostic denominator
 _MG2_OMSM = 1.0 - 1.0e-5           # MG2 limiter round-off margin omsm, micro_mg_utils.F90:117
 _MG2_ACCRETION_VARCOEF_EXP = 1.15  # MG2 accrete_cloud_water_rain var_coef(relvar, 1.15), micro_mg_utils.F90:1317
+
+# MorrisonConfig fields with no counterpart in gSAM's satadj_liquid: under the
+# sam flavour they must stay at their defaults (setting one raises).
+_NO_GSAM_SATADJ_COUNTERPART = (
+    "saturation_sharpness", "hard_saturation_adjustment",
+    "hard_sat_adjust_threshold", "hard_sat_max_heating_K", "liquid_from_closure")
+
+
+def _reject_fields_without_gsam_counterpart(config: MorrisonConfig) -> None:
+    """Raise if a sam-flavour config sets a field gSAM's adjustment lacks."""
+    bad = [f for f in _NO_GSAM_SATADJ_COUNTERPART
+           if getattr(config, f) != MorrisonConfig._field_defaults[f]]
+    if bad:
+        raise ValueError(
+            f"morrison_flavor='sam' runs gSAM's liquid saturation adjustment "
+            f"(satadj_liquid), which has no counterpart for {bad}; leave them "
+            f"at their defaults "
+            f"({ {f: MorrisonConfig._field_defaults[f] for f in bad} }).")
+
 
 def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     """Resolve ``morrison_flavor`` into the concrete parameter set.
@@ -277,6 +308,18 @@ def morrison_microphysics(
     # on the config string — no traced control flow).
     config = resolve_morrison_flavor(config)
     ncol, nlev = T.shape
+    # sam flavour: gSAM's micro_proc puts the state on the liquid saturation
+    # curve (satadj_liquid, condensing OR evaporating cloud) BEFORE the M2005
+    # process rates (microphysics.f90:743), so every rate below sees the
+    # adjusted state and the scheme's own smooth condensation is off.  The
+    # adjustment increment is added to the returned tendencies at the end.
+    gsam_satadj = config.morrison_flavor == "sam"
+    if gsam_satadj:
+        _reject_fields_without_gsam_counterpart(config)
+        T_in, q_v_in, q_c_in = T, q_v, hydrometeors.q_c
+        T, q_v, q_c_adj = saturation_adjustment_gsam(
+            T, q_v, hydrometeors.q_c, p_full)
+        hydrometeors = hydrometeors._replace(q_c=q_c_adj)
     q_c = hydrometeors.q_c
     q_r = hydrometeors.q_r
     q_i = hydrometeors.q_i
@@ -333,7 +376,7 @@ def morrison_microphysics(
     # ``q_sat`` is untouched -- rain evaporation, the sub-grid cloud-fraction
     # closure and the ice branch all still read it.  Static Python gate on a
     # config bool, the documented feature-gating exception to ``jnp.where``.
-    if config.liquid_from_closure:
+    if config.liquid_from_closure or gsam_satadj:
         condensation = jnp.zeros_like(condensation)
     # Sub-grid in-cloud closure (Morrison & Gettelman 2008): evaluate the
     # warm-rain rates on the IN-CLOUD water q_c/cf and scale back by cf, so the
@@ -1988,6 +2031,13 @@ def morrison_microphysics(
     # surface flux from ``sedimentation_tendency`` so column water
     # conservation holds exactly when the CFL limiter fires.
     precipitation = precip_r + precip_i + precip_s + precip_g
+    if gsam_satadj:
+        # The pre-rate saturation adjustment, as a tendency (enthalpy
+        # c_pd*T + L_v*q_v and q_v + q_c conserved by construction).
+        condensation = (hydrometeors.q_c - q_c_in) / dt
+        dT_dt = dT_dt + (T - T_in) / dt
+        dq_v_dt = dq_v_dt + (q_v - q_v_in) / dt
+        dq_c_dt = dq_c_dt + condensation
 
     # (No placeholder outputs here — every MicrophysicsOutput field below is
     # a computed tendency, so no dtype pin is needed; a former bare

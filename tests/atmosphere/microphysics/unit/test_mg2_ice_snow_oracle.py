@@ -269,7 +269,10 @@ def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
     cfg = _production_morrison()
     assert mi.min_tracer_slots("morrison", cfg) == 10
     assert mi.min_tracer_slots("morrison", cfg._replace(warm_rain_incloud=False)) == 9
-    assert MicrophysicsConfig(scheme="morrison").morrison.ice_snow_d_auto == 500.0e-6
+    from legoesm.atmosphere.physics.microphysics.morrison import resolve_morrison_flavor
+    _m = MicrophysicsConfig(scheme="morrison").morrison
+    assert _m.ice_snow_d_auto == 250.0e-6               # SAM default
+    assert resolve_morrison_flavor(_m).ice_snow_d_auto == 500.0e-6  # mg flavor
     seen = []
     real = mi.morrison_microphysics
 

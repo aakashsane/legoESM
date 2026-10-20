@@ -766,7 +766,7 @@ class MorrisonConfig(NamedTuple):
     #     "dropped — single-moment snow" note here was stale).
     #   "heuristic" = the legacy constant-rate agg_coeff·q_i·f_ice.
     ice_to_snow_scheme: str = "m2005_autoconv"
-    ice_snow_d_auto: float = 500.0e-6   # DCS [m]: CAM6 MG2 micro_mg_dcs (namelist_defaults_cam.xml:1244; was 250 um)
+    ice_snow_d_auto: float = 250.0e-6   # SAM DCS [m] (clice_snow_Dauto); morrison_flavor="mg" resolves CAM6 MG2 micro_mg_dcs 500 um
     # Aggregation (heuristic ice→snow rate)
     agg_coeff: float = 1e-3          # Ice-to-snow aggregation rate [1/s]
     # Melting

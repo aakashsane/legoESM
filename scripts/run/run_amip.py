@@ -2137,7 +2137,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                             "morrison_ice_snow_d_auto"],
                         dest="morrison_ice_snow_d_auto",
                         help="Morrison ice->snow autoconversion size DCS [m] "
-                             "(CAM6 MG2 micro_mg_dcs = 500e-6).")
+                             "(default 250e-6, SAM; the 'mg' flavor resolves "
+                             "that default to CAM6 MG2 micro_mg_dcs = 500e-6 "
+                             "and keeps any other value).")
     parser.add_argument("--morrison-accre-enhan-fact", type=float,
                         default=ExperimentConfig._field_defaults[
                             "morrison_accre_enhan_fact"],

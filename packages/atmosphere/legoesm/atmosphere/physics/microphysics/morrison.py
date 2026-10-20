@@ -171,6 +171,9 @@ _NUC_RH_LIQ_THRESHOLD = 0.999    # liquid-nucleation RH_liq gate
 _MG2_OMSM = 1.0 - 1.0e-5           # MG2 limiter round-off margin omsm, micro_mg_utils.F90:117
 _MG2_ACCRETION_VARCOEF_EXP = 1.15  # MG2 accrete_cloud_water_rain var_coef(relvar, 1.15), micro_mg_utils.F90:1317
 
+_MG2_DCS_M = 500.0e-6  # CAM6 MG2 micro_mg_dcs [m] (namelist_defaults_cam.xml:1244)
+
+
 def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     """Resolve ``morrison_flavor`` into the concrete parameter set.
 
@@ -190,6 +193,8 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     ``rain_selfcoll_scheme`` sb2001      mg2      (Beheng -8 nr qr rho, :1359;
                                                   only replaces the sb2001
                                                   default, see below)
+    ``ice_snow_d_auto``    250 µm        500 µm   (micro_mg_dcs; only
+                                                  replaces the SAM default)
     =====================  ============  =============
 
     The rain rows are CAM6 MG2 (cam_cesm2_1_rel_60 micro_mg_utils.F90).
@@ -203,6 +208,12 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
         # that the dispatcher must reject) is left as the caller set it.
         selfcoll = ("mg2" if config.rain_selfcoll_scheme == "sb2001"
                     else config.rain_selfcoll_scheme)
+        # DCS likewise: MG2's 500 um replaces only the SAM default 250 um
+        # (micro_mg_dcs, namelist_defaults_cam.xml:1244), so an explicit
+        # other value is kept.
+        dcs = (_MG2_DCS_M if config.ice_snow_d_auto
+               == MorrisonConfig._field_defaults["ice_snow_d_auto"]
+               else config.ice_snow_d_auto)
         return config._replace(
             lami_max=1.0 / 10.0e-6,  # coeff-ok: max ice slope (1/10um)
             snow_aggregation_eii=0.5,
@@ -211,6 +222,7 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
             ice_to_snow_scheme="mg_ferrier",
             lamr_min=1.0 / 500.0e-6,  # coeff-ok: MG2 lam_bnd_rain(1), micro_mg_utils.F90:169
             rain_selfcoll_scheme=selfcoll,
+            ice_snow_d_auto=dcs,
         )
     elif config.morrison_flavor == "sam":
         return config
@@ -1292,7 +1304,21 @@ def morrison_microphysics(
     # on the do_graupel path when a prognostic N_g is carried
     # (freeze_N_to_graupel in the graupel budget below, SAM NNUCCR).  Only
     # single-moment graupel — no N_g state — drops the frozen-drop number.
-    if config.do_graupel:
+    # CAM6 MG2 mode has no graupel: frozen rain becomes SNOW, or CLOUD ICE
+    # where the mean in-precip drop is smaller than DCS (micro_mg2_0.F90:
+    # 1648-1656 mnuccri/nnuccri; qstend :1893-1895, qitend :1882-1886).
+    freeze_to_ice = jnp.zeros_like(freeze_rain)
+    freeze_N_to_ice = jnp.zeros_like(freeze_N_r)
+    if mg2_snow:
+        to_ice = ((lamr_ic > MG2_QSMALL)
+                  & (1.0 / jnp.where(lamr_ic > MG2_QSMALL, lamr_ic, 1.0)
+                     < config.ice_snow_d_auto))
+        freeze_to_graupel = jnp.zeros_like(freeze_rain)
+        freeze_to_ice = jnp.where(to_ice, freeze_rain, 0.0)
+        freeze_to_snow = freeze_rain - freeze_to_ice
+        freeze_N_to_ice = jnp.where(to_ice, freeze_N_r, 0.0)
+        freeze_N_to_snow = freeze_N_r - freeze_N_to_ice
+    elif config.do_graupel:
         freeze_to_graupel = freeze_rain
         freeze_to_snow = jnp.zeros_like(freeze_rain)
         freeze_N_to_snow = jnp.zeros_like(freeze_N_r)
@@ -1641,7 +1667,10 @@ def morrison_microphysics(
             / jnp.where(_nlim, _nsink, 1.0) * _MG2_OMSM, 1.0)
         dN_r_evap = dN_r_evap * _nscale
         freeze_N_r = freeze_N_r * _nscale
-        if not config.do_graupel:
+        if mg2_snow:
+            freeze_N_to_ice = freeze_N_to_ice * _nscale
+            freeze_N_to_snow = freeze_N_to_snow * _nscale
+        elif not config.do_graupel:
             # the snow-number destination follows the limited freezing
             freeze_N_to_snow = freeze_N_r
         dN_r_selfcoll = dN_r_selfcoll * _nscale
@@ -1858,7 +1887,7 @@ def morrison_microphysics(
     )
     dq_i_dt = (
         dq_i_dep + dq_i_nuc + bergeron + riming_i - aggregation
-        - melt_ice + homo_freeze_c + sed_i
+        - melt_ice + homo_freeze_c + sed_i + freeze_to_ice
     )
     # Snow riming grows snow EXCEPT the portion PGSACW that converts to graupel.
     dq_s_dt = (aggregation + (riming_s - pgsacw) - melt_snow + freeze_to_snow
@@ -1928,7 +1957,8 @@ def morrison_microphysics(
     # 277 K, surface level: +4 C "ice number" with no melting sink,
     # 2026-07-28; the same surface pile ended century3 at N_i=1e193).
     dN_i_dt = (dN_i_nuc - dN_i_autoconv + homo_freeze_N + sed_N_i
-               - dN_i_melt - dN_i_subl)
+               - dN_i_melt - dN_i_subl
+               + freeze_N_to_ice / jnp.clip(rho, _RHO_FLOOR))
 
     if mg2_snow:
         dN_s_mg2 = dN_s_src + sed_N_s
@@ -2177,7 +2207,7 @@ def morrison_microphysics(
         # Frozen rain drops → graupel particles (per-volume freeze_N_r ⇒ /ρ for
         # per-mass N_g); the snow→graupel embryos NSCNG (already per-mass).
         freeze_N_to_graupel = (freeze_N_r / jnp.clip(rho, _RHO_FLOOR)
-                               if config.do_graupel
+                               if config.do_graupel and not mg2_snow
                                else jnp.zeros_like(q_g))
         dN_g_dt = (freeze_N_to_graupel + nscng
                    - dN_g_melt + dN_g_subl + sed_N_g)

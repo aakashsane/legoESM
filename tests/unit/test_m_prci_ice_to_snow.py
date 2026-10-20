@@ -55,11 +55,8 @@ def _run(T=250.0, p=4.0e4, q_i=1.0e-4, N_i=1.0e5, ssat=0.1,
         # default "mg" flavor would clobber it to mg_ferrier in
         # resolve_morrison_flavor and these tests pin the SAM PRCI / heuristic
         # paths and the unknown-scheme guard directly.
-        # SAM DCS 250 um (clice_snow_Dauto), pinned: the shared default is
-        # CAM6 MG2's 500 um.
         MorrisonConfig(
-            ice_to_snow_scheme=scheme, N_i0=0.0, morrison_flavor="sam",
-            ice_snow_d_auto=250.0e-6),
+            ice_to_snow_scheme=scheme, N_i0=0.0, morrison_flavor="sam"),
     )
     return float(out.dq_s_dt[0, 0]), float(out.dq_i_dt[0, 0])
 

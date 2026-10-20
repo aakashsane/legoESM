@@ -1504,7 +1504,7 @@ class ExperimentConfig(NamedTuple):
     # obs because small-crystal cirrus defeats both ice sinks while hom
     # nucleation keeps seeding number — these three knobs bracket the loop).
     morrison_fall_a_i: float = 700.0            # MorrisonConfig.fall_a_i [m^(1-b)/s]
-    morrison_ice_snow_d_auto: float = 500.0e-6  # MorrisonConfig.ice_snow_d_auto [m] (CAM6 MG2 micro_mg_dcs)
+    morrison_ice_snow_d_auto: float = 250.0e-6  # MorrisonConfig.ice_snow_d_auto [m] (SAM; the "mg" flavor resolves this default to CAM6 MG2 micro_mg_dcs 500 um)
     morrison_hom_ice_nuc_N: float = 1.0e6       # MorrisonConfig.hom_ice_nuc_N [1/m^3]
                                                 # (consumed only inside the
                                                 # homogeneous_ice_nucleation
@@ -4165,6 +4165,22 @@ class ExperimentConfig(NamedTuple):
                 f"cld_macmic_num_steps={self.cld_macmic_num_steps}, "
                 f"subgrid_autoconversion={self.subgrid_autoconversion}, "
                 f"cloud_scheme={self.cloud_scheme!r}")
+        if (self.morrison_warm_rain_incloud is True
+                and self.microphysics == "morrison"
+                and not (d.column_lane
+                         or (d.discretization != "fv3_duo"
+                             and normalize_grid_type(g.grid_type) == "mpas"))):
+            # CAM6 MG2 two-moment snow carries the snow number N_s only
+            # through the MPAS column loop and the FV3-duo column lane; the
+            # compiled / SPMD / per-step lanes pack the nine original tracers
+            # and would silently run single-moment snow (user decision
+            # 2026-10-20: refuse, do not carry N_s through them).
+            errors.append(
+                "morrison_warm_rain_incloud=True (CAM6 MG2 two-moment snow) "
+                "runs only on the MPAS lane (grid_type='mpas') or the FV3-duo "
+                "column lane: no other lane carries the snow number N_s; got "
+                f"grid_type={g.grid_type!r}, discretization={d.discretization!r}, "
+                f"column_lane={d.column_lane}")
         if (self.morrison_sed_cfl_substeps_strict is True
                 and self.morrison_sed_cfl_substeps is False):
             errors.append(

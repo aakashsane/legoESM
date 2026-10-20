@@ -4104,7 +4104,8 @@ def test_morrison_flavor_round_trips():
 
 def test_morrison_ice_snow_d_auto_round_trips():
     """--morrison-ice-snow-d-auto (and the deck key) reach ExperimentConfig;
-    default = CAM6 MG2 micro_mg_dcs 500 um."""
+    default = the SAM 250 um, which the "mg" flavor resolves to CAM6 MG2
+    micro_mg_dcs 500 um."""
     parser = build_arg_parser()
     cfg = build_config_from_args(_postprocess_args(parser.parse_args([
         "--dataset", "analytical", "--microphysics", "morrison",
@@ -4113,7 +4114,7 @@ def test_morrison_ice_snow_d_auto_round_trips():
     assert cfg.morrison_ice_snow_d_auto == 3.0e-4
     d = build_config_from_args(_postprocess_args(
         parser.parse_args(["--dataset", "analytical"]), parser))
-    assert d.morrison_ice_snow_d_auto == 500.0e-6
+    assert d.morrison_ice_snow_d_auto == 250.0e-6
 
 
 def test_morrison_flavor_yaml_route():

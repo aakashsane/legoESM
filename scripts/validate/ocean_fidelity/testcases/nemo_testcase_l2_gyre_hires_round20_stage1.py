@@ -167,6 +167,14 @@ def _face_fields(values: tuple) -> dict[str, np.ndarray]:
     }
 
 
+def _active_levels(field: np.ndarray) -> np.ndarray:
+    """Drop NEMO's closed jpk slot; legoESM stores the 30 active levels."""
+    field = np.asarray(field, dtype=np.float64)
+    require(field.ndim == 3 and field.shape[-1] == NATIVE_DIMS[-1],
+            f"oracle field has unexpected shape {field.shape}")
+    return field[..., :ACTIVE_LEVELS]
+
+
 def _plant_one_ulp(field: np.ndarray, mask: np.ndarray) -> np.ndarray:
     planted = np.array(field, dtype=np.float64, copy=True)
     index = tuple(np.argwhere(mask)[0])
@@ -264,7 +272,8 @@ def run(
             if plant == f"stage{stage_index}-{face}":
                 candidate = _plant_one_ulp(candidate, masks[face])
             rows[face] = envelope_score(
-                candidate, scalar[face], vector[face], masks[face])
+                candidate, _active_levels(scalar[face]),
+                _active_levels(vector[face]), masks[face])
         stages.append({"stage": stage_index, "rows": rows})
 
     scalar_rhs = read_completed_rhs(
@@ -278,7 +287,8 @@ def run(
         if plant == f"rhs-{face}":
             candidate = _plant_one_ulp(candidate, masks[face])
         rhs_rows[face] = envelope_score(
-            candidate, scalar_rhs[face], vector_rhs[face], masks[face])
+            candidate, _active_levels(scalar_rhs[face]),
+            _active_levels(vector_rhs[face]), masks[face])
 
     scalar_bt = read_bt_handoff(
         scalar_root / "instrumented" / BT_RECORD)

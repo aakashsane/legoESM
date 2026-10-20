@@ -71,6 +71,18 @@ def test_first_clearing_stage_respects_stage_and_face_order():
     assert (result["stage"], result["field"]) == (1, "v")
 
 
+def test_active_level_mapping_drops_only_nemo_closed_jpk(monkeypatch):
+    module = _load_module()
+    monkeypatch.setattr(module, "NATIVE_DIMS", (6, 5, 4))
+    monkeypatch.setattr(module, "ACTIVE_LEVELS", 3)
+    field = np.arange(2 * 3 * 4, dtype=np.float64).reshape(2, 3, 4)
+    active = module._active_levels(field)
+    assert active.shape == (2, 3, 3)
+    np.testing.assert_array_equal(active, field[..., :3])
+    with pytest.raises(Exception, match="unexpected shape"):
+        module._active_levels(field[..., :3])
+
+
 def test_completed_rhs_reader_rejects_bad_header(tmp_path, monkeypatch):
     module = _load_module()
     monkeypatch.setattr(module, "NATIVE_DIMS", (3, 2, 2))

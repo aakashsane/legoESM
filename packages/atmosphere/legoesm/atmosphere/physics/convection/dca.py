@@ -106,7 +106,7 @@ __physics_contract__ = {
         "Ahmed, Adames & Neelin (2020), J. Atmos. Sci. 77, 2163-2186"
     ),
     "idealized_test": (
-        "tests/atmosphere/test_dca_moist_conv_oracle.py: 19 columns vs the "
+        "tests/atmosphere/test_dca_moist_conv_oracle.py: 23 columns vs the "
         "running GFDL moist_conv to 1e-10 with the CAPE gate off; unsaturated "
         "columns are untouched."
     ),
@@ -274,10 +274,12 @@ def _manabe_dca_convection(
     -------
     ConvectionOutput
     """
+    traced_inert = []
     for name in _INERT_MANABE_FIELDS:
         v = getattr(config, name)
-        if (not isinstance(v, jax.core.Tracer)
-                and np.any(np.asarray(v) != DCAConfig._field_defaults[name])):
+        if isinstance(v, jax.core.Tracer):
+            traced_inert.append(jnp.any(v != DCAConfig._field_defaults[name]))
+        elif np.any(np.asarray(v) != DCAConfig._field_defaults[name]):
             raise ValueError(
                 f"DCAConfig.{name} belonged to the replaced pairwise sweep; the "
                 "GFDL moist_conv port has no counterpart, so the field is inert "
@@ -290,6 +292,10 @@ def _manabe_dca_convection(
     # Existing CAPE gate (no counterpart in moist_conv): R_d * positive part of
     # the adjustment's warming, integrated in dp/p.
     cape = compute_cape(T, T + Tdel, p_full, p_half)
+    if traced_inert:
+        # traced config (jit argument): a non-default inert field cannot raise,
+        # so it poisons the outputs instead of being ignored
+        cape = jnp.where(jnp.any(jnp.stack(traced_inert)), jnp.nan, cape)
     cape_gate = cape_trigger(cape, config.cape_threshold, config.cape_sharpness)
     dT_dt = cape_gate[:, None] * dT
     dq_v_dt = cape_gate[:, None] * dq

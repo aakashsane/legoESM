@@ -6,7 +6,8 @@ by RUNNING NOAA-GFDL/atmos_phys ``2021.02``
 unmodified (gfortran 8.5.0, fp64) against FMS stubs with legoESM's constants
 and saturation curve, via
 ``scripts/validate/oracle/dca_moist_conv/{build.sh,make_fixture.py}``
-(metadata in the npz ``meta``).  19 columns, dt = 1800 s, coldT = F.
+(metadata in the npz ``meta``).  23 columns (the 19 tier-2 audit columns and
+4 constructed supersaturated unstable ones), dt = 1800 s, coldT = F.
 
 Tolerance (user decision 2026-10-19): max relative error <= 1e-10 in fp64 at
 the hard limit of the existing smoothing fields.  The oracle has no CAPE gate;
@@ -68,11 +69,14 @@ def test_fixture_provenance(fx):
     adjusted = np.any(fx["ora_dT"] != 0.0, axis=1)
     assert np.any(adjusted) and np.any(~adjusted)
     assert np.all(fx["ora_snow"] == 0.0)
-    # coverage: a column with two separate unstable blocks, and a block that
-    # reaches the bottom level (the only case in which moist_conv re-tests)
-    runs = [int(np.sum(np.diff(np.concatenate([[0], c, [0]])) == 1)) for c in fx["ora_conv"]]
+    # coverage: a column adjusted in two separate blocks, and columns that
+    # moist_conv re-tested (its Conv flags are reset by the re-test, which only
+    # happens when a block reaches the bottom; they come back all-stable)
+    hit = (fx["ora_dT"] != 0.0).astype(int)
+    runs = [int(np.sum(np.diff(np.concatenate([[0], c, [0]])) == 1)) for c in hit]
     assert max(runs) >= 2
-    assert np.any(fx["ora_conv"][:, -1] == 1)
+    assert np.any(adjusted & (fx["ora_conv"].sum(axis=1) == 0))
+    assert np.any(adjusted & (fx["ora_conv"].sum(axis=1) > 0))
 
 
 def test_matches_gfdl_moist_conv_with_gate_off(fx):
@@ -127,3 +131,8 @@ def test_eager_jit_parity(fx):
 def test_inert_sweep_fields_reject_non_default(fx, field, value):
     with pytest.raises(ValueError, match=field):
         _run(fx, DCAConfig(**{field: value}))
+    # a traced config (jit argument) cannot raise: the outputs are NaN instead
+    args = [jnp.asarray(fx[k]) for k in ("T", "q", "p_full", "p_half")]
+    f = jax.jit(lambda x: dca_convection(*args, 1800.0, DCAConfig(**{field: x})))
+    assert bool(jnp.all(jnp.isnan(f(jnp.asarray(value)).dT_dt)))
+    assert bool(jnp.all(jnp.isfinite(f(jnp.asarray(DCAConfig._field_defaults[field])).dT_dt)))

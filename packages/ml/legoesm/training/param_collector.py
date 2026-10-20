@@ -237,7 +237,13 @@ def _unset_seed(meta: ParamMeta, cfg) -> float | None:
         raise TypeError(
             f"scheme_configs[{meta.scheme_key!r}] is a {type(cfg).__name__}, "
             f"not the {meta.config_class} that seeds {meta.qualified_name}")
-    return float(getattr(res(cfg), meta.field))
+    val = getattr(res(cfg), meta.field)
+    if val is None:
+        raise ValueError(
+            f"{meta.qualified_name} is unset and its resolver gives no value "
+            f"for this {meta.config_class} (unknown selection?); set it "
+            "explicitly or pass init_values")
+    return float(val)
 
 
 def _seed_raw(meta: ParamMeta, shape: tuple[int, ...], dtype,

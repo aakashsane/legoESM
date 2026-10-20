@@ -361,3 +361,12 @@ def test_wb_aimip_bundle_seeds_dcs_from_the_deck_pins() -> None:
         np.testing.assert_allclose(
             float(p.as_dict()[f"{key}.ice_snow_d_auto"]), expect, rtol=1e-5)
     assert _pinned_morrison_config({"atm.micro.KesslerConfig"}, {}) is None
+
+
+def test_unresolvable_unset_dcs_is_a_clear_error() -> None:
+    from legoesm.atmosphere.physics.microphysics.config import MorrisonConfig
+    key = "atm.micro.MorrisonConfig"
+    with pytest.raises(ValueError, match="resolver gives no value"):
+        build_trainable_params(
+            tier="extended", active_scheme_keys={key},
+            scheme_configs={key: MorrisonConfig(morrison_flavor="other")})

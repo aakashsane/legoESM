@@ -78,6 +78,11 @@ GSAM_QCI_GATE = 1.0e-8
 ICE_SCHEMES = ("morrison", "thompson", "p3")
 ICE_FIELD = "homogeneous_ice_supersaturation"
 LIQUID_FIELD = "hard_saturation_adjustment"
+# Morrison's sam flavour (the CRM lane's configuration) runs gSAM's exact
+# liquid saturation adjustment (satadj_liquid) on every call and REJECTS the
+# opt-in guard, which has no gSAM counterpart: there the liquid half checks the
+# rejection instead of an ON/OFF difference.
+LIQUID_GUARD_REJECTED = ("morrison",)
 
 # Cold cirrus cell: 215 K at 200 hPa, ice-super-saturated, ICE-FREE (so the
 # allowance applies) — the regime the ramp exists for.
@@ -304,6 +309,20 @@ def section_2_load_bearing() -> list[str]:
           f"control at RH_liq={LIQUID_NOOP_RH:.2f}")
     for scheme in ICE_SCHEMES:
         q_vw, restw = _column(WARM_T_K, WARM_P_PA, WARM_RH_LIQ * q_sat_l)
+        if scheme in LIQUID_GUARD_REJECTED:
+            fn, cfg = _scheme_fn_and_config(scheme)
+            T, hyd, p_full, p_half, rho, dz = restw
+            try:
+                fn(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S,
+                   cfg(**{LIQUID_FIELD: True}))
+            except ValueError:
+                print(f"    {scheme}: {LIQUID_FIELD} rejected (gSAM "
+                      "satadj_liquid runs unconditionally)")
+            else:
+                failures.append(
+                    f"{scheme}: {LIQUID_FIELD}=True was accepted although the "
+                    "sam flavour runs gSAM's adjustment unconditionally")
+            continue
         on, off = _on_off(scheme, LIQUID_FIELD, q_vw, restw)
         delta = _report(f"{scheme}: super-saturated", on, off)
         rel = abs(delta) / max(abs(off), 1.0e-30)

@@ -2440,7 +2440,10 @@ def test_config_yaml_round_trips_authoritative_values():
     # observed ocean rain all ran with it off.  cam6_clubb refuses it anyway
     # (deepcu is CAM6's own deep-convective cloud term), so it stays pinned.
     assert cfg.convective_cloud is False
-    assert cfg.surface_gustiness_zi == 300.0
+    # surface_gustiness_zi removed 2026-10-19 (user): inert on large_yeager_cesm
+    # (CESM gust_fac = 0); the coastal ocean-surface flux is on (#1320).
+    assert cfg.surface_gustiness_zi is None
+    assert cfg.ocean_flux_on_ocean_surface is True
     # No convective_precip_efficiency row: ZM has no precip-efficiency field,
     # so the 0.8 the deck carried was read by nothing (oracle audit 2026-10-18).
     assert cfg.convective_precip_efficiency is None

@@ -271,32 +271,6 @@ def _prognostic_clubb_lat_kwargs(carry_field, lat_fn):
     return {"lat": lat_fn()}
 
 
-def _prognostic_clubb_rad_kwargs(carry_field, phys_state, nCells, nlev, dtype):
-    """Radheating kwargs for the ``turb_fn`` call, prognostic CLUBB only.
-
-    Returns ``{"rad_dT_dt": array}`` when the resolved scheme is prognostic
-    CLUBB (``carry_field == "clubb_moments"``, a STATIC build-time decision)
-    and the host hands a ``phys_state`` whose cached ``rad_heating`` slot is
-    populated; otherwise ``{}`` so every other scheme and the diagnostic
-    CLUBB path stay byte-identical (their kernels do not accept the kwarg).
-    The decision never depends on array values, only on ``carry_field`` and
-    None-ness, so it is a pure Python branch resolved at trace time.
-
-    CACHE LAG NOTE: ``combined.py`` updates ``PhysicsState.rad_heating`` AFTER
-    the turbulence step runs, so the array seen here is from the PRECEDING
-    radiation solve (one step stale).  That is the documented contract: the
-    thlp2 budget's radiative source term uses the latest cached heating
-    available at turbulence time.
-    """
-    if carry_field != "clubb_moments":
-        return {}
-    rad_heating = (getattr(phys_state, "rad_heating", None)
-                   if phys_state is not None else None)
-    if rad_heating is None:
-        return {}
-    return {"rad_dT_dt": jnp.asarray(rad_heating, dtype=dtype).reshape(nCells, nlev)}
-
-
 from legoesm.atmosphere.physics._shared import (
     compute_heights_from_sigma as _compute_heights_from_sigma,
     compute_rho as _compute_rho,
@@ -1018,11 +992,17 @@ def _make_mpas_turbulence(
         if getattr(_surf, "ocean_q_sfc_saline", False):
             # Sea water at the SURFACE pressure (the coupled lane's convention)
             # for the ocean fraction: replace that fraction's fresh-water share
-            # of the blend; the land share is untouched.
+            # of the blend; the land share is untouched.  SPECIFIC humidity,
+            # like the air humidity it is differenced with (CESM ssq = 0.98 x
+            # saturation specific humidity): the saturation curve's MIXING
+            # RATIO is converted before the salinity factor.
             from legoesm.core.bulk_flux import ocean_surface_q_sat
-            _q_ocean = ocean_surface_q_sat(
-                T_sfc, p_s.reshape(nCells), thermo_convention=_surf.thermo_convention,
-                bulk_scheme=_surf.bulk_scheme, saline_factor=_Q_SAT_SALINE_FACTOR)
+            from legoesm.thermo import mixing_ratio_to_specific_humidity
+            _q_ocean = _Q_SAT_SALINE_FACTOR * mixing_ratio_to_specific_humidity(
+                ocean_surface_q_sat(
+                    T_sfc, p_s.reshape(nCells),
+                    thermo_convention=_surf.thermo_convention,
+                    bulk_scheme=_surf.bulk_scheme))
             _fo = (1.0 - jnp.asarray(f_land, dtype=q_sfc.dtype).reshape(nCells)
                    if f_land is not None else 1.0)
             q_sfc = q_sfc + _fo * (_q_ocean - _q_sfc_fresh)
@@ -1075,12 +1055,14 @@ def _make_mpas_turbulence(
             else:
                 _T_bulk = jnp.asarray(_T_oc, dtype=T_sfc.dtype).reshape(nCells)
                 if getattr(_surf, "ocean_q_sfc_saline", False):
+                    # Specific humidity, as the blended path's ocean share.
                     from legoesm.core.bulk_flux import ocean_surface_q_sat
-                    _q_bulk = ocean_surface_q_sat(
-                        _T_bulk, p_s.reshape(nCells),
-                        thermo_convention=_surf.thermo_convention,
-                        bulk_scheme=_surf.bulk_scheme,
-                        saline_factor=_Q_SAT_SALINE_FACTOR)
+                    from legoesm.thermo import mixing_ratio_to_specific_humidity
+                    _q_bulk = _Q_SAT_SALINE_FACTOR * mixing_ratio_to_specific_humidity(
+                        ocean_surface_q_sat(
+                            _T_bulk, p_s.reshape(nCells),
+                            thermo_convention=_surf.thermo_convention,
+                            bulk_scheme=_surf.bulk_scheme))
                 else:
                     _q_bulk = saturation_specific_humidity(_T_bulk, p_full_col[:, -1])
             # Through the shared helper rather than an inline copy: this
@@ -1170,13 +1152,9 @@ def _make_mpas_turbulence(
         if _liquid_partition:
             _sfc_kw = dict(_sfc_kw, q_c=_qc_col)
 
-        # Radiative-heating kwargs: prognostic CLUBB only, and only when the
-        # host cached a rad_heating.  CACHE LAG: combined.py refreshes the
-        # cache AFTER turbulence, so this is the PRECEDING radiation solve's
-        # heating.  {} (no kwarg at all) for every other scheme and the
-        # diagnostic CLUBB path — their turb_fn signatures do not accept it.
-        _rad_kw = _prognostic_clubb_rad_kwargs(
-            carry_field, phys_state, nCells, nlev, _state_dtype)
+        # No radiative thlp2 source is handed to CLUBB: CAM6 applies it only
+        # under clubb_cloudtop_cooling (do_cldcool), default .false.
+        # (namelist_defaults_cam.xml cesm2_1_rel :1200; clubb_intr.F90 :1935).
 
         def _mesh_lat():
             if not hasattr(mesh, "latCell"):
@@ -1192,7 +1170,7 @@ def _make_mpas_turbulence(
                 u_col, v_col, T_col, q_v_col, tke_in,
                 p_full_col, p_half_col, z_full, z_half,
                 T_sfc, q_sfc, rho, dt, step_config,
-                **_sfc_kw, **_rad_kw,
+                **_sfc_kw,
                 **_prognostic_clubb_lat_kwargs(carry_field, _mesh_lat),
             )
             tke_out = tke_new

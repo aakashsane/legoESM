@@ -346,13 +346,9 @@ _ATM_SCALAR_PARAM_MAP: dict[str, str] = {
     # gravity wave drag -> gwd_config_for (physics_pipeline), which every lane
     # (FV pipeline / MPAS / spectral) now routes through.  Before it, these
     # scalars existed on ExperimentConfig but NO production path read them.
-    # ``tau_max`` is tier 3 (a numerics clip), so the tier-1/2 reachability
-    # audit does not require it — it is mapped anyway because the same resolver
-    # threads it and the map's contract is "what the pipeline actually threads".
     "atm.gwd.HinesConfig.total_rms_wind": "hines_total_rms_wind",
     "atm.gwd.HinesConfig.Fmax": "hines_Fmax",
     "atm.gwd.McFarlaneConfig.directional_spread": "mcfarlane_directional_spread",
-    "atm.gwd.McFarlaneConfig.tau_max": "mcfarlane_tau_max",
     # NOTE: ``mcfarlane_k_wave`` is threaded too but has NO ``__param_spec__``
     # entry (its computed 2*pi/100e3 default is not a float literal, so the
     # AST-based spec gate never required one) — there is no qualified name to

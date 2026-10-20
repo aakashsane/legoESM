@@ -79,14 +79,16 @@ _COUPLED_DECKS = sorted(
 
 @pytest.mark.parametrize("deck", [None] + _COUPLED_DECKS,
                          ids=lambda d: "default" if d is None else d.name)
-def test_run_coupled_writes_manifest_before_setup(tmp_path, monkeypatch, deck):
+def test_run_coupled_writes_manifest_before_run(tmp_path, monkeypatch, deck):
     from legoesm.driver.coupled_esm_driver import CoupledESMDriver
     from scripts.run import run_coupled
 
     def _stop(self, *a, **kw):
         raise _LoopReached()
 
-    monkeypatch.setattr(CoupledESMDriver, "setup", _stop)
+    # setup is stubbed (no forcing files here); the manifest follows it
+    monkeypatch.setattr(CoupledESMDriver, "setup", lambda self: None)
+    monkeypatch.setattr(CoupledESMDriver, "run", _stop)
     argv = ["--output", str(tmp_path), "--days", "1"]
     if deck is not None:
         argv = ["--config", str(deck)] + argv + [
@@ -135,14 +137,13 @@ def test_record_final_state_digest_fills_result(tmp_path):
 
 def test_rerun_into_same_dir_archives_previous_manifest(tmp_path):
     restart.write_run_manifest_on_root(tmp_path, {"runner": "a"},
-                                       config_kind="land")
-    restart.write_run_manifest_on_root(tmp_path, {"runner": "b"},
-                                       config_kind="land")
+                                       config_kind="land", rng_seeds={"m": 1})
+    restart.write_run_manifest_on_root(tmp_path, {"runner": "a"},
+                                       config_kind="land", rng_seeds={"m": 2})
     prev = list(tmp_path.glob("run_manifest.prev-*.json"))
     assert len(prev) == 1
-    assert json.loads(prev[0].read_text())["config"]["resolved_config"] == {
-        "runner": "a"}
-    assert _manifest(tmp_path)["config"]["resolved_config"] == {"runner": "b"}
+    assert json.loads(prev[0].read_text())["result"]["rng_seeds"] == {"m": 1}
+    assert _manifest(tmp_path)["result"]["rng_seeds"] == {"m": 2}
 
 
 @pytest.mark.parametrize("root_failed", [True, False])

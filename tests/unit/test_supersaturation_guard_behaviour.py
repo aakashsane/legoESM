@@ -335,14 +335,15 @@ def test_ml_emulator_guard_gradient_is_finite_through_the_gate():
 
 def test_guard_conserves_moist_enthalpy_in_the_bulk_schemes():
     """c_pd*T + L_v*q_v is conserved by the adjustment (the identity the shared
-    core promises). Checked on Seifert-Beheng at step 1 with no rain formed
-    yet, so condensation is the only active vapour term.  (Kessler, the
-    original subject, is now the faithful ESCOMP kessler_run port, which has
-    no guard: HARD_SAT_GUARD_EXEMPT.)"""
-    fn, cfg_cls = _SCHEMES["seifert_beheng"]
+    core promises). Checked on Sundqvist at step 1 with no rain formed yet,
+    so condensation is the only active vapour term.  (Kessler and
+    Seifert-Beheng, the earlier subjects, are now faithful oracle ports that
+    refuse the guard: HARD_SAT_GUARD_EXEMPT.)"""
+    fn, cfg_cls = _SCHEMES["sundqvist"]
     T, q_v, hyd, p_full, p_half, rho, dz = _column()
     cfg = cfg_cls(hard_saturation_adjustment=True)
     out = fn(T, q_v, hyd, p_full, p_half, rho, dz, _DT, cfg)
+    assert float(np.min(np.asarray(out.dq_v_dt))) < 0.0   # it condenses
     dh = (constants.c_pd * out.dT_dt + constants.L_v * out.dq_v_dt) * _DT
     h0 = constants.c_pd * T + constants.L_v * q_v
     np.testing.assert_allclose(np.asarray(dh) / np.asarray(h0), 0.0, atol=1e-12)

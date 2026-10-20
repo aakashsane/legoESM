@@ -817,6 +817,7 @@ MG2_QRIC_MAX = 0.01       # micro_mg2_0.F90:1316 in-precip rain cap [kg/kg]
 # [2, 50] um (:409-410); ncic <= qcic/min_mean_mass_liq (:173, :493-494).
 _MG2_PGAM_A = 0.7
 _MG2_DROP_FALL_BC = 2.0    # micro_mg_utils.F90:133 bc, droplet fall-speed exponent
+_STOKES_DRAG_FACTOR = 18.0  # Stokes law v = g rho_w D^2/(18 mu): MG2 acn, micro_mg2_0.F90:899
 _MG2_PGAM_B = 0.008e-6     # [cm^3 -> m^3 conversion folded in] per (#/m^3)
 _MG2_PGAM_MIN = 2.0
 _MG2_DROP_DIAM_MAX = 50.0e-6   # [m] -> lambda lower bound (pgam+1)/50 um
@@ -940,7 +941,7 @@ def mg2_droplet_fall_coefficients(q_c, N_c_kg, lcldm, T, rho):
     falls = has_c & (lamc > 0.0)
     pgam = jnp.where(falls, pgam, 0.0)  # MG2's -100 marker would put gammaln off its domain
     mu = _MU_PREFACTOR * safe_pow(T, _MU_T_EXPONENT) / (T + _MU_SUTHERLAND_T)
-    acn = g * constants.rho_water / (18.0 * mu)
+    acn = g * constants.rho_water / (_STOKES_DRAG_FACTOR * mu)
     bc = _MG2_DROP_FALL_BC
     lam_bc = safe_pow(jnp.where(falls, lamc, 1.0), bc)
     lg = jax.scipy.special.gammaln

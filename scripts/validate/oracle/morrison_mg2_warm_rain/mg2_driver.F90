@@ -9,14 +9,16 @@
 ! usage: mg2_driver in.txt out.txt [microp_uniform T|F] [P]
 ! Built with -DMG2_TAP against the probe copy (build.sh, tap/) it writes three more columns: nctend right
 ! after the activation re-apply (micro_mg2_0.F90:2022), nctend after sedimentation (before :2501), and the
-! droplet sedimentation sub-step count.
+! droplet sedimentation sub-step count; then (S10.4) 10 columns before the ice melt (dumc, dumnc, dumi,
+! dumni, t+tlat/cpp*dt, qctend, nctend, qitend, nitend, tlat; M:2616), 5 after homogeneous freezing
+! (qctend, nctend, qitend, nitend, tlat; before M:2687) and the whole-call qitend, nitend.
 ! A 4th argument P = prognostic droplet number: nccons_in=.false. (ncic = max(nc/lcldm, 0)) and a 19th input
 ! column per level, npccn [1/kg/s]; without it the input has 18 columns and nccons_in=.true. as before.
 program mg2_driver
   use micro_mg_utils, only: r8
   use micro_mg2_0, only: micro_mg_init, micro_mg_tend
 #ifdef MG2_TAP
-  use micro_mg2_0, only: nctend_stage, nctend_sed, nstepc_tap
+  use micro_mg2_0, only: nctend_stage, nctend_sed, nstepc_tap, tap_pre, tap_post
 #endif
   use wv_sat_methods, only: wv_sat_methods_init
   implicit none
@@ -29,7 +31,7 @@ program mg2_driver
   logical :: uni, prog
   integer :: ninp
 #ifdef MG2_TAP
-  integer, parameter :: nout = 18
+  integer, parameter :: nout = 35
 #else
   integer, parameter :: nout = 15
 #endif
@@ -129,6 +131,10 @@ program mg2_driver
         allout(ic,k,16) = nctend_stage(1,k)
         allout(ic,k,17) = nctend_sed(1,k)
         allout(ic,k,18) = real(nstepc_tap(1), r8)
+        allout(ic,k,19:28) = tap_pre(1,k,:)
+        allout(ic,k,29:33) = tap_post(1,k,:)
+        allout(ic,k,34) = qitend(1,k)
+        allout(ic,k,35) = nitend(1,k)
 #endif
      end do
   end do

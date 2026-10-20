@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
-from legoesm.core.smooth import smooth_clamp, smooth_min
+from legoesm.core.smooth import smooth_clamp, smooth_min, smoothstep_quintic
 from legoesm.thermo import (
     mixing_ratio_to_specific_humidity,
     saturation_mixing_ratio,
@@ -827,6 +827,17 @@ _MG2_PGAM_UNSET = -100.0       # pgam where qcic <= qsmall (:419, "likely to cau
 # --- CAM6 MG2 rain processes (micro_mg_utils.F90) ---
 _MG2_BEHENG_SELFCOLL = 8.0     # self_collection_rain nragg = -8 nric qric rho (:1359, Beheng 1994)
 _MG2_EVAP_CLOUD_QMIN = 1.0e-6  # evaporate_sublimate_precip: dum=0 if qcic+qiic < 1e-6 (:1468)
+# --- CAM6 MG2 instantaneous ice melt / homogeneous freezing (micro_mg2_0.F90:2615-2685) ---
+_MG2_MELT_DROP_R3 = 5.12e-16   # [m^3] (8 um)^3: droplets from melted ice, mean-volume radius (:2641)
+_MG2_HOMOG_ICE_R3 = 1.563e-14  # [m^3] (25 um)^3: homogeneously frozen crystals (:2677)
+_MG2_HOMOG_ICE_RHO = 500.0     # [kg/m^3] their density (:2678)
+_MG2_HOMOG_PI = 3.14           # MG2's literal at :2677 (not pi), kept exact
+# Smooth switch-on width W = 4/sharpness: the 12-88 % spread of the existing
+# sigmoid(sharpness*x) ramps (user decision 2026-10-20, 1a).
+RAMP_WIDTH_PER_SHARPNESS = 4.0
+# Sharpness of the rounded "all of it / all the heat" cap, smooth_min(1, r)
+# (core.smooth default; user decision 2026-10-20, 2b): -0.7 % at r = 1.
+MG2_CAP_SHARPNESS = 100.0
 
 
 def mg2_incloud_warm_rain_inputs(q_c, q_r, N_c, cloud_fraction, rescale_nc,
@@ -998,6 +1009,82 @@ def mg2_cloud_sedimentation(q_c, N_c_kg, lcldm, T, rho, p_half, dt, n_substeps_m
     _, _, dqc, dn, dqv, sfc = jax.lax.fori_loop(
         0, int(n_substeps_max), body, (c0, n0, z, z, z, jnp.zeros_like(q_c[:, 0])))
     return dqc, dn, dqv, -constants.L_v * dqv / constants.c_pd, sfc, nstep_req
+
+
+
+def _mg2_phase_change_fraction(excess_K, mass, width_K, cap_sharpness):
+    """Fraction of ``mass`` an MG2 instant melt/freeze converts once the
+    temperature is ``excess_K`` past its threshold: the heat-limited fraction
+    min(excess*c_p/(L_f*mass), 1) (micro_mg2_0.F90:2621-2631, :2658-2668),
+    with the min rounded by smooth_min (never above the hard cap), scaled by a
+    C2 step that is exactly 0 at the threshold and 1 after ``width_K``.  Both
+    are deliberate departures from CAM for differentiability (user decisions
+    2026-10-20).  0 where ``mass <= 0``.
+    """
+    has = mass > 0.0
+    r = excess_K * constants.c_pd / (constants.L_f * jnp.where(has, mass, 1.0))
+    # max(., 0): smooth_min(1, 0) is -3.7e-46, not 0; the ramp is 0 there anyway
+    frac = jnp.maximum(smooth_min(jnp.ones_like(r), r, cap_sharpness), 0.0)
+    return jnp.where(has, smoothstep_quintic(excess_K / width_K) * frac, 0.0)
+
+
+def mg2_instant_ice_melt_homog_freeze(q_c, N_c_kg, q_i, N_i_kg, T, T_homog,
+                                      melt_width_K, freeze_width_K,
+                                      cap_sharpness=MG2_CAP_SHARPNESS):
+    """CAM6 MG2 instantaneous ice melt then homogeneous droplet freezing on the
+    RAW post-sedimentation grid-mean state (q + tend*dt, may be negative;
+    micro_mg2_0.F90:2503-2529 pools, :2615-2685).
+
+    Returns post-step targets ``(q_c, N_c_kg, q_i, N_i_kg, T, melt, frz,
+    changed)``: ``melt``/``frz`` are the converted masses [kg/kg] and
+    ``changed`` marks cells either process touched.  MG2 semantics: the donor
+    is OVERWRITTEN from its clipped pool ((1-f)*pool), the recipient is
+    INCREMENTED on its raw value.  Melted ice makes 8 um droplets; frozen
+    droplets make 25 um, density-500 crystals counted from the frozen MASS
+    (user decision 2026-10-20, 1a).  Numbers per kg.  Homogeneous freezing
+    reads the pre-melt pools and the post-melt temperature, as MG2.
+    """
+    dumc = jnp.maximum(q_c, 0.0)
+    dumi = jnp.maximum(q_i, 0.0)
+    dumnc = jnp.where(dumc < MG2_QSMALL, 0.0, jnp.maximum(N_c_kg, 0.0))
+    dumni = jnp.where(dumi < MG2_QSMALL, 0.0, jnp.maximum(N_i_kg, 0.0))
+
+    x_m = T - constants.T_freeze
+    f_m = _mg2_phase_change_fraction(x_m, dumi, melt_width_K, cap_sharpness)
+    fired_m = (dumi > 0.0) & (x_m > 0.0)
+    melt = f_m * dumi
+    q_i1 = jnp.where(fired_m, (1.0 - f_m) * dumi, q_i)
+    N_i1 = jnp.where(fired_m, (1.0 - f_m) * dumni, N_i_kg)
+    q_c1 = q_c + melt
+    N_c1 = N_c_kg + 3.0 * melt / (4.0 * jnp.pi * _MG2_MELT_DROP_R3 * constants.rho_water)
+    T1 = T - constants.L_f * melt / constants.c_pd
+
+    x_h = T_homog - T1
+    f_h = _mg2_phase_change_fraction(x_h, dumc, freeze_width_K, cap_sharpness)
+    fired_h = (dumc > 0.0) & (x_h > 0.0)
+    frz = f_h * dumc
+    q_c2 = jnp.where(fired_h, (1.0 - f_h) * dumc, q_c1)
+    N_c2 = jnp.where(fired_h, (1.0 - f_h) * dumnc, N_c1)
+    q_i2 = q_i1 + frz
+    N_i2 = N_i1 + frz * 3.0 / (4.0 * _MG2_HOMOG_PI * _MG2_HOMOG_ICE_R3 * _MG2_HOMOG_ICE_RHO)
+    T2 = T1 + constants.L_f * frz / constants.c_pd
+    return q_c2, N_c2, q_i2, N_i2, T2, melt, frz, fired_m | fired_h
+
+def mg2_droplet_number_readjust(q_c_post, N_c_post, N_c, cf, rho, dt, dN_c_dt):
+    """CAM6 MG2 final droplet mean-size re-adjust (micro_mg2_0.F90:2743-2753,
+    :2812-2835) on the grid-mean post-step state (per-volume number): in-cloud
+    dumc = min(max(q_post,0)/cf, 5e-3), dumnc = max(N_post,0)/cf; where
+    dumc >= qsmall and size_dist_param_liq moves the number, the tendency
+    becomes (dumnc_adj*cf - N_c)/dt.  At dumc == qsmall exactly the size
+    routine (qcic > qsmall) leaves the number, so a negative one survives, as
+    in MG2.
+    """
+    q_ic = jnp.minimum(jnp.maximum(q_c_post, 0.0) / cf, KK2000_CAM6_QC_MAX)
+    n_ic = jnp.maximum(N_c_post, 0.0) / cf
+    n_adj = mg2_size_bounded_nc(q_ic, n_ic, rho)
+    moved = (q_ic >= MG2_QSMALL) & (n_adj != n_ic)
+    return jnp.where(moved, (n_adj * cf - N_c) / dt, dN_c_dt)
+
 
 
 def mg2_inprecip_rain(q_r, N_r, rho, precip_frac, lamr_min, lamr_max):

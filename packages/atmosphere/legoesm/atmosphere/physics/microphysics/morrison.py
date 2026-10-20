@@ -76,6 +76,9 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     MG2_QSMALL,
     mg2_size_bounded_nc,
     mg2_cloud_sedimentation,
+    mg2_instant_ice_melt_homog_freeze,
+    mg2_droplet_number_readjust,
+    RAMP_WIDTH_PER_SHARPNESS,
     mg2_incloud_warm_rain_inputs,
     mg2_inprecip_rain,
     mg2_precip_frac,
@@ -1034,6 +1037,10 @@ def morrison_microphysics(
         config.melt_rate * jnp.clip(q_i, 0.0) * melt_frac,
         jnp.clip(q_i, 0.0) / jnp.maximum(dt, 1e-10),
     )
+    if _prog_nc:
+        # MG2 melts cloud ice instantly after sedimentation instead (below);
+        # no melt rate, so no melted-crystal rain number either.
+        melt_ice = jnp.zeros_like(melt_ice)
     # Snow melting: faithful SAM PSMLT (heat-balance-limited, PSD) when double-
     # moment; else the crude bulk rate. dt=dt applies PSMLT's sensible-heat cap
     # (can't over-cool below 0 °C, codex iter-29 D) + the mass donor clamp;
@@ -1222,7 +1229,10 @@ def morrison_microphysics(
     # droplet number becomes ice number, and L_f is released. Smooth sigmoid
     # threshold for AD (SAM uses a hard T≤233.15 switch). The rain analog is
     # the steep Bigg rate (iter-24). Gated by ``do_homogeneous_freezing``.
-    if config.do_homogeneous_freezing:
+    # Under prognostic_droplet_number MG2's instant homogeneous freezing runs
+    # after sedimentation instead, whatever do_homogeneous_freezing says (user
+    # decision 2026-10-20, 3b).
+    if config.do_homogeneous_freezing and not _prog_nc:
         homo_frac = jax.nn.sigmoid(
             config.homogeneous_freeze_sharpness
             * (config.homogeneous_freeze_T - T))
@@ -2060,8 +2070,7 @@ def morrison_microphysics(
                    * jnp.clip(N_c, 0.0) / jnp.clip(q_c, 1e-15))
     if _prog_nc:
         # MG2 nctend (micro_mg2_0.F90:1947) + activation re-applied everywhere
-        # (:2019-2022).  The net floor below stays under the switch until the
-        # MG2 end-of-step repairs land (user decision 2026-10-20).
+        # (:2019-2022).
         dN_c_dt = -nc_sink + npccn
     elif getattr(config, "predict_Nc", False):
         dN_c_dt = safe_divide(-dq_c_au * rho, x_c, eps=1e-15) - dN_c_riming
@@ -2130,6 +2139,33 @@ def morrison_microphysics(
         dN_c_dt = dN_c_dt + sed_nc_kg * rho
         dq_v_dt = dq_v_dt + sed_qv
         dT_dt = dT_dt + sed_T
+        # MG2 instant ice melt -> droplets and homogeneous freezing on the
+        # post-sedimentation state (micro_mg2_0.F90:2503-2685; decisions 4b, 1a,
+        # 2a, 2026-10-20 smooth switch-on of width 4/sharpness).
+        _q_c_raw = q_c + dq_c_dt * dt
+        (_q_c_end, _N_c_end, _q_i_end, _N_i_end, _T_end, _melt, _frz,
+         _chg) = mg2_instant_ice_melt_homog_freeze(
+            _q_c_raw, (N_c + dN_c_dt * dt) / rho, q_i + dq_i_dt * dt,
+            N_i + dN_i_dt * dt, T + dT_dt * dt, config.homogeneous_freeze_T,
+            RAMP_WIDTH_PER_SHARPNESS / config.melt_sharpness,
+            RAMP_WIDTH_PER_SHARPNESS / config.homogeneous_freeze_sharpness)
+        # added as increments on the raw post state (end - raw), so a cell's
+        # existing tendency survives in single precision; heat from the masses
+        _dqc = jnp.where(_chg, (_q_c_end - _q_c_raw) / dt, 0.0)
+        dq_c_dt = dq_c_dt + _dqc
+        dN_c_dt = dN_c_dt + jnp.where(
+            _chg, (_N_c_end * rho - (N_c + dN_c_dt * dt)) / dt, 0.0)
+        dq_i_dt = dq_i_dt + jnp.where(
+            _chg, (_q_i_end - (q_i + dq_i_dt * dt)) / dt, 0.0)
+        dN_i_dt = dN_i_dt + jnp.where(
+            _chg, (_N_i_end - (N_i + dN_i_dt * dt)) / dt, 0.0)
+        dT_dt = dT_dt + constants.L_f * (_frz - _melt) / (constants.c_pd * dt)
+        _qc_ice_melt = _melt / dt
+        _qc_homog = _dqc - _qc_ice_melt
+        # MG2 final droplet mean-size re-adjust (micro_mg2_0.F90:2743-2753,
+        # :2812-2830; Q2'a).
+        dN_c_dt = mg2_droplet_number_readjust(
+            q_c + dq_c_dt * dt, N_c + dN_c_dt * dt, N_c, cf_eff, rho, dt, dN_c_dt)
         # MG2's last droplet-number write (micro_mg2_0.F90:2913): no cloud
         # water left after the step => no droplets.
         dN_c_dt = jnp.where(q_c + dq_c_dt * dt < MG2_QSMALL, -N_c / dt, dN_c_dt)
@@ -2145,7 +2181,10 @@ def morrison_microphysics(
     # fall below zero; positive sources pass through. N_s/N_g already
     # get the equivalent treatment via their LAMS/LAMG consistency
     # limiters (``n_s_new``/``n_g_new``) below.
-    dN_c_dt = jnp.maximum(dN_c_dt, -jnp.clip(N_c, 0.0) / jnp.clip(dt, 1.0))
+    if not _prog_nc:
+        # MG2 has no net floor: its re-adjust and number clear above keep the
+        # number consistent (user decision 2026-10-20, removed in S10.4).
+        dN_c_dt = jnp.maximum(dN_c_dt, -jnp.clip(N_c, 0.0) / jnp.clip(dt, 1.0))
     dN_r_dt = jnp.maximum(dN_r_dt, -jnp.clip(N_r, 0.0) / jnp.clip(dt, 1.0))
     dN_i_dt = jnp.maximum(dN_i_dt, -jnp.clip(N_i, 0.0) / jnp.clip(dt, 1.0))
 
@@ -2436,6 +2475,8 @@ def morrison_microphysics(
         })
         if _prog_nc:
             out.qc_budget["sedimentation"] = sed_c
+            out.qc_budget["ice_melt"] = _qc_ice_melt
+            out.qc_budget["homogeneous_freezing"] = _qc_homog
     if _sed_poison is not None:
         # Strict mode: every FLOAT field carries the overflow guard (the
         # count stays a usable integer).  Static Python branch -- the

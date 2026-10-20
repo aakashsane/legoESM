@@ -318,6 +318,40 @@ def build_sedimentation_columns(cols):
     return cols + [thin, clear]
 
 
+def build_melt_freeze_columns(cols):
+    """``--prognostic-nc-melt`` columns (S10.4): ``meltice`` (cloud ice across 0 C,
+    incl. heat-limited partial melts and 0 < qi < qsmall) and ``homog`` (cloud
+    water across -40 C, incl. heat-limited partial freezing and 0 < qc < qsmall).
+    No rain or snow, so MG2's instant snow melt and rain freezing (M:2537-2612)
+    leave the pools the ice melt reads unchanged."""
+    from legoesm import constants as C
+    base = next(c for c in cols if c["name"] == "trop_deep")
+    nlev = len(base["T"])
+    ph = 60000.0 + 500.0 * np.arange(nlev + 1)
+    pf = 0.5 * (ph[1:] + ph[:-1])
+    z = np.zeros(nlev)
+
+    def col(name, T, qc, qi, nc_kg, ni_kg, cf, qv):
+        rho = pf / (C.R_d * T)
+        cf = np.maximum(cf, 1.0e-4)   # CAM hands MG2 fractions >= mincld (clear cells NaN otherwise)
+        return dict(base, name=name, T=T, p_half=ph, p_full=pf, rho=rho, cf=cf,
+                    q_c=qc, q_v=np.full(nlev, qv), q_r=z, N_r=z,
+                    N_c=nc_kg * rho, nc_kg=nc_kg, q_i=qi, ni_kg=ni_kg,
+                    relvar=np.ones(nlev), npccn=z)
+
+    T_m = np.linspace(273.0, 275.5, nlev)
+    qi_m = np.tile([3.0e-3, 1.0e-3, 1.0e-4, 1.0e-6, 5.0e-19, 0.0, 2.0e-3, 5.0e-4], nlev // 8 + 1)[:nlev]
+    qc_m = np.tile([0.0, 2.0e-4, 0.0, 1.0e-5], nlev // 4 + 1)[:nlev]
+    cf_m = np.where(qc_m + qi_m > 0, 0.6, 0.0)
+    melt = col("meltice", T_m, qc_m, qi_m, np.where(qc_m > 0, 5.0e7, 0.0),
+               np.where(qi_m > 0, 1.0e5, 0.0), cf_m, 4.0e-3)
+    T_h = np.linspace(229.0, 237.0, nlev)
+    qc_h = np.tile([1.0e-3, 3.0e-4, 1.0e-5, 3.0e-19, 0.0, 2.0e-3, 5.0e-4, 1.0e-4], nlev // 8 + 1)[:nlev]
+    cf_h = np.where(qc_h > 0, 0.5, 0.0)
+    homog = col("homog", T_h, qc_h, z, np.where(qc_h > 0, 8.0e7, 0.0), z, cf_h, 1.0e-4)
+    return [melt, homog]
+
+
 def write_prognostic_column_inputs(cols, path):
     nlev = len(cols[0]["T"])
     with open(path, "w") as f:
@@ -326,7 +360,8 @@ def write_prognostic_column_inputs(cols, path):
             f.write(f"{0.0:.17e}\n")       # ncnst: unused with nccons_in=.false.
             pdel = np.diff(c["p_half"])
             for k in range(nlev):
-                row = [c["T"][k], c["q_v"][k], c["q_c"][k], 0.0, c["nc_kg"][k], 0.0,
+                row = [c["T"][k], c["q_v"][k], c["q_c"][k], c.get("q_i", np.zeros(nlev))[k],
+                       c["nc_kg"][k], c.get("ni_kg", np.zeros(nlev))[k],
                        c["q_r"][k], 0.0, c["N_r"][k] / c["rho"][k], 0.0,
                        c["relvar"][k], 1.0, c["p_full"][k], pdel[k],
                        c["cf"][k], c["cf"][k], c["cf"][k], 1.0, c.get("npccn", np.zeros(nlev))[k]]
@@ -366,6 +401,13 @@ def load_column_outputs(path, ncol, nlev):
     if extra >= 3:
         out["nctend_sed"] = body[:, :, len(ORACLE_COLS) + 3]      # before :2501
         out["nstepc"] = body[:, :, len(ORACLE_COLS) + 4]          # droplet sed sub-steps
+    if extra >= 20:   # S10.4: before the ice melt (M:2616) / after homog freezing
+        b = len(ORACLE_COLS) + 5
+        for i, k in enumerate(("pre_dumc", "pre_dumnc", "pre_dumi", "pre_dumni", "pre_Tp",
+                               "pre_qctend", "pre_nctend", "pre_qitend", "pre_nitend",
+                               "pre_tlat", "post_qctend", "post_nctend", "post_qitend",
+                               "post_nitend", "post_tlat", "qitend", "nitend")):
+            out[k] = body[:, :, b + i]
     out["prect"] = prect
     return out
 
@@ -387,7 +429,8 @@ def _meta(a):
                    f"make_fixture.py --cam <CAM> --build <dir> --out {a.out.name}"
                    + (" --prognostic-nc" if a.prognostic_nc else "")
                    + (" --prognostic-nc-act" if a.prognostic_nc_act else "")
-                   + (" --prognostic-nc-sed" if a.prognostic_nc_sed else "")))
+                   + (" --prognostic-nc-sed" if a.prognostic_nc_sed else "")
+                   + (" --prognostic-nc-melt" if getattr(a, "prognostic_nc_melt", False) else "")))
 
 
 def main_prognostic(a):
@@ -464,6 +507,28 @@ def main_prognostic_sed(a):
     print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
 
 
+def main_prognostic_melt(a):
+    cols = build_melt_freeze_columns(build_prognostic_columns(build_columns()))
+    ncol, nlev = len(cols), len(cols[0]["T"])
+    fx = {f"col_{k}": np.stack([c[k] for c in cols])
+          for k in COL_FIELDS + ("nc_kg", "relvar", "npccn", "q_i", "ni_kg")}
+    fx["col_names"] = np.array([c["name"] for c in cols])
+    fx["dt"] = np.array(DT)
+    fin, fout = a.build / "melt_col_in.txt", a.build / "melt_col_out.txt"
+    write_prognostic_column_inputs(cols, fin)
+    subprocess.run([str(a.build / "mg2_tap"), str(fin), str(fout), "F", "P"], check=True)
+    o = load_column_outputs(fout, ncol, nlev)
+    for k in o:
+        fx[f"ora_{k}"] = o[k]
+    meta = _meta(a)
+    meta["probe"] = ("build.sh tap/: micro_mg2_0.F90 + S10.2/S10.3 taps + tap_pre before M:2616 "
+                     "and tap_post before M:2687 (27 added lines)")
+    fx["meta"] = np.array(json.dumps(meta))
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(a.out, **fx)
+    print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--cam", required=True, type=Path)
@@ -472,6 +537,7 @@ def main(argv=None):
     ap.add_argument("--prognostic-nc", action="store_true")
     ap.add_argument("--prognostic-nc-act", action="store_true")
     ap.add_argument("--prognostic-nc-sed", action="store_true")
+    ap.add_argument("--prognostic-nc-melt", action="store_true")
     a = ap.parse_args(argv)
     subprocess.run(["bash", str(HERE / "build.sh"), str(a.cam), str(a.build)],
                    check=True)
@@ -481,6 +547,8 @@ def main(argv=None):
         return main_prognostic_act(a)
     if a.prognostic_nc_sed:
         return main_prognostic_sed(a)
+    if a.prognostic_nc_melt:
+        return main_prognostic_melt(a)
     cols = build_columns()
     ncol, nlev = len(cols), len(cols[0]["T"])
     fx = {f"col_{k}": np.stack([c[k] for c in cols]) for k in COL_FIELDS}

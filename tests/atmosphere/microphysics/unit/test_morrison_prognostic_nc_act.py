@@ -7,8 +7,8 @@ Fixture ``oracle_fixtures/mg2_prognostic_nc_act.npz``: ``make_fixture.py
 micro_mg2_0.F90 of cam_cesm2_1_rel_60 with three added lines recording nctend
 right after the activation re-apply, micro_mg2_0.F90:2022).  Bound: 1e-10
 relative, hard-switch limit.  Where MG2's number would end the step negative
-(N_c + npccn*dt < 0), MG2 leaves the repair to its end of step (later stages);
-there the interim net floor applies (user decision 2026-10-20) and is asserted.
+(N_c + npccn*dt < 0), MG2's end-of-step droplet re-adjust repairs it (ported in
+S10.4, which also removed the interim net floor).
 """
 from __future__ import annotations
 
@@ -65,9 +65,10 @@ def _mg2_masks(fx):
 
 
 def test_droplet_number_budget_matches_mg2_stage():
-    """Compared after droplet sedimentation (stage S10.3, MG2 probe before
-    :2501) and, where no cloud water is left, after MG2's number clear (:2913);
-    the S10.2 coverage masks use the probe right after the activation re-apply."""
+    """Compared with MG2's WHOLE-CALL nctend on every cell (S10.4: warm columns,
+    so after sedimentation only the final droplet re-adjust, :2835, and the
+    number clear, :2913, write it -- both ported; no net floor).  The S10.2
+    coverage masks use the probe right after the activation re-apply."""
     fx = _fx()
     out = _run(fx)
     dt = float(fx["dt"])
@@ -76,15 +77,14 @@ def test_droplet_number_budget_matches_mg2_stage():
     nc = fx["col_nc_kg"]
     clear = fx["col_q_c"] + fx["ora_qctend"] * dt < W.MG2_QSMALL
     neg = ~clear & (nc + fx["ora_nctend_sed"] * dt < 0.0)
-    keep = ~clear & ~neg
-    err = _rel(dN[keep], fx["ora_nctend_sed"][keep])
-    print("S10.2 nctend max rel err", float(err.max()), "cells", int(keep.sum()),
-          "floor cells", int(neg.sum()), "clear cells", int(clear.sum()))
+    err = _rel(dN, fx["ora_nctend"])
+    print("S10.2 nctend max rel err", float(err.max()), "cells", err.size,
+          "repaired-negative cells", int(neg.sum()), "clear cells", int(clear.sum()))
     assert float(err.max()) <= TOL
-    assert float(_rel(dN[clear], fx["ora_nctend"][clear]).max()) <= TOL
-    # interim floor (user decision 2026-10-20) where MG2's number would go negative
-    floor = -nc / dt
-    assert np.allclose(dN[neg], floor[neg], rtol=1e-12, atol=0.0)
+    # the removed interim floor (-nc/dt) would differ from MG2 in the cells
+    # MG2's re-adjust repairs
+    assert neg.any() and (np.abs(-nc[neg] / dt - fx["ora_nctend"][neg])
+                          > 1e-6 * np.abs(nc[neg] / dt)).all()
     qb = out.qc_budget
     for k, ora in (("autoconversion", "ora_prctot"), ("accretion", "ora_pratot")):
         e = float(_rel(-np.asarray(qb[k]), fx[ora]).max())
@@ -149,8 +149,12 @@ def test_cold_riming_number_sinks_and_no_ice_riming():
     want = _with_sedimentation(fx, out, q_c, jnp.asarray(nc_vol),
                                jnp.asarray(np.where(has_n, pre, 0.0)), T)
     assert float(_rel(got[has_n], want[has_n]).max()) <= 1e-12
-    # a cloudy cell with no droplets: the nc limiter removes nothing (MG2 :1628-1642)
-    assert (c & (nc_vol == 0)).any() and np.all(got[c & (nc_vol == 0)] == 0.0)
+    # a cloudy cell with no droplets: the nc limiter removes nothing (MG2 :1628-1642);
+    # only MG2's final size re-adjust (S10.4) gives it droplets
+    empty = c & (nc_vol == 0)
+    assert empty.any()
+    want0 = _with_sedimentation(fx, out, q_c, jnp.asarray(nc_vol), jnp.zeros_like(q_c), T)
+    assert float(_rel(got[empty], want0[empty]).max()) <= 1e-12 and (got[empty] > 0).all()
 
 
 def _top(c):
@@ -170,6 +174,11 @@ def _with_sedimentation(fx, out, q_c, N_c, dN_pre, T):
         q_c + dqc_pre * dt, (N_c + dN_pre * dt) / rho, cf, T, rho,
         jnp.asarray(fx["col_p_half"]), dt, _cfg().sed_cfl_substeps_max)
     dN = dN_pre + sed_n * rho
+    # S10.4 final droplet re-adjust (no ice melt / homogeneous freezing at 258 K)
+    q_ic = jnp.minimum(jnp.maximum(q_c + out.dq_c_dt * dt, 0.0) / cf, W.KK2000_CAM6_QC_MAX)
+    n_ic = jnp.maximum(N_c + dN * dt, 0.0) / cf
+    n_adj = W.mg2_size_bounded_nc(q_ic, n_ic, rho)
+    dN = jnp.where((q_ic >= W.MG2_QSMALL) & (n_adj != n_ic), (n_adj * cf - N_c) / dt, dN)
     return np.asarray(jnp.where(q_c + out.dq_c_dt * dt < W.MG2_QSMALL, -N_c / dt, dN))
 
 

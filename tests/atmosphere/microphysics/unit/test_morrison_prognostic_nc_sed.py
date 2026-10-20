@@ -84,16 +84,13 @@ def test_sedimentation_matches_mg2():
                        fx["ora_rflx_bot"][:, -1] + fx["ora_lflx_bot"][:, -1]),
     }
     clear = fx["col_q_c"] + fx["ora_qctend"] * dt < W.MG2_QSMALL
-    neg = ~clear & (nc + fx["ora_nctend_sed"] * dt < 0.0)
-    keep = ~clear & ~neg
     dN = np.asarray(out.dN_c_dt) / rho
-    errs["nctend_sed"] = _rel(dN[keep], fx["ora_nctend_sed"][keep])
-    errs["nctend_clear"] = _rel(dN[clear], fx["ora_nctend"][clear])
+    # whole-call nctend: after sedimentation only the S10.4 droplet re-adjust and
+    # the number clear write it in these warm columns
+    errs["nctend"] = _rel(dN, fx["ora_nctend"])
     worst = {k: float(v.max()) for k, v in errs.items()}
-    print("S10.3 max rel err", worst, "cells", int(keep.sum()), "clear", int(clear.sum()),
-          "floor", int(neg.sum()))
+    print("S10.3 max rel err", worst, "clear", int(clear.sum()))
     assert max(worst.values()) <= TOL, worst
-    assert np.allclose(dN[neg], -nc[neg] / dt, rtol=1e-12, atol=0.0)   # interim floor
     # coverage, on the MG2 side
     names = list(fx["col_names"])
     thin = names.index("thin")

@@ -1504,7 +1504,10 @@ class ExperimentConfig(NamedTuple):
     # obs because small-crystal cirrus defeats both ice sinks while hom
     # nucleation keeps seeding number — these three knobs bracket the loop).
     morrison_fall_a_i: float = 700.0            # MorrisonConfig.fall_a_i [m^(1-b)/s]
-    morrison_ice_snow_d_auto: float = 250.0e-6  # MorrisonConfig.ice_snow_d_auto [m] (SAM; the "mg" flavor resolves this default to CAM6 MG2 micro_mg_dcs 500 um)
+    morrison_ice_snow_d_auto: float | None = None  # MorrisonConfig.ice_snow_d_auto [m];
+                                                # None = the flavor's DCS (SAM 250 um,
+                                                # mg = CAM6 MG2 micro_mg_dcs 500 um);
+                                                # an explicit value always wins
     morrison_hom_ice_nuc_N: float = 1.0e6       # MorrisonConfig.hom_ice_nuc_N [1/m^3]
                                                 # (consumed only inside the
                                                 # homogeneous_ice_nucleation
@@ -4043,6 +4046,8 @@ class ExperimentConfig(NamedTuple):
             ("morrison_accre_enhan_fact", 0.1, 10.0),
         ):
             _v = getattr(self, _f)
+            if _v is None and _f == "morrison_ice_snow_d_auto":
+                continue    # unset = the flavor's DCS
             if not math.isfinite(_v) or not (_lo <= _v <= _hi):
                 raise ValueError(
                     f"{_f}={_v} outside MorrisonConfig spec bounds "
@@ -4051,8 +4056,9 @@ class ExperimentConfig(NamedTuple):
             # a float32-noise value must be "default" in BOTH places, never
             # rejected here while the resolver would apply nothing (codex
             # 2026-07-26 round 3, item 4).
-            if not math.isclose(_v, ExperimentConfig._field_defaults[_f],
-                                rel_tol=1e-6, abs_tol=0.0):
+            _d = ExperimentConfig._field_defaults[_f]
+            if _d is None or not math.isclose(_v, _d, rel_tol=1e-6,
+                                              abs_tol=0.0):
                 _morrison_touched.append(_f)
         # A touched morrison_* scalar on any OTHER scheme must be refused at
         # CONFIG time: microphysics='none' early-returns before either lane's

@@ -171,7 +171,11 @@ _NUC_RH_LIQ_THRESHOLD = 0.999    # liquid-nucleation RH_liq gate
 _MG2_OMSM = 1.0 - 1.0e-5           # MG2 limiter round-off margin omsm, micro_mg_utils.F90:117
 _MG2_ACCRETION_VARCOEF_EXP = 1.15  # MG2 accrete_cloud_water_rain var_coef(relvar, 1.15), micro_mg_utils.F90:1317
 
-_MG2_DCS_M = 500.0e-6  # CAM6 MG2 micro_mg_dcs [m] (namelist_defaults_cam.xml:1244)
+# CAM6 MG2 micro_mg_dcs [m] (namelist_defaults_cam.xml:1244): the run's DCS
+# when the "mg" flavour runs and the config leaves morrison_ice_snow_d_auto
+# unset (applied where the run config is resolved, thread_morrison_scalars;
+# MorrisonConfig itself carries SAM's 250 um).
+MG2_DCS_M = 500.0e-6
 
 
 def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
@@ -193,8 +197,6 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     ``rain_selfcoll_scheme`` sb2001      mg2      (Beheng -8 nr qr rho, :1359;
                                                   only replaces the sb2001
                                                   default, see below)
-    ``ice_snow_d_auto``    250 µm        500 µm   (micro_mg_dcs; only
-                                                  replaces the SAM default)
     =====================  ============  =============
 
     The rain rows are CAM6 MG2 (cam_cesm2_1_rel_60 micro_mg_utils.F90).
@@ -208,12 +210,6 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
         # that the dispatcher must reject) is left as the caller set it.
         selfcoll = ("mg2" if config.rain_selfcoll_scheme == "sb2001"
                     else config.rain_selfcoll_scheme)
-        # DCS likewise: MG2's 500 um replaces only the SAM default 250 um
-        # (micro_mg_dcs, namelist_defaults_cam.xml:1244), so an explicit
-        # other value is kept.
-        dcs = (_MG2_DCS_M if config.ice_snow_d_auto
-               == MorrisonConfig._field_defaults["ice_snow_d_auto"]
-               else config.ice_snow_d_auto)
         return config._replace(
             lami_max=1.0 / 10.0e-6,  # coeff-ok: max ice slope (1/10um)
             snow_aggregation_eii=0.5,
@@ -222,7 +218,6 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
             ice_to_snow_scheme="mg_ferrier",
             lamr_min=1.0 / 500.0e-6,  # coeff-ok: MG2 lam_bnd_rain(1), micro_mg_utils.F90:169
             rain_selfcoll_scheme=selfcoll,
-            ice_snow_d_auto=dcs,
         )
     elif config.morrison_flavor == "sam":
         return config

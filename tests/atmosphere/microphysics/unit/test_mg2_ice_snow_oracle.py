@@ -28,6 +28,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 jax.config.update("jax_enable_x64", True)
 
@@ -109,7 +110,8 @@ def test_snow_kernels_match_mg2():
     fx = _fx()
     i = {k[6:]: jnp.asarray(v) for k, v in fx.items() if k.startswith("pt_in_")}
     o = {k[7:]: v for k, v in fx.items() if k.startswith("pt_out_")}
-    cfg = resolve_morrison_flavor(MorrisonConfig(morrison_flavor="mg"))
+    cfg = resolve_morrison_flavor(MorrisonConfig(
+        morrison_flavor="mg", ice_snow_d_auto=500.0e-6))   # CAM6 micro_mg_dcs
     rho, T, p, pf = i["rho"], i["T"], i["p"], i["precip_frac"]
     qvl = saturation_specific_humidity(T, p)
     qvi = saturation_specific_humidity_ice(T, p)
@@ -257,8 +259,7 @@ def test_gradients_finite_on_fixture_columns():
 
 def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
     """The MPAS column bridge hands the N_s tracer to Morrison and returns its
-    tendency; without the tracer the snow stays single-moment (N_s=None) and
-    no N_s tendency is emitted."""
+    tendency; without the tracer the MG2 mode is refused."""
     import types
 
     from legoesm.atmosphere.physics.clouds.config import CloudConfig
@@ -269,10 +270,7 @@ def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
     cfg = _production_morrison()
     assert mi.min_tracer_slots("morrison", cfg) == 10
     assert mi.min_tracer_slots("morrison", cfg._replace(warm_rain_incloud=False)) == 9
-    from legoesm.atmosphere.physics.microphysics.morrison import resolve_morrison_flavor
-    _m = MicrophysicsConfig(scheme="morrison").morrison
-    assert _m.ice_snow_d_auto == 250.0e-6               # SAM default
-    assert resolve_morrison_flavor(_m).ice_snow_d_auto == 500.0e-6  # mg flavor
+
     seen = []
     real = mi.morrison_microphysics
 
@@ -295,9 +293,10 @@ def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
     ps = types.SimpleNamespace(cloud_fraction=jnp.full(shape, 0.5))
     with_ns = fn(state._replace(tracers={**tr, "N_s": state.T.replace(
         data=ns, name="N_s", units="1/kg")}), mesh, sigma, phys_state=ps)
-    without = fn(state._replace(tracers=tr), mesh, sigma, phys_state=ps)
     np.testing.assert_array_equal(seen[0], np.asarray(ns))
-    assert seen[1] is None
+    # MG2 mode without the snow number is refused, never single-moment
+    # (user decision 2026-10-20)
+    with pytest.raises(ValueError, match="needs the snow number tracer N_s"):
+        fn(state._replace(tracers=tr), mesh, sigma, phys_state=ps)
     dns = np.asarray(with_ns.tracer_tendencies["N_s"].data)
     assert np.all(np.isfinite(dns)) and np.any(dns != 0.0)
-    assert "N_s" not in without.tracer_tendencies

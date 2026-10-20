@@ -357,6 +357,13 @@ def _make_hydrostatic_microphysics(
         rho = _compute_rho(T_col, p_full_col, q_v_col)
         dz = _compute_heights_from_sigma(T_col, p_half_col, q_v_col)
 
+        if _incloud and (state.tracers is None or "N_s" not in state.tracers):
+            # CAM6 MG2 mode carries the snow number; without it the scheme
+            # would silently run single-moment snow (user decision
+            # 2026-10-20: refuse).
+            raise ValueError(
+                "warm_rain_incloud=True (CAM6 MG2 two-moment snow) needs the "
+                "snow number tracer N_s in the state; it is absent.")
         # Extract actual hydrometeor state from tracers (fall back to zero
         # for any species not present in the tracer registry).
         hydrometeors = HydrometeorState(
@@ -370,8 +377,8 @@ def _make_hydrostatic_microphysics(
             N_r=number_per_mass_to_per_volume(_get_tracer("N_r"), rho),
             N_i=_get_tracer("N_i"),
             # Prognostic snow number [1/kg] when the state carries it (the
-            # CAM6 MG2 mode's two-moment snow); absent => None => single-
-            # moment snow.
+            # CAM6 MG2 mode's two-moment snow, required there, see above);
+            # absent outside that mode => None => single-moment snow.
             N_s=(_get_tracer("N_s") if state.tracers is not None
                  and "N_s" in state.tracers else None),
         )

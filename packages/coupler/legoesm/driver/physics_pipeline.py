@@ -4193,8 +4193,6 @@ def thread_morrison_scalars(config, scheme, micro_config):
          getattr(config, "morrison_k_au", None)),
         ("morrison_fall_a_i", "fall_a_i",
          getattr(config, "morrison_fall_a_i", None)),
-        ("morrison_ice_snow_d_auto", "ice_snow_d_auto",
-         getattr(config, "morrison_ice_snow_d_auto", None)),
         ("morrison_hom_ice_nuc_N", "hom_ice_nuc_N",
          getattr(config, "morrison_hom_ice_nuc_N", None)),
         ("morrison_autocon_fact", "autocon_fact",
@@ -4206,6 +4204,15 @@ def thread_morrison_scalars(config, scheme, micro_config):
                 float(_val), float(_ExpCfg._field_defaults[_exp_name]),
                 rel_tol=1e-6, abs_tol=0.0):
             _touched[_leaf_name] = float(_val)
+    # DCS: an explicit value always wins; unset (None) = the flavor's DCS,
+    # SAM 250 um (the leaf default) or CAM6 MG2 500 um for "mg".
+    _dcs = getattr(config, "morrison_ice_snow_d_auto", None)
+    if _dcs is None and scheme == "morrison" and getattr(
+            config, "morrison_flavor", "mg") == "mg":
+        from legoesm.atmosphere.physics.microphysics.morrison import MG2_DCS_M
+        _dcs = MG2_DCS_M
+    if _dcs is not None:
+        _touched["ice_snow_d_auto"] = float(_dcs)
     # Flavor is a string selector, not a float: forward only when it deviates
     # from the leaf default ("mg"), mirroring the touched-scalar rule so a
     # default config stays byte-identical on Morrison and silent elsewhere.

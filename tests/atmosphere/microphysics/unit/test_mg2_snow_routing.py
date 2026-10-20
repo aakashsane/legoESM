@@ -1,8 +1,8 @@
 """CAM6 MG2 mode decisions (user 2026-10-20): Bigg-frozen rain becomes snow,
 or cloud ice where the mean drop is smaller than DCS, never graupel
-(micro_mg2_0.F90:1648-1656, :1882-1895); DCS is 250 um for the SAM flavour
-and 500 um for the MG flavour; lanes that cannot carry the snow number refuse
-two-moment snow."""
+(micro_mg2_0.F90:1648-1656, :1882-1895); an unset DCS is 250 um for the SAM
+flavour and 500 um for the MG flavour, an explicit one always wins; lanes that
+cannot carry the snow number refuse two-moment snow."""
 import sys
 from pathlib import Path
 
@@ -16,20 +16,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_mg2_warm_rain_oracle import _production_morrison  # noqa: E402
 
 from legoesm import constants as C  # noqa: E402
-from legoesm.atmosphere.physics.microphysics.config import MorrisonConfig  # noqa: E402
 from legoesm.atmosphere.physics.microphysics.morrison import (  # noqa: E402
     morrison_microphysics, resolve_morrison_flavor)
 from legoesm.atmosphere.physics.microphysics.output import HydrometeorState  # noqa: E402
 
 
-def test_dcs_per_flavour():
-    sam = resolve_morrison_flavor(MorrisonConfig(morrison_flavor="sam"))
-    mg = resolve_morrison_flavor(MorrisonConfig(morrison_flavor="mg"))
-    assert sam.ice_snow_d_auto == 250.0e-6
-    assert mg.ice_snow_d_auto == 500.0e-6
-    kept = resolve_morrison_flavor(
-        MorrisonConfig(morrison_flavor="mg", ice_snow_d_auto=300.0e-6))
-    assert kept.ice_snow_d_auto == 300.0e-6
+@pytest.mark.parametrize("flavor,dcs,expect", [
+    ("mg", None, 500.0e-6),     # unset: CAM6 MG2 micro_mg_dcs
+    ("sam", None, 250.0e-6),    # unset: SAM clice_snow_Dauto
+    ("mg", 250.0e-6, 250.0e-6),  # explicit always wins (user 2026-10-20)
+    ("sam", 500.0e-6, 500.0e-6),
+    ("mg", 300.0e-6, 300.0e-6),
+])
+def test_dcs_unset_is_the_flavours_explicit_wins(flavor, dcs, expect):
+    from legoesm.driver.config import ExperimentConfig
+    from legoesm.driver.physics_pipeline import registry_scheme_config
+    cfg = ExperimentConfig(microphysics="morrison", morrison_flavor=flavor,
+                           morrison_ice_snow_d_auto=dcs)
+    cfg.validate_strict()
+    leaf = resolve_morrison_flavor(registry_scheme_config(cfg))
+    assert leaf.ice_snow_d_auto == expect
 
 
 def _freeze_rain(cfg, N_r_per_m3):

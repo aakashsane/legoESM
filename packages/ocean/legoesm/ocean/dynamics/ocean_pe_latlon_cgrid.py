@@ -5449,9 +5449,10 @@ def latlon_cgrid_ocean_baroclinic_tendencies(
     _vorticity_scheme = getattr(
         _vorticity_selection, "scheme", _vorticity_selection)
     if getattr(config, "een_nemo_relative_vorticity", False) and (
-            _mom_adv == "flux_form" or _vorticity_scheme != "een_total"):
-        # Only the vector-form een_total triad reads np_CRV's relative
-        # vorticity; every other arm would silently ignore the switch.
+            _mom_adv != "vector_invariant" or _vorticity_scheme != "een_total"):
+        # Only the vector-invariant een_total triad (NEMO's vor_een) reads
+        # np_CRV's relative vorticity; flux form ignores the switch and WENO
+        # would apply it outside the NEMO triad.
         raise ValueError(
             "een_nemo_relative_vorticity requires vector-form "
             "vorticity_scheme='een_total'; got "

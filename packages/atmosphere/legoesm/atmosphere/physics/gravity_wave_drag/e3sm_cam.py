@@ -1774,8 +1774,9 @@ def _e3sm_cam_gwd_one_source(
     land_frac_col : (ncol,) or None
         Per-column land fraction in [0, 1] for the E3SM driver-level
         orographic scaling ``utgw *= landfrac`` (gw_drag.F90:904-906 — the
-        oro drag is zeroed over ocean BEFORE the heating closure, so ocean
-        columns get neither drag nor heat).  Applied ONLY when
+        oro drag is zeroed over ocean BEFORE the heating closure, so in an
+        orographic-only suite ocean columns get neither drag nor heat).
+        Applied ONLY when
         ``config.source == "orographic"`` — E3SM scales the oro tendencies
         only; spectral (frontal/convective) sources ignore this argument,
         matching the oracle.  ``None`` -> no scaling (legacy behaviour,
@@ -1938,7 +1939,9 @@ def _e3sm_cam_gwd_one_source(
     # ``utgw(:,k) = utgw(:,k) * cam_in%landfrac`` — the oro drag is zeroed
     # over ocean.  ORDER MATTERS: E3SM scales the momentum tendencies BEFORE
     # the heating closure at :908-913 (the closure reads the scaled ptend%u),
-    # so ocean columns get neither drag nor heat.  Oro source only; E3SM does
+    # so in an orographic-only suite ocean columns get neither drag nor heat
+    # (in a spectral suite the closure still heats them with the spectral
+    # ptend, as E3SM does).  Oro source only; E3SM does
     # NOT landfrac-scale the spectral (frontal/Beres) tendencies.
     if land_frac_col is not None and config.source == "orographic":
         lfrac = jnp.clip(
@@ -1969,11 +1972,11 @@ def _e3sm_cam_gwd_one_source(
     #     -[KE(u+dt*du) - KE(u)]/dt as heat, closing the discrete column
     #     energy budget the way E3SM's does.  The continuous form over-heats
     #     by 0.5*dt*(du^2+dv^2)/c_pd per step (O(10%) of local heating in
-    #     tndmax-limited layers at dt=1800 s).  STRUCTURAL DEPARTURE kept:
-    #     E3SM applies this closure once over the ACCUMULATED ptend of all
-    #     GW sources ("includes spectrum", gw_drag.F90:898-899); our
-    #     per-source calls close each source independently, so the
-    #     spectral-x-oro cross terms of |du_total|^2 are not represented.
+    #     tndmax-limited layers at dt=1800 s).  As in E3SM the closure runs
+    #     over the ACCUMULATED ptend of all GW sources ("includes spectrum",
+    #     gw_drag.F90:898-913), so the spectral-x-oro cross terms are
+    #     included and, in a mixed suite, the spectral KE change is heated a
+    #     second time (E3SM v3.0.1 behaviour).
     #
     # Spectral (frontal / convective): dttke is the GROUND-RELATIVE
     # wave-energy-flux-divergence term, NOT the irreversible (c-ubm)*gwut

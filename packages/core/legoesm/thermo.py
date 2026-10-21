@@ -205,8 +205,8 @@ def saturation_vapor_pressure_goff(T: jax.Array) -> jax.Array:
 # (a03b84b7c4e34f965b115686f22a043b85739e56) src/physics/cam/wv_sat_methods.F90,
 # CAM's default scheme (``initial_default_idx = GoffGratch_idx``, :53).  NOT the
 # WMO Goff (1957) curve of :func:`saturation_vapor_pressure_goff`.  The
-# vapour-pressure -> specific-humidity map is CAM's own hard one
-# (``wv_sat_svp_to_qsat``), not the smooth shared conversion: a different
+# vapour-pressure -> specific-humidity map is CAM's own (``wv_sat_svp_to_qsat``,
+# its q = 1 cap smooth by default per RULE 5), not the shared conversion: a different
 # formula at an oracle boundary (same as :func:`nemo_si3_saturation_over_ice`).
 
 
@@ -245,11 +245,12 @@ def _specific_humidity_from_esat_cam(e_sat: jax.Array, p: jax.Array, *,
     ``p - es <= 0``.
 
     KNOWN DIFFERENCE (RULE 5): at the default the cap is smooth, ``r =
-    smooth_min(e_sat/p, 1)`` and ``q = eps r / (1 - (1 - eps) r)``, which is
-    ``<= 1`` everywhere, equals 1 at ``r -> inf`` and departs from CAM by
-    ``~log(1 + exp(-cap_sharpness (1 - r)))/cap_sharpness`` in ``r`` (nil for
-    tropospheric ``r << 1``); the denominator stays ``>= eps``.
-    ``cap_sharpness = math.inf`` is CAM's hard cap exactly."""
+    smooth_min(e_sat/p, 1)`` and ``q = eps r / (1 - (1 - eps) r)``, so
+    ``q <= 1`` and the denominator stays ``>= eps``.  The smoothed ratio sits
+    below CAM's ``min(r, 1)`` by ``log(1 + exp(-cap_sharpness |1 - r|))/cap_sharpness``
+    (on both sides of ``r = 1``; ``log 2/cap_sharpness`` at ``r = 1``), which
+    is nil for tropospheric ``r << 1``.  ``cap_sharpness = math.inf`` is CAM's
+    hard cap exactly.  ``p > 0`` is assumed."""
     eps = constants.epsilon
     if math.isinf(cap_sharpness):
         return jnp.where(p - e_sat <= 0.0, 1.0,
@@ -258,17 +259,23 @@ def _specific_humidity_from_esat_cam(e_sat: jax.Array, p: jax.Array, *,
     return eps * r / (1.0 - (1.0 - eps) * r)
 
 
-def saturation_specific_humidity_goff_gratch(T: jax.Array, p: jax.Array) -> jax.Array:
+def saturation_specific_humidity_goff_gratch(T: jax.Array, p: jax.Array, *,
+                                             cap_sharpness: float = _CAM_QSAT_CAP_SHARPNESS
+                                             ) -> jax.Array:
     """Saturation specific humidity over liquid [kg/kg], CAM
     ``wv_sat_qsat_water`` (wv_sat_methods.F90:195-218), the ``qsat_water``
     MG2 calls (micro_mg2_0.F90:113-115)."""
-    return _specific_humidity_from_esat_cam(saturation_vapor_pressure_goff_gratch(T), p)
+    return _specific_humidity_from_esat_cam(saturation_vapor_pressure_goff_gratch(T), p,
+                                            cap_sharpness=cap_sharpness)
 
 
-def saturation_specific_humidity_ice_goff_gratch(T: jax.Array, p: jax.Array) -> jax.Array:
+def saturation_specific_humidity_ice_goff_gratch(T: jax.Array, p: jax.Array, *,
+                                                 cap_sharpness: float = _CAM_QSAT_CAP_SHARPNESS
+                                                 ) -> jax.Array:
     """Saturation specific humidity over ice [kg/kg], CAM ``wv_sat_qsat_ice``
     (wv_sat_methods.F90:220-243), the ``qsat_ice`` MG2 calls."""
-    return _specific_humidity_from_esat_cam(saturation_vapor_pressure_ice_goff_gratch(T), p)
+    return _specific_humidity_from_esat_cam(saturation_vapor_pressure_ice_goff_gratch(T), p,
+                                            cap_sharpness=cap_sharpness)
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +483,8 @@ def saturation_vapor_pressure_trans(T: jax.Array) -> jax.Array:
 
 
 def saturation_specific_humidity_cam_table(T: jax.Array, p: jax.Array, *,
-                                           clamp_sharpness: float = _CAM_SVP_CLAMP_SHARPNESS
+                                           clamp_sharpness: float = _CAM_SVP_CLAMP_SHARPNESS,
+                                           cap_sharpness: float = _CAM_QSAT_CAP_SHARPNESS
                                            ) -> jax.Array:
     """CAM ``qsat`` (wv_saturation.F90:458-503) [kg/kg]: the 1-K table of
     :func:`saturation_vapor_pressure_trans` from ``tmin`` (``wv_sat_init``,
@@ -485,10 +493,12 @@ def saturation_specific_humidity_cam_table(T: jax.Array, p: jax.Array, *,
     CAM's ``svp_to_qsat``.  The ``qsat`` ``zm_conv_evap`` calls (zm_conv.F90:1484).
 
     KNOWN DIFFERENCE (RULE 5): at the default the [tmin, tmax] clamp is
-    ``smooth_clamp`` with ``clamp_sharpness`` [1/K]; it departs from CAM by
-    ``~exp(-clamp_sharpness * d)/clamp_sharpness`` K at ``d`` K inside a table
-    bound (nil in the atmosphere's range).  ``clamp_sharpness = math.inf`` is
-    CAM's hard clamp exactly."""
+    ``smooth_clamp`` with ``clamp_sharpness`` [1/K]; the clamped temperature
+    departs from CAM's by ``~log(1 + exp(-clamp_sharpness d))/clamp_sharpness``
+    K at ``d`` K from a table bound: ``log 2`` K at the bound itself (q 31%
+    high at ``tmin``, 1.8% at 130 K), < 3e-11 relative in q over 150-340 K.
+    The q = 1 cap is :func:`_specific_humidity_from_esat_cam`'s.  CAM exactly
+    is ``clamp_sharpness = cap_sharpness = math.inf``."""
     plenest = math.ceil(_CAM_SVP_TMAX_K - _CAM_SVP_TMIN_K) + 2
     estbl = saturation_vapor_pressure_trans(
         _CAM_SVP_TMIN_K + jnp.arange(plenest, dtype=T.dtype))
@@ -503,7 +513,7 @@ def saturation_specific_humidity_cam_table(T: jax.Array, p: jax.Array, *,
     weight = t_tmp - i
     i = i.astype(jnp.int32)
     es = (1.0 - weight) * estbl[i] + weight * estbl[i + 1]
-    return _specific_humidity_from_esat_cam(es, p)
+    return _specific_humidity_from_esat_cam(es, p, cap_sharpness=cap_sharpness)
 
 
 def nemo_si3_saturation_over_ice(

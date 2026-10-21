@@ -23,7 +23,9 @@ RAINQM, SNOWQM, NUMRAI (zm_conv_intr.F90:829-846, micro_mg_cam.F90:416-435) =
 legoESM ``q_c, q_i, N_c, N_i, q_r, q_s, N_r``.
 
 Tolerance: max relative error <= 1e-10 in fp64 (user decision 2026-10-19).
-ZM has no smoothing fields, so this hard-limit is also the production setting.
+ZM has no smoothing fields of its own.  Its qsat table's [tmin, tmax] clamp
+and q = 1 cap are smooth by default (legoesm.thermo, RULE 5) and depart from
+CAM by < 3e-11 relative over 150-340 K, inside this tolerance.
 """
 from __future__ import annotations
 

@@ -30,7 +30,8 @@ Departures from the oracle (all documented, measured where numeric):
   ``zm_conv_evap`` uses CAM's own ``qsat``
   (``legoesm.thermo.saturation_specific_humidity_cam_table``): the 1-K table
   of the Goff-Gratch ``svp_trans`` water->ice blend (0 to -20 degC), linearly
-  interpolated, with CAM's hard e->q conversion.
+  interpolated, with CAM's e->q conversion (its clamp and q = 1 cap smooth
+  by default, RULE 5).
 * Constants come from ``legoesm.constants`` (CAM's liquid/vapour heat
   capacities, dry gas constant, epsilon and vapour gas constant differ in
   the third or fourth significant figure).

@@ -92,11 +92,12 @@ def _cam_svp_to_qsat(es, p):
 @pytest.mark.parametrize("es,p", _CAP_CASES)
 def test_cam_qsat_cap_hard_limit_is_cam(es, p):
     import math
+    jax.config.update("jax_enable_x64", True)
 
     from legoesm.thermo import _specific_humidity_from_esat_cam
     got = float(_specific_humidity_from_esat_cam(jnp.float64(es), jnp.float64(p),
                                                  cap_sharpness=math.inf))
-    assert got == pytest.approx(_cam_svp_to_qsat(es, p), rel=1e-12)
+    assert got == _cam_svp_to_qsat(es, p)  # bitwise: same IEEE ops as CAM
 
 
 # Default-sharpness departure from CAM, per case (KNOWN DIFFERENCE).
@@ -135,6 +136,7 @@ _CLAMP_DEFAULT_REL_GAP = {
     (374.0, 1.0e6): -0.009976601552033509,
     (375.16, 1.0e6): -0.025094240926450913,
     (400.0, 1.0e6): -5.91245026142207e-13,
+    (300.0, 3.0e3): 0.0,  # p < e_sat: CAM's q = 1 (the cap, not the clamp)
 }
 
 
@@ -162,8 +164,9 @@ def test_cam_table_clamp_hard_limit_is_cam(T, p):
     from legoesm.thermo import saturation_specific_humidity_cam_table
     jax.config.update("jax_enable_x64", True)
     got = float(saturation_specific_humidity_cam_table(jnp.float64(T), jnp.float64(p),
-                                                       clamp_sharpness=math.inf))
-    assert got == pytest.approx(_cam_table_qsat(T, p), rel=1e-12, abs=0.0)
+                                                       clamp_sharpness=math.inf,
+                                                       cap_sharpness=math.inf))
+    assert got == pytest.approx(_cam_table_qsat(T, p), rel=1e-15, abs=0.0)
 
 
 @pytest.mark.parametrize("T,p", list(_CLAMP_DEFAULT_REL_GAP))

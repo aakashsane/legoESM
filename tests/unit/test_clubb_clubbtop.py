@@ -314,6 +314,60 @@ def test_tropical_clubbtop_resets_aloft_and_spreads_water_above_150_hpa():
         np.broadcast_to(share[:, None], below.shape)[below], rtol=1e-9, atol=1e-22)
 
 
+def test_relvar_rcm_is_rcm_out_below_clubbtop_and_host_liquid_above():
+    """clubb_intr.F90:2099-2103, 2424: relvar's rcm is CLUBB's pre-advance
+    rcm_out (clipped against the advanced rtm) below clubbtop and the host
+    liquid at and above it; below clubbtop the taper weights it as dq_c."""
+    c = _column(0.0)
+    m = _spun_up_moments(c)
+    troplev = cam_chem_tropopause_level(c["T"], c["p_full"], c["p_half"], c["lat"])
+    ct0 = np.asarray(_step(c, _ON, m, troplev=troplev)[5]["clubbtop"])
+    k = np.arange(c["p_full"].shape[1])[None, :]
+    c = dict(c, q_c=c["q_c"] + jnp.where(k <= ct0[:, None], 1.0e-6, 0.0))
+    d = _step(c, _ON, m, troplev=troplev)[5]
+    ct = np.asarray(d["clubbtop"])
+    np.testing.assert_array_equal(ct, ct0)
+    above, below = k <= ct[:, None], k > ct[:, None]
+    q_c = np.asarray(c["q_c"])
+    got = np.asarray(d["rcm_relvar"])
+    rcm_out = np.asarray(d["rcm_out"])[:, ::-1]
+    keep = np.asarray(_taper(c["p_full"])) * below
+    np.testing.assert_array_equal(got[above], q_c[above])
+    assert np.abs(rcm_out[above] - q_c[above]).max() > 1.0e-7  # discriminating
+    np.testing.assert_allclose(got, q_c + keep * (rcm_out - q_c), rtol=0, atol=1e-20)
+    assert np.abs(got[below]).max() > 1.0e-6
+
+
+def test_bridge_relvar_uses_rcm_relvar(monkeypatch):
+    """The prognostic bridge hands cam6_relvar clubb_step's rcm_relvar and
+    rcp2_zt (single sub-step here), not the post-advance host liquid."""
+    c = _column(0.0)
+    seen, args = [], []
+    real_step, real_rv = clubb_mod.clubb_step, clubb_mod.cam6_relvar
+
+    def spy_step(*a, **k):
+        out = real_step(*a, **k)
+        seen.append(out[5])
+        return out
+
+    def spy_rv(rcm, rcp2):
+        args.append((np.asarray(rcm), np.asarray(rcp2)))
+        return real_rv(rcm, rcp2)
+    carry = pack_clubb_moments(_spun_up_moments(c))
+    monkeypatch.setattr(clubb_mod, "clubb_step", spy_step)
+    monkeypatch.setattr(clubb_mod, "cam6_relvar", spy_rv)
+    clubb_turbulence_prognostic(
+        *_args(c), carry, c["p_full"], c["p_half"], c["z_full"], c["z_half"],
+        c["T_sfc"], c["q_sfc"], c["rho"], _DT, _ON, q_c=c["q_c"], lat=c["lat"])
+    assert len(seen) == 1 and len(args) == 1
+    d = seen[0]
+    rcm, rcp2 = args[0]
+    np.testing.assert_array_equal(rcm, np.asarray(d["rcm_relvar"]))
+    np.testing.assert_array_equal(rcp2, np.asarray(d["rcp2_zt"])[:, ::-1])
+    host = np.asarray(c["q_c"] + _DT * d["dq_c_dt"])
+    assert np.abs(rcm).max() > 1.0e-6 and not np.array_equal(rcm, host)
+
+
 def test_polar_clubbtop_resets_water_below_150_hpa():
     """Poleward of 50 deg the high tropopause is rejected and the formula
     puts clubbtop near 230 hPa: between 150 hPa and there CLUBB runs at full
@@ -504,3 +558,16 @@ def test_spectral_lane_passes_gaussian_latitudes(monkeypatch):
     lat = np.asarray(seen["lat"]).reshape(int(grid.n_lat), int(grid.n_lon))
     np.testing.assert_array_equal(lat, np.broadcast_to(
         np.asarray(grid.lat)[:, None], lat.shape))
+
+
+def test_subcycled_bridge_hands_relvar_from_the_final_substep():
+    """n_sub = 2 (clubb_dt = dt/2), liquid on: relvar is formed from the
+    stacked rcm_relvar / rcp2_zt of the final sub-step."""
+    c = _column(0.0)
+    cfg = _ON._replace(clubb_dt=_DT / 2.0)
+    carry = pack_clubb_moments(_spun_up_moments(c))
+    out, _ = clubb_turbulence_prognostic(
+        *_args(c), carry, c["p_full"], c["p_half"], c["z_full"], c["z_half"],
+        c["T_sfc"], c["q_sfc"], c["rho"], _DT, cfg, q_c=c["q_c"], lat=c["lat"])
+    rv = np.asarray(out.relvar)
+    assert rv.shape == np.asarray(c["T"]).shape and np.all(np.isfinite(rv))

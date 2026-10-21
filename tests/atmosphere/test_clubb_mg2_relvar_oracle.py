@@ -80,18 +80,18 @@ def _closure(st, Lscale, env, gr):
 
 def _ours(cfx, case):
     """n -> our step LEAVING oracle state s_n (n = 1..N): the qclvar the core
-    hands out (pre-advance rcp2), the pre-advance rcm (CAM's rcm_out), and the
+    hands out (pre-advance rcp2), its rcm_out (CAM's, clipped pre-advance rcm), and the
     post-advance closure's rcm/rcp2 (the liquid our host receives)."""
     gr, forcing, env = core._inputs(cfx, case)
     out = {}
     for n in range(1, int(cfx["meta/n_steps"]) + 1):
         st, rcm = core._state(cfx, case, n)
         o = core._step(st, rcm, forcing, env, gr, core._CFG, extra=("rcp2_zt",),
-                       diag_extra=("rcp2_zt",))
+                       diag_extra=("rcp2_zt", "rcm_out"))
         pre = _closure(st, o["Lscale"], env, gr)
         out[n] = {"qclvar": np.asarray(o["diag/rcp2_zt"]),
                   "pre_rcp2": np.asarray(pre["rcp2_zt"]),
-                  "pre_rcm": np.asarray(pre["rcm"]),
+                  "rcm_out": np.asarray(o["diag/rcm_out"]),
                   "post_rcp2": np.asarray(o["rcp2_zt"]),
                   "post_rcm": np.asarray(o["rcm"])}
         for k, v in out[n].items():
@@ -180,9 +180,9 @@ def test_relvar_end_to_end_cam_timing(rv, cfx, case):
     """relvar from our step's pre-advance rcm and qclvar (CAM's rcm_out and
     qclvar_out, clubb_intr.F90:2424) vs the oracle's: max per-element
     ``|a-b|/max(|a|,|b|)`` <= 1e-9 (user decision 2026-10-20).
-    qclvar is the core's own diagnostic, the buffer production feeds to
-    relvar; rcm here is CAM's pre-advance rcm, NOT the post-advance host
-    liquid production pairs it with (open decision; that gap is printed).
+    qclvar and rcm_out are the core's own diagnostics, the buffers production
+    feeds to relvar (user decision 2026-10-21: CAM's rcm_out, not the
+    post-advance host liquid; that gap is printed).
     Cells both sides clip to the same bound contribute 0.
     Worst cell, the trace-cloud outlier: wangara step 3, zt level 26, qclvar
     2.5e-16 against a column max of 1.3e-12 (rcp2 cancels ~4 orders there):
@@ -192,7 +192,7 @@ def test_relvar_end_to_end_cam_timing(rv, cfx, case):
     worst, prod = (0.0, None), 0.0
     for n, o in _ours(cfx, case).items():
         ref = rv[f"{case}/s{n}/relvar"]
-        ours = np.asarray(C.cam6_relvar(jnp.asarray(o["pre_rcm"]),
+        ours = np.asarray(C.cam6_relvar(jnp.asarray(o["rcm_out"]),
                                         jnp.asarray(o["qclvar"])))[0]
         assert np.all(np.isfinite(ours)), (case, n)
         rel = np.asarray(_rel(ours, ref))
@@ -200,8 +200,7 @@ def test_relvar_end_to_end_cam_timing(rv, cfx, case):
         if rel[k] > worst[0]:
             worst = (float(rel[k]), (n, k, float(o["qclvar"][0, k]),
                                      float(np.abs(rv[f"{case}/s{n}/qclvar_out"]).max())))
-        # production pairs qclvar with the POST-advance rcm the host receives
-        # (open decision, not asserted)
+        # the rejected pairing: the POST-advance rcm the host receives
         host = np.asarray(C.cam6_relvar(jnp.asarray(o["post_rcm"]),
                                         jnp.asarray(o["qclvar"])))[0]
         prod = max(prod, _errs(host, ref)[0])
@@ -261,6 +260,43 @@ def test_gradients_finite():
 
     gr = jax.grad(loss)(jnp.full(mfx["col_T"].shape[1], 2.0))
     assert bool(jnp.all(jnp.isfinite(gr))) and float(jnp.max(jnp.abs(gr))) > 0.0
+
+
+def test_relvar_fp32_gradients_finite_at_tiny_qclvar():
+    """fp32, qclvar = 1e-30: clip-high, in-range, clip-low and rcm = 0 cells
+    have finite gradients and the fp64 forward value."""
+    rcm64 = np.array([1.0e-6, 3.0e-16, 1.0e-17, 0.0])
+    q64 = np.full(4, 1.0e-30)
+    f32 = lambda x: jnp.asarray(x, jnp.float32)  # noqa: E731
+    g = jax.grad(lambda a, b: jnp.sum(C.cam6_relvar(a, b)), argnums=(0, 1))(
+        f32(rcm64), f32(q64))
+    assert all(bool(jnp.all(jnp.isfinite(x))) for x in g), g
+    ours = np.asarray(C.cam6_relvar(f32(rcm64), f32(q64)), np.float64)
+    ref = np.asarray(C.cam6_relvar(jnp.asarray(rcm64), jnp.asarray(q64)))
+    assert ref[0] == 10.0 and 1.0e-3 < ref[1] < 10.0 and ref[2] == 1.0e-3
+    np.testing.assert_allclose(ours, ref, rtol=1e-6)
+
+
+def test_relvar_forward_matches_the_fortran_formula_on_edges():
+    """Every branch incl. negative qclvar and exact clip edges, against
+    clubb_intr.F90:2424-2425 evaluated literally."""
+    rcm = np.array([0.0, 1e-4, 1e-4, 1e-4, -1e-4, 1e-4, 1e-4, 1e-4])
+    q = np.array([1e-8, 0.0, -1e-8, 1e-9, 1e-9, 1e-12, 1e-5, 2.0])
+    want = np.where((rcm != 0) & (np.minimum(1.0, q) != 0),
+                    np.minimum(10.0, np.maximum(
+                        1e-3, rcm ** 2 / np.where(q != 0, np.minimum(1.0, q), 1.0))),
+                    10.0)
+    np.testing.assert_allclose(np.asarray(C.cam6_relvar(jnp.asarray(rcm), jnp.asarray(q))),
+                               want, rtol=1e-15)
+
+
+def test_relvar_check_grads_in_range():
+    from jax.test_util import check_grads
+    rcm = jnp.asarray([1.0, -0.3, 0.2])
+    rcp2 = jnp.asarray([0.5, 0.2, 0.2])
+    assert bool(jnp.all((C.cam6_relvar(rcm, rcp2) > 1e-3)
+                        & (C.cam6_relvar(rcm, rcp2) < 10.0)))
+    check_grads(C.cam6_relvar, (rcm, rcp2), order=2, modes=("fwd", "rev"), eps=1e-6)
 
 
 def test_deck_routes_clubb_relvar_to_mg2():

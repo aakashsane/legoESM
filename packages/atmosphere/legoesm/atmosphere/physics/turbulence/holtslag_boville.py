@@ -331,7 +331,7 @@ def holtslag_boville_turbulence(
         ustar=ustar,
         h_pbl=hb.h_pbl,
         wtheta_flux=wtheta_flux,
-        Kh_iface=half_to_iface_zero_ends(Kh_half),
+        Kh_iface=half_to_iface_zero_ends(hb.Kh_half),
     )
 
 

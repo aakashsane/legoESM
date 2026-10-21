@@ -8,12 +8,14 @@ input moments) and the end-of-sub-cycle ``wp2`` left in ``WP2_nadv`` (:1987).
 from __future__ import annotations
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
 from legoesm.atmosphere.physics.turbulence.clubb import (  # noqa: E402
     CLUBBConfig,
+    cam_chem_tropopause_level,
     clubb_step,
     clubb_turbulence_prognostic,
     flip_vertical,
@@ -28,13 +30,16 @@ _DT = 300.0
 def _prognostic(c, cfg, moments):
     return clubb_turbulence_prognostic(
         *_args(c), pack_clubb_moments(moments), c["p_full"], c["p_half"], c["z_full"],
-        c["z_half"], c["T_sfc"], c["q_sfc"], c["rho"], _DT, cfg)
+        c["z_half"], c["T_sfc"], c["q_sfc"], c["rho"], _DT, cfg,
+        lat=c["lat"])
 
 
 def _step(c, state, moments, dt, cfg):
     u, v, T, q = state
+    # CAM's tropopause of the HOST (start-of-call) state, as the production wrapper
+    troplev = cam_chem_tropopause_level(c["T"], c["p_full"], c["p_half"], c["lat"])
     return clubb_step(u, v, T, q, moments, c["p_full"], c["p_half"], c["z_full"], c["z_half"],
-                      c["T_sfc"], c["q_sfc"], c["rho"], dt, cfg)
+                      c["T_sfc"], c["q_sfc"], c["rho"], dt, cfg, troplev=troplev)
 
 
 def _reference(c, moments, n_sub, cfg):

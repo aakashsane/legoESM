@@ -131,9 +131,11 @@ def test_guards():
         morrison_microphysics(*args, base, cloud_fraction=g["cf"])
     with pytest.raises(ValueError, match="per-cell relvar"):
         morrison_microphysics(*args, base, cloud_fraction=g["cf"], relvar=jnp.asarray(1.0))
+    # switch off: CLUBB's relvar is read by every CAM6 warm-rain run (main), npccn is refused
+    off = base._replace(prognostic_droplet_number=False)
+    morrison_microphysics(*args, off, cloud_fraction=g["cf"], relvar=g["relvar"])
     with pytest.raises(ValueError, match="read only under"):
-        morrison_microphysics(*args, base._replace(prognostic_droplet_number=False),
-                              cloud_fraction=g["cf"], relvar=g["relvar"])
+        morrison_microphysics(*args, off, cloud_fraction=g["cf"], relvar=g["relvar"], npccn=z)
 
 
 def test_gradients_finite_through_zero_number_cell():

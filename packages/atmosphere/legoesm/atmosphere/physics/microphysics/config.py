@@ -146,7 +146,7 @@ __param_spec__ = {
     "MorrisonConfig": {
         "scheme_key": "atm.micro.MorrisonConfig",
         "excluded": {
-            "cam_qsat_cap_sharpness": "numerics: smooth-switch sharpness (RULE 5), value pending user approval",
+            "cam_qsat_cap_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             # Fall-speed power-law EXPONENTS feed math.gamma(4 + b) / math.gamma(1 + b)
             # (morrison.py, _warm_rain.py) to precompute the cons* moment factors.
             # math.gamma is a Python C function requiring a float, so a traced
@@ -1017,7 +1017,7 @@ class MorrisonConfig(NamedTuple):
     # that pairing rather than letting it run.
     liquid_from_closure: bool = False
     # MG2's CAM Goff-Gratch q_sat = 1 cap (RULE 5, limiter class): sharpness
-    # on e_sat/p; math.inf = CAM's hard cap.  Value PENDING user approval.
+    # on e_sat/p; math.inf = CAM's hard cap.  Value approved by user 2026-10-21.
     cam_qsat_cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS
 
 

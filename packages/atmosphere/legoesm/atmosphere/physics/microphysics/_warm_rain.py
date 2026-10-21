@@ -716,12 +716,11 @@ def accretion(q_c, q_r, rho, k_ac, gamma_norm=1.0):
     """Rain collecting cloud water (accretion) — SIMPLIFIED BILINEAR SURROGATE.
 
     Rate = ``k_ac · q_c · q_r · rho · gamma_norm``.  This is the accretion
-    form wired into Morrison (non-KK2000 path), Seifert-Beheng, Thompson and
-    THIS repository's P3; it is a tunable-coefficient SURROGATE, NOT faithful
-    to the published Khairoutdinov-Kogan (2000) accretion that gSAM P3 and
-    SAM-M2005 use (``module_mp_p3.f90:3615``, iparam=3 /
-    ``module_mp_graupel.f90:1952``) — this repo's P3 instead calls THIS
-    surrogate.  The gSAM form, in a single column with the sub-grid
+    form wired into Morrison (non-KK2000 path), Seifert-Beheng and Thompson;
+    it is a tunable-coefficient SURROGATE, NOT faithful to the published
+    Khairoutdinov-Kogan (2000) accretion that P3 and SAM-M2005 use
+    (``module_mp_p3.f90:3615``, iparam=3 / ``module_mp_graupel.f90:1952``).
+    This repo's P3 (the WRF v4.8.0 port) calls :func:`accretion_kk2000`.  The gSAM form, in a single column with the sub-grid
     cloud/precip-fraction scheme off (``iSCF=iSPF=1``, ``dum2=1``), reduces to
     the mass rate::
 

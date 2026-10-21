@@ -234,11 +234,11 @@ def saturation_vapor_pressure_ice_goff_gratch(T: jax.Array) -> jax.Array:
 # --- limiter class: CAM's q_sat = 1 cap where p <= e_sat (RULE 5) ---
 # Sharpness of the smooth cap on r = e_sat/p [dimensionless]; math.inf = CAM's
 # hard cap exactly.  PENDING user approval.
-_CAM_QSAT_CAP_SHARPNESS = 1.0e3
+CAM_QSAT_CAP_SHARPNESS = 1.0e3
 
 
 def _specific_humidity_from_esat_cam(e_sat: jax.Array, p: jax.Array, *,
-                                     cap_sharpness: float = _CAM_QSAT_CAP_SHARPNESS
+                                     cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS
                                      ) -> jax.Array:
     """CAM ``wv_sat_svp_to_qsat`` (wv_sat_methods.F90:180-193): saturation
     SPECIFIC humidity ``epsilo es / (p - omeps es)``, and 1 where
@@ -260,7 +260,7 @@ def _specific_humidity_from_esat_cam(e_sat: jax.Array, p: jax.Array, *,
 
 
 def saturation_specific_humidity_goff_gratch(T: jax.Array, p: jax.Array, *,
-                                             cap_sharpness: float = _CAM_QSAT_CAP_SHARPNESS
+                                             cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS
                                              ) -> jax.Array:
     """Saturation specific humidity over liquid [kg/kg], CAM
     ``wv_sat_qsat_water`` (wv_sat_methods.F90:195-218), the ``qsat_water``
@@ -270,7 +270,7 @@ def saturation_specific_humidity_goff_gratch(T: jax.Array, p: jax.Array, *,
 
 
 def saturation_specific_humidity_ice_goff_gratch(T: jax.Array, p: jax.Array, *,
-                                                 cap_sharpness: float = _CAM_QSAT_CAP_SHARPNESS
+                                                 cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS
                                                  ) -> jax.Array:
     """Saturation specific humidity over ice [kg/kg], CAM ``wv_sat_qsat_ice``
     (wv_sat_methods.F90:220-243), the ``qsat_ice`` MG2 calls."""

@@ -1183,7 +1183,7 @@ def mg2_snow_sublimation(q_v, q_sat, q_sat_i, T, eps_s, q_sic, lcldm,
 
 
 def mg2_precip_sublimation_limiter(q_v, T, p, pre, prds, ice_sublim, vap_dep,
-                                   mnuccd, dt):
+                                   mnuccd, dt, *, cap_sharpness):
     """MG2 limit on rain evaporation + snow and ice sublimation
     (micro_mg2_0.F90:1805-1850), all GRID rates [kg/kg/s] with MG2's signs
     (``pre``, ``prds``, ``ice_sublim`` <= 0; ``vap_dep``, ``mnuccd`` >= 0).
@@ -1195,7 +1195,8 @@ def mg2_precip_sublimation_limiter(q_v, T, p, pre, prds, ice_sublim, vap_dep,
     one-step adjustment to saturation from the state after deposition and
     nucleation: rain to LIQUID saturation, snow and ice to ICE saturation,
     each ``min((qtmp - qsat)/(1 + L^2 qsat/(c_p R_v ttmp^2)), 0)/dt``, with
-    MG2's own ``qsat_water``/``qsat_ice`` (CAM Goff-Gratch).
+    MG2's own ``qsat_water``/``qsat_ice`` (CAM Goff-Gratch; ``cap_sharpness``
+    is their q = 1 cap, ``math.inf`` = CAM's hard cap).
     Returns ``(pre, prds, ice_sublim)``."""
     tot = pre + prds + ice_sublim
     on = tot < -1.0e-20
@@ -1204,17 +1205,17 @@ def mg2_precip_sublimation_limiter(q_v, T, p, pre, prds, ice_sublim, vap_dep,
     ttmp = T + (pre * constants.L_v  # latent-ok: MG2 oracle constant (xxlv)
                 + (prds + vap_dep + ice_sublim + mnuccd)
                 * constants.L_s) * dt / cp  # latent-ok: MG2 oracle constant (xxls)
-    on = on & (qtmp > saturation_specific_humidity_goff_gratch(ttmp, p))
+    on = on & (qtmp > saturation_specific_humidity_goff_gratch(ttmp, p, cap_sharpness=cap_sharpness))
     den = jnp.where(on, tot, -1.0)
     dum1 = pre / den
     dum2 = prds / den
     qtmp = q_v - (vap_dep + mnuccd) * dt
     ttmp = T + ((vap_dep + mnuccd) * constants.L_s) * dt / cp  # latent-ok: MG2 oracle constant (xxls)
-    qvn = saturation_specific_humidity_goff_gratch(ttmp, p)
+    qvn = saturation_specific_humidity_goff_gratch(ttmp, p, cap_sharpness=cap_sharpness)
     dum = jnp.minimum((qtmp - qvn) / (1.0 + constants.L_v ** 2 * qvn  # latent-ok: MG2 oracle constant (xxlv_squared)
                                       / (cp * constants.R_v * ttmp ** 2)), 0.0)
     pre_n = dum * dum1 / dt
-    qvn = saturation_specific_humidity_ice_goff_gratch(ttmp, p)
+    qvn = saturation_specific_humidity_ice_goff_gratch(ttmp, p, cap_sharpness=cap_sharpness)
     dum = jnp.minimum((qtmp - qvn) / (1.0 + constants.L_s ** 2 * qvn  # latent-ok: MG2 oracle constant (xxls_squared)
                                       / (cp * constants.R_v * ttmp ** 2)), 0.0)
     prds_n = dum * dum2 / dt

@@ -80,10 +80,11 @@ def test_goff_differentiable():
 
 
 def test_cam_goff_gratch_saturated_branch_and_gradients():
-    """CAM ``wv_sat_svp_to_qsat`` (wv_sat_methods.F90:180-193): q_sat = 1
-    exactly where p - e_sat <= 0; elsewhere the hard epsilo/omeps form.  The
-    values themselves are checked against the RUNNING Fortran in the MG2
-    oracle fixtures; here reverse-mode AD is finite in fp64 and fp32."""
+    """CAM ``wv_sat_svp_to_qsat`` (wv_sat_methods.F90:180-193) at the default
+    (smooth, RULE 5) cap, away from ``e_sat = p``: q_sat = 1 where e_sat >> p
+    and the epsilo/omeps form where e_sat << p, both to rounding.  The values
+    themselves are checked against the RUNNING Fortran in the MG2 oracle
+    fixtures; here reverse-mode AD is finite in fp64 and fp32."""
     from legoesm import constants
     from legoesm.thermo import (
         saturation_specific_humidity_goff_gratch,

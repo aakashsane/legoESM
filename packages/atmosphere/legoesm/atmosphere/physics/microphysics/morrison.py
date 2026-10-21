@@ -1348,7 +1348,7 @@ def morrison_microphysics(
             q_v, T, p_full, -evaporation,
             prds if mg2_snow else jnp.zeros_like(prds),
             jnp.minimum(dq_i_dep, 0.0), jnp.maximum(dq_i_dep, 0.0), dq_i_nuc,
-            dt)
+            dt, cap_sharpness=config.cam_qsat_cap_sharpness)
         evaporation = -_pre
         if mg2_snow:
             prds = _prds

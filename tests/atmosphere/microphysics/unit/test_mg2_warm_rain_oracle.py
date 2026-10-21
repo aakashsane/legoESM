@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import jax
@@ -42,7 +43,8 @@ HARD_LIMIT = dict(
     saturation_sharpness=1.0e14, ice_sigmoid_sharpness=1.0e6,
     nuc_rh_sharpness=1.0e9, nuc_T_sharpness=1.0e6,
     homogeneous_freeze_sharpness=1.0e6, hom_freeze_T_sharpness=1.0e6,
-    hom_ice_nuc_sharpness=1.0e9, melt_sharpness=1.0e6)
+    hom_ice_nuc_sharpness=1.0e9, melt_sharpness=1.0e6,
+    cam_qsat_cap_sharpness=math.inf)
 
 
 def _fx():

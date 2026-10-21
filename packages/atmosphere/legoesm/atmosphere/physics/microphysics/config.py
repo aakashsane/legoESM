@@ -312,7 +312,7 @@ __param_spec__ = {
         "scheme_key": "atm.micro.SeifertBehengConfig",
         "excluded": {
             "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
-            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value pending user approval",
+            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
             "autoconversion_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "breakup_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
@@ -533,8 +533,8 @@ class SeifertBehengConfig(NamedTuple):
     hard_sat_adjust_threshold: float = 1.1      # RH trigger q_v > thr*q_sat [-]
     hard_sat_max_heating_K: float = 5.0         # per-step latent-heating cap [K]
     # gSAM satadj_liquid smooth switches (RULE 5), as MorrisonConfig's; hard
-    # limit = gSAM exactly: math.inf, math.inf, 0.0.  Excess and pressure values
-    # approved by user 2026-10-21; the floor value is PENDING user approval.
+    # limit = gSAM exactly: math.inf, math.inf, 0.0.  All three values approved
+    # by user 2026-10-21.
     gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step [-]
     gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
     gsam_satadj_p_min_width_pa: float = 100.0     # p >= 5000 Pa gate width [Pa]

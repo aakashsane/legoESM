@@ -369,3 +369,34 @@ def test_mg2_ice_conservation_credits_same_step_sources(ice_to_snow):
     print("qi_new / qi", qi_new / 2.0e-5)
     assert np.all(qi_new >= -1.0e-14 * 2.0e-5), qi_new
     assert np.all(qi_new <= 1.0e-4 * 2.0e-5), qi_new
+
+
+@pytest.mark.parametrize("dt", [600.0, 1800.0])
+def test_mg2_ice_limit_credits_only_vapour_limited_deposition(dt):
+    """The qi limit credits deposition + nucleation, so it must see them
+    AFTER the q_v donor clamp: heavy ice at RH_ice 2-3 with homogeneous
+    nucleation off once ended at -0.08 (600 s) to -3.0 (1800 s) x q_i."""
+    from legoesm import constants as C
+    from legoesm.thermo import saturation_mixing_ratio_ice
+    from legoesm.atmosphere.physics.microphysics.morrison import morrison_microphysics
+    from legoesm.atmosphere.physics.microphysics.output import HydrometeorState
+    cfg = _production_morrison()._replace(warm_rain_scheme="kk2000_cam6",
+                                          homogeneous_ice_nucleation=False)
+    T = jnp.asarray([[235.0], [235.0], [250.0], [250.0]])
+    rhi = jnp.asarray([[2.0], [3.0], [2.0], [3.0]])
+    p = jnp.full_like(T, 30000.0)
+    ph = jnp.concatenate([p - 500.0, p + 500.0], axis=1)
+    rho = p / (C.R_d * T)
+    dz = (ph[:, 1:] - ph[:, :-1]) / (C.g * rho)
+    qv = rhi * saturation_mixing_ratio_ice(T, p)
+    qi = jnp.full_like(T, 1.0e-3)
+    z = jnp.zeros_like(T)
+    hyd = HydrometeorState(q_c=z, q_r=z, q_i=qi, q_s=z, q_g=z, N_c=z + 5.0e7,
+                           N_r=z, N_i=z + 1.0e5, N_s=z)
+    out = morrison_microphysics(T, qv, hyd, p, ph, rho, dz, dt, cfg,
+                                cloud_fraction=z + 1.0)
+    qi_new = np.asarray(qi + dt * out.dq_i_dt)[:, 0]
+    qv_new = np.asarray(qv + dt * out.dq_v_dt)[:, 0]
+    print("qi_new / qi", qi_new / 1.0e-3, "qv_new", qv_new)
+    assert np.all(qi_new >= -1.0e-14 * 1.0e-3), qi_new
+    assert np.all(qv_new >= -1.0e-14), qv_new

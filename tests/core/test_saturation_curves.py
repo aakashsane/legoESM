@@ -151,3 +151,65 @@ def test_cam_qsat_cap_default_gradients(es, p):
     jax.config.update("jax_enable_x64", True)
     check_grads(_specific_humidity_from_esat_cam, (jnp.float64(es), jnp.float64(p)),
                 order=2, modes=("rev",))
+
+
+# --- RULE 5: CAM qsat-table [tmin, tmax] clamp (limiter class), smooth by default ---
+# Relative departure of the default from CAM's hard clamp, per (T [K], p [Pa]).
+_CLAMP_DEFAULT_REL_GAP = {
+    (100.0, 6.0e4): 7.227809275300596e-13,
+    (127.16, 6.0e4): 0.312004834823652,
+    (130.0, 6.0e4): 0.018059983190437317,
+    (250.0, 6.0e4): 0.0,
+    (374.0, 1.0e6): -0.009976601552033509,
+    (375.16, 1.0e6): -0.025094240926450913,
+    (400.0, 1.0e6): -5.91245026142207e-13,
+    (300.0, 3.0e3): 0.0,  # p < e_sat: CAM's q = 1 (the cap, not the clamp)
+}
+
+
+def _cam_table_qsat(T, p):
+    """CAM qsat (wv_saturation.F90:458-503) on the 1-K svp_trans table."""
+    import math
+
+    from legoesm import constants
+    from legoesm.thermo import saturation_vapor_pressure_trans
+    tmin, tmax = 127.16, 375.16
+    t = max(min(T, tmax) - tmin, 0.0)
+    i = math.floor(t)
+    w = t - i
+    e0 = float(saturation_vapor_pressure_trans(jnp.float64(tmin + i)))
+    e1 = float(saturation_vapor_pressure_trans(jnp.float64(tmin + i + 1)))
+    es = (1.0 - w) * e0 + w * e1
+    eps = constants.epsilon
+    return 1.0 if p - es <= 0.0 else eps * es / (p - (1.0 - eps) * es)
+
+
+@pytest.mark.parametrize("T,p", list(_CLAMP_DEFAULT_REL_GAP))
+def test_cam_table_clamp_hard_limit_is_cam(T, p):
+    import math
+
+    from legoesm.thermo import saturation_specific_humidity_cam_table
+    jax.config.update("jax_enable_x64", True)
+    got = float(saturation_specific_humidity_cam_table(jnp.float64(T), jnp.float64(p),
+                                                       clamp_sharpness=math.inf,
+                                                       cap_sharpness=math.inf))
+    assert got == _cam_table_qsat(T, p)  # bitwise
+
+
+@pytest.mark.parametrize("T,p", list(_CLAMP_DEFAULT_REL_GAP))
+def test_cam_table_clamp_default_gap_is_pinned(T, p):
+    from legoesm.thermo import saturation_specific_humidity_cam_table
+    jax.config.update("jax_enable_x64", True)
+    ref = _cam_table_qsat(T, p)
+    rel = float(saturation_specific_humidity_cam_table(jnp.float64(T), jnp.float64(p))) / ref - 1.0
+    assert rel == pytest.approx(_CLAMP_DEFAULT_REL_GAP[(T, p)], rel=1e-6, abs=1e-12)
+
+
+@pytest.mark.parametrize("T", [126.0, 127.16 + 5.0e-5, 200.3, 375.16 - 5.0e-5, 376.0])
+def test_cam_table_clamp_default_gradients(T):
+    from jax.test_util import check_grads
+
+    from legoesm.thermo import saturation_specific_humidity_cam_table
+    jax.config.update("jax_enable_x64", True)
+    check_grads(lambda t: saturation_specific_humidity_cam_table(t, jnp.float64(1.0e6)),
+                (jnp.float64(T),), order=2, modes=("rev",), eps=1e-4)

@@ -1761,7 +1761,7 @@ def mg2_qi_conservation_ratio(q_avail, src, snk, dt, omsm, width=0.0):
     # sinks below 1e-30 kg/kg/s: ratio >= q/dt/1e-30 >> 1 either way, so the
     # sentinel keeps fp32 r finite without changing the factor (1).
     has = snk > 1.0e-30
-    r = jnp.where(has, (q_avail / dt + src) * omsm / jnp.where(has, snk, 1.0),
+    r = jnp.where(has, (q_avail / dt + src) / jnp.where(has, snk, 1.0) * omsm,
                   1.0e30)
     if width > 0.0:
         return smooth_min(jnp.ones_like(r), r, 1.0 / width)

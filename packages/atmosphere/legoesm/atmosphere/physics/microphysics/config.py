@@ -163,8 +163,9 @@ __param_spec__ = {
     "MorrisonConfig": {
         "scheme_key": "atm.micro.MorrisonConfig",
         "excluded": {
-            "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value pending user approval",
-            "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value pending user approval",
+            "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
+            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value pending user approval",
+            "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
             # Fall-speed power-law EXPONENTS feed math.gamma(4 + b) / math.gamma(1 + b)
             # (morrison.py, _warm_rain.py) to precompute the cons* moment factors.
             # math.gamma is a Python C function requiring a float, so a traced
@@ -306,8 +307,9 @@ __param_spec__ = {
     "SeifertBehengConfig": {
         "scheme_key": "atm.micro.SeifertBehengConfig",
         "excluded": {
-            "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value pending user approval",
-            "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value pending user approval",
+            "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
+            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value pending user approval",
+            "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
             "autoconversion_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "breakup_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
@@ -527,8 +529,10 @@ class SeifertBehengConfig(NamedTuple):
     hard_sat_adjust_threshold: float = 1.1      # RH trigger q_v > thr*q_sat [-]
     hard_sat_max_heating_K: float = 5.0         # per-step latent-heating cap [K]
     # gSAM satadj_liquid smooth switches (RULE 5), as MorrisonConfig's; hard
-    # limit = gSAM exactly: math.inf, 0.0.  Both values PENDING user approval.
-    gsam_satadj_excess_sharpness: float = 1.0e3   # saturation step [-]
+    # limit = gSAM exactly: math.inf, math.inf, 0.0.  Excess and pressure values
+    # approved by user 2026-10-21; the floor value is PENDING user approval.
+    gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step [-]
+    gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
     gsam_satadj_p_min_width_pa: float = 100.0     # p >= 5000 Pa gate width [Pa]
 
 
@@ -933,7 +937,7 @@ class MorrisonConfig(NamedTuple):
     # saturation curve where q_v > hard_sat_adjust_threshold * q_sat, draining
     # local super-saturation pools the smooth sigmoid path cannot (conserving
     # c_pd*T + L_v*q_v exactly).  Default OFF => byte-identical to the smooth
-    # path (mg flavour).  The sam flavour runs gSAM's exact satadj_liquid on
+    # path (mg flavour).  The sam flavour runs gSAM's satadj_liquid (smooth by default, RULE 5) on
     # every call and REJECTS this guard.  Threaded from ExperimentConfig via
     # ``apply_microphysics_experiment_flags``.  See
     # ``_warm_rain.saturation_adjustment``.
@@ -1057,8 +1061,10 @@ class MorrisonConfig(NamedTuple):
     liquid_from_closure: bool = False
     # morrison_flavor="sam" gSAM satadj_liquid smooth switches (RULE 5; see
     # _warm_rain.saturation_adjustment_gsam).  Hard limit = gSAM exactly:
-    # math.inf, 0.0.  Both values PENDING user approval.
-    gsam_satadj_excess_sharpness: float = 1.0e3   # saturation step, on (q_t - q_s)/q_sat [-]
+    # math.inf, math.inf, 0.0.  Excess and pressure values approved by user
+    # 2026-10-21; the floor value is PENDING user approval.
+    gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step, on (q_t - q_s)/q_sat [-]
+    gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
     gsam_satadj_p_min_width_pa: float = 100.0     # on/off, p >= 5000 Pa gate width [Pa]
 
 

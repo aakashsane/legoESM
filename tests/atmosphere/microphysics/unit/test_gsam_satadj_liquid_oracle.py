@@ -52,11 +52,13 @@ HARD_LIMIT = dict(
     ice_sigmoid_sharpness=1.0e6, nuc_rh_sharpness=1.0e9, nuc_T_sharpness=1.0e6,
     homogeneous_freeze_sharpness=1.0e6, hom_freeze_T_sharpness=1.0e6,
     hom_ice_nuc_sharpness=1.0e9, melt_sharpness=1.0e6,
-    gsam_satadj_excess_sharpness=math.inf, gsam_satadj_p_min_width_pa=0.0)
+    gsam_satadj_excess_sharpness=math.inf, gsam_satadj_qc_floor_sharpness=math.inf,
+    gsam_satadj_p_min_width_pa=0.0)
 # saturation_adjustment_gsam at gSAM's hard switches, and at the defaults.
-GSAM_HARD = dict(excess_sharpness=math.inf, p_min_width_pa=0.0)
+GSAM_HARD = dict(excess_sharpness=math.inf, qc_floor_sharpness=math.inf, p_min_width_pa=0.0)
 GSAM_DEFAULT = dict(
     excess_sharpness=MorrisonConfig._field_defaults["gsam_satadj_excess_sharpness"],
+    qc_floor_sharpness=MorrisonConfig._field_defaults["gsam_satadj_qc_floor_sharpness"],
     p_min_width_pa=MorrisonConfig._field_defaults["gsam_satadj_p_min_width_pa"])
 
 
@@ -187,7 +189,8 @@ def test_sam_rejects_fields_without_gsam_counterpart(field, value):
 # --- RULE 5: gSAM satadj smooth switches, one class at a time (others hard) ---
 # Default departure from the gSAM oracle over the fixture: (max|dT| [K], max|dq_c| [kg/kg]).
 _GSAM_DEFAULT_GAP = {
-    "excess_sharpness": (0.015505454156595988, 6.2284683981937585e-06),
+    "excess_sharpness": (0.0010472030201071902, 4.20656554226504e-07),
+    "qc_floor_sharpness": (3.0516852007167472e-05, 1.2258476687345997e-08),
     "p_min_width_pa": (0.00023259943355924406, 9.343410433085435e-08),
 }
 
@@ -205,11 +208,14 @@ def test_gsam_satadj_default_gap_is_pinned(field):
 
 def _kink_cell(field):
     """A cell on the field's hard switch: exactly saturated (excess) or a
-    1% supersaturated cell at p = 5000 Pa (pressure gate)."""
+    1% supersaturated cell at p = 5000 Pa (pressure gate).  The cloud-water
+    floor binds only where the excess switch does, so its cell is the saturated
+    one and its gradient check cannot fail on the floor alone (docstring)."""
     from legoesm.thermo import saturation_specific_humidity
-    p = 8.0e4 if field == "excess_sharpness" else 5000.0
-    T = jnp.float64(280.0 if field == "excess_sharpness" else 230.0)
-    s = 1.0 if field == "excess_sharpness" else 1.01
+    gate = field == "p_min_width_pa"
+    p = 5000.0 if gate else 8.0e4
+    T = jnp.float64(230.0 if gate else 280.0)
+    s = 1.01 if gate else 1.0
     q_v = s * saturation_specific_humidity(T, jnp.float64(p))
     return T, q_v * 1e3, jnp.float64(0.0), jnp.float64(p)
 
@@ -219,9 +225,31 @@ def test_gsam_satadj_default_gradients(field):
     from jax.test_util import check_grads
     T, qv_gkg, qc_gkg, p = _kink_cell(field)
     kw = dict(GSAM_HARD, **{field: GSAM_DEFAULT[field]})
+    if field == "qc_floor_sharpness":  # the floor's only kink is the excess one
+        kw = dict(GSAM_DEFAULT)
 
     def fn(T, qv_gkg, p):
         Tn, qvn, qcn = saturation_adjustment_gsam(T, qv_gkg * 1e-3, qc_gkg * 1e-3, p, **kw)
         return jnp.stack([Tn - T, qcn * 1e3])
 
     check_grads(fn, (T, qv_gkg, p), order=2, modes=("rev",), eps=1e-4, atol=1e-6, rtol=1e-3)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_gsam_satadj_default_finite_and_nonnegative_over_the_cold_corner(dtype):
+    """Smooth default over 150-310 K, 100 Pa-1e5 Pa, saturation ratio 0-1.2:
+    finite value and gradient (fp32 q_sat underflows to 0 at the cold end) and
+    no negative cloud water although the floor is not applied."""
+    from legoesm.thermo import saturation_specific_humidity
+    T = jnp.linspace(150.0, 310.0, 17, dtype=dtype)[:, None, None]
+    p = jnp.asarray([1.0e2, 5.0e3, 3.0e4, 1.0e5], dtype=dtype)[None, :, None]
+    S = jnp.linspace(0.0, 1.2, 13, dtype=dtype)[None, None, :]
+    q_v = (S * saturation_specific_humidity(T, p)).ravel()
+    T, p = (jnp.broadcast_to(a, (17, 4, 13)).ravel() for a in (T, p))
+    q_c = jnp.zeros_like(T)
+    fn = functools.partial(saturation_adjustment_gsam, **GSAM_DEFAULT)
+    Tn, qvn, qcn = fn(T, q_v, q_c, p)
+    assert all(bool(jnp.all(jnp.isfinite(x))) for x in (Tn, qvn, qcn))
+    assert bool(jnp.all(qcn >= 0.0))
+    g = jax.grad(lambda T, q: sum(jnp.sum(x) for x in fn(T, q, q_c, p)), argnums=(0, 1))(T, q_v)
+    assert all(bool(jnp.all(jnp.isfinite(x))) for x in g)

@@ -1,6 +1,6 @@
 """Seifert-Beheng two-moment warm-rain microphysics, as gSAM M2005 runs it.
 
-At the hard limit of its two ``gsam_satadj_*`` fields (defaults smooth, RULE 5)
+At the hard limit of its three ``gsam_satadj_*`` fields (defaults smooth, RULE 5)
 the scheme IS gSAM 1.8.8's liquid-only Morrison (2005) microphysics with the
 Seifert & Beheng (2001) warm rain: ``micro_proc`` (SRC/MICRO_M2005/
 microphysics.f90) with ``doicemicro=.false.`` (ILIQ=1), ``dosb_warm_rain=
@@ -10,7 +10,7 @@ defaults apart from the two switches that make it warm-rain-only and SB2001:
 
 1. ``satadj_liquid``: the state is put on the liquid saturation curve
    (:func:`_warm_rain.saturation_adjustment_gsam`; smooth by default, exact at
-   the hard limit of the two ``gsam_satadj_*`` fields, RULE 5);
+   the hard limit of the three ``gsam_satadj_*`` fields, RULE 5);
 2. ``M2005MICRO_GRAUPEL`` (module_mp_graupel.f90) on the adjusted state:
    small-amount removal, rain and droplet size distributions with the number
    reset at the slope bounds, SB2001 autoconversion / accretion, SB2001 rain
@@ -19,7 +19,7 @@ defaults apart from the two switches that make it warm-rain-only and SB2001:
    rain (mass and number) and cloud droplets (Stokes) from the post-source
    state with gSAM's CFL sub-steps (:func:`_warm_rain.m2005_liquid_step`).
 
-Oracle-pinned at the hard limit of the two ``gsam_satadj_*`` fields (whole
+Oracle-pinned at the hard limit of the three ``gsam_satadj_*`` fields (whole
 call, fp64, max relative error <= 1e-10 on T, q_v, q_c,
 q_r, N_r and surface precipitation against the compiled gSAM) by
 ``tests/atmosphere/microphysics/unit/test_gsam_sb_liquid_oracle.py``.
@@ -72,7 +72,8 @@ _GSAM_M2005_PARAMS = MorrisonConfig(morrison_flavor="sam")
 # default (``MorrisonConfig.sed_cfl_substeps_max``), reused unchanged.
 _SED_SUBSTEPS_MAX = MorrisonConfig._field_defaults["sed_cfl_substeps_max"]
 # The only SeifertBehengConfig field gSAM reads (NDCNST, as a per-volume count).
-_GSAM_FIELDS = ("Nc_0", "gsam_satadj_excess_sharpness", "gsam_satadj_p_min_width_pa")
+_GSAM_FIELDS = ("Nc_0", "gsam_satadj_excess_sharpness", "gsam_satadj_qc_floor_sharpness",
+                "gsam_satadj_p_min_width_pa")
 
 __physics_contract__ = {
     "summary": (
@@ -133,7 +134,7 @@ def _reject_fields_without_gsam_counterpart(config: SeifertBehengConfig) -> None
         raise ValueError(
             "seifert_beheng runs gSAM 1.8.8 M2005 (liquid only, SB2001 warm "
             f"rain), which has no counterpart for {bad}; leave them at their "
-            "defaults (only Nc_0, the specified droplet number, and the two "
+            "defaults (only Nc_0, the specified droplet number, and the three "
             "gsam_satadj_* smooth-switch fields are read).")
 
 
@@ -143,6 +144,7 @@ def _gsam_call(T, q_v, hydrometeors, p_full, rho, dz, dt, config):
     T1, q_v1, q_c1 = saturation_adjustment_gsam(
         T, q_v, hydrometeors.q_c, p_full,
         excess_sharpness=config.gsam_satadj_excess_sharpness,
+        qc_floor_sharpness=config.gsam_satadj_qc_floor_sharpness,
         p_min_width_pa=config.gsam_satadj_p_min_width_pa)
     return m2005_liquid_step(
         T1, q_v1, q_c1, hydrometeors.q_r, hydrometeors.N_r, p_full, rho, dz,

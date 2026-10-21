@@ -12,7 +12,7 @@ git tag/SHA), via ``python scripts/validate/oracle/gsam_sb_liquid/make_fixture.p
 Tolerance (user decision 2026-10-19): max relative error <= 1e-10 in fp64.
 Relative error is ``|a-b| / max(|a|, |b|)`` (0 where both are exactly 0); no
 floor (the tier-1 oracle tests' metric).  The oracle tests run at the hard
-limit of the two ``gsam_satadj_*`` fields; their smooth-default gap is pinned in
+limit of the three ``gsam_satadj_*`` fields; their smooth-default gap is pinned in
 test_gsam_satadj_liquid_oracle.py.
 """
 from __future__ import annotations
@@ -67,6 +67,7 @@ def _inputs(fx, g, dtype=jnp.float64, hard=True):
     cfg = SeifertBehengConfig(Nc_0=float(fx[f"{g}_Nc0_cm3"]) * 1.0e6)
     if hard:  # gSAM's own hard switches (RULE 5 hard limit)
         cfg = cfg._replace(gsam_satadj_excess_sharpness=math.inf,
+                           gsam_satadj_qc_floor_sharpness=math.inf,
                            gsam_satadj_p_min_width_pa=0.0)
     return (flip("T"), flip("q_v"), hyd, flip("p_full"),
             jnp.asarray(fx[f"{g}_p_half"][:, ::-1], dtype=dtype), rho,

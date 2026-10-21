@@ -608,10 +608,13 @@ _GSAM_SATADJ_THRESH_K = 0.01     # convergence: |dT| <= min(0.01, 0.01*fac_cond*
 _GSAM_SATADJ_THRESH_QFRAC = 0.01  # ... 0.01 of the saturation value (:1683) [-]
 # Newton iteration limit (maxiter, :1650) -- a loop count, never tunable.
 _GSAM_SATADJ_MAXITER = 20
+# Normaliser floor of the smooth excess [kg/kg]: fp32 q_sat underflows to 0 when
+# cold, and a scale whose square underflows makes the gradient NaN.
+_GSAM_SATADJ_SCALE_FLOOR = 1.0e-15
 
 
 def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
-                               p_min_width_pa):
+                               qc_floor_sharpness, p_min_width_pa):
     """gSAM liquid saturation adjustment: the adjusted ``(T, q_v, q_c)``.
 
     Port of gSAM 1.8.8 ``satadj_liquid`` (SRC/MICRO_M2005/microphysics.f90
@@ -636,15 +639,22 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
     convergence masks are ``jnp.where`` and the gradient is that of the
     iterate.  Computed in the state dtype.
 
-    KNOWN DIFFERENCE (RULE 5): two classes of hard switch are smooth unless
-    their field is at the hard limit (``math.inf``, ``0.0``):
+    KNOWN DIFFERENCE (RULE 5): three classes of hard switch are smooth unless
+    their field is at the hard limit (``math.inf``, ``math.inf``, ``0.0``):
 
     * saturation step (``excess_sharpness`` [-]): ``max(0, q_t - q_s)`` is
-      ``q_sat(T_l) smooth_relu((q_t - q_s)/q_sat(T_l))`` and the
+      ``s_q smooth_relu((q_t - q_s)/s_q)``, ``s_q = q_sat(T_l) + 1e-15`` kg/kg
+      (the floor keeps cold fp32 cells finite), and the
       ``q_t > q_sat`` skip is dropped, so a sub-saturated cell runs the same
-      Newton and condenses a vanishing amount.  The Newton root then has
-      ``T1 > T_l``, so gSAM's ``max(0, T1 - T_l)`` floor is not applied (it
-      bound in 0 of 146k swept cells at 1e2-1e4; it stays on the hard path);
+      Newton and condenses ``~q_sat log(1 + exp(-s |S - 1|))/s`` (``S`` the
+      saturation ratio; softplus is > 0, so ``T1 >= T_l``).  A small
+      sharpness condenses in dry air: at 1 a dry 280 K cell reaches negative
+      vapour;
+    * positivity (``qc_floor_sharpness`` [1/K]): gSAM's ``max(0, T1 - T_l)``
+      is ``smooth_relu``, adding up to ``log 2/qc_floor_sharpness`` K of
+      condensate-equivalent warming (``T = T_l + (L/c_p) q_c`` keeps ``T_l``
+      conserved); with the smooth excess the hard floor never binds (0 of 146k
+      swept cells), so its gradient test cannot fail on this switch alone;
     * on/off threshold (``p_min_width_pa`` [Pa]): the ``p >= 5000 Pa`` gate
       is ``sigmoid((p - 5000)/width)`` weighting the adjusted state.
 
@@ -652,9 +662,10 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
     control, not switched here.
     """
     hard_excess = math.isinf(excess_sharpness)
-    if not (excess_sharpness > 0.0 and p_min_width_pa >= 0.0):
-        raise ValueError("gSAM satadj needs excess_sharpness > 0 and "
-                         f"p_min_width_pa >= 0, got {excess_sharpness}, {p_min_width_pa}")
+    if not (excess_sharpness > 0.0 and qc_floor_sharpness > 0.0 and p_min_width_pa >= 0.0):
+        raise ValueError("gSAM satadj needs excess_sharpness > 0, qc_floor_sharpness > 0 "
+                         f"and p_min_width_pa >= 0, got {excess_sharpness}, "
+                         f"{qc_floor_sharpness}, {p_min_width_pa}")
     fac = constants.L_v / constants.c_pd
     cp_rv = constants.c_pd * constants.R_v
     lv2 = constants.L_v ** 2
@@ -665,7 +676,8 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
     def excess(qs):
         if hard_excess:
             return jnp.maximum(0.0, q_t - qs)
-        return qsat1 * smooth_relu((q_t - qs) / qsat1, excess_sharpness)
+        scale = qsat1 + _GSAM_SATADJ_SCALE_FLOOR
+        return scale * smooth_relu((q_t - qs) / scale, excess_sharpness)
 
     sat = (q_t > qsat1) if hard_excess else jnp.ones_like(q_t, dtype=bool)
     if p_min_width_pa == 0.0:
@@ -692,11 +704,11 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
     dtabs, tabs1, niter = jax.lax.fori_loop(
         0, _GSAM_SATADJ_MAXITER - 1, body, (dtabs, tabs1, niter))
     ok = sat & (niter <= _GSAM_SATADJ_MAXITER - 1)
-    if hard_excess:
+    if hard_excess and math.isinf(qc_floor_sharpness):
         q_c_new = jnp.where(ok, p_weight * jnp.maximum(0.0, tabs1 - tabs) / fac, 0.0)
         T_adj = tabs1 if p_min_width_pa == 0.0 else tabs + p_weight * (tabs1 - tabs)
         return jnp.where(ok, T_adj, tabs), q_t - q_c_new, q_c_new
-    dT = jnp.where(ok, p_weight, 0.0) * (tabs1 - tabs)
+    dT = jnp.where(ok, p_weight, 0.0) * smooth_relu(tabs1 - tabs, qc_floor_sharpness)
     q_c_new = dT / fac
     return tabs + dT, q_t - q_c_new, q_c_new
 
@@ -834,7 +846,7 @@ def accretion(q_c, q_r, rho, k_ac, gamma_norm=1.0):
     (2) BILINEAR ``q_c·q_r`` (product exponent 1) vs KK2000's ``(q_c·q_r)^1.15``;
     (3) a spurious ``rho`` factor — KK2000 is a pure mixing-ratio rate with NO
     density dependence; (4) an optional ``gamma_norm`` PSD-shape modifier absent
-    from KK2000 (P3 passes the default ``1.0``, so P3 does not incur (4)).
+    from KK2000.
     Pinned + canaried in
     ``tests/atmosphere/microphysics/unit/test_p3_accretion_faithful.py``.
 

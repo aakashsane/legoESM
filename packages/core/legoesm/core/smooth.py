@@ -11,13 +11,14 @@ A static ``sharpness = math.inf`` returns the discontinuous function exactly
 """
 
 import math
+import numbers
 
 import jax
 import jax.numpy as jnp
 
 
 def _hard(sharpness) -> bool:
-    return isinstance(sharpness, (int, float)) and math.isinf(sharpness)
+    return isinstance(sharpness, numbers.Real) and sharpness == math.inf
 
 
 def sigmoid_switch(x: jax.Array, sharpness: float = 100.0) -> jax.Array:

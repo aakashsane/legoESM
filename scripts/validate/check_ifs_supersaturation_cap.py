@@ -12,7 +12,7 @@ of the three lanes that run legoESM's atmospheric physics:
 * **LIQUID** — no liquid super-saturation: the excess is condensed onto the
   saturation curve.  Implemented as the in-scheme
   ``hard_saturation_adjustment`` guard, which is opt-in; the sam-flavour
-  Morrison instead runs gSAM's exact ``satadj_liquid`` on every call and
+  Morrison instead runs gSAM's ``satadj_liquid`` (smooth by default) on every call and
   refuses the opt-in (checked as a refusal, ``LIQUID_GUARD_REJECTED``).
 
 Three lanes, defined by which code builds the microphysics config:
@@ -84,8 +84,8 @@ ICE_SCHEMES = ("morrison", "thompson")
 LIQUID_SCHEMES = ICE_SCHEMES + ("p3",)
 ICE_FIELD = "homogeneous_ice_supersaturation"
 LIQUID_FIELD = "hard_saturation_adjustment"
-# Morrison's sam flavour (the CRM lane's configuration) runs gSAM's exact
-# liquid saturation adjustment (satadj_liquid) on every call and REJECTS the
+# Morrison's sam flavour (the CRM lane's configuration) runs gSAM's
+# liquid saturation adjustment (smooth by default, RULE 5) (satadj_liquid) on every call and REJECTS the
 # opt-in guard, which has no gSAM counterpart: there the liquid half checks the
 # rejection instead of an ON/OFF difference.
 LIQUID_GUARD_REJECTED = ("morrison",)

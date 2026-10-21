@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
-from legoesm.core.smooth import smooth_clamp, smooth_min
+from legoesm.core.smooth import smooth_clamp, smooth_min, smooth_relu
 from legoesm.thermo import (
     mixing_ratio_to_specific_humidity,
     saturation_mixing_ratio,
@@ -606,6 +606,119 @@ def saturation_adjustment(T, q_v, p_full, dt, sharpness=_DEFAULT_SAT_SHARPNESS, 
         q_c_avail = jnp.clip(q_c, 0.0, None)
         condensation = jnp.maximum(condensation, -q_c_avail / jnp.maximum(dt, 1e-10))
     return condensation, q_sat
+
+
+# --- gSAM liquid saturation adjustment (SRC/MICRO_M2005/microphysics.f90
+# satadj_liquid, :1638-1720, called by micro_proc :743 before the M2005 kernel).
+_GSAM_SATADJ_P_MIN = 5000.0      # no adjustment where pres < 5000 Pa (:1664) [Pa]
+_GSAM_SATADJ_THRESH_K = 0.01     # convergence: |dT| <= min(0.01, 0.01*fac_cond*qsat) (:1683) [K]
+_GSAM_SATADJ_THRESH_QFRAC = 0.01  # ... 0.01 of the saturation value (:1683) [-]
+# Newton iteration limit (maxiter, :1650) -- a loop count, never tunable.
+_GSAM_SATADJ_MAXITER = 20
+# Normaliser floor of the smooth excess [kg/kg]: fp32 q_sat underflows to 0 when
+# cold, and a scale whose square underflows makes the gradient NaN.
+_GSAM_SATADJ_SCALE_FLOOR = 1.0e-15
+
+
+def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
+                               qc_floor_sharpness, p_min_width_pa):
+    """gSAM liquid saturation adjustment: the adjusted ``(T, q_v, q_c)``.
+
+    Port of gSAM 1.8.8 ``satadj_liquid`` (SRC/MICRO_M2005/microphysics.f90
+    :1638-1720) as ``micro_proc`` calls it (:743): on total water
+    ``q_t = q_v + q_c`` and liquid-water temperature ``T_l = T - (L_v/c_pd) q_c``
+    the state is put back on the liquid saturation curve, condensing or
+    evaporating cloud as needed.  Per cell::
+
+        q_c = 0;  skip where p < 5000 Pa or q_t <= q_sat(T_l)   (q_v = q_t, T = T_l)
+        dT  = (L/c_p) max(0, q_t - q_sat(T_l)) / (1 + L^2 q_sat/(c_p R_v T_l^2))
+        Newton  dT = f/f',  f = T_l - T1 + (L/c_p) max(0, q_t - q_sat(T1)),
+                f' = 1 + L^2 q_sat(T1)/(c_p R_v T1^2)
+        while |dT| > min(0.01, 0.01 (L/c_p) q_sat(T_l)) and niter < 20
+        if niter > 19: leave the cell unadjusted (q_c = 0, q_v = q_t, T = T_l)
+        q_c = max(0, T1 - T_l)/(L/c_p);  q_v = q_t - q_c;  T = T1
+
+    The iteration count and the convergence test are reproduced exactly (a
+    fixed 19-step masked loop), so the result is the oracle's iterate, not
+    the exact root.  The saturation curve is legoESM's
+    :func:`legoesm.thermo.saturation_specific_humidity` (the oracle fixture is
+    built with the same curve).  Piecewise differentiable: the branch and
+    convergence masks are ``jnp.where`` and the gradient is that of the
+    iterate.  Computed in the state dtype.
+
+    KNOWN DIFFERENCE (RULE 5): three classes of hard switch are smooth unless
+    their field is at the hard limit (``math.inf``, ``math.inf``, ``0.0``):
+
+    * saturation step (``excess_sharpness`` [-]): ``max(0, q_t - q_s)`` is
+      ``s_q smooth_relu((q_t - q_s)/s_q)``, ``s_q = q_sat(T_l) + 1e-15`` kg/kg
+      (the floor keeps cold fp32 cells finite), and the
+      ``q_t > q_sat`` skip is dropped, so a sub-saturated cell runs the same
+      Newton and condenses ``~q_sat log(1 + exp(-s |S - 1|))/s`` (``S`` the
+      saturation ratio; softplus is > 0, so ``T1 >= T_l``).  A small
+      sharpness condenses in dry air: at 1 a dry 280 K cell reaches negative
+      vapour;
+    * positivity (``qc_floor_sharpness`` [1/K]): gSAM's ``max(0, T1 - T_l)``
+      is ``smooth_relu``, adding up to ``log 2/qc_floor_sharpness`` K of
+      condensate-equivalent warming (``T = T_l + (L/c_p) q_c`` keeps ``T_l``
+      conserved); with the smooth excess the hard floor never binds (0 of 146k
+      swept cells), but just above saturation (``T1 - T_l ~ 1/s``) the smooth
+      floor scales the gradient by ``sigmoid(s (T1 - T_l))``, which the tests pin;
+    * on/off threshold (``p_min_width_pa`` [Pa]): the ``p >= 5000 Pa`` gate
+      is ``sigmoid((p - 5000)/width)`` weighting the adjusted state.
+
+    The Newton convergence test and the 20-iteration fallback are loop
+    control, not switched here.
+    """
+    hard_excess = math.isinf(excess_sharpness)
+    if not (excess_sharpness > 0.0 and qc_floor_sharpness > 0.0 and p_min_width_pa >= 0.0):
+        raise ValueError("gSAM satadj needs excess_sharpness > 0, qc_floor_sharpness > 0 "
+                         f"and p_min_width_pa >= 0, got {excess_sharpness}, "
+                         f"{qc_floor_sharpness}, {p_min_width_pa}")
+    fac = constants.L_v / constants.c_pd
+    cp_rv = constants.c_pd * constants.R_v
+    lv2 = constants.L_v ** 2
+    tabs = T - fac * q_c
+    q_t = q_v + q_c
+    qsat1 = saturation_specific_humidity(tabs, p_full)
+
+    def excess(qs):
+        if hard_excess:
+            return jnp.maximum(0.0, q_t - qs)
+        scale = qsat1 + _GSAM_SATADJ_SCALE_FLOOR
+        return scale * smooth_relu((q_t - qs) / scale, excess_sharpness)
+
+    sat = (q_t > qsat1) if hard_excess else jnp.ones_like(q_t, dtype=bool)
+    if p_min_width_pa == 0.0:
+        sat = sat & (p_full >= _GSAM_SATADJ_P_MIN)
+        p_weight = 1.0
+    else:
+        p_weight = jax.nn.sigmoid((p_full - _GSAM_SATADJ_P_MIN) / p_min_width_pa)
+    dtabs = fac * excess(qsat1) / (1.0 + lv2 * qsat1 / (cp_rv * tabs ** 2))
+    tabs1 = tabs + dtabs
+    niter = jnp.ones_like(tabs)
+    thresh = jnp.minimum(_GSAM_SATADJ_THRESH_K,
+                         _GSAM_SATADJ_THRESH_QFRAC * fac * qsat1)
+
+    def body(_, carry):
+        dtabs, tabs1, niter = carry
+        go = (jnp.abs(dtabs) > thresh) & (niter < _GSAM_SATADJ_MAXITER)
+        qs = saturation_specific_humidity(tabs1, p_full)
+        fff = tabs - tabs1 + fac * excess(qs)
+        dfff = 1.0 + lv2 * qs / (cp_rv * tabs1 ** 2)
+        step = fff / dfff
+        return (jnp.where(go, step, dtabs), jnp.where(go, tabs1 + step, tabs1),
+                niter + go.astype(niter.dtype))
+
+    dtabs, tabs1, niter = jax.lax.fori_loop(
+        0, _GSAM_SATADJ_MAXITER - 1, body, (dtabs, tabs1, niter))
+    ok = sat & (niter <= _GSAM_SATADJ_MAXITER - 1)
+    if hard_excess and math.isinf(qc_floor_sharpness):
+        q_c_new = jnp.where(ok, p_weight * jnp.maximum(0.0, tabs1 - tabs) / fac, 0.0)
+        T_adj = tabs1 if p_min_width_pa == 0.0 else tabs + p_weight * (tabs1 - tabs)
+        return jnp.where(ok, T_adj, tabs), q_t - q_c_new, q_c_new
+    dT = jnp.where(ok, p_weight, 0.0) * smooth_relu(tabs1 - tabs, qc_floor_sharpness)
+    q_c_new = dT / fac
+    return tabs + dT, q_t - q_c_new, q_c_new
 
 
 def effective_Nc(N_c, Nc_0, *, predict_Nc=True, nc_specified_field=False):

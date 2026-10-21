@@ -119,7 +119,12 @@ def test_section_2_covers_every_ice_scheme(checker):
         assert (scheme, checker.ICE_FIELD) in seen, (scheme, seen)
     assert set(checker.LIQUID_SCHEMES) == {"morrison", "thompson", "p3"}
     for scheme in checker.LIQUID_SCHEMES:
-        assert (scheme, checker.LIQUID_FIELD) in seen, (scheme, seen)
+        if scheme in checker.LIQUID_GUARD_REJECTED:
+            # sam-flavour Morrison: the guard is rejected (checked inside
+            # section 2), gSAM's own adjustment runs unconditionally.
+            assert (scheme, checker.LIQUID_FIELD) not in seen, (scheme, seen)
+        else:
+            assert (scheme, checker.LIQUID_FIELD) in seen, (scheme, seen)
 
 
 def test_section_2_fails_when_a_scheme_ignores_the_flag(checker):

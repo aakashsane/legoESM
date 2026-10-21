@@ -155,6 +155,9 @@ __param_spec__ = {
     "MorrisonConfig": {
         "scheme_key": "atm.micro.MorrisonConfig",
         "excluded": {
+            "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
+            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
+            "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
             "cam_qsat_cap_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             # Fall-speed power-law EXPONENTS feed math.gamma(4 + b) / math.gamma(1 + b)
             # (morrison.py, _warm_rain.py) to precompute the cons* moment factors.
@@ -912,7 +915,8 @@ class MorrisonConfig(NamedTuple):
     # saturation curve where q_v > hard_sat_adjust_threshold * q_sat, draining
     # local super-saturation pools the smooth sigmoid path cannot (conserving
     # c_pd*T + L_v*q_v exactly).  Default OFF => byte-identical to the smooth
-    # path.  Threaded from ExperimentConfig via
+    # path (mg flavour).  The sam flavour runs gSAM's satadj_liquid (smooth by default, RULE 5) on
+    # every call and REJECTS this guard.  Threaded from ExperimentConfig via
     # ``apply_microphysics_experiment_flags``.  See
     # ``_warm_rain.saturation_adjustment``.
     hard_saturation_adjustment: bool = False
@@ -1033,6 +1037,12 @@ class MorrisonConfig(NamedTuple):
     # model's only liquid source; ``ExperimentConfig.validate_strict`` refuses
     # that pairing rather than letting it run.
     liquid_from_closure: bool = False
+    # morrison_flavor="sam" gSAM satadj_liquid smooth switches (RULE 5; see
+    # _warm_rain.saturation_adjustment_gsam).  Hard limit = gSAM exactly:
+    # math.inf, math.inf, 0.0.  All three values approved by user 2026-10-21.
+    gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step, on (q_t - q_s)/q_sat [-]
+    gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
+    gsam_satadj_p_min_width_pa: float = 100.0     # on/off, p >= 5000 Pa gate width [Pa]
     # MG2's CAM Goff-Gratch q_sat = 1 cap (RULE 5, limiter class): sharpness
     # on e_sat/p; math.inf = CAM's hard cap.  Value approved by user 2026-10-21.
     cam_qsat_cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS

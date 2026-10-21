@@ -166,7 +166,7 @@ def test_cam_table_clamp_hard_limit_is_cam(T, p):
     got = float(saturation_specific_humidity_cam_table(jnp.float64(T), jnp.float64(p),
                                                        clamp_sharpness=math.inf,
                                                        cap_sharpness=math.inf))
-    assert got == pytest.approx(_cam_table_qsat(T, p), rel=1e-15, abs=0.0)
+    assert got == _cam_table_qsat(T, p)  # bitwise
 
 
 @pytest.mark.parametrize("T,p", list(_CLAMP_DEFAULT_REL_GAP))

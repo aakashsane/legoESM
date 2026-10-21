@@ -42,7 +42,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
-from legoesm.core.smooth import smooth_min
+from legoesm.core.smooth import smooth_clamp, smooth_min
 
 
 def saturation_vapor_pressure(T: jax.Array) -> jax.Array:
@@ -455,6 +455,9 @@ def saturation_vapor_pressure_ice(T: jax.Array) -> jax.Array:
 _CAM_TTRICE_K = 20.0     # ttrice, wv_saturation.F90:82
 _CAM_SVP_TMIN_K = 127.16  # tmin, wv_saturation.F90:79 (table start)
 _CAM_SVP_TMAX_K = 375.16  # tmax, wv_saturation.F90:80
+# limiter class: sharpness of the smooth [tmin, tmax] clamp [1/K] (RULE 5);
+# math.inf = CAM's hard clamp exactly.  PENDING user approval.
+_CAM_SVP_CLAMP_SHARPNESS = 1.0
 
 
 def saturation_vapor_pressure_trans(T: jax.Array) -> jax.Array:
@@ -472,17 +475,31 @@ def saturation_vapor_pressure_trans(T: jax.Array) -> jax.Array:
                      e_liq)
 
 
-def saturation_specific_humidity_cam_table(T: jax.Array, p: jax.Array) -> jax.Array:
+def saturation_specific_humidity_cam_table(T: jax.Array, p: jax.Array, *,
+                                           clamp_sharpness: float = _CAM_SVP_CLAMP_SHARPNESS
+                                           ) -> jax.Array:
     """CAM ``qsat`` (wv_saturation.F90:458-503) [kg/kg]: the 1-K table of
     :func:`saturation_vapor_pressure_trans` from ``tmin`` (``wv_sat_init``,
     :216-226, ``plenest = ceiling(tmax - tmin) + 2`` entries), linearly
     interpolated by ``estblf`` (:306-321, ``T`` clamped to [tmin, tmax]), then
-    CAM's ``svp_to_qsat``.  The ``qsat`` ``zm_conv_evap`` calls (zm_conv.F90:1484)."""
+    CAM's ``svp_to_qsat``.  The ``qsat`` ``zm_conv_evap`` calls (zm_conv.F90:1484).
+
+    KNOWN DIFFERENCE (RULE 5): at the default the [tmin, tmax] clamp is
+    ``smooth_clamp`` with ``clamp_sharpness`` [1/K]; it departs from CAM by
+    ``~exp(-clamp_sharpness * d)/clamp_sharpness`` K at ``d`` K inside a table
+    bound (nil in the atmosphere's range).  ``clamp_sharpness = math.inf`` is
+    CAM's hard clamp exactly."""
     plenest = math.ceil(_CAM_SVP_TMAX_K - _CAM_SVP_TMIN_K) + 2
     estbl = saturation_vapor_pressure_trans(
         _CAM_SVP_TMIN_K + jnp.arange(plenest, dtype=T.dtype))
-    t_tmp = jnp.maximum(jnp.minimum(T, _CAM_SVP_TMAX_K) - _CAM_SVP_TMIN_K, 0.0)
-    i = jnp.floor(t_tmp)
+    if math.isinf(clamp_sharpness):
+        t_tmp = jnp.maximum(jnp.minimum(T, _CAM_SVP_TMAX_K) - _CAM_SVP_TMIN_K, 0.0)
+    else:
+        t_tmp = smooth_clamp(T, _CAM_SVP_TMIN_K, _CAM_SVP_TMAX_K,
+                             clamp_sharpness) - _CAM_SVP_TMIN_K
+    # Rounding guard only (smooth_clamp may land an ulp outside the table);
+    # a -1 index would wrap to the last entry.
+    i = jnp.clip(jnp.floor(t_tmp), 0.0, plenest - 2.0)
     weight = t_tmp - i
     i = i.astype(jnp.int32)
     es = (1.0 - weight) * estbl[i] + weight * estbl[i + 1]

@@ -145,6 +145,8 @@ __param_spec__ = {
     "MorrisonConfig": {
         "scheme_key": "atm.micro.MorrisonConfig",
         "excluded": {
+            "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value pending user approval",
+            "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value pending user approval",
             # Fall-speed power-law EXPONENTS feed math.gamma(4 + b) / math.gamma(1 + b)
             # (morrison.py, _warm_rain.py) to precompute the cons* moment factors.
             # math.gamma is a Python C function requiring a float, so a traced
@@ -990,6 +992,11 @@ class MorrisonConfig(NamedTuple):
     # model's only liquid source; ``ExperimentConfig.validate_strict`` refuses
     # that pairing rather than letting it run.
     liquid_from_closure: bool = False
+    # morrison_flavor="sam" gSAM satadj_liquid smooth switches (RULE 5; see
+    # _warm_rain.saturation_adjustment_gsam).  Hard limit = gSAM exactly:
+    # math.inf, 0.0.  Both values PENDING user approval.
+    gsam_satadj_excess_sharpness: float = 1.0e3   # saturation step, on (q_t - q_s)/q_sat [-]
+    gsam_satadj_p_min_width_pa: float = 100.0     # on/off, p >= 5000 Pa gate width [Pa]
 
 
 # Hard ceiling of ``sed_cfl_substeps_max`` wherever it is set (leaf, applier,

@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
+from legoesm.core.smooth import smooth_relu
 from legoesm.thermo import (
     mixing_ratio_to_specific_humidity,
     saturation_mixing_ratio,
@@ -607,7 +608,8 @@ _GSAM_SATADJ_THRESH_QFRAC = 0.01  # ... 0.01 of the saturation value (:1683) [-]
 _GSAM_SATADJ_MAXITER = 20
 
 
-def saturation_adjustment_gsam(T, q_v, q_c, p_full):
+def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
+                               p_min_width_pa):
     """gSAM liquid saturation adjustment: the adjusted ``(T, q_v, q_c)``.
 
     Port of gSAM 1.8.8 ``satadj_liquid`` (SRC/MICRO_M2005/microphysics.f90
@@ -631,15 +633,45 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full):
     built with the same curve).  Piecewise differentiable: the branch and
     convergence masks are ``jnp.where`` and the gradient is that of the
     iterate.  Computed in the state dtype.
+
+    KNOWN DIFFERENCE (RULE 5): two classes of hard switch are smooth unless
+    their field is at the hard limit (``math.inf``, ``0.0``):
+
+    * saturation step (``excess_sharpness`` [-]): ``max(0, q_t - q_s)`` is
+      ``q_sat(T_l) smooth_relu((q_t - q_s)/q_sat(T_l))`` and the
+      ``q_t > q_sat`` skip is dropped, so a sub-saturated cell runs the same
+      Newton and condenses a vanishing amount.  The Newton root then has
+      ``T1 > T_l``, so gSAM's ``max(0, T1 - T_l)`` floor is not applied (it
+      bound in 0 of 146k swept cells at 1e2-1e4; it stays on the hard path);
+    * on/off threshold (``p_min_width_pa`` [Pa]): the ``p >= 5000 Pa`` gate
+      is ``sigmoid((p - 5000)/width)`` weighting the adjusted state.
+
+    The Newton convergence test and the 20-iteration fallback are loop
+    control, not switched here.
     """
+    hard_excess = math.isinf(excess_sharpness)
+    if not (excess_sharpness > 0.0 and p_min_width_pa >= 0.0):
+        raise ValueError("gSAM satadj needs excess_sharpness > 0 and "
+                         f"p_min_width_pa >= 0, got {excess_sharpness}, {p_min_width_pa}")
     fac = constants.L_v / constants.c_pd
     cp_rv = constants.c_pd * constants.R_v
     lv2 = constants.L_v ** 2
     tabs = T - fac * q_c
     q_t = q_v + q_c
     qsat1 = saturation_specific_humidity(tabs, p_full)
-    sat = (p_full >= _GSAM_SATADJ_P_MIN) & (q_t > qsat1)
-    dtabs = fac * jnp.maximum(0.0, q_t - qsat1) / (1.0 + lv2 * qsat1 / (cp_rv * tabs ** 2))
+
+    def excess(qs):
+        if hard_excess:
+            return jnp.maximum(0.0, q_t - qs)
+        return qsat1 * smooth_relu((q_t - qs) / qsat1, excess_sharpness)
+
+    sat = (q_t > qsat1) if hard_excess else jnp.ones_like(q_t, dtype=bool)
+    if p_min_width_pa == 0.0:
+        sat = sat & (p_full >= _GSAM_SATADJ_P_MIN)
+        p_weight = 1.0
+    else:
+        p_weight = jax.nn.sigmoid((p_full - _GSAM_SATADJ_P_MIN) / p_min_width_pa)
+    dtabs = fac * excess(qsat1) / (1.0 + lv2 * qsat1 / (cp_rv * tabs ** 2))
     tabs1 = tabs + dtabs
     niter = jnp.ones_like(tabs)
     thresh = jnp.minimum(_GSAM_SATADJ_THRESH_K,
@@ -649,7 +681,7 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full):
         dtabs, tabs1, niter = carry
         go = (jnp.abs(dtabs) > thresh) & (niter < _GSAM_SATADJ_MAXITER)
         qs = saturation_specific_humidity(tabs1, p_full)
-        fff = tabs - tabs1 + fac * jnp.maximum(0.0, q_t - qs)
+        fff = tabs - tabs1 + fac * excess(qs)
         dfff = 1.0 + lv2 * qs / (cp_rv * tabs1 ** 2)
         step = fff / dfff
         return (jnp.where(go, step, dtabs), jnp.where(go, tabs1 + step, tabs1),
@@ -658,8 +690,13 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full):
     dtabs, tabs1, niter = jax.lax.fori_loop(
         0, _GSAM_SATADJ_MAXITER - 1, body, (dtabs, tabs1, niter))
     ok = sat & (niter <= _GSAM_SATADJ_MAXITER - 1)
-    q_c_new = jnp.where(ok, jnp.maximum(0.0, tabs1 - tabs) / fac, 0.0)
-    return (jnp.where(ok, tabs1, tabs), jnp.where(ok, q_t - q_c_new, q_t), q_c_new)
+    if hard_excess:
+        q_c_new = jnp.where(ok, p_weight * jnp.maximum(0.0, tabs1 - tabs) / fac, 0.0)
+        T_adj = tabs1 if p_min_width_pa == 0.0 else tabs + p_weight * (tabs1 - tabs)
+        return jnp.where(ok, T_adj, tabs), q_t - q_c_new, q_c_new
+    dT = jnp.where(ok, p_weight, 0.0) * (tabs1 - tabs)
+    q_c_new = dT / fac
+    return tabs + dT, q_t - q_c_new, q_c_new
 
 
 def effective_Nc(N_c, Nc_0, *, predict_Nc=True, nc_specified_field=False):

@@ -323,7 +323,9 @@ def morrison_microphysics(
         _reject_fields_without_gsam_counterpart(config)
         T_in, q_v_in, q_c_in = T, q_v, hydrometeors.q_c
         T, q_v, q_c_adj = saturation_adjustment_gsam(
-            T, q_v, hydrometeors.q_c, p_full)
+            T, q_v, hydrometeors.q_c, p_full,
+            excess_sharpness=config.gsam_satadj_excess_sharpness,
+            p_min_width_pa=config.gsam_satadj_p_min_width_pa)
         hydrometeors = hydrometeors._replace(q_c=q_c_adj)
     q_c = hydrometeors.q_c
     q_r = hydrometeors.q_r

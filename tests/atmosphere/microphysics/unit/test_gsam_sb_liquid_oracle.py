@@ -16,9 +16,9 @@ so the hard limit is the default.
 """
 from __future__ import annotations
 
-import math
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import jax

@@ -225,3 +225,23 @@ def test_gsam_satadj_default_gradients(field):
         return jnp.stack([Tn - T, qcn * 1e3])
 
     check_grads(fn, (T, qv_gkg, p), order=2, modes=("rev",), eps=1e-4, atol=1e-6, rtol=1e-3)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
+def test_gsam_satadj_default_finite_and_nonnegative_over_the_cold_corner(dtype):
+    """Smooth default over 150-310 K, 100 Pa-1e5 Pa, saturation ratio 0-1.2:
+    finite value and gradient (fp32 q_sat underflows to 0 at the cold end) and
+    no negative cloud water although the floor is not applied."""
+    from legoesm.thermo import saturation_specific_humidity
+    T = jnp.linspace(150.0, 310.0, 17, dtype=dtype)[:, None, None]
+    p = jnp.asarray([1.0e2, 5.0e3, 3.0e4, 1.0e5], dtype=dtype)[None, :, None]
+    S = jnp.linspace(0.0, 1.2, 13, dtype=dtype)[None, None, :]
+    q_v = (S * saturation_specific_humidity(T, p)).ravel()
+    T, p = (jnp.broadcast_to(a, (17, 4, 13)).ravel() for a in (T, p))
+    q_c = jnp.zeros_like(T)
+    fn = functools.partial(saturation_adjustment_gsam, **GSAM_DEFAULT)
+    Tn, qvn, qcn = fn(T, q_v, q_c, p)
+    assert all(bool(jnp.all(jnp.isfinite(x))) for x in (Tn, qvn, qcn))
+    assert bool(jnp.all(qcn >= 0.0))
+    g = jax.grad(lambda T, q: sum(jnp.sum(x) for x in fn(T, q, q_c, p)), argnums=(0, 1))(T, q_v)
+    assert all(bool(jnp.all(jnp.isfinite(x))) for x in g)

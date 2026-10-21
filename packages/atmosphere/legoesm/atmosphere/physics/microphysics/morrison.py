@@ -26,8 +26,9 @@ ADDRESSED
   branches (freeze_N_to_graupel = SAM NNUCCR; dN_g_melt = NGMLTG).
 
 SATURATION ADJUSTMENT (sam flavour, oracle port 2026-10-19)
-- ``morrison_flavor="sam"`` runs gSAM's ``satadj_liquid`` (exact two-sided
-  liquid adjustment, :func:`_warm_rain.saturation_adjustment_gsam`) BEFORE the
+- ``morrison_flavor="sam"`` runs gSAM's ``satadj_liquid`` (two-sided liquid
+  adjustment, :func:`_warm_rain.saturation_adjustment_gsam`; its switches are
+  smooth by default and exact at the hard limit, RULE 5) BEFORE the
   process rates, as gSAM's micro_proc does; every rate sees the adjusted
   state.  Oracle-pinned (adjustment points and the whole-call T, q_v of five
   warm columns) by tests/atmosphere/microphysics/unit/

@@ -606,6 +606,9 @@ _GSAM_SATADJ_THRESH_K = 0.01     # convergence: |dT| <= min(0.01, 0.01*fac_cond*
 _GSAM_SATADJ_THRESH_QFRAC = 0.01  # ... 0.01 of the saturation value (:1683) [-]
 # Newton iteration limit (maxiter, :1650) -- a loop count, never tunable.
 _GSAM_SATADJ_MAXITER = 20
+# Normaliser floor of the smooth excess [kg/kg]: fp32 q_sat underflows to 0 when
+# cold, and a scale whose square underflows makes the gradient NaN.
+_GSAM_SATADJ_SCALE_FLOOR = 1.0e-15
 
 
 def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
@@ -640,9 +643,11 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
     * saturation step (``excess_sharpness`` [-]): ``max(0, q_t - q_s)`` is
       ``q_sat(T_l) smooth_relu((q_t - q_s)/q_sat(T_l))`` and the
       ``q_t > q_sat`` skip is dropped, so a sub-saturated cell runs the same
-      Newton and condenses a vanishing amount.  The Newton root then has
-      ``T1 > T_l``, so gSAM's ``max(0, T1 - T_l)`` floor is not applied (it
-      bound in 0 of 146k swept cells at 1e2-1e4; it stays on the hard path);
+      Newton and condenses ``~q_sat log(1 + exp(-s |S - 1|))/s`` (``S`` the
+      saturation ratio; softplus is > 0, so ``T1 >= T_l`` and gSAM's
+      ``max(0, T1 - T_l)`` floor, kept on the hard path, is not applied --
+      it bound in 0 of 146k swept cells at 1e2-1e4).  A small sharpness
+      condenses in dry air: at 1 a dry 280 K cell reaches negative vapour;
     * on/off threshold (``p_min_width_pa`` [Pa]): the ``p >= 5000 Pa`` gate
       is ``sigmoid((p - 5000)/width)`` weighting the adjusted state.
 
@@ -663,7 +668,8 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
     def excess(qs):
         if hard_excess:
             return jnp.maximum(0.0, q_t - qs)
-        return qsat1 * smooth_relu((q_t - qs) / qsat1, excess_sharpness)
+        scale = qsat1 + _GSAM_SATADJ_SCALE_FLOOR
+        return scale * smooth_relu((q_t - qs) / scale, excess_sharpness)
 
     sat = (q_t > qsat1) if hard_excess else jnp.ones_like(q_t, dtype=bool)
     if p_min_width_pa == 0.0:

@@ -643,3 +643,21 @@ def test_mpas_poststep_hook_jit_matches_eager_and_compiles_once(ice_curve):
     assert not compiles, f"{len(compiles)} compiles on a repeated call"
     assert "_dq_hs) = _mpas_hard_saturation_poststep_jit(" in inspect.getsource(
         ModelDriver._run_column)
+
+
+@pytest.mark.parametrize("scheme", ["kessler", "seifert_beheng"])
+def test_faithful_ports_refuse_the_guard_at_config_build(scheme):
+    """User decision 2026-10-21: the faithful Kessler and Seifert-Beheng ports
+    refuse --hard-saturation-adjustment when the config is BUILT (shared
+    helper), not at run time inside the kernel."""
+    from legoesm.atmosphere.physics.microphysics.config import (
+        HARD_SAT_GUARD_EXEMPT, HARD_SAT_GUARD_SCHEMES, MicrophysicsConfig,
+        apply_microphysics_experiment_flags,
+    )
+    assert scheme in HARD_SAT_GUARD_EXEMPT and scheme not in HARD_SAT_GUARD_SCHEMES
+    leaf = getattr(MicrophysicsConfig(scheme=scheme), scheme)
+    with pytest.raises(ValueError, match="hard_saturation_adjustment=True is not supported"):
+        apply_microphysics_experiment_flags(
+            leaf, scheme, hard_saturation_adjustment=True)
+    # without the flag the same call builds the config unchanged
+    assert apply_microphysics_experiment_flags(leaf, scheme) == leaf

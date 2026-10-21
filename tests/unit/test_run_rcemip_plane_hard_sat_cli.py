@@ -84,12 +84,12 @@ def test_float_override_without_the_gate_is_refused():
             "sundqvist", hard_sat_max_heating_K=8.0)
 
 
-# kessler: faithful ESCOMP kessler_run port, no guard (its kernel raises).
-@pytest.mark.parametrize("scheme", ["sdm", "fast_sbm", "kessler"])
+# kessler / seifert_beheng: faithful oracle ports, refused when the config is
+# built (HARD_SAT_GUARD_EXEMPT).
+@pytest.mark.parametrize("scheme", ["sdm", "fast_sbm", "kessler", "seifert_beheng"])
 def test_exempt_schemes_reject_the_flag_loudly(scheme):
-    """sdm/fast_sbm resolve super-saturation explicitly and carry no guard
-    fields; asking for it must raise via the SHARED helper, never silently do
-    nothing."""
+    """Exempt schemes (HARD_SAT_GUARD_EXEMPT) refuse the guard flag via the
+    SHARED helper when the config is built, never silently do nothing."""
     rcp = _load()
     with pytest.raises(ValueError, match="hard_saturation_adjustment"):
         rcp._build_microphysics_config(

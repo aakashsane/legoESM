@@ -16,6 +16,7 @@ so the hard limit is the default.
 """
 from __future__ import annotations
 
+import math
 import importlib.util
 import json
 from pathlib import Path
@@ -56,13 +57,16 @@ def _rel(a, b):
     return np.where(d > 0, np.abs(a - b) / np.where(d > 0, d, 1.0), 0.0)
 
 
-def _inputs(fx, g, dtype=jnp.float64):
+def _inputs(fx, g, dtype=jnp.float64, hard=True):
     flip = lambda k: jnp.asarray(fx[f"{g}_{k}"][:, ::-1], dtype=dtype)  # top-down
     rho = flip("rho")
     z = jnp.zeros_like(rho)
     hyd = HydrometeorState(q_c=flip("q_c"), q_r=flip("q_r"), q_i=z, q_s=z, q_g=z,
                            N_c=z, N_r=flip("n_r_kg") * rho, N_i=z, N_s=z, N_g=z)
     cfg = SeifertBehengConfig(Nc_0=float(fx[f"{g}_Nc0_cm3"]) * 1.0e6)
+    if hard:  # gSAM's own hard switches (RULE 5 hard limit)
+        cfg = cfg._replace(gsam_satadj_excess_sharpness=math.inf,
+                           gsam_satadj_p_min_width_pa=0.0)
     return (flip("T"), flip("q_v"), hyd, flip("p_full"),
             jnp.asarray(fx[f"{g}_p_half"][:, ::-1], dtype=dtype), rho,
             flip("dz"), float(fx[f"{g}_dt"]), cfg)
@@ -153,7 +157,7 @@ def test_fixture_exercises_the_branches():
 def test_gradients_finite(dtype):
     fx = _fx()
     for g in GROUPS:
-        T, q_v, hyd, pf, ph, rho, dz, dt, cfg = _inputs(fx, g, dtype)
+        T, q_v, hyd, pf, ph, rho, dz, dt, cfg = _inputs(fx, g, dtype, hard=False)
 
         def loss(T, q_v, q_c, q_r):
             out = seifert_beheng_microphysics(

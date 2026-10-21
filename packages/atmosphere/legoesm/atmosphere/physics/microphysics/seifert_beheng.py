@@ -69,7 +69,7 @@ _GSAM_M2005_PARAMS = MorrisonConfig(morrison_flavor="sam")
 # default (``MorrisonConfig.sed_cfl_substeps_max``), reused unchanged.
 _SED_SUBSTEPS_MAX = MorrisonConfig._field_defaults["sed_cfl_substeps_max"]
 # The only SeifertBehengConfig field gSAM reads (NDCNST, as a per-volume count).
-_GSAM_FIELDS = ("Nc_0",)
+_GSAM_FIELDS = ("Nc_0", "gsam_satadj_excess_sharpness", "gsam_satadj_p_min_width_pa")
 
 __physics_contract__ = {
     "summary": (
@@ -129,14 +129,17 @@ def _reject_fields_without_gsam_counterpart(config: SeifertBehengConfig) -> None
         raise ValueError(
             "seifert_beheng runs gSAM 1.8.8 M2005 (liquid only, SB2001 warm "
             f"rain), which has no counterpart for {bad}; leave them at their "
-            "defaults (only Nc_0, the specified droplet number, is read).")
+            "defaults (only Nc_0, the specified droplet number, and the two "
+            "gsam_satadj_* smooth-switch fields are read).")
 
 
 def _gsam_call(T, q_v, hydrometeors, p_full, rho, dz, dt, config):
     """satadj_liquid then the M2005 liquid-only step (no sub-step guard)."""
     _reject_fields_without_gsam_counterpart(config)
     T1, q_v1, q_c1 = saturation_adjustment_gsam(
-        T, q_v, hydrometeors.q_c, p_full)
+        T, q_v, hydrometeors.q_c, p_full,
+        excess_sharpness=config.gsam_satadj_excess_sharpness,
+        p_min_width_pa=config.gsam_satadj_p_min_width_pa)
     return m2005_liquid_step(
         T1, q_v1, q_c1, hydrometeors.q_r, hydrometeors.N_r, p_full, rho, dz,
         dt, config.Nc_0, _GSAM_M2005_PARAMS, _SED_SUBSTEPS_MAX)

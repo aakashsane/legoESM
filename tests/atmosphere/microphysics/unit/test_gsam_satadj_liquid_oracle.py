@@ -20,8 +20,10 @@ N_r within one call.
 """
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
+import math
 from pathlib import Path
 
 import jax
@@ -49,7 +51,13 @@ HARD_LIMIT = dict(
     autoconversion_sharpness=1.0e9, breakup_sharpness=1.0e12,
     ice_sigmoid_sharpness=1.0e6, nuc_rh_sharpness=1.0e9, nuc_T_sharpness=1.0e6,
     homogeneous_freeze_sharpness=1.0e6, hom_freeze_T_sharpness=1.0e6,
-    hom_ice_nuc_sharpness=1.0e9, melt_sharpness=1.0e6)
+    hom_ice_nuc_sharpness=1.0e9, melt_sharpness=1.0e6,
+    gsam_satadj_excess_sharpness=math.inf, gsam_satadj_p_min_width_pa=0.0)
+# saturation_adjustment_gsam at gSAM's hard switches, and at the defaults.
+GSAM_HARD = dict(excess_sharpness=math.inf, p_min_width_pa=0.0)
+GSAM_DEFAULT = dict(
+    excess_sharpness=MorrisonConfig._field_defaults["gsam_satadj_excess_sharpness"],
+    p_min_width_pa=MorrisonConfig._field_defaults["gsam_satadj_p_min_width_pa"])
 
 
 def _fx():
@@ -85,7 +93,7 @@ def test_fixture_provenance_and_inputs_reproduce():
 def test_adjustment_matches_gsam():
     fx = _fx()
     T, q_v, q_c, p = (jnp.asarray(fx[k]) for k in ("T", "q_v", "q_c", "p"))
-    Tn, qvn, qcn = saturation_adjustment_gsam(T, q_v, q_c, p)
+    Tn, qvn, qcn = saturation_adjustment_gsam(T, q_v, q_c, p, **GSAM_HARD)
     errs = {"T": _rel(Tn, fx["ora_T"]).max(), "q_v": _rel(qvn, fx["ora_q_v"]).max(),
             "q_c": _rel(qcn, fx["ora_q_c"]).max()}
     assert max(errs.values()) <= TOL, errs
@@ -130,7 +138,7 @@ def test_adjustment_gradients_finite(dtype):
     T, q_v, q_c, p = (jnp.asarray(fx[k], dtype=dtype) for k in ("T", "q_v", "q_c", "p"))
 
     def loss(T, q_v, q_c):
-        Tn, qvn, qcn = saturation_adjustment_gsam(T, q_v, q_c, p)
+        Tn, qvn, qcn = saturation_adjustment_gsam(T, q_v, q_c, p, **GSAM_DEFAULT)
         return jnp.sum(Tn) + jnp.sum(qvn + qcn) * 1e3
 
     for g in jax.grad(loss, argnums=(0, 1, 2))(T, q_v, q_c):
@@ -157,8 +165,9 @@ def test_jit_matches_eager():
     fixture's S = 1.0005 cold points (reported in the PR)."""
     fx = _fx()
     args = tuple(jnp.asarray(fx[k]) for k in ("T", "q_v", "q_c", "p"))
-    eager = saturation_adjustment_gsam(*args)
-    jitted = jax.jit(saturation_adjustment_gsam)(*args)
+    fn = functools.partial(saturation_adjustment_gsam, **GSAM_DEFAULT)
+    eager = fn(*args)
+    jitted = jax.jit(fn)(*args)
     for a, b in zip(eager[:2], jitted[:2]):
         assert _rel(a, b).max() <= TOL
 
@@ -173,3 +182,46 @@ def test_sam_rejects_fields_without_gsam_counterpart(field, value):
     with pytest.raises(ValueError, match="no counterpart"):
         morrison_microphysics(T, q_v, hyd, pf, ph, rho, dz, dt,
                               _sam(**{field: value}))
+
+
+# --- RULE 5: gSAM satadj smooth switches, one class at a time (others hard) ---
+# Default departure from the gSAM oracle over the fixture: (max|dT| [K], max|dq_c| [kg/kg]).
+_GSAM_DEFAULT_GAP = {
+    "excess_sharpness": (0.015505454156595988, 6.2284683981937585e-06),
+    "p_min_width_pa": (0.00023259943355924406, 9.343410433085435e-08),
+}
+
+
+@pytest.mark.parametrize("field", list(_GSAM_DEFAULT_GAP))
+def test_gsam_satadj_default_gap_is_pinned(field):
+    fx = _fx()
+    T, q_v, q_c, p = (jnp.asarray(fx[k]) for k in ("T", "q_v", "q_c", "p"))
+    kw = dict(GSAM_HARD, **{field: GSAM_DEFAULT[field]})
+    Tn, _, qcn = saturation_adjustment_gsam(T, q_v, q_c, p, **kw)
+    gap = (float(np.abs(np.asarray(Tn) - fx["ora_T"]).max()),
+           float(np.abs(np.asarray(qcn) - fx["ora_q_c"]).max()))
+    assert gap == pytest.approx(_GSAM_DEFAULT_GAP[field], rel=1e-6, abs=1e-12)
+
+
+def _kink_cell(field):
+    """A cell on the field's hard switch: exactly saturated (excess) or a
+    1% supersaturated cell at p = 5000 Pa (pressure gate)."""
+    from legoesm.thermo import saturation_specific_humidity
+    p = 8.0e4 if field == "excess_sharpness" else 5000.0
+    T = jnp.float64(280.0 if field == "excess_sharpness" else 230.0)
+    s = 1.0 if field == "excess_sharpness" else 1.01
+    q_v = s * saturation_specific_humidity(T, jnp.float64(p))
+    return T, q_v * 1e3, jnp.float64(0.0), jnp.float64(p)
+
+
+@pytest.mark.parametrize("field", list(_GSAM_DEFAULT_GAP))
+def test_gsam_satadj_default_gradients(field):
+    from jax.test_util import check_grads
+    T, qv_gkg, qc_gkg, p = _kink_cell(field)
+    kw = dict(GSAM_HARD, **{field: GSAM_DEFAULT[field]})
+
+    def fn(T, qv_gkg, p):
+        Tn, qvn, qcn = saturation_adjustment_gsam(T, qv_gkg * 1e-3, qc_gkg * 1e-3, p, **kw)
+        return jnp.stack([Tn - T, qcn * 1e3])
+
+    check_grads(fn, (T, qv_gkg, p), order=2, modes=("rev",), eps=1e-4, atol=1e-6, rtol=1e-3)

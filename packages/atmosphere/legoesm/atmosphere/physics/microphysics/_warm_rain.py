@@ -1409,22 +1409,19 @@ def mg2_precip_sublimation_limiter(q_v, T, p, pre, prds, ice_sublim, vap_dep,
             jnp.where(on, ice_n, ice_sublim))
 
 
-def mg2_instant_snow_melt(T, q_s, N_s):
+def mg2_instant_snow_melt(T, q_s, N_s, width_K, cap_sharpness=MG2_CAP_SHARPNESS):
     """MG2 instantaneous snow melting above ``snowmelt = T_freeze + 2 K``
     (micro_mg2_0.F90:1147-1169 before the processes, :2538-2566 after
-    sedimentation): where ``T > snowmelt`` and ``q_s > 0`` the fraction
-    ``dum = 1``, or, if melting all of it would cool the air below snowmelt,
-    ``dum = clip((T - snowmelt) c_p/(L_f q_s), 0, 1)``.  Returns the melted
-    ``(mass, number) = (dum q_s, dum N_s)`` [kg/kg, #/kg]."""
-    t_melt = constants.T_freeze + MG2_SNOWMELT_OFFSET_K
-    active = (T > t_melt) & (q_s > 0.0)
-    q = jnp.where(active, q_s, 1.0)
-    whole = T - constants.L_f / constants.c_pd * q < t_melt  # latent-ok: MG2 oracle constant (xlf)
-    frac = jnp.where(
-        whole, jnp.clip((T - t_melt) * constants.c_pd / constants.L_f / q,  # latent-ok: MG2 oracle constant (xlf)
-                        0.0, 1.0), 1.0)
-    return (jnp.where(active, frac * q_s, 0.0),
-            jnp.where(active, frac * N_s, 0.0))
+    sedimentation): MG2 melts the fraction ``min(1, (T - snowmelt) c_p/(L_f
+    q_s))`` of the snow where ``T > snowmelt`` and ``q_s > 0`` (heat-limited so
+    the melt cannot cool the air below snowmelt).  Here the switch-on is the C2
+    step, 0 at snowmelt and full ``width_K`` above, and the min is rounded with
+    smooth_min at ``cap_sharpness`` (user decisions 2026-10-20 2a/2b, re-applied
+    on main 2026-10-21 item 1a; see :func:`_mg2_phase_change_fraction`).
+    Returns the melted ``(mass, number) = (f q_s, f N_s)`` [kg/kg, #/kg]."""
+    excess = T - (constants.T_freeze + MG2_SNOWMELT_OFFSET_K)
+    frac = _mg2_phase_change_fraction(excess, q_s, width_K, cap_sharpness)
+    return frac * jnp.maximum(q_s, 0.0), frac * N_s
 
 # --- Seifert & Beheng (2001) warm-rain UNIVERSAL FUNCTIONS ---
 # Faithful transcription of the gSAM M2005 IRAIN=1 path

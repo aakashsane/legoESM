@@ -105,6 +105,7 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     mg2_bergeron_snow,
     mg2_snow_sublimation,
     mg2_instant_snow_melt,
+    MG2_SNOWMELT_OFFSET_K,
     mg2_precip_sublimation_limiter,
     MG2_QSIC_MAX,
     snow_deposition_m2005,
@@ -331,6 +332,8 @@ def morrison_microphysics(
              f"CLUBB's per-cell relvar passed as relvar= with shape {T.shape}"),
             (npccn is not None and jnp.shape(npccn) == T.shape,
              f"the activation tendency passed as npccn= with shape {T.shape}"),
+            (hydrometeors.N_s is not None,
+             "a prognostic snow number (MG2's instant snow melt, user decision 1a)"),
         ) if not ok]
         if _bad:
             raise ValueError("MorrisonConfig.prognostic_droplet_number=True needs "
@@ -376,13 +379,18 @@ def morrison_microphysics(
         # (MG2's "re-apply snow melting", :2024-2040).
         q_s0, N_s0, q_r0, N_r0 = q_s, N_s, q_r, N_r
         if config.do_snow_melting:
-            minstsm, ninstsm = mg2_instant_snow_melt(T, q_s, N_s)
+            minstsm, ninstsm = mg2_instant_snow_melt(
+                T, q_s, N_s, RAMP_WIDTH_PER_SHARPNESS / config.melt_sharpness)
         else:
             minstsm = ninstsm = jnp.zeros_like(q_s)
-        q_s = jnp.maximum(q_s - minstsm, 0.0)
-        N_s = jnp.maximum(N_s - ninstsm, 0.0)
-        q_r = jnp.maximum(q_r + minstsm, 0.0)
-        N_r = jnp.maximum(N_r + ninstsm * rho, 0.0)   # N_r per-volume
+        # MG2 enters only cells above snowmelt with snow (micro_mg2_0.F90:
+        # 1149-1150); its max(., 0) touches those cells alone, so a slightly
+        # negative pool elsewhere is left as it is.
+        _fired = (T > constants.T_freeze + MG2_SNOWMELT_OFFSET_K) & (q_s > 0.0)
+        q_s = jnp.where(_fired, jnp.maximum(q_s - minstsm, 0.0), q_s)
+        N_s = jnp.where(_fired, jnp.maximum(N_s - ninstsm, 0.0), N_s)
+        q_r = jnp.where(_fired, jnp.maximum(q_r + minstsm, 0.0), q_r)
+        N_r = jnp.where(_fired, jnp.maximum(N_r + ninstsm * rho, 0.0), N_r)   # per volume
     sharpness = config.saturation_sharpness
     # Saturation curves: the CAM6 MG2 mode uses MG2's own qsat_water/qsat_ice,
     # CAM's Goff-Gratch (micro_mg2_0.F90:113-115, :909-916); other modes keep
@@ -1078,7 +1086,10 @@ def morrison_microphysics(
     # all three down proportionally so the SUM can't over-cool:
     #   (melt_ice+melt_snow+melt_graupel)·dt·L_f ≤ c_p·(T−T₀).
     total_melt = melt_ice + melt_snow + melt_graupel
-    heat_avail = (constants.c_pd * jnp.maximum(T - constants.T_freeze, 0.0)
+    # MG2 mode: the temperature after the snow pre-melt cooling (user decision
+    # 2026-10-20 4a)
+    _T_cap = T - constants.L_f * minstsm / constants.c_pd if mg2_snow else T  # latent-ok: MG2 oracle constant (xlf)
+    heat_avail = (constants.c_pd * jnp.maximum(_T_cap - constants.T_freeze, 0.0)
                   / (constants.L_f * jnp.maximum(dt, 1.0e-12)))
     melt_heat_scale = jnp.where(
         total_melt > heat_avail,
@@ -2109,7 +2120,9 @@ def morrison_microphysics(
             _dums = jnp.maximum(q_s + dq_s_dt * dt, 0.0)
             _dumns = jnp.where(_dums < MG2_QSMALL, 0.0,
                                jnp.maximum(N_s + dN_s_mg2 * dt, 0.0))
-            _m2, _n2 = mg2_instant_snow_melt(T + dT_dt * dt, _dums, _dumns)
+            _m2, _n2 = mg2_instant_snow_melt(
+                T + dT_dt * dt, _dums, _dumns,
+                RAMP_WIDTH_PER_SHARPNESS / config.melt_sharpness)
             dq_s_dt = dq_s_dt - _m2 / dt
             dN_s_mg2 = dN_s_mg2 - _n2 / dt
             dq_r_dt = dq_r_dt + _m2 / dt

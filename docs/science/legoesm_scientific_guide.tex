@@ -1975,7 +1975,11 @@ $W=4/k$, with $k$ the existing melting or freezing sharpness ($W=2$\,K for ice
 melting, $0.2$\,K for homogeneous freezing).  The heat limit itself,
 $\min(1,r)$ with $r$ the heat-allowed over the available mass, is rounded with
 the smooth minimum $-\ln(e^{-s}+e^{-sr})/s$, $s=100$: it never exceeds the hard
-cap and lies $\ln 2/s\approx0.7\%$ below it at $r=1$.
+cap and lies $\ln 2/s\approx0.7\%$ below it at $r=1$.  Snow melts the same way above
+$+2\,^\circ$C, both on the start-of-step state (every later process then sees
+the melted snow as rain) and again after sedimentation, with the same smooth
+step ($W=2$\,K) and rounded cap; Morrison's own snow-melting rate is then off,
+and graupel melting is limited by the heat left after the snow has melted.
 
 \paragraph{Homogeneous ice nucleation.}
 Optionally, haze droplets freeze homogeneously when the ice supersaturation

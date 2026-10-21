@@ -45,7 +45,8 @@ def _run(fx, cfg=None, npccn_kg=None, N_c=None, q_c=None, hyd_kw=None, T=None):
     dz = (g["p_half"][:, 1:] - g["p_half"][:, :-1]) / (C.g * g["rho"])
     z = jnp.zeros_like(g["T"])
     kw = dict(q_c=g["q_c"] if q_c is None else q_c, q_r=g["q_r"], q_i=z, q_s=z, q_g=z,
-              N_c=g["nc_kg"] * g["rho"] if N_c is None else N_c, N_r=g["N_r"], N_i=z)
+              N_c=g["nc_kg"] * g["rho"] if N_c is None else N_c, N_r=g["N_r"], N_i=z,
+              N_s=z)   # the switch needs a snow number (decision 1a)
     kw.update(hyd_kw or {})
     npc = g["npccn"] if npccn_kg is None else npccn_kg
     return morrison_microphysics(
@@ -231,7 +232,7 @@ def test_npccn_guards():
     dz = (g["p_half"][:, 1:] - g["p_half"][:, :-1]) / (C.g * g["rho"])
     z = jnp.zeros_like(g["T"])
     hyd = HydrometeorState(q_c=g["q_c"], q_r=g["q_r"], q_i=z, q_s=z, q_g=z,
-                           N_c=g["nc_kg"] * g["rho"], N_r=g["N_r"], N_i=z)
+                           N_c=g["nc_kg"] * g["rho"], N_r=g["N_r"], N_i=z, N_s=z)
     args = (g["T"], g["q_v"], hyd, g["p_full"], g["p_half"], g["rho"], dz, float(fx["dt"]))
     with pytest.raises(ValueError, match="npccn= with shape"):
         morrison_microphysics(*args, _cfg(), cloud_fraction=g["cf"], relvar=g["relvar"])

@@ -21,14 +21,20 @@ gfortran $FF -o mg2_procs "$HERE/mg2_procs_driver.F90" wv_sat_methods.o micro_mg
 # droplet sedimentation sub-step count); no MG2 arithmetic changes.  Built in tap/ so the unmodified
 # objects above stay untouched.
 mkdir -p tap
+# S10.4b adds tap_snow1 (state after the snow-melt pre-apply, M:1178), tap_snow2
+# (pools, Tp, tends before the post-sedimentation snow melt, M:2535) and tap_snow3
+# (tends after it, before M:2569); line-addressed where the text repeats.
 # S10.4 adds tap_pre (pools, Tp and the tends just before the ice melt, M:2616)
 # and tap_post (tends after homogeneous freezing, before M:2687).
 # S10.3 adds nctend right before M:2501 (after all sedimentation) and the
 # droplet sub-step count of the cloud sedimentation loop.
-sed -e '0,/^contains$/s//real(r8), public :: nctend_stage(1,512) = 0._r8\nreal(r8), public :: nctend_sed(1,512) = 0._r8\ninteger, public :: nstepc_tap(1) = 0\nreal(r8), public :: tap_pre(1,512,10) = 0._r8\nreal(r8), public :: tap_post(1,512,5) = 0._r8\ncontains/' \
+sed -e '0,/^contains$/s//real(r8), public :: nctend_stage(1,512) = 0._r8\nreal(r8), public :: nctend_sed(1,512) = 0._r8\ninteger, public :: nstepc_tap(1) = 0\nreal(r8), public :: tap_pre(1,512,10) = 0._r8\nreal(r8), public :: tap_post(1,512,5) = 0._r8\nreal(r8), public :: tap_snow1(1,512,5) = 0._r8\nreal(r8), public :: tap_snow2(1,512,8) = 0._r8\nreal(r8), public :: tap_snow3(1,512,5) = 0._r8\ncontains/' \
     -e 's/^  nctend = nctend + npccn$/&\n  nctend_stage = 0._r8\n  nctend_stage(1:mgncol,1:nlev) = nctend/' \
     -e 's/^  ! get new update for variables that includes sedimentation tendency$/  nctend_sed = 0._r8\n  nctend_sed(1:mgncol,1:nlev) = nctend\n&/' \
     -e 's/^        faloutc  = fc(i,:)  \* dumc(i,:)$/        nstepc_tap(i) = nstep\n&/' \
+    -e '1178s/^  end do $/&\n  tap_snow1 = 0._r8\n  tap_snow1(1:mgncol,1:nlev,1) = qs\n  tap_snow1(1:mgncol,1:nlev,2) = ns\n  tap_snow1(1:mgncol,1:nlev,3) = qr\n  tap_snow1(1:mgncol,1:nlev,4) = nr\n  tap_snow1(1:mgncol,1:nlev,5) = tlat/' \
+    -e 's/^  ! calculate instantaneous processes (melting, homogeneous freezing)$/  tap_snow2 = 0._r8\n  tap_snow2(1:mgncol,1:nlev,1) = dums\n  tap_snow2(1:mgncol,1:nlev,2) = dumns\n  tap_snow2(1:mgncol,1:nlev,3) = t + tlat\/cpp*deltat\n  tap_snow2(1:mgncol,1:nlev,4) = qstend\n  tap_snow2(1:mgncol,1:nlev,5) = nstend\n  tap_snow2(1:mgncol,1:nlev,6) = qrtend\n  tap_snow2(1:mgncol,1:nlev,7) = nrtend\n  tap_snow2(1:mgncol,1:nlev,8) = tlat\n&/' \
+    -e '2569s/^   do k=1,nlev$/  tap_snow3 = 0._r8\n  tap_snow3(1:mgncol,1:nlev,1) = qstend\n  tap_snow3(1:mgncol,1:nlev,2) = nstend\n  tap_snow3(1:mgncol,1:nlev,3) = qrtend\n  tap_snow3(1:mgncol,1:nlev,4) = nrtend\n  tap_snow3(1:mgncol,1:nlev,5) = tlat\n&/' \
     -e 's/^   if (do_cldice) then$/  tap_pre = 0._r8\n  tap_pre(1:mgncol,1:nlev,1) = dumc\n  tap_pre(1:mgncol,1:nlev,2) = dumnc\n  tap_pre(1:mgncol,1:nlev,3) = dumi\n  tap_pre(1:mgncol,1:nlev,4) = dumni\n  tap_pre(1:mgncol,1:nlev,5) = t + tlat\/cpp*deltat\n  tap_pre(1:mgncol,1:nlev,6) = qctend\n  tap_pre(1:mgncol,1:nlev,7) = nctend\n  tap_pre(1:mgncol,1:nlev,8) = qitend\n  tap_pre(1:mgncol,1:nlev,9) = nitend\n  tap_pre(1:mgncol,1:nlev,10) = tlat\n&/' \
     -e 's/^     ! remove any excess over-saturation, which is possible due to non-linearity when adding$/  tap_post = 0._r8\n  tap_post(1:mgncol,1:nlev,1) = qctend\n  tap_post(1:mgncol,1:nlev,2) = nctend\n  tap_post(1:mgncol,1:nlev,3) = qitend\n  tap_post(1:mgncol,1:nlev,4) = nitend\n  tap_post(1:mgncol,1:nlev,5) = tlat\n&/' \
     "$CAM/micro_mg2_0.F90" > tap/micro_mg2_0.F90
@@ -37,7 +43,10 @@ test "$(grep -c nctend_sed tap/micro_mg2_0.F90)" -eq 3
 test "$(grep -c nstepc_tap tap/micro_mg2_0.F90)" -eq 2
 test "$(grep -c tap_pre tap/micro_mg2_0.F90)" -eq 12
 test "$(grep -c tap_post tap/micro_mg2_0.F90)" -eq 7
-test "$(diff "$CAM/micro_mg2_0.F90" tap/micro_mg2_0.F90 | grep -c '^>')" -eq 27
+test "$(grep -c tap_snow1 tap/micro_mg2_0.F90)" -eq 7
+test "$(grep -c tap_snow2 tap/micro_mg2_0.F90)" -eq 10
+test "$(grep -c tap_snow3 tap/micro_mg2_0.F90)" -eq 7
+test "$(diff "$CAM/micro_mg2_0.F90" tap/micro_mg2_0.F90 | grep -c '^>')" -eq 51
 # S10.4 claim: between the homogeneous-freezing block and the final number
 # clear, nctend is written only by the nccons branch (off in the P driver), the
 # droplet re-adjust and the clear; qctend only under allow_sed_supersat (off).

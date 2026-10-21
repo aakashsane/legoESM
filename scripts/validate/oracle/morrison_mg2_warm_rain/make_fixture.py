@@ -352,6 +352,37 @@ def build_melt_freeze_columns(cols):
     return [melt, homog]
 
 
+def build_snow_melt_columns(cols):
+    """``--prognostic-nc-snow`` columns (S10.4b): ``snowmelt``, snow across +2 C, incl.
+    heat-limited partial melts and 0 < qs < qsmall; no cloud ice, T > 0 C, so
+    MG2's ice processes and rain freezing are idle; ``snowfall``, snow above
+    the +2 C level falling into it (the post-sedimentation melt point)."""
+    from legoesm import constants as C
+    from legoesm.thermo import saturation_specific_humidity
+    import jax.numpy as jnp
+    base = next(c for c in cols if c["name"] == "trop_deep")
+    nlev = len(base["T"])
+    ph = 60000.0 + 500.0 * np.arange(nlev + 1)
+    pf = 0.5 * (ph[1:] + ph[:-1])
+    z = np.zeros(nlev)
+    T = np.linspace(274.5, 279.5, nlev)
+    qs = np.tile([3.0e-3, 1.0e-3, 2.0e-4, 1.0e-6, 5.0e-19, 0.0, 6.0e-3, 5.0e-4], nlev // 8 + 1)[:nlev]
+    ns = np.where(qs > 0, 2.0e4, 0.0)
+    rho = pf / (C.R_d * T)
+    qv = 0.95 * np.asarray(saturation_specific_humidity(jnp.asarray(T), jnp.asarray(pf)))
+    snow = dict(base, name="snowmelt", T=T, p_half=ph, p_full=pf, rho=rho,
+                cf=np.full(nlev, 1.0e-4), q_c=z, q_v=qv, q_r=z, N_r=z, N_c=z, nc_kg=z,
+                q_i=z, ni_kg=z, q_s=qs, ns_kg=ns, relvar=np.ones(nlev), npccn=z)
+    # cold snow above +2 C air: sedimentation carries it down to the post-step melt
+    T2 = np.linspace(268.0, 281.0, nlev)
+    qs2 = np.where(T2 < 274.0, 2.0e-3, 0.0)
+    rho2 = pf / (C.R_d * T2)
+    qv2 = 0.95 * np.asarray(saturation_specific_humidity(jnp.asarray(T2), jnp.asarray(pf)))
+    fall = dict(snow, name="snowfall", T=T2, rho=rho2, q_v=qv2, q_s=qs2,
+                ns_kg=np.where(qs2 > 0, 1.0e4, 0.0))
+    return [snow, fall]
+
+
 def write_prognostic_column_inputs(cols, path):
     nlev = len(cols[0]["T"])
     with open(path, "w") as f:
@@ -362,7 +393,8 @@ def write_prognostic_column_inputs(cols, path):
             for k in range(nlev):
                 row = [c["T"][k], c["q_v"][k], c["q_c"][k], c.get("q_i", np.zeros(nlev))[k],
                        c["nc_kg"][k], c.get("ni_kg", np.zeros(nlev))[k],
-                       c["q_r"][k], 0.0, c["N_r"][k] / c["rho"][k], 0.0,
+                       c["q_r"][k], c.get("q_s", np.zeros(nlev))[k], c["N_r"][k] / c["rho"][k],
+                       c.get("ns_kg", np.zeros(nlev))[k],
                        c["relvar"][k], 1.0, c["p_full"][k], pdel[k],
                        c["cf"][k], c["cf"][k], c["cf"][k], 1.0, c.get("npccn", np.zeros(nlev))[k]]
                 f.write(" ".join(f"{x:.17e}" for x in row) + "\n")
@@ -408,6 +440,13 @@ def load_column_outputs(path, ncol, nlev):
                                "pre_tlat", "post_qctend", "post_nctend", "post_qitend",
                                "post_nitend", "post_tlat", "qitend", "nitend")):
             out[k] = body[:, :, b + i]
+    if extra >= 38:   # S10.4b snow melt taps: driver columns 36..53
+        names = ("snow1_qs", "snow1_ns", "snow1_qr", "snow1_nr", "snow1_tlat",
+                 "snow2_dums", "snow2_dumns", "snow2_Tp", "snow2_qstend", "snow2_nstend",
+                 "snow2_qrtend", "snow2_nrtend", "snow2_tlat", "snow3_qstend", "snow3_nstend",
+                 "snow3_qrtend", "snow3_nrtend", "snow3_tlat")
+        for i, k in enumerate(names):
+            out[k] = body[:, :, 1 + 36 + i]      # body = (ic, k, driver column j at index j + 1)
     out["prect"] = prect
     return out
 
@@ -430,7 +469,8 @@ def _meta(a):
                    + (" --prognostic-nc" if a.prognostic_nc else "")
                    + (" --prognostic-nc-act" if a.prognostic_nc_act else "")
                    + (" --prognostic-nc-sed" if a.prognostic_nc_sed else "")
-                   + (" --prognostic-nc-melt" if getattr(a, "prognostic_nc_melt", False) else "")))
+                   + (" --prognostic-nc-melt" if getattr(a, "prognostic_nc_melt", False) else "")
+                   + (" --prognostic-nc-snow" if getattr(a, "prognostic_nc_snow", False) else "")))
 
 
 def main_prognostic(a):
@@ -529,6 +569,29 @@ def main_prognostic_melt(a):
     print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
 
 
+def main_prognostic_snow(a):
+    cols = build_snow_melt_columns(build_prognostic_columns(build_columns()))
+    ncol, nlev = len(cols), len(cols[0]["T"])
+    fx = {f"col_{k}": np.stack([c[k] for c in cols])
+          for k in COL_FIELDS + ("nc_kg", "relvar", "npccn", "q_i", "ni_kg", "q_s", "ns_kg")}
+    fx["col_names"] = np.array([c["name"] for c in cols])
+    fx["dt"] = np.array(DT)
+    fin, fout = a.build / "snow_col_in.txt", a.build / "snow_col_out.txt"
+    write_prognostic_column_inputs(cols, fin)
+    subprocess.run([str(a.build / "mg2_tap"), str(fin), str(fout), "F", "P"], check=True)
+    o = load_column_outputs(fout, ncol, nlev)
+    for k in o:
+        fx[f"ora_{k}"] = o[k]
+    meta = _meta(a)
+    meta["probe"] = ("build.sh tap/: micro_mg2_0.F90 + S10.2-S10.4 taps + tap_snow1 after the "
+                     "snow-melt pre-apply (M:1178), tap_snow2/3 around the post-sedimentation "
+                     "snow melt (M:2535, M:2569) (51 added lines)")
+    fx["meta"] = np.array(json.dumps(meta))
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(a.out, **fx)
+    print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--cam", required=True, type=Path)
@@ -538,6 +601,7 @@ def main(argv=None):
     ap.add_argument("--prognostic-nc-act", action="store_true")
     ap.add_argument("--prognostic-nc-sed", action="store_true")
     ap.add_argument("--prognostic-nc-melt", action="store_true")
+    ap.add_argument("--prognostic-nc-snow", action="store_true")
     a = ap.parse_args(argv)
     subprocess.run(["bash", str(HERE / "build.sh"), str(a.cam), str(a.build)],
                    check=True)
@@ -549,6 +613,8 @@ def main(argv=None):
         return main_prognostic_sed(a)
     if a.prognostic_nc_melt:
         return main_prognostic_melt(a)
+    if a.prognostic_nc_snow:
+        return main_prognostic_snow(a)
     cols = build_columns()
     ncol, nlev = len(cols), len(cols[0]["T"])
     fx = {f"col_{k}": np.stack([c[k] for c in cols]) for k in COL_FIELDS}

@@ -59,7 +59,7 @@ def _run(fx, cfg, N_c=None, q_c=None, relvar=None):
     z = jnp.zeros_like(g["T"])
     hyd = HydrometeorState(q_c=g["q_c"] if q_c is None else q_c, q_r=g["q_r"], q_i=z, q_s=z,
                            q_g=z, N_c=g["nc_kg"] * g["rho"] if N_c is None else N_c,
-                           N_r=g["N_r"], N_i=z)
+                           N_r=g["N_r"], N_i=z, N_s=z)   # the switch needs a snow number (1a)
     return morrison_microphysics(
         g["T"], g["q_v"], hyd, g["p_full"], g["p_half"], g["rho"], dz, float(fx["dt"]), cfg,
         cloud_fraction=g["cf"], relvar=g["relvar"] if relvar is None else relvar,
@@ -125,7 +125,7 @@ def test_guards():
     g, dz = _inputs(fx)
     z = jnp.zeros_like(g["T"])
     hyd = HydrometeorState(q_c=g["q_c"], q_r=g["q_r"], q_i=z, q_s=z, q_g=z,
-                           N_c=g["nc_kg"] * g["rho"], N_r=g["N_r"], N_i=z)
+                           N_c=g["nc_kg"] * g["rho"], N_r=g["N_r"], N_i=z, N_s=z)
     args = (g["T"], g["q_v"], hyd, g["p_full"], g["p_half"], g["rho"], dz, float(fx["dt"]))
     with pytest.raises(ValueError, match="relvar passed as relvar="):
         morrison_microphysics(*args, base, cloud_fraction=g["cf"])

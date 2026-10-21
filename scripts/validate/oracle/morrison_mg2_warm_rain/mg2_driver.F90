@@ -11,14 +11,17 @@
 ! after the activation re-apply (micro_mg2_0.F90:2022), nctend after sedimentation (before :2501), and the
 ! droplet sedimentation sub-step count; then (S10.4) 10 columns before the ice melt (dumc, dumnc, dumi,
 ! dumni, t+tlat/cpp*dt, qctend, nctend, qitend, nitend, tlat; M:2616), 5 after homogeneous freezing
-! (qctend, nctend, qitend, nitend, tlat; before M:2687) and the whole-call qitend, nitend.
+! (qctend, nctend, qitend, nitend, tlat; before M:2687) and the whole-call qitend, nitend; then (S10.4b)
+! qs, ns, qr, nr, tlat after the snow-melt pre-apply, the post-sedimentation snow-melt pools dums, dumns,
+! Tp and qstend, nstend, qrtend, nrtend, tlat before it, and those five tends after it.
 ! A 4th argument P = prognostic droplet number: nccons_in=.false. (ncic = max(nc/lcldm, 0)) and a 19th input
 ! column per level, npccn [1/kg/s]; without it the input has 18 columns and nccons_in=.true. as before.
 program mg2_driver
   use micro_mg_utils, only: r8
   use micro_mg2_0, only: micro_mg_init, micro_mg_tend
 #ifdef MG2_TAP
-  use micro_mg2_0, only: nctend_stage, nctend_sed, nstepc_tap, tap_pre, tap_post
+  use micro_mg2_0, only: nctend_stage, nctend_sed, nstepc_tap, tap_pre, tap_post, &
+       tap_snow1, tap_snow2, tap_snow3
 #endif
   use wv_sat_methods, only: wv_sat_methods_init
   implicit none
@@ -31,7 +34,7 @@ program mg2_driver
   logical :: uni, prog
   integer :: ninp
 #ifdef MG2_TAP
-  integer, parameter :: nout = 35
+  integer, parameter :: nout = 53
 #else
   integer, parameter :: nout = 15
 #endif
@@ -135,6 +138,9 @@ program mg2_driver
         allout(ic,k,29:33) = tap_post(1,k,:)
         allout(ic,k,34) = qitend(1,k)
         allout(ic,k,35) = nitend(1,k)
+        allout(ic,k,36:40) = tap_snow1(1,k,:)
+        allout(ic,k,41:48) = tap_snow2(1,k,:)
+        allout(ic,k,49:53) = tap_snow3(1,k,:)
 #endif
      end do
   end do

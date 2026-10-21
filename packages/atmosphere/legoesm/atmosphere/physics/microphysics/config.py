@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import NamedTuple
 
 from legoesm import constants
+from legoesm.thermo import CAM_QSAT_CAP_SHARPNESS
 from legoesm.atmosphere.physics.microphysics.arg_activation import ActivationConfig
 from legoesm.atmosphere.physics.microphysics.fast_sbm.config import FastSBMConfig
 from legoesm.atmosphere.physics.microphysics.sdm.config import SDMConfig
@@ -164,8 +165,9 @@ __param_spec__ = {
         "scheme_key": "atm.micro.MorrisonConfig",
         "excluded": {
             "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
-            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value pending user approval",
+            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
+            "cam_qsat_cap_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             # Fall-speed power-law EXPONENTS feed math.gamma(4 + b) / math.gamma(1 + b)
             # (morrison.py, _warm_rain.py) to precompute the cons* moment factors.
             # math.gamma is a Python C function requiring a float, so a traced
@@ -189,6 +191,8 @@ __param_spec__ = {
             "lamr_min": "numerics: solver/smoothing/tolerance/iteration parameter",
             "lams_min": "numerics: solver/smoothing/tolerance/iteration parameter",
             "melt_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
+            "mg2_ice_slope_log_width": "numerics: solver/smoothing/tolerance/iteration parameter",
+            "mg2_qi_limit_width": "numerics: solver/smoothing/tolerance/iteration parameter",
             "nuc_T_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "nuc_rh_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
@@ -1061,11 +1065,19 @@ class MorrisonConfig(NamedTuple):
     liquid_from_closure: bool = False
     # morrison_flavor="sam" gSAM satadj_liquid smooth switches (RULE 5; see
     # _warm_rain.saturation_adjustment_gsam).  Hard limit = gSAM exactly:
-    # math.inf, math.inf, 0.0.  Excess and pressure values approved by user
-    # 2026-10-21; the floor value is PENDING user approval.
+    # math.inf, math.inf, 0.0.  All three values approved by user 2026-10-21.
     gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step, on (q_t - q_s)/q_sat [-]
     gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
     gsam_satadj_p_min_width_pa: float = 100.0     # on/off, p >= 5000 Pa gate width [Pa]
+    # MG2's CAM Goff-Gratch q_sat = 1 cap (RULE 5, limiter class): sharpness
+    # on e_sat/p; math.inf = CAM's hard cap.  Value approved by user 2026-10-21.
+    cam_qsat_cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS
+    # RULE 5 smoothing widths of two CAM6 MG2 limits (0 = MG2's hard form;
+    # values approved by user 2026-10-21, see the KNOWN DIFFERENCE in _warm_rain.py):
+    # LogSumExp width of the ice-slope clamp in ln(lami) (mg2_ice_slope) and
+    # of the qi-conservation factor (mg2_qi_conservation_ratio).
+    mg2_ice_slope_log_width: float = 0.01
+    mg2_qi_limit_width: float = 1.0e-2
 
 
 # Hard ceiling of ``sed_cfl_substeps_max`` wherever it is set (leaf, applier,

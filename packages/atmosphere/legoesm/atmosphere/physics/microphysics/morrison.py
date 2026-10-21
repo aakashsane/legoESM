@@ -66,7 +66,6 @@ from __future__ import annotations
 import functools
 import math
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 
@@ -80,7 +79,6 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     saturation_adjustment,
     saturation_adjustment_gsam,
     effective_Nc,
-    autoconversion_sb,
     autoconversion_sb2001,
     autoconversion_kk2000,
     autoconversion_kk2000_cam6,
@@ -93,7 +91,6 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     mg2_var_coef,
     self_collection_rain_mg2,
     rain_evaporation_mg2,
-    accretion,
     accretion_sb2001,
     accretion_kk2000,
     self_collection_breakup,
@@ -139,6 +136,8 @@ from legoesm.atmosphere.physics.microphysics.config import (
 from legoesm.atmosphere.physics.microphysics.output import (
     HydrometeorState,
     MicrophysicsOutput,
+    apply_sedimentation_poison,
+    sedimentation_overflow_guard,
     sedimentation_tendency,
 )
 
@@ -208,6 +207,28 @@ def _reject_fields_without_gsam_counterpart(config: MorrisonConfig) -> None:
             f"(satadj_liquid), which has no counterpart for {bad}; leave them "
             f"at their defaults "
             f"({ {f: MorrisonConfig._field_defaults[f] for f in bad} }).")
+
+
+# MorrisonConfig fields read only by the former "seifert_beheng" proxy rates;
+# SB2001 as gSAM runs it has no counterpart for them.
+_SB_PROXY_FIELDS = ("k_au", "x_star", "k_ac", "autoconversion_sharpness")
+
+
+def _reject_sb_proxy_fields(config: MorrisonConfig) -> None:
+    """Raise if ``warm_rain_scheme="seifert_beheng"`` sets a proxy coefficient."""
+    bad = []
+    for f in _SB_PROXY_FIELDS:
+        try:    # a traced (trained) value is never "the default"
+            differs = bool(getattr(config, f) != MorrisonConfig._field_defaults[f])
+        except jax.errors.ConcretizationTypeError:
+            differs = True
+        if differs:
+            bad.append(f)
+    if bad:
+        raise ValueError(
+            "warm_rain_scheme='seifert_beheng' runs SB2001 as gSAM M2005 runs "
+            f"it, which has no counterpart for {bad}; leave them at their "
+            "defaults.")
 
 
 def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
@@ -524,15 +545,13 @@ def morrison_microphysics(
             fact=config.accre_enhan_fact * mg2_var_coef(
                 _relvar, _MG2_ACCRETION_VARCOEF_EXP,
                 q_c.dtype)) * cf_eff
-    elif config.warm_rain_scheme == "seifert_beheng":
-        dq_c_au, dN_r_au, x_c = autoconversion_sb(
-            q_c_ic, N_c_ic, rho, config.k_au, config.x_star,
-            config.autoconversion_sharpness,
-        )
-        dq_c_au = dq_c_au * cf_eff
-        dN_r_au = dN_r_au * cf_eff
-        dq_c_ac = accretion(q_c_ic, q_r_ic, rho, config.k_ac) * cf_eff
-    elif config.warm_rain_scheme == "seifert_beheng_sb2001":
+    elif config.warm_rain_scheme in ("seifert_beheng", "seifert_beheng_sb2001"):
+        # "seifert_beheng" was a simplified proxy (k_au*q_c^2 onset sigmoid,
+        # bilinear k_ac accretion); the scheme of that name IS SB2001 as gSAM
+        # M2005 runs it, so both names run the same law and the proxy's
+        # coefficients (no gSAM counterpart) must stay at their defaults.
+        if config.warm_rain_scheme == "seifert_beheng":
+            _reject_sb_proxy_fields(config)
         # Seifert & Beheng (2001) as gSAM M2005 runs it (IRAIN=1,
         # module_mp_graupel.f90:1830-1844, :1955-1962): rate gates, droplet
         # shape nu DIAGNOSED from N_c and the droplet-slope clamp on N_c
@@ -555,8 +574,9 @@ def morrison_microphysics(
     else:
         raise ValueError(
             f"Unknown warm_rain_scheme: {config.warm_rain_scheme!r}; choose "
-            f"'kk2000' (SAM M2005 default), 'kk2000_cam6' (CAM6 MG2), 'seifert_beheng' (simplified "
-            f"proxy) or 'seifert_beheng_sb2001' (SB2001 as gSAM M2005 runs it)."
+            f"'kk2000' (SAM M2005 default), 'kk2000_cam6' (CAM6 MG2), or "
+            f"'seifert_beheng' / 'seifert_beheng_sb2001' (both SB2001 as gSAM "
+            f"M2005 runs it)."
         )
     # Rain self-collection + breakup. "sb2001" (SAM NRAGG) self-collects
     # ~5580× faster than the legacy k_sc=1e-3 sigmoid form, so rain coalesces
@@ -1883,32 +1903,19 @@ def morrison_microphysics(
         sed_substeps_required = jnp.maximum(
             jnp.maximum(_req_r, _req_i), jnp.maximum(_req_s, _req_g))
         if config.sed_cfl_substeps_strict:
-            # equinox error_if: a custom_jvp puts the check outside AD, so the
-            # gate is jit- and gradient-safe (equinox/_errors.py).  It is
-            # attached to the SEDIMENTATION TENDENCIES and surface fluxes, not
-            # only to the diagnostic count: a caller that discards the count
-            # let XLA eliminate the check as dead code (codex 2026-09-22
-            # reproduced exactly that, under jit AND under grad).
-            _overflow = jnp.any(sed_substeps_required > _nsub_max)
-            (sed_substeps_required, sed_r, sed_i, sed_s, sed_g,
-             precip_r, precip_i, precip_s, precip_g) = eqx.error_if(
+            # Strict gate + NaN poison (see ``sedimentation_overflow_guard``):
+            # the abort rides on the sedimentation tendencies and surface
+            # fluxes, and ``_sed_poison`` multiplies EVERY returned field.
+            ((sed_substeps_required, sed_r, sed_i, sed_s, sed_g,
+              precip_r, precip_i, precip_s, precip_g),
+             _sed_poison) = sedimentation_overflow_guard(
+                sed_substeps_required, _nsub_max,
                 (sed_substeps_required, sed_r, sed_i, sed_s, sed_g,
                  precip_r, precip_i, precip_s, precip_g),
-                _overflow,
                 "Morrison sedimentation: a column needs more CFL sub-steps "
                 f"than MorrisonConfig.sed_cfl_substeps_max={_nsub_max} (the "
                 "loop clamps and the species falls slower than its terminal "
                 "speed); shorten the physics sub-step or raise the cap")
-            # ``error_if`` alone is not enough: its check sits OUTSIDE AD (a
-            # custom_jvp), so ``jit(grad(f))`` keeps the gradient and drops
-            # the abort, and a caller reading an output that does not descend
-            # from sedimentation (``dq_v_dt``) never touches it at all (codex
-            # 2026-09-22 reproduced both).  ``_sed_poison`` is exactly 1.0
-            # unless the cap is exceeded and multiplies EVERY returned field
-            # below, so the guard is a real data dependency of every consumer
-            # and of its derivative: on overflow the outputs and their
-            # gradients are NaN, which no caller can silently ignore.
-            _sed_poison = jnp.where(_overflow, jnp.nan, 1.0)
     else:
         sed_substeps_required = None
     # NUMBER sedimentation (so the rain/ice number falls WITH the mass and the
@@ -2383,33 +2390,7 @@ def morrison_microphysics(
             "bergeron_snow": -bergs,
         })
     if _sed_poison is not None:
-        # Strict mode: every FLOAT field carries the overflow guard (the
-        # count stays a usable integer).  Static Python branch -- the
-        # non-strict graph is untouched.  BOTH a multiply and an add: the
-        # multiply propagates the poison into derivatives, the add reaches a
-        # field that is structurally ZERO (dN_c_dt with predict_Nc=False),
-        # where a multiply alone still leaves 0 * NaN unevaluated in some
-        # simplifications.  Residual, documented limit: a loss reading ONLY a
-        # field that does not depend on the differentiated input at all has
-        # no AD path, so jit(grad) of it returns zeros with no abort -- the
-        # forward value is NaN and the reported count still shows the
-        # overflow (codex 2026-09-22).  A ``where`` would be bit-neutral on
-        # the clean path (the ADD turns -0.0 into +0.0; the multiply by 1.0
-        # does not) but its
-        # DERIVATIVE on overflow is 0, not NaN, which is the silent failure
-        # this guard exists to prevent; strict and non-strict arms are not
-        # claimed bit-identical (GLM 2026-09-22).
-        _bias = jnp.where(jnp.isnan(_sed_poison), jnp.nan, 0.0)
-        # ``qc_budget`` is a dict of arrays, not an array: ``jnp.asarray`` on a
-        # dict raises, so filter on type BEFORE probing the dtype.  The budget
-        # is a diagnostic and carries no gradient the guard needs to poison.
-        def _is_float_array(v):
-            if v is None or isinstance(v, dict):
-                return False
-            return jnp.issubdtype(jnp.asarray(v).dtype, jnp.floating)
-
-        out = out._replace(**{
-            _k: getattr(out, _k) * _sed_poison + _bias
-            for _k in out._fields
-            if _is_float_array(getattr(out, _k))})
+        # Strict mode: every FLOAT field carries the overflow guard.  Static
+        # Python branch -- the non-strict graph is untouched.
+        out = apply_sedimentation_poison(out, _sed_poison)
     return out

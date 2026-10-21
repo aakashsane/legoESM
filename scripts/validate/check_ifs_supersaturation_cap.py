@@ -84,8 +84,8 @@ ICE_SCHEMES = ("morrison", "thompson")
 LIQUID_SCHEMES = ICE_SCHEMES + ("p3",)
 ICE_FIELD = "homogeneous_ice_supersaturation"
 LIQUID_FIELD = "hard_saturation_adjustment"
-# Morrison's sam flavour (the CRM lane's configuration) runs gSAM's exact
-# liquid saturation adjustment (satadj_liquid) on every call and REJECTS the
+# Morrison's sam flavour (the CRM lane's configuration) runs gSAM's
+# liquid saturation adjustment (smooth by default, RULE 5) (satadj_liquid) on every call and REJECTS the
 # opt-in guard, which has no gSAM counterpart: there the liquid half checks the
 # rejection instead of an ON/OFF difference.
 LIQUID_GUARD_REJECTED = ("morrison",)

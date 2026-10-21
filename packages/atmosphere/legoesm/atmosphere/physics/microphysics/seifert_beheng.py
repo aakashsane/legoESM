@@ -1,6 +1,7 @@
 """Seifert-Beheng two-moment warm-rain microphysics, as gSAM M2005 runs it.
 
-The scheme IS gSAM 1.8.8's liquid-only Morrison (2005) microphysics with the
+At the hard limit of its two ``gsam_satadj_*`` fields (defaults smooth, RULE 5)
+the scheme IS gSAM 1.8.8's liquid-only Morrison (2005) microphysics with the
 Seifert & Beheng (2001) warm rain: ``micro_proc`` (SRC/MICRO_M2005/
 microphysics.f90) with ``doicemicro=.false.`` (ILIQ=1), ``dosb_warm_rain=
 .true.`` (IRAIN=1), ``dopredictNc=.false.`` (INUM=1, droplet number specified
@@ -187,7 +188,8 @@ def seifert_beheng_microphysics(
     dt: float,
     config: SeifertBehengConfig = SeifertBehengConfig(),
 ) -> MicrophysicsOutput:
-    """Seifert-Beheng warm-rain tendencies as gSAM M2005 computes them.
+    """Seifert-Beheng warm-rain tendencies as gSAM M2005 computes them (exactly
+    at the ``gsam_satadj_*`` hard limit; the defaults are smooth).
 
     Same interface as all microphysics backends; ``hydrometeors.N_c`` and the
     ice species are not read (droplet number is ``config.Nc_0``; liquid only).

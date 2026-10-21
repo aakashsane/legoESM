@@ -691,9 +691,10 @@ def main() -> int:
         for _k in range(args.steps):
             _sr = step(_sr, args.dt, aux=_aux) if _aux is not None else step(_sr, args.dt)
             _w = _max_speed_where(_sr)
-            print(f"[where] step {_k + 1}: max|u| {_w[0][0]:.3e} at row,col,lev "
-                  f"{[int(x) for x in _w[0][1:]]}; max|v| {_w[1][0]:.3e} at "
-                  f"{[int(x) for x in _w[1][1:]]}", flush=True)
+            if jax.process_index() == 0:
+                print(f"[where] step {_k + 1}: max|u| {_w[0][0]:.3e} at row,col,lev "
+                      f"{[int(x) for x in _w[0][1:]]}; max|v| {_w[1][0]:.3e} at "
+                      f"{[int(x) for x in _w[1][1:]]}", flush=True)
         jax.block_until_ready(_sr)
         del _sr
         jax.effects_barrier()
@@ -1070,6 +1071,7 @@ def main() -> int:
     if args.record_true_residual:
         rec["true_residual"] = true_residual
         rec["timing_perturbed_by_residual_probe"] = True
+        rec["true_residual_probed_from"] = "initial_state"
     # Multi-controller: every process times the same program; process 0 owns
     # the JSONL + stdout (others would duplicate/corrupt the append).
     if jax.process_index() == 0:

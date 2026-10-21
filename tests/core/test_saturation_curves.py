@@ -77,3 +77,49 @@ def test_goff_differentiable():
     g = jax.grad(lambda t: saturation_mixing_ratio_goff(
         jnp.array([t]), jnp.array([1.0e5]))[0])(295.0)
     assert np.isfinite(float(g)) and float(g) > 0.0
+
+
+# --- RULE 5: CAM q_sat = 1 cap (limiter class), smooth by default ---
+_CAP_CASES = [(600.0, 1.0e5), (50.0, 60.0), (99.5, 100.0), (100.0, 100.0), (150.0, 100.0)]
+
+
+def _cam_svp_to_qsat(es, p):
+    from legoesm import constants
+    eps = constants.epsilon
+    return 1.0 if p - es <= 0.0 else eps * es / (p - (1.0 - eps) * es)
+
+
+@pytest.mark.parametrize("es,p", _CAP_CASES)
+def test_cam_qsat_cap_hard_limit_is_cam(es, p):
+    import math
+
+    from legoesm.thermo import _specific_humidity_from_esat_cam
+    got = float(_specific_humidity_from_esat_cam(jnp.float64(es), jnp.float64(p),
+                                                 cap_sharpness=math.inf))
+    assert got == pytest.approx(_cam_svp_to_qsat(es, p), rel=1e-12)
+
+
+# Default-sharpness departure from CAM, per case (KNOWN DIFFERENCE).
+_CAP_DEFAULT_GAP = {
+    (600.0, 1.0e5): 0.0, (50.0, 60.0): 0.0, (99.5, 100.0): -1.0731362096172425e-05,
+    (100.0, 100.0): -1.1139510508489936e-03, (150.0, 100.0): 0.0,
+}
+
+
+@pytest.mark.parametrize("es,p", _CAP_CASES)
+def test_cam_qsat_cap_default_gap_is_pinned(es, p):
+    from legoesm.thermo import _specific_humidity_from_esat_cam
+    jax.config.update("jax_enable_x64", True)
+    gap = (float(_specific_humidity_from_esat_cam(jnp.float64(es), jnp.float64(p)))
+           - _cam_svp_to_qsat(es, p))
+    assert gap == pytest.approx(_CAP_DEFAULT_GAP[(es, p)], rel=1e-6, abs=1e-12)
+
+
+@pytest.mark.parametrize("es,p", _CAP_CASES)
+def test_cam_qsat_cap_default_gradients(es, p):
+    from jax.test_util import check_grads
+
+    from legoesm.thermo import _specific_humidity_from_esat_cam
+    jax.config.update("jax_enable_x64", True)
+    check_grads(_specific_humidity_from_esat_cam, (jnp.float64(es), jnp.float64(p)),
+                order=2, modes=("rev",))

@@ -42,6 +42,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
+from legoesm.core.smooth import smooth_min
 
 
 def saturation_vapor_pressure(T: jax.Array) -> jax.Array:
@@ -230,13 +231,31 @@ def saturation_vapor_pressure_ice_goff_gratch(T: jax.Array) -> jax.Array:
                     + jnp.log10(6.1071)) * 100.0
 
 
-def _specific_humidity_from_esat_cam(e_sat: jax.Array, p: jax.Array) -> jax.Array:
+# --- limiter class: CAM's q_sat = 1 cap where p <= e_sat (RULE 5) ---
+# Sharpness of the smooth cap on r = e_sat/p [dimensionless]; math.inf = CAM's
+# hard cap exactly.  PENDING user approval.
+_CAM_QSAT_CAP_SHARPNESS = 1.0e3
+
+
+def _specific_humidity_from_esat_cam(e_sat: jax.Array, p: jax.Array, *,
+                                     cap_sharpness: float = _CAM_QSAT_CAP_SHARPNESS
+                                     ) -> jax.Array:
     """CAM ``wv_sat_svp_to_qsat`` (wv_sat_methods.F90:180-193): saturation
     SPECIFIC humidity ``epsilo es / (p - omeps es)``, and 1 where
-    ``p - es <= 0``."""
+    ``p - es <= 0``.
+
+    KNOWN DIFFERENCE (RULE 5): at the default the cap is smooth, ``r =
+    smooth_min(e_sat/p, 1)`` and ``q = eps r / (1 - (1 - eps) r)``, which is
+    ``<= 1`` everywhere, equals 1 at ``r -> inf`` and departs from CAM by
+    ``~log(1 + exp(-cap_sharpness (1 - r)))/cap_sharpness`` in ``r`` (nil for
+    tropospheric ``r << 1``); the denominator stays ``>= eps``.
+    ``cap_sharpness = math.inf`` is CAM's hard cap exactly."""
     eps = constants.epsilon
-    return jnp.where(p - e_sat <= 0.0, 1.0,
-                     eps * e_sat / (p - (1.0 - eps) * e_sat))
+    if math.isinf(cap_sharpness):
+        return jnp.where(p - e_sat <= 0.0, 1.0,
+                         eps * e_sat / (p - (1.0 - eps) * e_sat))
+    r = smooth_min(e_sat / p, 1.0, cap_sharpness)
+    return eps * r / (1.0 - (1.0 - eps) * r)
 
 
 def saturation_specific_humidity_goff_gratch(T: jax.Array, p: jax.Array) -> jax.Array:

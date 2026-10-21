@@ -661,7 +661,8 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
       is ``smooth_relu``, adding up to ``log 2/qc_floor_sharpness`` K of
       condensate-equivalent warming (``T = T_l + (L/c_p) q_c`` keeps ``T_l``
       conserved); with the smooth excess the hard floor never binds (0 of 146k
-      swept cells), so its gradient test cannot fail on this switch alone;
+      swept cells), but just above saturation (``T1 - T_l ~ 1/s``) the smooth
+      floor scales the gradient by ``sigmoid(s (T1 - T_l))``, which the tests pin;
     * on/off threshold (``p_min_width_pa`` [Pa]): the ``p >= 5000 Pa`` gate
       is ``sigmoid((p - 5000)/width)`` weighting the adjusted state.
 

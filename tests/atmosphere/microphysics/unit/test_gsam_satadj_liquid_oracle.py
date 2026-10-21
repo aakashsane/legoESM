@@ -31,6 +31,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from legoesm import constants
 from legoesm.atmosphere.physics.microphysics._warm_rain import (
     saturation_adjustment_gsam,
 )
@@ -210,7 +211,7 @@ def _kink_cell(field):
     """A cell on the field's hard switch: exactly saturated (excess) or a
     1% supersaturated cell at p = 5000 Pa (pressure gate).  The cloud-water
     floor binds only where the excess switch does, so its cell is the saturated
-    one and its gradient check cannot fail on the floor alone (docstring)."""
+    one; the floor alone is tested just above saturation (next test)."""
     from legoesm.thermo import saturation_specific_humidity
     gate = field == "p_min_width_pa"
     p = 5000.0 if gate else 8.0e4
@@ -233,6 +234,27 @@ def test_gsam_satadj_default_gradients(field):
         return jnp.stack([Tn - T, qcn * 1e3])
 
     check_grads(fn, (T, qv_gkg, p), order=2, modes=("rev",), eps=1e-4, atol=1e-6, rtol=1e-3)
+
+
+def test_gsam_satadj_floor_alone_scales_the_gradient_just_above_saturation():
+    """Hard excess, smooth floor: just above saturation the condensation
+    increment x = T1 - T_l is ~1/s, where the smooth floor's slope is
+    sigmoid(s x) < 1 and the hard floor's is 1.  Fails if the floor is hard."""
+    from legoesm.thermo import saturation_specific_humidity
+    s = GSAM_DEFAULT["qc_floor_sharpness"]
+    T, p, q_c = jnp.float64(290.0), jnp.float64(9.0e4), jnp.float64(0.0)
+    q_v = saturation_specific_humidity(T, p) + 3.0e-8
+
+    def q_c_new(q, floor):
+        kw = dict(GSAM_HARD, qc_floor_sharpness=floor)
+        return saturation_adjustment_gsam(T, q, q_c, p, **kw)[2]
+
+    fac = constants.L_v / constants.c_pd
+    x = q_c_new(q_v, math.inf) * fac
+    g_hard = jax.grad(q_c_new)(q_v, math.inf)
+    g_smooth = jax.grad(q_c_new)(q_v, s)
+    assert float(g_smooth) == pytest.approx(float(jax.nn.sigmoid(s * x) * g_hard), rel=1e-6)
+    assert float(g_smooth) < 0.6 * float(g_hard)
 
 
 @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])

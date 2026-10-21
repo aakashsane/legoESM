@@ -143,14 +143,14 @@ def test_snow_kernels_match_mg2():
     mn, nn = W.rain_freezing_bigg_mg2(q_ric, N_ric, lamr, T, rho, pf, cfg)
     errs["mnuccr"] = _rel(mn, o["mnuccr"] * pf)
     errs["nnuccr"] = _rel(nn / rho, o["nnuccr"] * pf)
-    # Ferrier on the MG2 ice slope where it is inside MG2's bounds
-    # (1/[2 dcs, 1 um]); legoESM's own slope is unclamped (separate finding).
-    lami = (cfg.rho_cloud_ice * jnp.pi * i["ni"]
-            / jnp.where(i["qi"] > 0, i["qi"], 1.0)) ** (1.0 / 3.0)
-    prci, nprci = W.ice_autoconversion_mg2(i["qi"], i["ni"], lami, float(fx["dcs"]), T)
-    inb = np.asarray(o["niic"] == fx["pt_in_ni"])
-    errs["prci"] = _rel(prci, o["prci"])[inb]
-    errs["nprci"] = _rel(nprci, o["nprci"])[inb]
+    # Ferrier on MG2's ice slope (no fixture point reaches its bounds; see
+    # test_mg2_ice_slope_bounds).
+    niic, lami = W.mg2_ice_slope(i["qi"], i["ni"], cfg.rho_cloud_ice, float(fx["dcs"]))
+    errs["lami"] = _rel(lami, o["lami"])
+    errs["niic"] = _rel(niic, o["niic"])
+    prci, nprci = W.ice_autoconversion_mg2(i["qi"], niic, lami, float(fx["dcs"]), T)
+    errs["prci"] = _rel(prci, o["prci"])
+    errs["nprci"] = _rel(nprci, o["nprci"])
     worst = {k: float(np.max(v)) for k, v in errs.items()}
     print("snow kernel max rel err", worst)
     assert max(worst.values()) <= TOL, worst
@@ -302,3 +302,221 @@ def test_hydrostatic_bridge_carries_snow_number(monkeypatch):
         fn(state._replace(tracers=tr), mesh, sigma, phys_state=ps)
     dns = np.asarray(with_ns.tracer_tendencies["N_s"].data)
     assert np.all(np.isfinite(dns)) and np.any(dns != 0.0)
+
+
+def test_mg2_ice_slope_bounds():
+    """MG2 size_dist_param_basic on mg_ice_props (micro_mg_utils.F90:294,
+    481-516): N <= q/1e-20 kg, then lami held inside 1/[2 dcs, 1 um] with the
+    number re-adjusted; Ferrier prci/nprci on that slope equal MG2's own
+    m_ip * nprci * poly form with n0i = niic*lami (micro_mg_utils.F90:880-894)."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    rhoi, dcs = 500.0, 500.0e-6
+    q = jnp.asarray([1.0e-5, 1.0e-5, 1.0e-5, 1.0e-12])
+    n = jnp.asarray([1.0, 1.0e5, 1.0e20, 1.0e12])   # big, inside, tiny, mean mass < 1e-20
+    ni, lam = W.mg2_ice_slope(q, n, rhoi, dcs)
+    lo, hi = 1.0 / (2.0 * dcs), 1.0e6
+    raw = (rhoi * np.pi * np.asarray(n) / np.asarray(q)) ** (1.0 / 3.0)
+    assert raw[0] < lo and lo < raw[1] < hi and raw[2] > hi
+    np.testing.assert_allclose(lam, [lo, raw[1], hi, hi], rtol=1e-13)
+    np.testing.assert_allclose(
+        ni, [lo ** 3 * 1e-5 / (rhoi * np.pi), 1.0e5, hi ** 3 * 1e-5 / (rhoi * np.pi),
+             hi ** 3 * 1e-12 / (rhoi * np.pi)], rtol=1e-13)
+    assert float(ni[3]) <= 1.0e-12 / 1.0e-20
+    T = jnp.full(4, 250.0)
+    prci, nprci = W.ice_autoconversion_mg2(q, ni, lam, dcs, T)
+    d = np.asarray(lam) * dcs
+    nprci_mg2 = np.asarray(ni) * np.asarray(lam) / (np.asarray(lam) * 180.0) * np.exp(-d)
+    prci_mg2 = (rhoi * np.pi / 6.0) / np.asarray(lam) ** 3 * nprci_mg2 * (((d + 3) * d + 6) * d + 6)
+    np.testing.assert_allclose(nprci[:3], nprci_mg2[:3], rtol=1e-12)  # [3]: below the 1e-14 gate
+    np.testing.assert_allclose(prci[:3], prci_mg2[:3], rtol=1e-12)
+
+
+@pytest.mark.parametrize("ice_to_snow", ["m2005_autoconv", "mg_ferrier"])
+def test_mg2_ice_conservation_credits_same_step_sources(ice_to_snow):
+    """MG2 conservation of qi (micro_mg2_0.F90:1717-1735): ice->snow
+    autoconversion + sublimation may take q_i PLUS this step's ice sources
+    (deposition here), x omsm.  Single-level cold cells at RH_ice 0.8-1.4 with
+    big ice whose unlimited conversion overdraws q_i: the cell keeps only the
+    omsm margin of (q_i + sources), never goes negative, and supersaturated
+    cells do not keep the deposited ice the old q_i-only donor clamp left."""
+    from legoesm import constants as C
+    from legoesm.thermo import saturation_mixing_ratio_ice
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    from legoesm.atmosphere.physics.microphysics.morrison import morrison_microphysics
+    from legoesm.atmosphere.physics.microphysics.output import HydrometeorState
+    cfg = _production_morrison()._replace(warm_rain_scheme="kk2000_cam6",
+                                          ice_to_snow_scheme=ice_to_snow)
+    assert cfg.warm_rain_incloud
+    n, dt = 4, 600.0
+    T = jnp.full((n, 1), 235.0)
+    p = jnp.full((n, 1), 30000.0)
+    ph = jnp.concatenate([p - 500.0, p + 500.0], axis=1)
+    rho = p / (C.R_d * T)
+    dz = (ph[:, 1:] - ph[:, :-1]) / (C.g * rho)
+    rhi = jnp.asarray([0.8, 1.0, 1.2, 1.4])[:, None]
+    qv = rhi * saturation_mixing_ratio_ice(T, p)
+    qi = jnp.full((n, 1), 2.0e-5)
+    Ni = jnp.full((n, 1), 2.0e3)
+    z = jnp.zeros_like(T)
+    ni, lam = W.mg2_ice_slope(qi, Ni, cfg.rho_cloud_ice, cfg.ice_snow_d_auto)
+    prci, _ = W.ice_autoconversion_mg2(qi, ni, lam, cfg.ice_snow_d_auto, T)
+    assert np.all(np.asarray(prci) * dt > 2.0 * np.asarray(qi))  # limit binds
+    hyd = HydrometeorState(q_c=z, q_r=z, q_i=qi, q_s=z, q_g=z, N_c=z + 5.0e7,
+                           N_r=z, N_i=Ni, N_s=z)
+    out = morrison_microphysics(T, qv, hyd, p, ph, rho, dz, dt, cfg,
+                                cloud_fraction=z + 1.0)
+    qi_new = np.asarray(qi + dt * out.dq_i_dt)[:, 0]
+    print("qi_new / qi", qi_new / 2.0e-5)
+    assert np.all(qi_new >= -1.0e-14 * 2.0e-5), qi_new
+    assert np.all(qi_new <= 1.0e-4 * 2.0e-5), qi_new
+
+
+@pytest.mark.parametrize("dt", [600.0, 1800.0])
+def test_mg2_ice_limit_credits_only_vapour_limited_deposition(dt):
+    """The qi limit credits deposition + nucleation, so it must see them
+    AFTER the q_v donor clamp: heavy ice at RH_ice 2-3 with homogeneous
+    nucleation off once ended at -0.08 (600 s) to -3.0 (1800 s) x q_i."""
+    from legoesm import constants as C
+    from legoesm.thermo import saturation_mixing_ratio_ice
+    from legoesm.atmosphere.physics.microphysics.morrison import morrison_microphysics
+    from legoesm.atmosphere.physics.microphysics.output import HydrometeorState
+    cfg = _production_morrison()._replace(warm_rain_scheme="kk2000_cam6",
+                                          homogeneous_ice_nucleation=False)
+    T = jnp.asarray([[235.0], [235.0], [250.0], [250.0]])
+    rhi = jnp.asarray([[2.0], [3.0], [2.0], [3.0]])
+    p = jnp.full_like(T, 30000.0)
+    ph = jnp.concatenate([p - 500.0, p + 500.0], axis=1)
+    rho = p / (C.R_d * T)
+    dz = (ph[:, 1:] - ph[:, :-1]) / (C.g * rho)
+    qv = rhi * saturation_mixing_ratio_ice(T, p)
+    qi = jnp.full_like(T, 1.0e-3)
+    z = jnp.zeros_like(T)
+    hyd = HydrometeorState(q_c=z, q_r=z, q_i=qi, q_s=z, q_g=z, N_c=z + 5.0e7,
+                           N_r=z, N_i=z + 1.0e5, N_s=z)
+    out = morrison_microphysics(T, qv, hyd, p, ph, rho, dz, dt, cfg,
+                                cloud_fraction=z + 1.0)
+    qi_new = np.asarray(qi + dt * out.dq_i_dt)[:, 0]
+    qv_new = np.asarray(qv + dt * out.dq_v_dt)[:, 0]
+    print("qi_new / qi", qi_new / 1.0e-3, "qv_new", qv_new)
+    assert np.all(qi_new >= -1.0e-14 * 1.0e-3), qi_new
+    assert np.all(qv_new >= -1.0e-14), qv_new
+
+
+# --- RULE 5: the two MG2 limits are smooth by default ------------------------
+# Gaps measured 2026-10-21 at the MorrisonConfig default widths (values
+# approved by user 2026-10-21); a change to either smooth form or width re-measures these.
+_SLOPE_W, _QI_W = 0.01, 0.01
+_SLOPE_N = np.array([1.0, 5.0, 6.0, 6.366, 7.0, 1.0e5, 6.0e9, 6.366e9, 7.0e9, 1.0e20])
+_SLOPE_LAM_GAP = np.array([
+    -2.2737367544323206e-16, 3.1836667565130485e-06, 1.3005436733576517e-03,
+    6.9503389399751545e-03, 4.1413072192057775e-04, -2.9052501665538021e-16,
+    -1.2988544564146243e-03, -6.9023651626077803e-03, -4.1395928866183384e-04,
+    -4.6566128730773924e-16])
+_SLOPE_N_GAP = np.array([
+    -5.5805895968138108e-16, 9.5510306769342735e-06, 3.9067074613694658e-03,
+    2.0996274205559502e-02, 1.2429067495505208e-03, -2.3283064365386965e-15,
+    -3.8915044917465845e-03, -2.0564496400243489e-02, -1.2413638500445130e-03,
+    -1.3482253018526143e-15])
+_QI_SRC = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1e-9, 1e-9, 0.0])
+_QI_SNK = np.array([0.0, 1e-8, 1.6e-8, 1.6666e-8, 1.67e-8, 1.8e-8, 3e-8, 1e-6])
+_QI_GAP = np.array([0.0, 0.0, -0.00015400808255561, -0.00691648245647114,
+                    -0.0059786935327536, -0.00145650908798789, 0.0, 0.0])
+
+
+def _gap_close(actual, stored):
+    np.testing.assert_allclose(actual, stored, rtol=1e-6, atol=1e-12)
+
+
+def test_rule5_widths_are_the_measured_defaults():
+    from legoesm.atmosphere.physics.microphysics.config import MorrisonConfig
+    c = MorrisonConfig()
+    assert (c.mg2_ice_slope_log_width, c.mg2_qi_limit_width) == (_SLOPE_W, _QI_W)
+
+
+def test_mg2_ice_slope_smooth_default_gaps():
+    """KNOWN DIFFERENCE per case at the default width: through the lower
+    (N ~ 6.4/kg) and upper (N ~ 6.4e9/kg) bounds at q_i = 1e-5, dcs = 500 um;
+    largest exactly at a bound (lami 0.70 %, niic 2.1 %), rounding far
+    from them.  The fixture points (none near a bound) stay within TOL."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    q = jnp.full(_SLOPE_N.size, 1.0e-5)
+    nh, lh = W.mg2_ice_slope(q, jnp.asarray(_SLOPE_N), 500.0, 5.0e-4, 0.0)
+    ns, ls = W.mg2_ice_slope(q, jnp.asarray(_SLOPE_N), 500.0, 5.0e-4, _SLOPE_W)
+    _gap_close((ls - lh) / lh, _SLOPE_LAM_GAP)
+    _gap_close((ns - nh) / nh, _SLOPE_N_GAP)
+    lo, hi = 1.0 / (2.0 * 5.0e-4), 1.0e6       # smooth slope stays in bounds
+    assert np.all(np.asarray(ls) <= hi)
+    assert np.all(np.asarray(ls) >= lo * np.exp(-_SLOPE_W * np.log(2.0)))
+    fx = _fx()
+    i = {k[6:]: jnp.asarray(v) for k, v in fx.items() if k.startswith("pt_in_")}
+    ni, lam = W.mg2_ice_slope(i["qi"], i["ni"], 500.0, float(fx["dcs"]), _SLOPE_W)
+    assert float(np.max(_rel(lam, fx["pt_out_lami"]))) <= TOL
+    assert float(np.max(_rel(ni, fx["pt_out_niic"]))) <= TOL
+
+
+def test_mg2_ice_slope_gradient_at_default():
+    from jax.test_util import check_grads
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+
+    def f(lq, ln):
+        return jnp.sum(jnp.log(jnp.stack(
+            W.mg2_ice_slope(jnp.exp(lq), jnp.exp(ln), 500.0, 5.0e-4, _SLOPE_W))))
+    for n in (6.366, 6.366e9, 1.0e5):
+        a = (jnp.log(1.0e-5), jnp.log(n))
+        check_grads(f, a, order=2, modes=["rev"], eps=1e-4, atol=1e-5, rtol=1e-4)
+    g = jax.grad(f, argnums=1)(jnp.log(1.0e-5), jnp.log(6.366))
+    assert np.isfinite(float(g)) and 0.0 < float(g) < 4.0 / 3.0  # through the bound
+
+
+def test_mg2_qi_ratio_hard_limit_is_mg2():
+    """width = 0 is micro_mg2_0.F90:1722-1731 exactly."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    a, dt, omsm = 1.0e-5, 600.0, 1.0 - 1.0e-5
+    r = np.asarray(W.mg2_qi_conservation_ratio(a, jnp.asarray(_QI_SRC),
+                                               jnp.asarray(_QI_SNK), dt, omsm, 0.0))
+    ref = np.where((_QI_SNK - _QI_SRC) * dt > a,
+                   (a / dt + _QI_SRC) / np.where(_QI_SNK > 0, _QI_SNK, 1.0) * omsm, 1.0)
+    np.testing.assert_array_equal(r, ref)
+    assert np.count_nonzero(ref < 1.0) >= 4
+
+
+def test_mg2_qi_ratio_smooth_default_gaps():
+    """KNOWN DIFFERENCE per case at the default width: the smooth factor
+    trims the sinks by up to 0.69 % where the hard ratio is near 1, is 1/the
+    hard ratio far from it, and never exceeds min(1, ratio) (so q_i >= 0)."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    a, dt, omsm = 1.0e-5, 600.0, 1.0 - 1.0e-5
+    src, snk = jnp.asarray(_QI_SRC), jnp.asarray(_QI_SNK)
+    rh = np.asarray(W.mg2_qi_conservation_ratio(a, src, snk, dt, omsm, 0.0))
+    rs = np.asarray(W.mg2_qi_conservation_ratio(a, src, snk, dt, omsm, _QI_W))
+    _gap_close(rs - rh, _QI_GAP)
+    rmin = np.minimum(1.0, (a / dt + _QI_SRC) * omsm / np.where(_QI_SNK > 0, _QI_SNK, 1e-300))
+    assert np.all(rs <= rmin)
+
+
+def test_mg2_qi_ratio_gradient_at_default():
+    from jax.test_util import check_grads
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+
+    def f(x, y, z):
+        return W.mg2_qi_conservation_ratio(1e-5 * x, 1e-9 * y, 1e-8 * z, 600.0,
+                                           1.0 - 1.0e-5, _QI_W)
+    for z in (1.6667, 1.8, 3.0):
+        check_grads(f, tuple(map(jnp.asarray, (1.0, 1.0, z))), order=2,
+                    modes=["rev"], eps=1e-4, atol=1e-5, rtol=1e-4)
+    g = jax.grad(f, argnums=2)(jnp.asarray(1.0), jnp.asarray(0.0), jnp.asarray(1.6667))
+    assert np.isfinite(float(g)) and float(g) < 0.0  # through the switch
+
+
+def test_mg2_ice_slope_zero_number_gradient_fp32():
+    """fp32, N_i = 0 with ice present: the smooth slope's log floor is the
+    dtype's tiny, so value and gradient stay finite."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    q = jnp.asarray([1.0e-5, 1.0e-5], dtype=jnp.float32)
+
+    def f(n):
+        ni, lam = W.mg2_ice_slope(q, n, 500.0, 5.0e-4, _SLOPE_W)
+        return jnp.sum(lam * 1.0e-3 + ni)
+    n = jnp.asarray([0.0, 1.0e5], dtype=jnp.float32)
+    assert bool(jnp.isfinite(f(n)))
+    assert bool(jnp.all(jnp.isfinite(jax.grad(f)(n))))

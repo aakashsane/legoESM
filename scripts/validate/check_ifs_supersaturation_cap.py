@@ -8,7 +8,7 @@ of the three lanes that run legoESM's atmospheric physics:
   homogeneous-freezing ramp ``rh_homo = 2.583 - T/207.8`` (gSAM 1.8.7
   ``MICRO_SAM1MOM/cloud.f90``, "modeled after IFS"), withdrawn where cloud ice
   already exists.  Implemented as ``thermo.homogeneous_freezing_rh_factor`` and
-  applied to the DEPOSITION target of morrison / thompson (p3: faithful gSAM P3, no allowance).
+  applied to the DEPOSITION target of morrison / thompson (p3: faithful WRF P3, no allowance).
 * **LIQUID** — no liquid super-saturation: the excess is condensed onto the
   saturation curve.  Implemented as the in-scheme
   ``hard_saturation_adjustment`` guard, which is opt-in.
@@ -75,10 +75,11 @@ GSAM_RH_HOMO_B = 207.8
 GSAM_RH_HOMO_T_MAX = 235.0
 GSAM_QCI_GATE = 1.0e-8
 
-# p3 is not listed: it is a faithful gSAM P3 port, which has no rh_homo
-# allowance (that is SAM cloud.f90), and P3Config.homogeneous_ice_supersaturation
-# raises when changed (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART).
+# p3 is not listed: it is a faithful WRF P3 port, which has no rh_homo
+# allowance (that is SAM cloud.f90); P3Config has no such field.
 ICE_SCHEMES = ("morrison", "thompson")
+# The liquid guard (opt-in post-step adjustment) is still carried by p3.
+LIQUID_SCHEMES = ICE_SCHEMES + ("p3",)
 ICE_FIELD = "homogeneous_ice_supersaturation"
 LIQUID_FIELD = "hard_saturation_adjustment"
 
@@ -305,7 +306,7 @@ def section_2_load_bearing() -> list[str]:
     print(f"  warm cell: T={WARM_T_K} K, p={WARM_P_PA / 100:.0f} hPa, "
           f"q_sat_liq={q_sat_l:.3e} kg/kg, RH_liq={WARM_RH_LIQ:.2f}; "
           f"control at RH_liq={LIQUID_NOOP_RH:.2f}")
-    for scheme in ICE_SCHEMES:
+    for scheme in LIQUID_SCHEMES:
         q_vw, restw = _column(WARM_T_K, WARM_P_PA, WARM_RH_LIQ * q_sat_l)
         on, off = _on_off(scheme, LIQUID_FIELD, q_vw, restw)
         delta = _report(f"{scheme}: super-saturated", on, off)
@@ -365,7 +366,11 @@ def section_2b_target_isolation() -> list[str]:
     they are held to that: a nonzero residual there is a regression, and the
     bound is the measurement rather than a round number.
 
-    p3 does NOT reduce to it, and that is an OPEN measured fact rather than a
+    The p3 row is the gSAM P3 port that preceded the WRF port (#2077); the WRF
+    port has no rh_homo allowance, so this section now iterates morrison and
+    thompson only and the paragraph below is historical.
+
+    p3 did NOT reduce to it, and that was an OPEN measured fact rather than a
     tolerance to widen.  Silencing Cooper removed morrison's 237748 % residual
     entirely but left p3's 35 % untouched, so p3 carries a second
     q_v-dependent term at this cell that the allowance does not pass through.
@@ -462,7 +467,7 @@ def section_3_reachable() -> list[str]:
     print(f"  {'lane':32s} {'scheme':10s} {'ice(default)':14s} "
           f"{'liquid(default)':16s} liquid(requested ON)")
     for label, fn in LANES:
-        for scheme in ICE_SCHEMES:
+        for scheme in LIQUID_SCHEMES:
             try:
                 sub = fn(scheme)
                 sub_on = fn(scheme, guard=True)
@@ -470,12 +475,15 @@ def section_3_reachable() -> list[str]:
                 failures.append(f"{label} could not build {scheme}: {exc!r}")
                 print(f"  {label:32s} {scheme:10s} ERROR: {exc!r}")
                 continue
-            ice = getattr(sub, ICE_FIELD, "<absent>")
+            # p3 keeps the ice field only to refuse it (no WRF counterpart):
+            # certifying its value would certify an inactive control.
+            ice = (getattr(sub, ICE_FIELD, "<absent>") if scheme in ICE_SCHEMES
+                   else "n/a")
             liq = getattr(sub, LIQUID_FIELD, "<absent>")
             liq_on = getattr(sub_on, LIQUID_FIELD, "<absent>")
             print(f"  {label:32s} {scheme:10s} {str(ice):14s} "
                   f"{str(liq):16s} {liq_on}")
-            if ice is not True:
+            if scheme in ICE_SCHEMES and ice is not True:
                 failures.append(
                     f"{label}/{scheme}: {ICE_FIELD} is {ice!r}, expected True "
                     "(the ice allowance ships ON)")

@@ -233,7 +233,7 @@ def saturation_vapor_pressure_ice_goff_gratch(T: jax.Array) -> jax.Array:
 
 # --- limiter class: CAM's q_sat = 1 cap where p <= e_sat (RULE 5) ---
 # Sharpness of the smooth cap on r = e_sat/p [dimensionless]; math.inf = CAM's
-# hard cap exactly.  PENDING user approval.
+# hard cap exactly.  Value approved by user 2026-10-21.
 _CAM_QSAT_CAP_SHARPNESS = 1.0e3
 
 
@@ -463,7 +463,7 @@ _CAM_TTRICE_K = 20.0     # ttrice, wv_saturation.F90:82
 _CAM_SVP_TMIN_K = 127.16  # tmin, wv_saturation.F90:79 (table start)
 _CAM_SVP_TMAX_K = 375.16  # tmax, wv_saturation.F90:80
 # limiter class: sharpness of the smooth [tmin, tmax] clamp [1/K] (RULE 5);
-# math.inf = CAM's hard clamp exactly.  PENDING user approval.
+# math.inf = CAM's hard clamp exactly.  Value approved by user 2026-10-21.
 _CAM_SVP_CLAMP_SHARPNESS = 1.0
 
 

@@ -1041,7 +1041,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         dest="clubb_trop_cloud_top_press",
                         help="CLUBB upper domain limit [Pa] (CAM "
                              "trop_cloud_top_press): mixing tapered to zero "
-                             "above it. Default: the scheme's own 0 = no limit.")
+                             "above it. Default: the scheme's own (CAM6 100 Pa).")
     for _f, _leaf in {**ZM_SCALAR_FIELDS, **CLUBB_SCALAR_FIELDS}.items():
         _cls = ("ZhangMcFarlaneConfig" if _f.startswith("zm_")
                 else "CLUBBParams")
@@ -1345,6 +1345,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "(explicit aquaplanet, ocean coefficients "
                              "everywhere). "
                              f"Default {_EXPERIMENT_DEFAULTS.zm_land_fraction}.")
+    parser.add_argument("--zm-transport-cloud-tracers",
+                        dest="zm_transport_cloud_tracers",
+                        action=argparse.BooleanOptionalAction,
+                        default=_EXPERIMENT_DEFAULTS.zm_transport_cloud_tracers,
+                        help="Zhang-McFarlane convective transport (CAM6 convtran) "
+                             "of the carried cloud water, ice, rain, snow and "
+                             "number tracers. "
+                             f"Default {_EXPERIMENT_DEFAULTS.zm_transport_cloud_tracers}.")
     parser.add_argument("--bechtold-conv-top-pa", type=float,
                         default=_EXPERIMENT_DEFAULTS.bechtold_conv_top_pa,
                         dest="bechtold_conv_top_pa",
@@ -2095,11 +2103,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="cos(lat) taper of the E3SM frontal/background drag "
                              "toward the poles (E3SM structured-dycore branch); "
                              "--no-... is the unstructured/MPAS branch.")
-    parser.add_argument("--mcfarlane-tau-max", type=float, default=None,
-                        dest="mcfarlane_tau_max",
-                        help="McFarlane orographic GWD surface stress cap [Pa] "
-                             "(default 10.0). Reaches the kernel on every lane "
-                             "via gwd_config_for.")
     parser.add_argument("--mcfarlane-k-wave", type=float, default=None,
                         dest="mcfarlane_k_wave",
                         help="McFarlane orographic GWD horizontal wavenumber "
@@ -2137,7 +2140,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                             "morrison_ice_snow_d_auto"],
                         dest="morrison_ice_snow_d_auto",
                         help="Morrison ice->snow autoconversion size DCS [m] "
-                             "(CAM6 MG2 micro_mg_dcs = 500e-6).")
+                             "(unset = the flavor's DCS: SAM 250e-6, mg = CAM6 "
+                             "MG2 micro_mg_dcs 500e-6; an explicit value always "
+                             "wins).")
     parser.add_argument("--morrison-accre-enhan-fact", type=float,
                         default=ExperimentConfig._field_defaults[
                             "morrison_accre_enhan_fact"],
@@ -2969,9 +2974,6 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
             args.e3sm_cam_dttke_intrinsic
             if args.e3sm_cam_dttke_intrinsic is not None
             else _EXPERIMENT_DEFAULTS.e3sm_cam_dttke_intrinsic),
-        mcfarlane_tau_max=(
-            args.mcfarlane_tau_max if args.mcfarlane_tau_max is not None
-            else _EXPERIMENT_DEFAULTS.mcfarlane_tau_max),
         mcfarlane_k_wave=(
             args.mcfarlane_k_wave if args.mcfarlane_k_wave is not None
             else _EXPERIMENT_DEFAULTS.mcfarlane_k_wave),
@@ -3003,6 +3005,7 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         bechtold_subsidence_solve=args.bechtold_subsidence_solve,
         bechtold_rain_vapor_sink=args.bechtold_rain_vapor_sink,
         zm_land_fraction=args.zm_land_fraction,
+        zm_transport_cloud_tracers=args.zm_transport_cloud_tracers,
         bechtold_conv_top_pa=args.bechtold_conv_top_pa,
         bechtold_downdraft_evap=args.bechtold_downdraft_evap,
         bechtold_downdraft_alpha=args.bechtold_downdraft_alpha,

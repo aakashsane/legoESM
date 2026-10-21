@@ -406,6 +406,9 @@ class PhysicsPipeline:
         # whose kernel accepts ``land_frac_col`` for the E3SM driver-level
         # orographic landfrac scaling; the builder sets it from the config.
         self._gwd_takes_land_frac = False
+        # ``_gwd_mcfarlane`` marks a scheme with a ``mcfarlane`` (CAM6
+        # gw_oro) part: it takes the reference interfaces and land fraction.
+        self._gwd_mcfarlane = False
         # ``_gwd_takes_frontgf`` marks the frontal (CM) e3sm_cam source on a
         # grid family with a frontogenesis producer (E3SM FRONTGF analogue,
         # gravity_wave_drag/frontogenesis.py); the pipeline then computes
@@ -2244,6 +2247,18 @@ class PhysicsPipeline:
                 # rides along.
                 _e3sm_kw["netdt_col"] = conv_out.dT_dt
                 _e3sm_kw["mfcc_table"] = self._gwd_mfcc_table
+            _mcf_kw = {}
+            if self._gwd_mcfarlane:
+                # CAM6 gw_oro: pref_edge = coordinate at p_ref (CAM psr) and
+                # cam_in%landfrac.  Tracer diffusion is not threaded on this
+                # lane (tracers=None).
+                _mcf_kw = {
+                    "p_ref_half": self.sigma_coord.pressure_at_half(
+                        jnp.asarray([constants.p_ref], dtype=T_col.dtype)
+                    ).reshape(-1),
+                    "land_frac_col": (None if self.f_land is None
+                                      else ad.flatten_2d(self.f_land)),
+                }
             if self._gwd_prognostic:
                 # Prognostic spectral GWD (issue #413): the wave-action
                 # spectrum is the carry; kernel returns
@@ -2273,6 +2288,8 @@ class PhysicsPipeline:
                     )
                 gwd_out, gwd_spectrum_out = self.gwd_fn(
                     spectrum_in=_spec_in, **_gwd_kwargs, **_e3sm_kw,
+                    **({"mcfarlane_kwargs": _mcf_kw} if self._gwd_mcfarlane
+                       else {}),
                 )
             elif self._gwd_composite:
                 # Stateless '+'-composite (e.g. ``hines+mcfarlane``, issue #834):
@@ -2289,14 +2306,15 @@ class PhysicsPipeline:
                         self.subgrid_topo_stddev
                     )
                 gwd_out, _ = self.gwd_fn(
-                    spectrum_in=None, **_gwd_kwargs, **_e3sm_kw)
+                    spectrum_in=None, mcfarlane_kwargs=_mcf_kw,
+                    **_gwd_kwargs, **_e3sm_kw)
             else:
                 if (self._gwd_orographic
                         and self.subgrid_topo_stddev is not None):
                     _gwd_kwargs["h_topo_col"] = ad.flatten_2d(
                         self.subgrid_topo_stddev
                     )
-                gwd_out = self.gwd_fn(**_gwd_kwargs, **_e3sm_kw)
+                gwd_out = self.gwd_fn(**_gwd_kwargs, **_e3sm_kw, **_mcf_kw)
             du_dt = du_dt + ad.unflatten_3d(gwd_out.du_dt)
             dv_dt = dv_dt + ad.unflatten_3d(gwd_out.dv_dt)
             dT_dt = dT_dt + ad.unflatten_3d(gwd_out.dT_dt)
@@ -3983,7 +4001,9 @@ def _resolve_convection(config):
             conv_config = conv_config._replace(precip_efficiency=_pe)
         if scheme == "zhang_mcfarlane":
             conv_config = conv_config._replace(
-                land_fraction=config.zm_land_fraction, **_zm_set)
+                land_fraction=config.zm_land_fraction,
+                transport_cloud_tracers=config.zm_transport_cloud_tracers,
+                **_zm_set)
 
         # Tiedtke plume buoyancy-death memory (ExperimentConfig /
         # --convective-buoyancy-death-memory, Tiedtke-only per the CLI guard).
@@ -4193,8 +4213,6 @@ def thread_morrison_scalars(config, scheme, micro_config):
          getattr(config, "morrison_k_au", None)),
         ("morrison_fall_a_i", "fall_a_i",
          getattr(config, "morrison_fall_a_i", None)),
-        ("morrison_ice_snow_d_auto", "ice_snow_d_auto",
-         getattr(config, "morrison_ice_snow_d_auto", None)),
         ("morrison_hom_ice_nuc_N", "hom_ice_nuc_N",
          getattr(config, "morrison_hom_ice_nuc_N", None)),
         ("morrison_autocon_fact", "autocon_fact",
@@ -4206,6 +4224,11 @@ def thread_morrison_scalars(config, scheme, micro_config):
                 float(_val), float(_ExpCfg._field_defaults[_exp_name]),
                 rel_tol=1e-6, abs_tol=0.0):
             _touched[_leaf_name] = float(_val)
+    # DCS: an explicit value always wins; unset (None) stays unset on the leaf
+    # and resolves by flavour at scheme entry (resolve_morrison_flavor).
+    _dcs = getattr(config, "morrison_ice_snow_d_auto", None)
+    if _dcs is not None:
+        _touched["ice_snow_d_auto"] = float(_dcs)
     # Flavor is a string selector, not a float: forward only when it deviates
     # from the leaf default ("mg"), mirroring the touched-scalar rule so a
     # default config stays byte-identical on Morrison and silent elsewhere.
@@ -4382,6 +4405,14 @@ def _resolve_microphysics(config):
     # forwarded, so a non-Morrison scheme with untouched defaults stays
     # silent and a Morrison config at defaults is byte-identical.
     micro_config = thread_morrison_scalars(config, scheme, micro_config)
+    if scheme == "morrison" and not config.column_loop_lane:
+        # This pipeline has no CLUBB relvar hand-off; the column-loop lane
+        # runs make_physics instead, whose factory applies the same guard.
+        from legoesm.atmosphere.physics.microphysics.integration import (
+            require_relvar_for_kk2000_cam6,
+        )
+        require_relvar_for_kk2000_cam6(
+            MicrophysicsConfig(scheme="morrison", morrison=micro_config), False)
 
     if scheme == "ml_emulator":
         from legoesm.atmosphere.physics.microphysics.ml_emulator import (
@@ -4610,7 +4641,7 @@ def turbulence_config_for(config):
             tc = tc._replace(liquid_partition=True)
         # CLUBB's upper domain limit (CAM ``trop_cloud_top_press``), same
         # threading and the same refusal as the prognostic flag.  None (default)
-        # => byte-identical: the scheme's own 0.0 (off) stands.
+        # => the scheme's own default stands (CLUBBConfig, CAM6 100 Pa).
         _ctp = getattr(config, "clubb_trop_cloud_top_press", None)
         if _ctp is not None:
             if tc.scheme != "clubb":
@@ -4794,8 +4825,8 @@ def gwd_config_for(config):
     :func:`convection_config_for`): every lane — FV pipeline, MPAS,
     spectral — previously built ``GravityWaveDragConfig(scheme=...)`` from
     the scheme STRING alone, so the tuned ExperimentConfig scalars
-    (``mcfarlane_k_wave`` / ``mcfarlane_directional_spread`` /
-    ``mcfarlane_tau_max``, and the Hines launch amplitude) silently never
+    (``mcfarlane_k_wave`` / ``mcfarlane_directional_spread``, and the
+    Hines launch amplitude) silently never
     reached the kernel on ANY production AMIP path; only the AIMIP training
     path consumed them.  Same gap class as the 2026-07-23 convection and
     hard-sat overrides.
@@ -4826,8 +4857,6 @@ def gwd_config_for(config):
         directional_spread=float(getattr(
             config, "mcfarlane_directional_spread",
             gc.mcfarlane.directional_spread)),
-        tau_max=float(getattr(config, "mcfarlane_tau_max",
-                              gc.mcfarlane.tau_max)),
     )
     # Hines (non-orographic) launch amplitude + saturation flux cap.
     hn = gc.hines._replace(
@@ -5311,6 +5340,7 @@ def build_physics_pipeline(grid, sigma, config, spacing_grid=None):
     _resolved_gwd = gwd_config_for(config) if _gwd_scheme != "none" else None
     _e3sm_srcs = e3sm_sources(_resolved_gwd) if _resolved_gwd is not None else ()
     pipeline._gwd_takes_land_frac = "e3sm_cam" in _gwd_scheme.split("+")
+    pipeline._gwd_mcfarlane = "mcfarlane" in _gwd_scheme.split("+")
     # Beres netdt threading: only when the resolved e3sm_cam config actually
     # selects the convective source (the kernel accepts the kwarg for every
     # source but only Beres consumes it — avoid useless plumbing otherwise).

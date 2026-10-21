@@ -2440,8 +2440,13 @@ def test_config_yaml_round_trips_authoritative_values():
     # observed ocean rain all ran with it off.  cam6_clubb refuses it anyway
     # (deepcu is CAM6's own deep-convective cloud term), so it stays pinned.
     assert cfg.convective_cloud is False
-    assert cfg.surface_gustiness_zi == 300.0
-    assert cfg.convective_precip_efficiency == pytest.approx(0.8)
+    # surface_gustiness_zi removed 2026-10-19 (user): inert on large_yeager_cesm
+    # (CESM gust_fac = 0); the coastal ocean-surface flux is on (#1320).
+    assert cfg.surface_gustiness_zi is None
+    assert cfg.ocean_flux_on_ocean_surface is True
+    # No convective_precip_efficiency row: ZM has no precip-efficiency field,
+    # so the 0.8 the deck carried was read by nothing (oracle audit 2026-10-18).
+    assert cfg.convective_precip_efficiency is None
     # User table 2026-09-24, "production now, matches CAM6", three rows set
     # EXPLICITLY so nothing rests on a code default (the defaults are the
     # opposite of all three): the closure's liquid handed to cloud water; the
@@ -2490,6 +2495,10 @@ def _assert_optics_thinning(cfg, *, thinned: bool):
     # The MPAS lane's own builder (model_driver._run_column), so the pin reads
     # the config the run would radiate with, not the YAML.
     from legoesm.driver.model_driver import _standalone_cloud_config
+    from legoesm.driver.physics_pipeline import turbulence_config_for
+    from legoesm.atmosphere.physics.turbulence.integration import (
+        resolved_clubb_config,
+    )
     cloud_cfg = _standalone_cloud_config(
         cfg, cfg.cloud_scheme, allow_convective_cloud=True)
     assert cloud_cfg.cloud_partial_coverage_optics == "none"
@@ -2504,7 +2513,9 @@ def _assert_optics_thinning(cfg, *, thinned: bool):
         q_ice=jnp.zeros_like(q_c),
         cloud_fraction_override=jnp.full((1, 4), 0.5),
         # cam6_clubb's tropopause switch needs these; harmless to the others.
-        lat=jnp.zeros((1,)), p_half=p_half)
+        lat=jnp.zeros((1,)), p_half=p_half,
+        # cam6_clubb's aist top cut reads the run's resolved CLUBB config.
+        clubb_config=resolved_clubb_config(turbulence_config_for(cfg)))
     raw = q_c * dp / constants.g
     ratio = float(jnp.sum(props.lwp) / jnp.sum(raw))
     if thinned:
@@ -4059,7 +4070,7 @@ def test_hard_saturation_adjustment_requires_a_guarded_scheme():
         HARD_SAT_GUARD_EXEMPT,
     )
     parser = build_arg_parser()
-    assert set(HARD_SAT_GUARD_EXEMPT) == {"sdm", "fast_sbm", "none"}
+    assert set(HARD_SAT_GUARD_EXEMPT) == {"sdm", "fast_sbm", "none", "kessler"}
     for micro in sorted(HARD_SAT_GUARD_EXEMPT):
         cfg = build_config_from_args(_postprocess_args(parser.parse_args([
             "--dataset", "analytical", "--microphysics", micro,
@@ -4078,9 +4089,9 @@ def test_hard_saturation_adjustment_accepted_by_every_guarded_scheme():
     )
     parser = build_arg_parser()
     exposed = [s for s in HARD_SAT_GUARD_SCHEMES
-               if s in {"kessler", "sundqvist", "seifert_beheng", "morrison",
+               if s in {"sundqvist", "seifert_beheng", "morrison",
                         "thompson", "p3"}]
-    assert len(exposed) == 6, exposed
+    assert len(exposed) == 5, exposed
     for micro in exposed:
         cfg = build_config_from_args(_postprocess_args(parser.parse_args([
             "--dataset", "analytical", "--microphysics", micro,
@@ -4104,7 +4115,7 @@ def test_morrison_flavor_round_trips():
 
 def test_morrison_ice_snow_d_auto_round_trips():
     """--morrison-ice-snow-d-auto (and the deck key) reach ExperimentConfig;
-    default = CAM6 MG2 micro_mg_dcs 500 um."""
+    default unset (None = the flavor's DCS)."""
     parser = build_arg_parser()
     cfg = build_config_from_args(_postprocess_args(parser.parse_args([
         "--dataset", "analytical", "--microphysics", "morrison",
@@ -4113,7 +4124,7 @@ def test_morrison_ice_snow_d_auto_round_trips():
     assert cfg.morrison_ice_snow_d_auto == 3.0e-4
     d = build_config_from_args(_postprocess_args(
         parser.parse_args(["--dataset", "analytical"]), parser))
-    assert d.morrison_ice_snow_d_auto == 500.0e-6
+    assert d.morrison_ice_snow_d_auto is None
 
 
 def test_morrison_flavor_yaml_route():
@@ -4743,14 +4754,18 @@ def test_persistent_dgrid_flag_flows_to_config_1028():
 def test_clubb_trop_cloud_top_press_reaches_the_turbulence_kernel():
     """The CLUBB upper domain limit (CAM trop_cloud_top_press) was a scheme
     field no run could set; the flag threads it through the same single source
-    the prognostic flag uses, and None keeps the scheme's own 0 (off)."""
+    the prognostic flag uses, and None keeps the scheme's own default, CAM6's
+    namelist 100 Pa (namelist_defaults_cam.xml:1295)."""
+    from legoesm.atmosphere.physics.turbulence.integration import (
+        resolved_clubb_config,
+    )
     from legoesm.driver.physics_pipeline import turbulence_config_for
     parser = build_arg_parser()
     cfg_off = build_config_from_args(_postprocess_args(parser.parse_args(
         ["--dataset", "analytical", "--turbulence", "clubb"]), parser))
     assert cfg_off.clubb_trop_cloud_top_press is None
     tc_off = turbulence_config_for(cfg_off)
-    assert tc_off.clubb is None or tc_off.clubb.trop_cloud_top_press == 0.0
+    assert resolved_clubb_config(tc_off).trop_cloud_top_press == 100.0
     cfg_on = build_config_from_args(_postprocess_args(parser.parse_args(
         ["--dataset", "analytical", "--turbulence", "clubb",
          "--clubb-trop-cloud-top-press", "15000"]), parser))
@@ -5274,6 +5289,36 @@ def test_production_deck_pins_the_zm_land_fraction_policy():
         build_arg_parser())
     assert keys["convection"] == "zhang_mcfarlane"
     assert keys["zm_land_fraction"] == "required"
+
+
+def test_zm_transport_cloud_tracers_flows_to_config_and_kernel():
+    """--[no-]zm-transport-cloud-tracers threads CLI -> ExperimentConfig ->
+    ZhangMcFarlaneConfig and survives the AMIP export; default on (CAM6)."""
+    from legoesm.driver.config import ExperimentConfig
+    from legoesm.driver.physics_pipeline import _resolve_convection
+    parser = build_arg_parser()
+    base = ["--dataset", "analytical", "--convection", "zhang_mcfarlane"]
+    cfg_on = build_config_from_args(_postprocess_args(parser.parse_args(base), parser))
+    cfg_off = build_config_from_args(_postprocess_args(parser.parse_args(
+        base + ["--no-zm-transport-cloud-tracers"]), parser))
+    assert cfg_on.zm_transport_cloud_tracers is True
+    assert cfg_off.zm_transport_cloud_tracers is False
+    assert _resolve_convection(cfg_on)[1].transport_cloud_tracers is True
+    assert _resolve_convection(cfg_off)[1].transport_cloud_tracers is False
+    for c in (cfg_on, cfg_off):
+        assert ExperimentConfig.from_amip_config(
+            c.to_amip_config()).zm_transport_cloud_tracers == c.zm_transport_cloud_tracers
+    # a quoted YAML "false" reaches the config as a str (truthy); refuse it
+    with pytest.raises(ValueError, match="zm_transport_cloud_tracers"):
+        cfg_on._replace(zm_transport_cloud_tracers="false").validate_strict()
+
+
+def test_production_deck_pins_zm_tracer_transport_on():
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    for deck in ("amip_production.yaml", "amip_production_fv3duo_c24.yaml"):
+        keys = load_yaml_config(
+            str(_repo_root() / "config" / "amip" / deck), build_arg_parser())
+        assert keys["zm_transport_cloud_tracers"] is True, deck
 
 
 def test_production_deck_pins_the_reference_aod():

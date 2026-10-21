@@ -906,6 +906,19 @@ def cam_chem_tropopause_level(T, p_full, p_half, lat_rad):
         lev >= 0, lev, _level_holding(cam6_tropopause_analytic(lat_rad), p_half))
 
 
+def trop_cloud_top_taper(p_full, trop_cloud_top_press, trop_cloud_taper_lnp_width):
+    """Weight of CAM's ``top_lev`` cut (ref_pres ``trop_cloud_top_press``):
+    0 above the CLUBB top, 1 below, a sigmoid in log-pressure of width
+    ``trop_cloud_taper_lnp_width`` [ln Pa] (CLUBBConfig fields of the same
+    names).  CAM slices at ``top_lev`` = the first level with
+    ``pref_mid > trop_cloud_top_press`` (ref_pres.F90:126, 158-165); the
+    width -> 0 limit is that hard switch on ``p_full``.  Shared by CLUBB's
+    tendency cut and the ice-stratus cut so both sit on one surface."""
+    return nn.sigmoid(
+        (jnp.log(jnp.clip(p_full, 1.0, None)) - jnp.log(trop_cloud_top_press))
+        / trop_cloud_taper_lnp_width)
+
+
 def cam6_ice_stratus_fraction(
     q_v: jnp.ndarray,
     T: jnp.ndarray,
@@ -914,6 +927,9 @@ def cam6_ice_stratus_fraction(
     lat_rad: jnp.ndarray,
     config: CloudConfig,
     p_top: jnp.ndarray,
+    *,
+    trop_cloud_top_press: float,
+    trop_cloud_taper_lnp_width: float,
 ) -> jnp.ndarray:
     """CAM6 ice-stratus fraction ``aist`` (cldfrc2m.F90 aist_vector, iceopt=5).
 
@@ -934,11 +950,23 @@ def cam6_ice_stratus_fraction(
     over 200-273 K).  Shapes (ncol, nlev); ``lat_rad`` (ncol,) [rad];
     ``p_top`` (ncol, nlev) is each layer's top-interface pressure [Pa].
 
-    DEPARTURE (top cutoff): clubb_intr.F90:2535 zeroes ``aist`` above
-    ``top_lev`` (ref_pres ``trop_cloud_top_press``, CAM6 namelist 100 Pa);
-    not applied here -- every current lid sits below 1 hPa, where it would be
-    inert.  Port it with the CLUBB ``trop_cloud_top_press`` taper if a
-    higher-top grid is ever run with this scheme.
+    Top cutoff: clubb_intr.F90:2535 ``aist(:,:top_lev-1) = 0`` above CLUBB's
+    ``top_lev``.  ``trop_cloud_top_press`` / ``trop_cloud_taper_lnp_width``
+    are the run's CLUBBConfig fields (keyword-only, no default: every caller
+    threads them from the CLUBB config); the cut is
+    :func:`trop_cloud_top_taper`, the same weight CLUBB's own tendencies use.
+    ``trop_cloud_top_press == 0`` is CLUBB's static "no top" gate (CAM:
+    ``top_lev = 1``, nothing zeroed).
+
+    KNOWN DIFFERENCE (user decision 2026-10-20): CAM's cut is a hard step on
+    the reference-pressure ``top_lev``; here it is the smooth log-pressure
+    taper, kept because differentiability is never traded for oracle
+    fidelity.  It leaves a little aist above the top and trims it just
+    below; on production L32 (top 100 Pa, lid 225 Pa) the top layer is
+    scaled by 0.99982.  ``trop_cloud_taper_lnp_width -> 0`` gives a hard
+    cut, but on the column's own ``p_full`` (CAM: reference pressure), so
+    the cut level can differ by one layer and a layer exactly at the top
+    pressure keeps weight 0.5.
     """
     q_s = mixing_ratio_to_specific_humidity(saturation_mixing_ratio_goff(T, p_full))
     esl = saturation_vapor_pressure_goff(T)
@@ -965,7 +993,11 @@ def cam6_ice_stratus_fraction(
                      jnp.clip(q_i / _CAM6_QIST_MIN, 0.0, 1.0), aist)
     aist = jnp.where(has_ice & (icimr > _CAM6_QIST_MAX),
                      jnp.clip(q_i / _CAM6_QIST_MAX, 0.0, 1.0), aist)
-    return jnp.clip(aist, 0.0, _CAM6_AIST_MAX)
+    aist = jnp.clip(aist, 0.0, _CAM6_AIST_MAX)
+    if trop_cloud_top_press > 0.0:
+        aist = aist * trop_cloud_top_taper(p_full, trop_cloud_top_press,
+                                           trop_cloud_taper_lnp_width)
+    return aist
 
 
 def cam6_deep_convective_fraction(
@@ -1015,6 +1047,8 @@ def compute_cloud_properties(
     conv_mass_flux_up: jnp.ndarray | None = None,
     conv_icwmr: jnp.ndarray | None = None,
     p_half: jnp.ndarray | None = None,
+    clubb_config=None,
+    n_cloud_in_cloud: bool = False,
 ) -> CloudProperties:
     """Compute diagnostic cloud fraction and cloud optical properties.
 
@@ -1041,6 +1075,20 @@ def compute_cloud_properties(
         condensate floor and hence radiation reflect the moist closure's
         less-overcast marine BL.  ``None`` (default) keeps the RH grid-scale
         fraction (byte-identical).
+    clubb_config : CLUBBConfig or None
+        The run's CLUBB config, required by scheme ``cam6_clubb`` (raises if
+        None): its ``trop_cloud_top_press`` / ``trop_cloud_taper_lnp_width``
+        zero the ice-stratus fraction above CLUBB's top (clubb_intr.F90:2535).
+    n_cloud_in_cloud : bool
+        True when ``n_cloud`` is an IN-CLOUD droplet number (the aerosol/CCN
+        activated number, CAM6 MG2 ``nccons`` convention ``ncic = ncnst/rho``),
+        False (default) when it is the GRID-MEAN prognostic ``N_c`` tracer.
+        Under scheme ``cam6_clubb`` an in-cloud number is paired with the
+        in-cloud water ``q_c / max(ast, mincld)``, as CAM6 MG2 forms the
+        droplet effective radius it hands to radiation (micro_mg2_0.F90:2741,
+        2753, 2830-2838; lcldm = max(ast, mincld) with ast = max(alst, aist),
+        micro_mg_cam.F90:1810, :2009; mincld = 1e-4, micro_mg_utils.F90:123).
+        Other schemes keep the grid-mean pairing (#1521).
 
     Returns
     -------
@@ -1078,6 +1126,7 @@ def compute_cloud_properties(
     RH = q_v / jnp.maximum(q_sat, 1.0e-10)
 
     # --- Cloud fraction ---
+    _ast_cam6 = None  # CAM6 stratiform fraction max(alst, aist); cam6_clubb only
     if config.scheme == "xu_randall":
         q_c = jnp.zeros_like(T) if q_cloud is None else q_cloud
         q_i = jnp.zeros_like(T) if q_ice is None else q_ice
@@ -1128,14 +1177,21 @@ def compute_cloud_properties(
                 "CloudConfig.convective_cloud is not part of CAM6's "
                 "clubb_intr cloud fraction (deepcu takes that role); unset it "
                 "for scheme 'cam6_clubb'.")
+        if clubb_config is None:
+            raise ValueError(
+                "cloud scheme 'cam6_clubb' needs the run's CLUBBConfig "
+                "(clubb_config): CAM zeroes the ice-stratus fraction above "
+                "CLUBB's top_lev (clubb_intr.F90:2535); got None.")
         if (conv_mass_flux_up is None) != (conv_icwmr is None):
             raise ValueError(
                 "cam6_clubb deepcu needs BOTH conv_mass_flux_up and conv_icwmr "
                 "(or neither); got one of them None.")
         q_i = jnp.zeros_like(T) if q_ice is None else jnp.maximum(q_ice, 0.0)
         alst = jnp.clip(cloud_fraction_override, 0.0, 1.0)
-        aist = cam6_ice_stratus_fraction(q_v, T, p_full, q_i, lat, config,
-                                         p_half[:, :-1])
+        aist = cam6_ice_stratus_fraction(
+            q_v, T, p_full, q_i, lat, config, p_half[:, :-1],
+            trop_cloud_top_press=clubb_config.trop_cloud_top_press,
+            trop_cloud_taper_lnp_width=clubb_config.trop_cloud_taper_lnp_width)
         if conv_mass_flux_up is None:
             # No deep-convection producer wired (a scheme that publishes no
             # updraft mass flux): deepcu = 0, exactly CAM's value when the
@@ -1144,7 +1200,8 @@ def compute_cloud_properties(
         else:
             deepcu = cam6_deep_convective_fraction(
                 conv_mass_flux_up, conv_icwmr, config)
-        cf = jnp.minimum(jnp.maximum(alst, aist) + deepcu, 1.0)
+        _ast_cam6 = jnp.maximum(alst, aist)
+        cf = jnp.minimum(_ast_cam6 + deepcu, 1.0)
     else:
         raise ValueError(
             f"Unknown cloud scheme: {config.scheme!r}. "
@@ -1385,9 +1442,10 @@ def compute_cloud_properties(
         # Where the prognostic droplet number is 0/garbage (SAM specified-Nc
         # Morrison, dopredictNc=.false., keeps the Nc slot at 0), fall back to the
         # specified Nc_default so r_eff is the SAM constant-Nc value, not 35 um.
-        # The PSD ratio N_c/q_c must pair LIKE WITH LIKE.  ``N_c`` is a tracer,
-        # hence a GRID-MEAN number density, and ``q_c`` above is a grid-mean
-        # mixing ratio (:833-836), so where the prognostic tracer is live the
+        # The PSD ratio N_c/q_c must pair LIKE WITH LIKE.  A prognostic ``N_c``
+        # tracer (``n_cloud_in_cloud=False``) is a GRID-MEAN number density,
+        # and ``q_c`` above is a grid-mean mixing ratio (:833-836), so where
+        # the prognostic tracer is live the
         # ratio is already the in-cloud ratio and needs no cf.  ``Nc_default``
         # is NOT a grid mean: it is SAM's specified IN-CLOUD concentration
         # (dopredictNc=.false.), exact there because a CRM cell is either fully
@@ -1411,6 +1469,16 @@ def compute_cloud_properties(
         n_cloud = jnp.where(n_cloud > 1.0, n_cloud, config.Nc_default)
         _cf_psd = jnp.clip(cf, _INHOM_CF_FLOOR, 1.0)
         q_c_psd = jnp.where(_nc_is_specified, q_c / _cf_psd, q_c)
+        if n_cloud_in_cloud and _ast_cam6 is not None:
+            # In-cloud number (CCN): pair it with the in-cloud water exactly as
+            # CAM6 MG2 does for REL, dumc = qc/lcldm with lcldm = max(ast,
+            # mincld) (micro_mg2_0.F90:878, :2741; ast, not the radiative cover
+            # that also holds deepcu).  The dead-number branch above is kept.
+            from legoesm.atmosphere.physics.microphysics._warm_rain import (
+                MG2_MINCLD,
+            )
+            q_c_psd = jnp.where(_nc_is_specified, q_c_psd,
+                                q_c / jnp.maximum(_ast_cam6, MG2_MINCLD))
         # MOIST density, same basis as the bridges that produced ``n_cloud``
         # from the per-mass tracer: a dry rho here un-does that conversion
         # with a different density and biases nc_permass — hence LAMC and
@@ -1447,12 +1515,11 @@ def compute_cloud_properties(
         # per-mass [1/kg] — the SAME PSD as the M2005 deposition.  So
         # ``r_eff_ice = 1.5·(q_i/(CONS12·N_i))^(1/3)`` [m].  EFFI = 25 µm in
         # ice-free cells (SAM uses 25 µm when q_i < QSMALL = 1e-14).
-        # The radius is returned in metres; the RRTMGP cloud-optics
-        # (cloud_optics.py) converts radius→generalized DIAMETER (×2) and
-        # clamps to the ice lookup-table validity range, so NO explicit
-        # bound is imposed here. (NB: legoESM's RRTMGP omits SAM's
-        # ``ρ_ci/917`` solid-ice density rescale that its RRTM ice table
-        # needs — an accepted RRTMG↔RRTMGP generation difference.)
+        # The radius is returned in metres (bulk-density-500 PSD radius);
+        # the RRTMGP cloud-optics (cloud_optics.py) converts it to CAM6's
+        # solid-ice effective DIAMETER ``2·r·500/917`` (MG2
+        # micro_mg2_0.F90:2795) and clamps to the ice lookup-table validity
+        # range, so NO explicit bound is imposed here.
         #
         # PAIR LIKE WITH LIKE (#1520): ``n_ice`` is the PROGNOSTIC (tracer)
         # ice number, so the M2005 PSD is meaningful only for the PROGNOSTIC

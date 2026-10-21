@@ -100,9 +100,9 @@ def test_section_2_reports_both_flags_as_load_bearing(checker):
 
 def test_section_2_covers_every_ice_scheme(checker):
     """A cap that reaches morrison and nothing else must not pass: section 3
-    only reads config fields, so an ignored flag in thompson or p3 would be
+    only reads config fields, so an ignored flag in thompson would be
     invisible without this."""
-    assert set(checker.ICE_SCHEMES) == {"morrison", "thompson", "p3"}
+    assert set(checker.ICE_SCHEMES) == {"morrison", "thompson"}
     seen = []
     real = checker._on_off
 
@@ -128,7 +128,7 @@ def test_section_2_fails_when_a_scheme_ignores_the_flag(checker):
 
     def _inert(scheme, field, q_v, rest):
         on, off = real(scheme, field, q_v, rest)
-        return (off, off) if scheme == "p3" else (on, off)
+        return (off, off) if scheme == "thompson" else (on, off)
 
 
     checker._on_off = _inert
@@ -136,7 +136,7 @@ def test_section_2_fails_when_a_scheme_ignores_the_flag(checker):
         failures = checker.section_2_load_bearing()
     finally:
         checker._on_off = real
-    assert any("p3" in f for f in failures), failures
+    assert any("thompson" in f for f in failures), failures
 
 
 def test_section_2_fails_on_a_barely_nonzero_liquid_effect(checker):

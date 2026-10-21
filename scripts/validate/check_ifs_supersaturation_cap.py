@@ -8,7 +8,7 @@ of the three lanes that run legoESM's atmospheric physics:
   homogeneous-freezing ramp ``rh_homo = 2.583 - T/207.8`` (gSAM 1.8.7
   ``MICRO_SAM1MOM/cloud.f90``, "modeled after IFS"), withdrawn where cloud ice
   already exists.  Implemented as ``thermo.homogeneous_freezing_rh_factor`` and
-  applied to the DEPOSITION target of morrison / thompson / p3.
+  applied to the DEPOSITION target of morrison / thompson (p3: faithful gSAM P3, no allowance).
 * **LIQUID** — no liquid super-saturation: the excess is condensed onto the
   saturation curve.  Implemented as the in-scheme
   ``hard_saturation_adjustment`` guard, which is opt-in.
@@ -75,7 +75,10 @@ GSAM_RH_HOMO_B = 207.8
 GSAM_RH_HOMO_T_MAX = 235.0
 GSAM_QCI_GATE = 1.0e-8
 
-ICE_SCHEMES = ("morrison", "thompson", "p3")
+# p3 is not listed: it is a faithful gSAM P3 port, which has no rh_homo
+# allowance (that is SAM cloud.f90), and P3Config.homogeneous_ice_supersaturation
+# raises when changed (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART).
+ICE_SCHEMES = ("morrison", "thompson")
 ICE_FIELD = "homogeneous_ice_supersaturation"
 LIQUID_FIELD = "hard_saturation_adjustment"
 

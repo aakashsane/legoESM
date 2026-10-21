@@ -76,6 +76,11 @@ _DEFAULT_PICARD_OMEGA = 0.15
 # performance: measured on recorded production batches, iteration counts and
 # converged flags identical, state differs only by rounding (<= 5e-13 K).
 _CANOPY_SOLVE_GROUP = 64
+# Picard passes after the first order their columns by the previous pass's
+# Newton iterations before grouping, so hard columns share groups.  Pure
+# performance: same per-column solve, results equal to rounding (measured at 8
+# nodes: slowest rank's land solve 515 -> 383 ms, step -2.6 %).
+_SORT_BY_PREV_ITERS = True
 
 # Time constant of the growth-temperature exponential moving average [s].
 # 30 days * 86400 s/day = 2.592e6 s.  At dt = 1800 s, ~76 days reach 95 %
@@ -527,14 +532,27 @@ def compute_two_leaf_canopy_fluxes(
     # land step accepts if the column ends unsolved); freezing it held desert
     # columns at their start-of-step soil.  Acceptance stays tied to the LAST pass.
     x_conv = jnp.full_like(initial_state, jnp.nan)
+    n_iters = None  # set by each pass; the sort reads the previous pass's
     for _picard_iter in range(n_picard):
         bundles_k = _build_bundle(Ts_bc_k)
         _fallback = initial_state if _picard_iter % 2 == 0 else cold_state
         _seed_k = jnp.where(jnp.all(jnp.isfinite(x_conv), axis=-1, keepdims=True),
                             jnp.nan_to_num(x_conv), _fallback)
-        (x_final, n_iters, converged, resid_sq, resid_rel, lam_f,
-         hit_cap) = jax.lax.map(lambda a: _solve_one_col(*a), (_seed_k, bundles_k),
-                                batch_size=_CANOPY_SOLVE_GROUP)
+        _args = (_seed_k, bundles_k)
+        if _picard_iter > 0 and _SORT_BY_PREV_ITERS:
+            # Each group iterates until its slowest column stops, so hard
+            # columns scattered over many groups make every group run to the
+            # cap.  Order this pass by the previous pass's iteration counts:
+            # hard columns share groups, the rest stop early.  Same per-column
+            # solve; only group membership changes.
+            _perm = jnp.argsort(n_iters, descending=True)
+            _inv = jnp.argsort(_perm)
+            _args = jax.tree_util.tree_map(lambda a: a[_perm], _args)
+        _out = jax.lax.map(lambda a: _solve_one_col(*a), _args,
+                           batch_size=_CANOPY_SOLVE_GROUP)
+        if _picard_iter > 0 and _SORT_BY_PREV_ITERS:
+            _out = jax.tree_util.tree_map(lambda a: a[_inv], _out)
+        (x_final, n_iters, converged, resid_sq, resid_rel, lam_f, hit_cap) = _out
         x_conv = jnp.where(converged[:, None], x_final, x_conv)
         # A rejected iterate may be non-finite: evaluate the fluxes of a failed
         # column at the (finite) cold state instead, so no NaN enters a

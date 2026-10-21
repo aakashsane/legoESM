@@ -146,7 +146,7 @@ __param_spec__ = {
         "scheme_key": "atm.micro.MorrisonConfig",
         "excluded": {
             "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
-            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value pending user approval",
+            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
             # Fall-speed power-law EXPONENTS feed math.gamma(4 + b) / math.gamma(1 + b)
             # (morrison.py, _warm_rain.py) to precompute the cons* moment factors.
@@ -995,8 +995,7 @@ class MorrisonConfig(NamedTuple):
     liquid_from_closure: bool = False
     # morrison_flavor="sam" gSAM satadj_liquid smooth switches (RULE 5; see
     # _warm_rain.saturation_adjustment_gsam).  Hard limit = gSAM exactly:
-    # math.inf, math.inf, 0.0.  Excess and pressure values approved by user
-    # 2026-10-21; the floor value is PENDING user approval.
+    # math.inf, math.inf, 0.0.  All three values approved by user 2026-10-21.
     gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step, on (q_t - q_s)/q_sat [-]
     gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
     gsam_satadj_p_min_width_pa: float = 100.0     # on/off, p >= 5000 Pa gate width [Pa]

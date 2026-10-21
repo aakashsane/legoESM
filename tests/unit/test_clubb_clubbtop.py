@@ -560,14 +560,34 @@ def test_spectral_lane_passes_gaussian_latitudes(monkeypatch):
         np.asarray(grid.lat)[:, None], lat.shape))
 
 
-def test_subcycled_bridge_hands_relvar_from_the_final_substep():
-    """n_sub = 2 (clubb_dt = dt/2), liquid on: relvar is formed from the
-    stacked rcm_relvar / rcp2_zt of the final sub-step."""
+def test_subcycled_bridge_hands_relvar_from_the_final_substep(monkeypatch):
+    """n_sub = 2 (clubb_dt = dt/2), liquid on: cam6_relvar receives the
+    final sub-step's rcm_relvar and rcp2_zt, not the first's (scan run
+    eagerly under disable_jit so the sub-step diagnostics are concrete)."""
     c = _column(0.0)
     cfg = _ON._replace(clubb_dt=_DT / 2.0)
     carry = pack_clubb_moments(_spun_up_moments(c))
-    out, _ = clubb_turbulence_prognostic(
-        *_args(c), carry, c["p_full"], c["p_half"], c["z_full"], c["z_half"],
-        c["T_sfc"], c["q_sfc"], c["rho"], _DT, cfg, q_c=c["q_c"], lat=c["lat"])
-    rv = np.asarray(out.relvar)
-    assert rv.shape == np.asarray(c["T"]).shape and np.all(np.isfinite(rv))
+    seen, args = [], []
+    real_step, real_rv = clubb_mod.clubb_step, clubb_mod.cam6_relvar
+
+    def spy_step(*a, **k):
+        out = real_step(*a, **k)
+        seen.append({k_: np.asarray(out[5][k_]) for k_ in ("rcm_relvar", "rcp2_zt")})
+        return out
+
+    def spy_rv(rcm, rcp2):
+        args.append((np.asarray(rcm), np.asarray(rcp2)))
+        return real_rv(rcm, rcp2)
+    monkeypatch.setattr(clubb_mod, "clubb_step", spy_step)
+    monkeypatch.setattr(clubb_mod, "cam6_relvar", spy_rv)
+    with jax.disable_jit():
+        out, _ = clubb_turbulence_prognostic(
+            *_args(c), carry, c["p_full"], c["p_half"], c["z_full"], c["z_half"],
+            c["T_sfc"], c["q_sfc"], c["rho"], _DT, cfg, q_c=c["q_c"], lat=c["lat"])
+    assert len(seen) == 2 and len(args) == 1
+    rcm, rcp2 = args[0]
+    np.testing.assert_array_equal(rcm, seen[1]["rcm_relvar"])
+    np.testing.assert_array_equal(rcp2, seen[1]["rcp2_zt"][:, ::-1])
+    assert not np.array_equal(seen[0]["rcm_relvar"], seen[1]["rcm_relvar"])
+    assert not np.array_equal(seen[0]["rcp2_zt"], seen[1]["rcp2_zt"])
+    assert np.all(np.isfinite(np.asarray(out.relvar)))

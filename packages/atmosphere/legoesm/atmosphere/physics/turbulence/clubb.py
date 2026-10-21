@@ -6362,7 +6362,8 @@ def _square_over(a, q):
 @_square_over.defjvp
 def _square_over_jvp(primals, tangents):
     # Autodiff of a/q forms a/q**2, and q**2 underflows to 0 in fp32 at
-    # q ~ 1e-30 (gradient -inf); d/dq = -(a/q)**2 stays representable.
+    # q ~ 1e-30 (gradient -inf); d/dq = -(a/q)**2 stays representable down
+    # to q ~ 1e-38 (fp32 subnormal), where the true derivative itself overflows.
     a, q = primals
     da, dq = tangents
     x = a / q

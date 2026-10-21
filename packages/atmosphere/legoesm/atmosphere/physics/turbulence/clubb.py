@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 7172)
+Table of contents (sections, in order; flag reference table at line 7175)
 -----------------------------------------------------------------------------
   1. [line  352] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  473] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -50,7 +50,7 @@ Table of contents (sections, in order; flag reference table at line 7172)
   18. [line  5329] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  6087] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  6090] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 
@@ -5936,6 +5936,10 @@ def advance_clubb_core(state: CLUBBMomentState, forcing: CLUBBForcing, *,
         wm_zm, wm_zt, rho_ds_zm, rho_ds_zt, invrs_rho_ds_zm, invrs_rho_ds_zt,
         pdf["w_1_zm"], pdf["w_2_zm"], pdf["varnce_w_1_zm"], pdf["varnce_w_2_zm"],
         pdf["mixt_frac_zm"], dt, gr, config)
+    # CAM's rcm_out: the pre-advance in-layer rcm clipped against the advanced
+    # rtm (advance_clubb_core_module.F90 clip_rcm after advance_xm_wpxp);
+    # clubb_intr pairs it with qclvar in relvar (:2424).
+    rcm_out = clip_rcm(rtm, pdf["rcm"])
 
     # ---- (4) advance_xp2_xpyp: rtp2/thlp2/rtpthlp/up2/vp2 (uses pre-wp2_wp3 wp2) ----
     rtp2, thlp2, rtpthlp, up2, vp2 = advance_xp2_xpyp(
@@ -5999,7 +6003,11 @@ def advance_clubb_core(state: CLUBBMomentState, forcing: CLUBBForcing, *,
 
     diagnostics = dict(
         cloud_frac=pdf_post["cloud_frac"], rcm=pdf_post["rcm"],
-        rcm_grid=pdf_post["rcm_grid"], rcp2_zt=pdf_post["rcp2_zt"],
+        rcm_grid=pdf_post["rcm_grid"],
+        # CAM's qclvar: rcp2_zt of the PRE-advance closure (CLUBB_CESM r8099
+        # advance_clubb_core_module.F90:1150 -> :1798, before the advances).
+        rcp2_zt=pdf["rcp2_zt"],
+        rcm_out=rcm_out,
         wpthvp=pdf_post["wpthvp"], Kh_zt=diag["Kh_zt"], Kh_zm=diag["Kh_zm"])
     return new_state, diagnostics
 
@@ -6345,21 +6353,44 @@ _CAM6_RELVARMAX = 10.0        # relvarmax, deep_scheme /= 'CLUBB_SGS' (CAM6 ZM, 
 _CAM6_RELVAR_MIN = 1.0e-3     # relvar lower clip (:2425)
 
 
+@jax.custom_jvp
+def _square_over(a, q):
+    """``a**2 / q`` as ``(a/q)*a``."""
+    return (a / q) * a
+
+
+@_square_over.defjvp
+def _square_over_jvp(primals, tangents):
+    # Autodiff of a/q forms a/q**2, and q**2 underflows to 0 in fp32 at
+    # q ~ 1e-30 (gradient -inf); d/dq = -(a/q)**2 stays representable down
+    # to q ~ 1e-38 (fp32 subnormal), where the true derivative itself overflows.
+    a, q = primals
+    da, dq = tangents
+    x = a / q
+    return x * a, 2.0 * x * da - x * x * dq
+
+
 def cam6_relvar(rcm, rcp2):
     """CAM6 relative cloud-water variance ``relvar`` handed to MG2.
 
     ``clubb_intr.F90:1998, 2421-2425``: ``qclvar = min(1, rcp2_zt)``,
     ``relvar = relvarmax`` by default and, where ``rcm /= 0`` and
     ``qclvar /= 0``, ``min(relvarmax, max(0.001, rcm**2/qclvar))``.  ``rcm``
-    is the cloud liquid CLUBB leaves on the host (CAM's ``rcm`` after the
-    clubbtop reset, the value its ptend writes), ``rcp2`` the closure's
-    ``r_c'^2`` on the same levels.
+    is CAM's ``rcm`` after the clubbtop reset: the pre-advance ``rcm_out``
+    below clubbtop, the host liquid at and above it; ``rcp2`` the
+    pre-advance closure's ``r_c'^2`` (CAM's ``qclvar_out``) on the same levels.
     """
     qclvar = jnp.minimum(_CAM6_QCLVAR_MAX, rcp2)
     has = (rcm != 0.0) & (qclvar != 0.0)
-    ratio = rcm ** 2 / jnp.where(has, qclvar, 1.0)
-    return jnp.where(
-        has, jnp.clip(ratio, _CAM6_RELVAR_MIN, _CAM6_RELVARMAX), _CAM6_RELVARMAX)
+    # Branches picked by products, never by the ratio: at qclvar ~1e-30 in
+    # fp32 rcm**2/qclvar overflows and the clip-region VJP was 0*inf = NaN.
+    rcm2 = rcm * rcm
+    hi = (rcm2 >= _CAM6_RELVARMAX * qclvar) & (qclvar > 0.0)
+    lo = (rcm2 <= _CAM6_RELVAR_MIN * qclvar) | (qclvar < 0.0)
+    q_safe = jnp.where(has & ~hi & ~lo, qclvar, 1.0)
+    ratio = _square_over(rcm, q_safe)
+    out = jnp.where(hi, _CAM6_RELVARMAX, jnp.where(lo, _CAM6_RELVAR_MIN, ratio))
+    return jnp.where(has, out, _CAM6_RELVARMAX)
 
 
 # clubb_intr.F90:2043 (cam_cesm2_1_rel == cesm2_2_rel): a level whose rtp2 is
@@ -6686,6 +6717,8 @@ def clubb_step(
         # REPLACES the host liquid, matching the reference; the seeding above is
         # what makes that reversible rather than a one-way ratchet.
         dq_c_dt = (rcm_new - q_c) / dt
+        # relvar's rcm (clubb_intr.F90:2424): rcm_out, host liquid above clubbtop
+        rcm_relvar = flip_vertical(diags["rcm_out"])
     else:
         T_new = flip_vertical(new_state.thlm) * exner  # thl ~ theta, no liquid
         q_new = flip_vertical(new_state.rtm)
@@ -6730,11 +6763,13 @@ def clubb_step(
         removed_water = jnp.sum(dp_g * (1.0 - keep) * (dq_v_dt + dq_c_dt),
                                 axis=1, keepdims=True)
         dq_c_dt = keep * dq_c_dt
+        if liquid_partition:
+            rcm_relvar = q_c + keep * (rcm_relvar - q_c)
         dq_v_dt = return_removed_water(
             keep * dq_v_dt, removed_water, dp_g, q_v, dt, below)
         diags = dict(diags, clubbtop=clubbtop)
     if liquid_partition:
-        diags = dict(diags, dq_c_dt=dq_c_dt)
+        diags = dict(diags, dq_c_dt=dq_c_dt, rcm_relvar=rcm_relvar)
     # KE removed by the momentum mixing + surface stress -> heat [K/s,
     # +warming] (review 2026-10-10 F14; CAM6 clubb_do_energyfix=.true.):
     # exact for the host update u += dt*du, T += dt*dT of this call.
@@ -6919,6 +6954,7 @@ def clubb_turbulence_prognostic(
         Kh_full = flip_vertical(diags["Kh_zt"])
         cloud_frac_a = diags["cloud_frac"]
         rcp2_a = diags["rcp2_zt"]
+        rcm_relvar_a = diags.get("rcm_relvar")
         dq_c_dt = diags.get("dq_c_dt")
     else:
         dt_sub = dt / n_sub
@@ -6973,6 +7009,8 @@ def clubb_turbulence_prognostic(
         # states the host never sees.
         cloud_frac_a = diag_stk["cloud_frac"][-1]
         rcp2_a = diag_stk["rcp2_zt"][-1]
+        rcm_relvar_a = (diag_stk["rcm_relvar"][-1] if "rcm_relvar" in diag_stk
+                        else None)
 
     # With an injected tiled flux, report the surface diagnostics as the INJECTED
     # dynamic values directly (Louis-equivalent), rather than clubb_step's
@@ -7023,11 +7061,11 @@ def clubb_turbulence_prognostic(
         cloud_fraction_td = cloud_fraction_td * trop_cloud_top_taper(
             p_full, config.trop_cloud_top_press,
             config.trop_cloud_taper_lnp_width)
-    # MG2's relvar from the liquid CLUBB leaves on the host and the closure's
-    # rcp2 of the same (final) sub-step; only with the liquid partition, where
-    # that liquid is CLUBB's (CAM always partitions).
+    # MG2's relvar from the final sub-step's rcm_out and qclvar, both CAM's
+    # pre-advance timing (not the post-advance host liquid); only with the
+    # liquid partition (CAM always partitions).
     relvar = (None if dq_c_dt is None
-              else cam6_relvar(q_c + dt * dq_c_dt, flip_vertical(rcp2_a)))
+              else cam6_relvar(rcm_relvar_a, flip_vertical(rcp2_a)))
     output = TurbulenceOutput(
         du_dt=du_dt, dv_dt=dv_dt, dT_dt=dT_dt, dq_v_dt=dq_v_dt,
         Km=Kh_full, Kh=Kh_full, shflx=shflx, lhflx=lhflx,

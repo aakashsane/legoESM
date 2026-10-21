@@ -870,7 +870,7 @@ class MorrisonConfig(NamedTuple):
     # saturation curve where q_v > hard_sat_adjust_threshold * q_sat, draining
     # local super-saturation pools the smooth sigmoid path cannot (conserving
     # c_pd*T + L_v*q_v exactly).  Default OFF => byte-identical to the smooth
-    # path (mg flavour).  The sam flavour runs gSAM's exact satadj_liquid on
+    # path (mg flavour).  The sam flavour runs gSAM's satadj_liquid (smooth by default, RULE 5) on
     # every call and REJECTS this guard.  Threaded from ExperimentConfig via
     # ``apply_microphysics_experiment_flags``.  See
     # ``_warm_rain.saturation_adjustment``.

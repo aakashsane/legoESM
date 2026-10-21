@@ -641,7 +641,8 @@ def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
     their field is at the hard limit (``math.inf``, ``0.0``):
 
     * saturation step (``excess_sharpness`` [-]): ``max(0, q_t - q_s)`` is
-      ``q_sat(T_l) smooth_relu((q_t - q_s)/q_sat(T_l))`` and the
+      ``s_q smooth_relu((q_t - q_s)/s_q)``, ``s_q = q_sat(T_l) + 1e-15`` kg/kg
+      (the floor keeps cold fp32 cells finite), and the
       ``q_t > q_sat`` skip is dropped, so a sub-saturated cell runs the same
       Newton and condenses ``~q_sat log(1 + exp(-s |S - 1|))/s`` (``S`` the
       saturation ratio; softplus is > 0, so ``T1 >= T_l`` and gSAM's

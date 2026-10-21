@@ -731,7 +731,7 @@ def accretion(q_c, q_r, rho, k_ac, gamma_norm=1.0):
     (2) BILINEAR ``q_c·q_r`` (product exponent 1) vs KK2000's ``(q_c·q_r)^1.15``;
     (3) a spurious ``rho`` factor — KK2000 is a pure mixing-ratio rate with NO
     density dependence; (4) an optional ``gamma_norm`` PSD-shape modifier absent
-    from KK2000 (P3 passes the default ``1.0``, so P3 does not incur (4)).
+    from KK2000.
     Pinned + canaried in
     ``tests/atmosphere/microphysics/unit/test_p3_accretion_faithful.py``.
 

@@ -824,12 +824,11 @@ def accretion(q_c, q_r, rho, k_ac, gamma_norm=1.0):
     """Rain collecting cloud water (accretion) — SIMPLIFIED BILINEAR SURROGATE.
 
     Rate = ``k_ac · q_c · q_r · rho · gamma_norm``.  This is the accretion
-    form wired into Morrison (non-KK2000 path), Seifert-Beheng, Thompson and
-    THIS repository's P3; it is a tunable-coefficient SURROGATE, NOT faithful
-    to the published Khairoutdinov-Kogan (2000) accretion that gSAM P3 and
-    SAM-M2005 use (``module_mp_p3.f90:3615``, iparam=3 /
-    ``module_mp_graupel.f90:1952``) — this repo's P3 instead calls THIS
-    surrogate.  The gSAM form, in a single column with the sub-grid
+    form wired into Morrison (non-KK2000 path), Seifert-Beheng and Thompson;
+    it is a tunable-coefficient SURROGATE, NOT faithful to the published
+    Khairoutdinov-Kogan (2000) accretion that P3 and SAM-M2005 use
+    (``module_mp_p3.f90:3615``, iparam=3 / ``module_mp_graupel.f90:1952``).
+    This repo's P3 (the WRF v4.8.0 port) calls :func:`accretion_kk2000`.  The gSAM form, in a single column with the sub-grid
     cloud/precip-fraction scheme off (``iSCF=iSPF=1``, ``dum2=1``), reduces to
     the mass rate::
 
@@ -840,7 +839,7 @@ def accretion(q_c, q_r, rho, k_ac, gamma_norm=1.0):
     (2) BILINEAR ``q_c·q_r`` (product exponent 1) vs KK2000's ``(q_c·q_r)^1.15``;
     (3) a spurious ``rho`` factor — KK2000 is a pure mixing-ratio rate with NO
     density dependence; (4) an optional ``gamma_norm`` PSD-shape modifier absent
-    from KK2000 (P3 passes the default ``1.0``, so P3 does not incur (4)).
+    from KK2000.
     Pinned + canaried in
     ``tests/atmosphere/microphysics/unit/test_p3_accretion_faithful.py``.
 

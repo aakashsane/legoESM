@@ -11,8 +11,9 @@ git tag/SHA), via ``python scripts/validate/oracle/gsam_sb_liquid/make_fixture.p
 
 Tolerance (user decision 2026-10-19): max relative error <= 1e-10 in fp64.
 Relative error is ``|a-b| / max(|a|, |b|)`` (0 where both are exactly 0); no
-floor (the tier-1 oracle tests' metric).  The scheme has no smoothing fields,
-so the hard limit is the default.
+floor (the tier-1 oracle tests' metric).  The oracle tests run at the hard
+limit of the two ``gsam_satadj_*`` fields; their smooth-default gap is pinned in
+test_gsam_satadj_liquid_oracle.py.
 """
 from __future__ import annotations
 

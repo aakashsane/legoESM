@@ -7,8 +7,9 @@ microphysics.f90) with ``doicemicro=.false.`` (ILIQ=1), ``dosb_warm_rain=
 as ``SeifertBehengConfig.Nc_0``) and ``dofix_pgam=.false.`` -- the gSAM
 defaults apart from the two switches that make it warm-rain-only and SB2001:
 
-1. ``satadj_liquid``: the state is put exactly on the liquid saturation curve
-   (:func:`_warm_rain.saturation_adjustment_gsam`);
+1. ``satadj_liquid``: the state is put on the liquid saturation curve
+   (:func:`_warm_rain.saturation_adjustment_gsam`; smooth by default, exact at
+   the hard limit of the two ``gsam_satadj_*`` fields, RULE 5);
 2. ``M2005MICRO_GRAUPEL`` (module_mp_graupel.f90) on the adjusted state:
    small-amount removal, rain and droplet size distributions with the number
    reset at the slope bounds, SB2001 autoconversion / accretion, SB2001 rain

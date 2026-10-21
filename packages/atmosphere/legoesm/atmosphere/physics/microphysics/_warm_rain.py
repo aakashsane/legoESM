@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
-from legoesm.core.smooth import smooth_clamp, smooth_min, smoothstep_quintic
+from legoesm.core.smooth import smooth_clamp, smooth_max, smooth_min, smoothstep_quintic
 from legoesm.thermo import (
     mixing_ratio_to_specific_humidity,
     saturation_mixing_ratio,
@@ -1193,33 +1193,50 @@ MG2_SNOWMELT_OFFSET_K = 2.0    # snowmelt = tmelt + 2 K: all snow melts above it
 _MG2_SNOW_VT_CAP = 1.2         # ums, uns <= 1.2*rhof [m/s] (:1407-1408, :2189-2190)
 _MG2_STOKES_DIV = 9.0          # accrete_cloud_water_snow Stokes number dc0^2 uns rhow lams/(9 mu) (:1133)
 _MG2_ECI_KNEE = 0.4            # eci = St^2/(St+0.4)^2, Thompson et al. 2004 (:1134)
+# --- CAM6 MG2 Hallett-Mossop splinters (secondary_ice_production, micro_mg_utils.F90:1157-1184) ---
+_MG2_SPLINTER_PER_KG = 3.5e8   # splinters per kg of rime (:1172, Cotton et al. 1986)
+_MG2_SPLINTER_T_HI = 270.16    # [K] window top (:1171)
+_MG2_SPLINTER_T_PEAK = 268.16  # [K] peak (:1171)
+_MG2_SPLINTER_T_LO = 265.16    # [K] window bottom (:1173)
+_MG2_MI0 = 4.0 / 3.0 * math.pi * 500.0 * (1.0e-6) ** 3  # [kg] 1-um ice embryo, MG2 rhoi 500 (U:126, :150)
 _MG2_NSAGG_DENOM = 4.0 * 720.0  # snow_self_aggregation -1108 eii/(4*720 rhosn) (:1072)
 
 
-def mg2_snow_slope(q_sic, N_sic, config):
+def mg2_snow_slope(q_sic, N_sic, config, psd_sharpness=None):
     """MG2 ``size_dist_param_basic(mg_snow_props, qsic, nsic, lams)``
     (micro_mg_utils.F90:481-516): where ``qsic > qsmall``,
     ``lams = (pi rhosn nsic/qsic)^(1/3)``; outside ``[lams_min, lams_max]`` it
     is set to the bound and ``nsic`` re-adjusted to match.  ``lams = 0`` (and
     ``nsic`` untouched) elsewhere.  Returns ``(nsic, lams)``, per-mass number.
-    """
-    return _mg2_size_dist_basic(q_sic, N_sic, config.rho_snow * jnp.pi,
-                                config.lams_min, config.lams_max)
+    The bound is rounded with smooth_min/smooth_max on slope/bound at
+    ``psd_sharpness`` (default MG2_CAP_SHARPNESS; user decision 2026-10-21
+    S10.5b, re-applied on main item 4a), the number re-adjusted to it."""
+    return _mg2_size_dist_basic(
+        q_sic, N_sic, config.rho_snow * jnp.pi, config.lams_min, config.lams_max,
+        ratio_sharpness=MG2_CAP_SHARPNESS if psd_sharpness is None else psd_sharpness)
 
 
 def _mg2_size_dist_basic(q, N, shape, lam_min, lam_max, min_mean_mass=None,
-                         log_width=0.0):
+                         log_width=0.0, ratio_sharpness=None):
     """MG2 ``size_dist_param_basic`` for an exponential PSD (eff_dim 3,
     micro_mg_utils.F90:481-516) -> ``(N_adj, lam)``; see :func:`mg2_snow_slope`.
     ``min_mean_mass`` caps ``N <= q/min_mean_mass`` first (the ice props).
     ``log_width > 0`` replaces the hard slope clamp by a LogSumExp clamp of
     ``ln lam`` of that width, with ``N`` re-adjusted to the smooth slope
-    everywhere; ``0`` is MG2's hard clamp."""
+    everywhere; ``0`` is MG2's hard clamp.  ``ratio_sharpness`` instead rounds
+    the clamp as ``lam_max smooth_min(1, lam/lam_max)`` then ``lam_min
+    smooth_max(1, ./lam_min)`` at that sharpness, ``N`` re-adjusted likewise."""
     active = q > MG2_QSMALL
     q_safe = jnp.where(active, q, 1.0)
     if min_mean_mass is not None:
         N = jnp.minimum(N, q_safe / min_mean_mass)
-    if log_width > 0.0:
+    if ratio_sharpness is not None:
+        lam_raw = safe_pow(shape * N / q_safe, 1.0 / 3.0)
+        one = jnp.ones_like(lam_raw)
+        lam = lam_max * smooth_min(one, lam_raw / lam_max, ratio_sharpness)
+        lam = lam_min * smooth_max(one, lam / lam_min, ratio_sharpness)
+        n_adj = lam ** 3 * q_safe / shape
+    elif log_width > 0.0:
         arg = shape * N / q_safe
         tiny = jnp.finfo(jnp.result_type(arg)).tiny
         ln_raw = jnp.log(jnp.where(arg > tiny, arg, tiny)) / 3.0
@@ -1234,7 +1251,7 @@ def _mg2_size_dist_basic(q, N, shape, lam_min, lam_max, min_mean_mass=None,
     return (jnp.where(active, n_adj, N), jnp.where(active, lam, 0.0))
 
 
-def mg2_inprecip_snow(q_s, N_s, precip_frac, config):
+def mg2_inprecip_snow(q_s, N_s, precip_frac, config, psd_sharpness=None):
     """MG2 in-precip snow ``(qsic, nsic, lams, n0s)`` (micro_mg2_0.F90:
     1358-1375 then :1400-1401): ``qsic = min(qs/precip_frac, 0.01)``,
     ``nsic = max(ns/precip_frac, 0)``, both 0 where ``qsic < qsmall``, then
@@ -1243,7 +1260,7 @@ def mg2_inprecip_snow(q_s, N_s, precip_frac, config):
     small = q_sic < MG2_QSMALL
     q_sic = jnp.where(small, 0.0, q_sic)
     N_sic = jnp.maximum(jnp.where(small, 0.0, N_s / precip_frac), 0.0)
-    N_sic, lams = mg2_snow_slope(q_sic, N_sic, config)
+    N_sic, lams = mg2_snow_slope(q_sic, N_sic, config, psd_sharpness)
     return q_sic, N_sic, lams, N_sic * lams
 
 
@@ -1291,7 +1308,7 @@ def mg2_snow_self_aggregation(q_sic, N_sic, T, rho, config):
 
 
 def mg2_accrete_cloud_water_snow(T, rho, mu, uns, q_cic, N_cic, q_sic, pgam,
-                                 lamc, lams, n0s, config):
+                                 lamc, lams, n0s, config, cold_width_K):
     """MG2 ``accrete_cloud_water_snow`` (micro_mg_utils.F90:1087-1151): riming
     of cloud droplets by snow, in-cloud ``(psacws [kg/kg/s], npsacws)``::
 
@@ -1300,12 +1317,14 @@ def mg2_accrete_cloud_water_snow(T, rho, mu, uns, q_cic, N_cic, q_sic, pgam,
         rate = pi/4 asn rho n0s eci Gamma(bs+3)/lams^(bs+3)
         psacws = rate qcic,  npsacws = rate ncic
 
-    where ``qsic >= qsmall``, ``T <= T_freeze`` and ``qcic >= qsmall``.
+    where ``qsic >= qsmall`` and ``qcic >= qsmall``.  MG2's hard ``T <= T_freeze``
+    is the C2 step, 0 at 0 C and full by -``cold_width_K`` (user decision
+    2026-10-21 S10.5 1a, re-applied on main item 2a).
     ``uns`` is the PROVISIONAL in-precip snow number fall speed, ``pgam/lamc``
     from :func:`mg2_size_dist_liq`; ``N_cic`` in whatever units the caller wants
     ``npsacws`` in."""
-    active = ((q_sic >= MG2_QSMALL) & (T <= constants.T_freeze)
-              & (q_cic >= MG2_QSMALL))
+    active = (q_sic >= MG2_QSMALL) & (q_cic >= MG2_QSMALL)
+    cold = smoothstep_quintic((constants.T_freeze - T) / cold_width_K)
     lc = jnp.where(active, lamc, 1.0)
     ls = jnp.where(active, lams, 1.0)
     _, asn = mg2_snow_rhof_asn(rho, config)
@@ -1316,8 +1335,28 @@ def mg2_accrete_cloud_water_snow(T, rho, mu, uns, q_cic, N_cic, q_sic, pgam,
     bs = config.fall_b_s
     rate = (jnp.pi / 4.0 * asn * rho * n0s * eci * math.gamma(bs + 3.0)
             / ls ** (bs + 3.0))
-    return (jnp.where(active, rate * q_cic, 0.0),
-            jnp.where(active, rate * N_cic, 0.0))
+    return (jnp.where(active, cold * rate * q_cic, 0.0),
+            jnp.where(active, cold * rate * N_cic, 0.0))
+
+
+def mg2_secondary_ice_production(psacws, T, sharpness):
+    """CAM6 MG2 ``secondary_ice_production`` (Hallett-Mossop, micro_mg_utils.F90:
+    1157-1184): ``(psacws_left, msacwi, nsacwi)`` with nsacwi [1/kg/s] =
+    3.5e8 * tri(T) * psacws and msacwi = min(nsacwi*mi0, psacws).  The
+    triangle tri (0 at -8 and -3 C, 1 at -5 C) has its three corners rounded,
+    smooth_max(0, smooth_min((270.16-T)/2, (T-265.16)/3)) at ``sharpness``
+    (user decision 2026-10-21, 2b).  msacwi/psacws <= 7.3e-7, so the min never
+    binds; kept as MG2 wrote it.
+    """
+    tri = smooth_max(
+        jnp.zeros_like(T),
+        smooth_min((_MG2_SPLINTER_T_HI - T) / (_MG2_SPLINTER_T_HI - _MG2_SPLINTER_T_PEAK),
+                   (T - _MG2_SPLINTER_T_LO) / (_MG2_SPLINTER_T_PEAK - _MG2_SPLINTER_T_LO),
+                   sharpness),
+        sharpness)
+    nsacwi = _MG2_SPLINTER_PER_KG * tri * psacws
+    msacwi = jnp.minimum(nsacwi * _MG2_MI0, psacws)
+    return psacws - msacwi, msacwi, nsacwi
 
 
 def mg2_snow_vent_eps(n0s, lams, T, p, rho, config):

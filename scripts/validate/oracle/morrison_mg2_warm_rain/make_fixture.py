@@ -470,7 +470,8 @@ def _meta(a):
                    + (" --prognostic-nc-act" if a.prognostic_nc_act else "")
                    + (" --prognostic-nc-sed" if a.prognostic_nc_sed else "")
                    + (" --prognostic-nc-melt" if getattr(a, "prognostic_nc_melt", False) else "")
-                   + (" --prognostic-nc-snow" if getattr(a, "prognostic_nc_snow", False) else "")))
+                   + (" --prognostic-nc-snow" if getattr(a, "prognostic_nc_snow", False) else "")
+                   + (" --prognostic-nc-rime" if getattr(a, "prognostic_nc_rime", False) else "")))
 
 
 def main_prognostic(a):
@@ -592,6 +593,49 @@ def main_prognostic_snow(a):
     print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
 
 
+RIME_IN = ("qcic", "ncic_kg", "rho", "qs", "ns_kg", "precip_frac", "T")
+RIME_OUT = ("psacws_raw", "npsacws", "psacws_left", "msacwi", "nsacwi", "lams", "n0s",
+            "uns", "nsic_adj", "ncic_adj")
+RIME_RHOSN = 250.0   # MG2 rhosn; the test runs our PSD at this density
+
+
+def build_rime_points():
+    """Points spanning T from -13 to +1 C (offset off every MG2 corner), in-cloud
+    droplets up to the 5e-3 cap, snow from trace to the 0.01 in-precip cap, and
+    snow numbers placing the PSD slope below, inside and above its bounds."""
+    rng = np.random.default_rng(105)
+    T = 260.15 + 0.0731 + 0.25 * np.arange(57)
+    pts = []
+    for t in T:
+        for _ in range(6):
+            qc = 10.0 ** rng.uniform(-7, np.log10(5.0e-3))
+            nc = 10.0 ** rng.uniform(7, 9)
+            rho = rng.uniform(0.4, 1.2)
+            pf = rng.choice([1.0, 0.35])
+            qs = 10.0 ** rng.uniform(-8, -1.5)
+            lam = 10.0 ** rng.uniform(np.log10(300.0), np.log10(2.0e5))
+            ns = lam ** 3 * min(qs / pf, 0.01) / (np.pi * RIME_RHOSN) * pf
+            pts.append((qc, nc, rho, qs, ns, pf, t))
+    return np.array(pts)
+
+
+def main_prognostic_rime(a):
+    pts = build_rime_points()
+    pin, pout = a.build / "rime_pt_in.txt", a.build / "rime_pt_out.txt"
+    np.savetxt(pin, pts, fmt="%.17e", header=str(len(pts)), comments="")
+    subprocess.run([str(a.build / "mg2_rime"), str(pin), str(pout)], check=True)
+    po = np.loadtxt(pout)
+    fx = {f"in_{k}": pts[:, i] for i, k in enumerate(RIME_IN)}
+    fx.update({f"out_{k}": po[:, i] for i, k in enumerate(RIME_OUT)})
+    fx["rhosn"] = np.array(RIME_RHOSN)
+    meta = _meta(a)
+    meta["probe"] = "mg2_rime_driver.F90: unmodified accrete_cloud_water_snow + secondary_ice_production"
+    fx["meta"] = np.array(json.dumps(meta))
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(a.out, **fx)
+    print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--cam", required=True, type=Path)
@@ -602,6 +646,7 @@ def main(argv=None):
     ap.add_argument("--prognostic-nc-sed", action="store_true")
     ap.add_argument("--prognostic-nc-melt", action="store_true")
     ap.add_argument("--prognostic-nc-snow", action="store_true")
+    ap.add_argument("--prognostic-nc-rime", action="store_true")
     a = ap.parse_args(argv)
     subprocess.run(["bash", str(HERE / "build.sh"), str(a.cam), str(a.build)],
                    check=True)
@@ -615,6 +660,8 @@ def main(argv=None):
         return main_prognostic_melt(a)
     if a.prognostic_nc_snow:
         return main_prognostic_snow(a)
+    if a.prognostic_nc_rime:
+        return main_prognostic_rime(a)
     cols = build_columns()
     ncol, nlev = len(cols), len(cols[0]["T"])
     fx = {f"col_{k}": np.stack([c[k] for c in cols]) for k in COL_FIELDS}

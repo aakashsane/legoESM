@@ -15,6 +15,7 @@ FF="-O0 -g -ffree-line-length-none -DHAVE_GAMMA_INTRINSICS -fbacktrace"
 gfortran $FF -c "$CAM/wv_sat_methods.F90" "$CAM/micro_mg_utils.F90" "$CAM/micro_mg2_0.F90"
 gfortran $FF -o mg2_driver "$HERE/mg2_driver.F90" wv_sat_methods.o micro_mg_utils.o micro_mg2_0.o
 gfortran $FF -o mg2_procs "$HERE/mg2_procs_driver.F90" wv_sat_methods.o micro_mg_utils.o micro_mg2_0.o
+gfortran $FF -o mg2_rime "$HERE/mg2_rime_driver.F90" wv_sat_methods.o micro_mg_utils.o micro_mg2_0.o
 # Probe build (S10.2/S10.3 stage oracle): a COPY of micro_mg2_0.F90 that only
 # records values in public module arrays (nctend right after the activation
 # re-apply, micro_mg2_0.F90:2022, and after sedimentation, before :2501; the

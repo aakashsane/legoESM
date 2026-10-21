@@ -114,7 +114,15 @@ def test_activation_pre_apply_moves_the_rates():
     assert not (moved & (fx["col_npccn"] == 0)).any()
 
 
-def test_cold_riming_number_sinks_and_no_ice_riming():
+def _no_bergeron(monkeypatch):
+    """MG2 Bergeron onto snow also drains cloud water here; these tests isolate
+    the riming number sinks, so it is zeroed."""
+    from legoesm.atmosphere.physics.microphysics import morrison as M
+    monkeypatch.setattr(M, "mg2_bergeron_snow", lambda T, q_cic, *a: jnp.zeros_like(q_cic))
+
+
+def test_cold_riming_number_sinks_and_no_ice_riming(monkeypatch):
+    _no_bergeron(monkeypatch)
     """Cold cloudy cells with snow, graupel and ice: riming by cloud ice is 0;
     the droplet-number sink is (snow + graupel riming) x the size-reset ncic/qcic
     where autoconversion and accretion vanish (q_r = 0, qcic < icsmall)."""
@@ -202,7 +210,8 @@ def _cold(fx, qcic, q_r, nc_scale=1.0):
             np.asarray(q_c), T)
 
 
-def test_cold_full_sum_and_graupel_under_the_number_cap():
+def test_cold_full_sum_and_graupel_under_the_number_cap(monkeypatch):
+    _no_bergeron(monkeypatch)
     """(1) qcic = 1e-6 with rain: autoconversion + accretion + snow + graupel riming
     together set the number sink; (2) droplet number x 1e-6: the riming-dominated
     sink is capped by MG2's nc limiter at N_c/dt x omsm (user decision 7a)."""

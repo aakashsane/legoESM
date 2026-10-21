@@ -104,6 +104,7 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     mg2_snow_fall_speeds,
     mg2_snow_self_aggregation,
     mg2_accrete_cloud_water_snow,
+    mg2_secondary_ice_production,
     mg2_snow_vent_eps,
     mg2_bergeron_snow,
     mg2_snow_sublimation,
@@ -532,7 +533,9 @@ def morrison_microphysics(
             # MG2's ONE droplet-number size reset (size_dist_param_liq,
             # micro_mg2_0.F90:1296), shared by autoconversion and every
             # droplet-number sink below.
-            N_c_ic = mg2_size_bounded_nc(q_c_ic, N_c_ic, rho)
+            # The shape (pgam, lamc) comes from the PRE-reset number, as MG2
+            # keeps it (:1296); riming reads it below.
+            N_c_ic, _pgam_c, _lamc_c = mg2_size_dist_liq(q_c_ic, N_c_ic, rho)
         dq_c_au, dN_r_au, x_c = autoconversion_kk2000_cam6(
             q_c_ic, N_c_ic, rho, _relvar,
             fact=config.autocon_fact, nc_floor=not _prog_nc,
@@ -964,10 +967,14 @@ def morrison_microphysics(
             # MG2 accrete_cloud_water_snow on the in-cloud liquid with the
             # size_dist_param_liq droplet PSD (micro_mg2_0.F90:1302, :1485),
             # grid = psacws*lcldm (:1894).
-            _nc_liq, _pgam, _lamc = mg2_size_dist_liq(q_c_ic, N_c_ic, rho)
+            if _prog_nc:     # N_c_ic is already MG2's reset number (above)
+                _nc_liq, _pgam, _lamc = N_c_ic, _pgam_c, _lamc_c
+            else:
+                _nc_liq, _pgam, _lamc = mg2_size_dist_liq(q_c_ic, N_c_ic, rho)
             riming_s = mg2_accrete_cloud_water_snow(
                 T, rho, mu_air, uns_ic, q_c_ic, _nc_liq, q_sic, _pgam, _lamc,
-                lams_ic, n0s_ic, config)[0] * cf_eff
+                lams_ic, n0s_ic, config,
+                RAMP_WIDTH_PER_SHARPNESS / config.melt_sharpness)[0] * cf_eff
         else:
             riming_s = jnp.zeros_like(q_c)
     elif snow_double_moment and config.do_snow_riming:
@@ -975,6 +982,12 @@ def morrison_microphysics(
     else:
         riming_s = (config.rime_coeff * jnp.clip(q_s, 0.0)
                     * jnp.clip(q_c, 0.0) * f_ice)
+    if _prog_nc:
+        # MG2 Hallett-Mossop splinter share of the snow riming (decisions
+        # 2026-10-21 S10.5 2b, 4a).  riming_s stays the TOTAL cloud-water loss
+        # (MG2 limits psacws + msacwi together); msacwi goes to cloud ice below.
+        _, msacwi, nsacwi = mg2_secondary_ice_production(
+            riming_s, T, MG2_CAP_SHARPNESS)
 
     # 4a. MG2 Bergeron onto snow (bergeron_process_snow, micro_mg2_0.F90:
     #     1527-1531): cloud liquid -> snow, grid = bergs*lcldm (:1894).
@@ -1369,6 +1382,9 @@ def morrison_microphysics(
     bergeron = bergeron * qc_scale
     riming_i = riming_i * qc_scale
     riming_s = riming_s * qc_scale
+    if _prog_nc:
+        # MG2 scales msacwi with psacws but not nsacwi (micro_mg2_0.F90:1579-1580).
+        msacwi = msacwi * qc_scale
     riming_g = riming_g * qc_scale
     bergs = bergs * qc_scale
     # PGSACW: heavily-rimed snow converts to graupel. Uses the DONOR-CLAMPED
@@ -1379,7 +1395,8 @@ def morrison_microphysics(
     if (snow_double_moment and config.do_graupel
             and config.do_snow_to_graupel and not mg2_route):
         pgsacw = snow_to_graupel_pgsacw(
-            q_c, q_s, N_s, riming_s, rho, config, dt)
+            q_c, q_s, N_s, riming_s - msacwi if _prog_nc else riming_s,
+            rho, config, dt)
         # NSCNG snow-number sink = (ρ_sn/(ρ_g−ρ_sn)·PGSACW)/MG0. PGSACW is a
         # MIXING-ratio rate [kg/kg/s] and MG0 the embryo mass [kg], so DUM/MG0 is
         # already a PER-MASS number rate [1/(kg·s)] — matching legoESM's per-mass
@@ -2064,6 +2081,9 @@ def morrison_microphysics(
     # Snow riming grows snow EXCEPT the portion PGSACW that converts to graupel.
     dq_s_dt = (aggregation + (riming_s - pgsacw) - melt_snow + freeze_to_snow
                + prds + bergs + sed_s)
+    if _prog_nc:
+        dq_i_dt = dq_i_dt + msacwi      # splinters leave the snow's rime share
+        dq_s_dt = dq_s_dt - msacwi
     # Graupel (single-moment): gains the Bigg-frozen rain + cloud-water riming
     # (PSACWG) + rain accretion (PRACG) + snow→graupel conversion (PGSACW) +
     # vapor deposition (PRDG, can be negative=sublimation), loses melt → rain,
@@ -2135,6 +2155,8 @@ def morrison_microphysics(
     dN_i_dt = (dN_i_nuc - dN_i_autoconv + homo_freeze_N + sed_N_i
                - dN_i_melt - dN_i_subl
                + freeze_N_to_ice / jnp.clip(rho, _RHO_FLOOR))
+    if _prog_nc:
+        dN_i_dt = dN_i_dt + nsacwi      # unscaled source, no nimax cap (decision 4a)
 
     if mg2_snow:
         dN_s_mg2 = dN_s_src + sed_N_s

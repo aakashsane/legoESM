@@ -117,7 +117,9 @@ def test_snow_kernels_match_mg2():
     qvl = saturation_specific_humidity_goff_gratch(T, p)
     qvi = saturation_specific_humidity_ice_goff_gratch(T, p)
     errs = {"qvl": _rel(qvl, o["qvl"]), "qvi": _rel(qvi, o["qvi"])}
-    qsic, nsic, lams, n0s = W.mg2_inprecip_snow(i["qs"], i["ns"], pf, cfg)
+    # hard limits: CAM's own slope clamp and 0 C gates (the smooth production
+    # forms depart from CAM only within a percent of a bound / 2 K of 0 C)
+    qsic, nsic, lams, n0s = W.mg2_inprecip_snow(i["qs"], i["ns"], pf, cfg, psd_sharpness=1.0e9)
     for k, v in (("qsic", qsic), ("nsic", nsic), ("lams", lams), ("n0s", n0s)):
         errs[k] = _rel(v, o[k])
     ums, uns = W.mg2_snow_fall_speeds(lams, rho, cfg)
@@ -131,7 +133,7 @@ def test_snow_kernels_match_mg2():
     errs["lamc"] = _rel(lamc, o["lamc"])
     eps_s, mu = W.mg2_snow_vent_eps(n0s, lams, T, p, rho, cfg)
     psacws, npsacws = W.mg2_accrete_cloud_water_snow(
-        T, rho, mu, uns, i["qcic"], nc_adj / rho, qsic, pgam, lamc, lams, n0s, cfg)
+        T, rho, mu, uns, i["qcic"], nc_adj / rho, qsic, pgam, lamc, lams, n0s, cfg, 1.0e-9)
     errs["psacws"] = _rel(psacws, o["psacws"])
     errs["npsacws"] = _rel(npsacws, o["npsacws"])
     errs["bergs"] = _rel(W.mg2_bergeron_snow(T, i["qcic"], qsic, qvl, qvi, eps_s),

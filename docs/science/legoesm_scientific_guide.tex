@@ -1982,6 +1982,24 @@ step ($W=2$\,K) and rounded cap; Morrison's own snow-melting rate is then off,
 and graupel melting is limited by the heat left after the snow has melted,
 through the same smooth step and rounded cap.
 
+\paragraph{Snow riming and splinters (prognostic droplet number).}
+Under the same switch, snow collects cloud droplets with CAM6 MG2's
+continuous-collection rate: a Stokes-number collection efficiency
+$E=\mathrm{St}^2/(\mathrm{St}+0.4)^2$ with
+$\mathrm{St}=D_c^2 V_{n,s}\rho_w\lambda_s/(9\mu)$, evaluated on the in-cloud
+droplets and the in-precipitation snow and multiplied by the liquid cloud
+fraction; droplets are removed in proportion to their mass.  The snow size
+distribution is the model's own (density and slope bounds; its number is not
+re-adjusted at the slope bounds, unlike MG2).  MG2's hard 0\,\textdegree C
+switch becomes a smooth step, zero at 0\,\textdegree C and full riming by
+$-W$ ($W=2$\,K in production).  Hallett--Mossop splinters take
+$3.5\times10^{8}$ crystals per kg of rime between $-8$ and $-3$\,\textdegree C
+(peak at $-5$\,\textdegree C), each of mass $\frac{4}{3}\pi\rho_i(1\,\mu$m$)^3$;
+the triangle's three corners are rounded with a smooth minimum and maximum
+(sharpness 100).  Splinter mass is limited with the rest of riming, splinter
+number is not (as MG2), and MG2's cap of ice number at the activated ice-nuclei
+number is not applied, because the model has no such number.
+
 \paragraph{Homogeneous ice nucleation.}
 Optionally, haze droplets freeze homogeneously when the ice supersaturation
 exceeds the threshold

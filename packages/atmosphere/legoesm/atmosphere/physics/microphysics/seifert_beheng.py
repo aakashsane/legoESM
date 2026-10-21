@@ -75,11 +75,11 @@ _GSAM_FIELDS = ("Nc_0", "gsam_satadj_excess_sharpness", "gsam_satadj_p_min_width
 __physics_contract__ = {
     "summary": (
         "Seifert-Beheng two-moment warm rain as gSAM 1.8.8 M2005 runs it "
-        "(liquid only, SB2001 warm rain, specified droplet number): exact "
-        "liquid saturation adjustment, SB2001 autoconversion/accretion/"
+        "(liquid only, SB2001 warm rain, specified droplet number): liquid "
+        "saturation adjustment (smooth by default, exact at the hard limit), SB2001 autoconversion/accretion/"
         "self-collection+breakup, M2005 rain evaporation, conservation "
         "limiters, CFL-sub-stepped rain and cloud-droplet sedimentation to "
-        "surface precipitation. Oracle-pinned to the compiled gSAM."
+        "surface precipitation. Oracle-pinned to the compiled gSAM at the hard limit."
     ),
     "inputs": {
         "T": "K", "q_v": "kg/kg", "hydrometeors.q_c": "kg/kg",

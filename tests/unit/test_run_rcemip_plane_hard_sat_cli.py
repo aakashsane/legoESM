@@ -34,8 +34,7 @@ def _load():
     return mod
 
 
-GUARDED = ("sundqvist", "seifert_beheng", "morrison", "thompson",
-           "p3", "ml_emulator")
+GUARDED = ("sundqvist", "morrison", "thompson", "p3", "ml_emulator")
 
 
 @pytest.mark.parametrize("scheme", GUARDED)

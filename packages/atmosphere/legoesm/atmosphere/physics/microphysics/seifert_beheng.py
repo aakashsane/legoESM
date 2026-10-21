@@ -18,7 +18,8 @@ defaults apart from the two switches that make it warm-rain-only and SB2001:
    rain (mass and number) and cloud droplets (Stokes) from the post-source
    state with gSAM's CFL sub-steps (:func:`_warm_rain.m2005_liquid_step`).
 
-Oracle-pinned (whole call, fp64, max relative error <= 1e-10 on T, q_v, q_c,
+Oracle-pinned at the hard limit of the two ``gsam_satadj_*`` fields (whole
+call, fp64, max relative error <= 1e-10 on T, q_v, q_c,
 q_r, N_r and surface precipitation against the compiled gSAM) by
 ``tests/atmosphere/microphysics/unit/test_gsam_sb_liquid_oracle.py``.
 
@@ -76,7 +77,8 @@ __physics_contract__ = {
     "summary": (
         "Seifert-Beheng two-moment warm rain as gSAM 1.8.8 M2005 runs it "
         "(liquid only, SB2001 warm rain, specified droplet number): liquid "
-        "saturation adjustment (smooth by default, exact at the hard limit), SB2001 autoconversion/accretion/"
+        "saturation adjustment (smooth by default, exact at the hard "
+        "limit), SB2001 autoconversion/accretion/"
         "self-collection+breakup, M2005 rain evaporation, conservation "
         "limiters, CFL-sub-stepped rain and cloud-droplet sedimentation to "
         "surface precipitation. Oracle-pinned to the compiled gSAM at the hard limit."

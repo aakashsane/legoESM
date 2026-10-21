@@ -444,6 +444,9 @@ def test_mg2_ice_slope_smooth_default_gaps():
     ns, ls = W.mg2_ice_slope(q, jnp.asarray(_SLOPE_N), 500.0, 5.0e-4, _SLOPE_W)
     _gap_close((ls - lh) / lh, _SLOPE_LAM_GAP)
     _gap_close((ns - nh) / nh, _SLOPE_N_GAP)
+    lo, hi = 1.0 / (2.0 * 5.0e-4), 1.0e6       # smooth slope stays in bounds
+    assert np.all(np.asarray(ls) <= hi)
+    assert np.all(np.asarray(ls) >= lo * np.exp(-_SLOPE_W * np.log(2.0)))
     fx = _fx()
     i = {k[6:]: jnp.asarray(v) for k, v in fx.items() if k.startswith("pt_in_")}
     ni, lam = W.mg2_ice_slope(i["qi"], i["ni"], 500.0, float(fx["dcs"]), _SLOPE_W)
@@ -503,3 +506,17 @@ def test_mg2_qi_ratio_gradient_at_default():
                     modes=["rev"], eps=1e-4, atol=1e-5, rtol=1e-4)
     g = jax.grad(f, argnums=2)(jnp.asarray(1.0), jnp.asarray(0.0), jnp.asarray(1.6667))
     assert np.isfinite(float(g)) and float(g) < 0.0  # through the switch
+
+
+def test_mg2_ice_slope_zero_number_gradient_fp32():
+    """fp32, N_i = 0 with ice present: the smooth slope's log floor is the
+    dtype's tiny, so value and gradient stay finite."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    q = jnp.asarray([1.0e-5, 1.0e-5], dtype=jnp.float32)
+
+    def f(n):
+        ni, lam = W.mg2_ice_slope(q, n, 500.0, 5.0e-4, _SLOPE_W)
+        return jnp.sum(lam * 1.0e-3 + ni)
+    n = jnp.asarray([0.0, 1.0e5], dtype=jnp.float32)
+    assert bool(jnp.isfinite(f(n)))
+    assert bool(jnp.all(jnp.isfinite(jax.grad(f)(n))))

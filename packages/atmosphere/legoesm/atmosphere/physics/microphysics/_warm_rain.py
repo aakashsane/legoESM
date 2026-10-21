@@ -1049,7 +1049,9 @@ def _mg2_size_dist_basic(q, N, shape, lam_min, lam_max, min_mean_mass=None,
     if min_mean_mass is not None:
         N = jnp.minimum(N, q_safe / min_mean_mass)
     if log_width > 0.0:
-        ln_raw = jnp.log(jnp.maximum(shape * N / q_safe, 1.0e-300)) / 3.0
+        arg = shape * N / q_safe
+        tiny = jnp.finfo(jnp.result_type(arg)).tiny
+        ln_raw = jnp.log(jnp.where(arg > tiny, arg, tiny)) / 3.0
         lam = jnp.exp(smooth_clamp(ln_raw, math.log(lam_min), math.log(lam_max),
                                    1.0 / log_width))
         n_adj = lam ** 3 * q_safe / shape
@@ -1756,7 +1758,9 @@ def mg2_qi_conservation_ratio(q_avail, src, snk, dt, omsm, width=0.0):
     up to ``width ln 2`` where the ratio is near 1 and is 1 to rounding far
     from it (measured gaps: test_mg2_ice_snow_oracle.py).  ``width = 0`` is
     MG2's hard form exactly."""
-    has = snk > 0.0
+    # sinks below 1e-30 kg/kg/s: ratio >= q/dt/1e-30 >> 1 either way, so the
+    # sentinel keeps fp32 r finite without changing the factor (1).
+    has = snk > 1.0e-30
     r = jnp.where(has, (q_avail / dt + src) * omsm / jnp.where(has, snk, 1.0),
                   1.0e30)
     if width > 0.0:

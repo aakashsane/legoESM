@@ -496,7 +496,8 @@ def saturation_specific_humidity_cam_table(T: jax.Array, p: jax.Array, *,
     ``smooth_clamp`` with ``clamp_sharpness`` [1/K]; the clamped temperature
     departs from CAM's by ``~log(1 + exp(-clamp_sharpness d))/clamp_sharpness``
     K at ``d`` K from a table bound: ``log 2`` K at the bound itself (q 31%
-    high at ``tmin``, 1.8% at 130 K), < 3e-11 relative in q over 150-340 K.
+    high at ``tmin``, 1.8% at 130 K), < 6e-11 relative in q over 150-340 K
+    where ``e_sat/p`` is away from 1 (the cap departs by 1.1e-3 at ``e_sat = p``).
     The q = 1 cap is :func:`_specific_humidity_from_esat_cam`'s.  CAM exactly
     is ``clamp_sharpness = cap_sharpness = math.inf``."""
     plenest = math.ceil(_CAM_SVP_TMAX_K - _CAM_SVP_TMIN_K) + 2

@@ -160,8 +160,9 @@ def test_evaporation_saturation_is_the_cam_qsat_table():
     water curve at and above T_freeze, ice curve at or below T_freeze - 20 K,
     the vapour-pressure blend (T_freeze - T)/20 in between.  The CAM qsat table
     (saturation_specific_humidity_cam_table) reproduces svp_trans at the 1-K
-    nodes tmin + k and interpolates linearly between them; T is clamped to
-    [tmin, tmax]."""
+    nodes tmin + k and interpolates linearly between them (checked here away
+    from the table bounds, where the default smooth clamp is CAM's to
+    rounding; the bounds themselves are pinned in test_saturation_curves)."""
     from legoesm.thermo import (saturation_specific_humidity_cam_table,
                                 saturation_vapor_pressure_goff_gratch,
                                 saturation_vapor_pressure_ice_goff_gratch,

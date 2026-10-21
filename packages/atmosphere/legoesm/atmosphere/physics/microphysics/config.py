@@ -177,6 +177,8 @@ __param_spec__ = {
             "lamr_min": "numerics: solver/smoothing/tolerance/iteration parameter",
             "lams_min": "numerics: solver/smoothing/tolerance/iteration parameter",
             "melt_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
+            "mg2_ice_slope_log_width": "numerics: solver/smoothing/tolerance/iteration parameter",
+            "mg2_qi_limit_width": "numerics: solver/smoothing/tolerance/iteration parameter",
             "nuc_T_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "nuc_rh_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
@@ -1056,6 +1058,12 @@ class MorrisonConfig(NamedTuple):
     # model's only liquid source; ``ExperimentConfig.validate_strict`` refuses
     # that pairing rather than letting it run.
     liquid_from_closure: bool = False
+    # RULE 5 smoothing widths of two CAM6 MG2 limits (0 = MG2's hard form;
+    # values PENDING USER, see the KNOWN DIFFERENCE in _warm_rain.py):
+    # LogSumExp width of the ice-slope clamp in ln(lami) (mg2_ice_slope) and
+    # of the qi-conservation factor (mg2_qi_conservation_ratio).
+    mg2_ice_slope_log_width: float = 0.01
+    mg2_qi_limit_width: float = 1.0e-2
 
 
 # Hard ceiling of ``sed_cfl_substeps_max`` wherever it is set (leaf, applier,

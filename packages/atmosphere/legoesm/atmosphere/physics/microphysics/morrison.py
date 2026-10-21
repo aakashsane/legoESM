@@ -85,6 +85,7 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     rain_freezing_bigg_mg2,
     ice_autoconversion_mg2,
     mg2_ice_slope,
+    mg2_qi_conservation_ratio,
     mg2_size_dist_liq,
     mg2_inprecip_snow,
     mg2_snow_slope,
@@ -943,8 +944,9 @@ def morrison_microphysics(
                                       cf_eff)
         else:
             _qi_ac, _ni_ac, _cf_ac = q_i, N_i, 1.0
-        _ni_mg2, _lami_mg2 = mg2_ice_slope(_qi_ac, _ni_ac,
-                                           config.rho_cloud_ice, dcs)
+        _ni_mg2, _lami_mg2 = mg2_ice_slope(
+            _qi_ac, _ni_ac, config.rho_cloud_ice, dcs,
+            log_width=config.mg2_ice_slope_log_width)
         aggregation, nprci_ferrier = ice_autoconversion_mg2(
             _qi_ac, _ni_mg2, _lami_mg2, dcs, T)
         aggregation = aggregation * _cf_ac
@@ -1427,10 +1429,8 @@ def morrison_microphysics(
                  + homo_freeze_c + freeze_to_ice)
         _isnk = aggregation + jnp.maximum(-dq_i_dep, 0.0)
         _iav = jnp.clip(jnp.clip(q_i, 0.0) - melt_ice * dt, 0.0)
-        _ilim = (_isnk - _isrc) * dt > _iav
-        qi_scale = jnp.where(
-            _ilim, (_iav / dt + _isrc) / jnp.where(_ilim, _isnk, 1.0) * _MG2_OMSM,
-            1.0)
+        qi_scale = mg2_qi_conservation_ratio(
+            _iav, _isrc, _isnk, dt, _MG2_OMSM, width=config.mg2_qi_limit_width)
         aggregation = aggregation * qi_scale
         dq_i_dep = jnp.where(dq_i_dep < 0.0, dq_i_dep * qi_scale, dq_i_dep)
     # Ice-number transfer of the ice->snow autoconversion (an N_i sink and,

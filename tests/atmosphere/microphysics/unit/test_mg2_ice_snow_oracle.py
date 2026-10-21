@@ -400,3 +400,106 @@ def test_mg2_ice_limit_credits_only_vapour_limited_deposition(dt):
     print("qi_new / qi", qi_new / 1.0e-3, "qv_new", qv_new)
     assert np.all(qi_new >= -1.0e-14 * 1.0e-3), qi_new
     assert np.all(qv_new >= -1.0e-14), qv_new
+
+
+# --- RULE 5: the two MG2 limits are smooth by default ------------------------
+# Gaps measured 2026-10-21 at the MorrisonConfig default widths (values
+# PENDING USER); a change to either smooth form or width re-measures these.
+_SLOPE_W, _QI_W = 0.01, 0.01
+_SLOPE_N = np.array([1.0, 5.0, 6.0, 6.366, 7.0, 1.0e5, 6.0e9, 6.366e9, 7.0e9, 1.0e20])
+_SLOPE_LAM_GAP = np.array([
+    -2.2737367544323206e-16, 3.1836667565130485e-06, 1.3005436733576517e-03,
+    6.9503389399751545e-03, 4.1413072192057775e-04, -2.9052501665538021e-16,
+    -1.2988544564146243e-03, -6.9023651626077803e-03, -4.1395928866183384e-04,
+    -4.6566128730773924e-16])
+_SLOPE_N_GAP = np.array([
+    -5.5805895968138108e-16, 9.5510306769342735e-06, 3.9067074613694658e-03,
+    2.0996274205559502e-02, 1.2429067495505208e-03, -2.3283064365386965e-15,
+    -3.8915044917465845e-03, -2.0564496400243489e-02, -1.2413638500445130e-03,
+    -1.3482253018526143e-15])
+_QI_SRC = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1e-9, 1e-9, 0.0])
+_QI_SNK = np.array([0.0, 1e-8, 1.6e-8, 1.6666e-8, 1.67e-8, 1.8e-8, 3e-8, 1e-6])
+_QI_GAP = np.array([0.0, 0.0, -0.00015400808255561, -0.00691648245647114,
+                    -0.0059786935327536, -0.00145650908798789, 0.0, 0.0])
+
+
+def _gap_close(actual, stored):
+    np.testing.assert_allclose(actual, stored, rtol=1e-6, atol=1e-12)
+
+
+def test_rule5_widths_are_the_measured_defaults():
+    from legoesm.atmosphere.physics.microphysics.config import MorrisonConfig
+    c = MorrisonConfig()
+    assert (c.mg2_ice_slope_log_width, c.mg2_qi_limit_width) == (_SLOPE_W, _QI_W)
+
+
+def test_mg2_ice_slope_smooth_default_gaps():
+    """KNOWN DIFFERENCE per case at the default width: through the lower
+    (N ~ 6.4/kg) and upper (N ~ 6.4e9/kg) bounds at q_i = 1e-5, dcs = 500 um;
+    largest exactly at a bound (lami 0.70 %, niic 2.1 %), rounding far
+    from them.  The fixture points (none near a bound) stay within TOL."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    q = jnp.full(_SLOPE_N.size, 1.0e-5)
+    nh, lh = W.mg2_ice_slope(q, jnp.asarray(_SLOPE_N), 500.0, 5.0e-4, 0.0)
+    ns, ls = W.mg2_ice_slope(q, jnp.asarray(_SLOPE_N), 500.0, 5.0e-4, _SLOPE_W)
+    _gap_close((ls - lh) / lh, _SLOPE_LAM_GAP)
+    _gap_close((ns - nh) / nh, _SLOPE_N_GAP)
+    fx = _fx()
+    i = {k[6:]: jnp.asarray(v) for k, v in fx.items() if k.startswith("pt_in_")}
+    ni, lam = W.mg2_ice_slope(i["qi"], i["ni"], 500.0, float(fx["dcs"]), _SLOPE_W)
+    assert float(np.max(_rel(lam, fx["pt_out_lami"]))) <= TOL
+    assert float(np.max(_rel(ni, fx["pt_out_niic"]))) <= TOL
+
+
+def test_mg2_ice_slope_gradient_at_default():
+    from jax.test_util import check_grads
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+
+    def f(lq, ln):
+        return jnp.sum(jnp.log(jnp.stack(
+            W.mg2_ice_slope(jnp.exp(lq), jnp.exp(ln), 500.0, 5.0e-4, _SLOPE_W))))
+    for n in (6.366, 6.366e9, 1.0e5):
+        a = (jnp.log(1.0e-5), jnp.log(n))
+        check_grads(f, a, order=2, modes=["rev"], eps=1e-4, atol=1e-5, rtol=1e-4)
+    g = jax.grad(f, argnums=1)(jnp.log(1.0e-5), jnp.log(6.366))
+    assert np.isfinite(float(g)) and 0.0 < float(g) < 4.0 / 3.0  # through the bound
+
+
+def test_mg2_qi_ratio_hard_limit_is_mg2():
+    """width = 0 is micro_mg2_0.F90:1722-1731 exactly."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    a, dt, omsm = 1.0e-5, 600.0, 1.0 - 1.0e-5
+    r = np.asarray(W.mg2_qi_conservation_ratio(a, jnp.asarray(_QI_SRC),
+                                               jnp.asarray(_QI_SNK), dt, omsm, 0.0))
+    ref = np.where((_QI_SNK - _QI_SRC) * dt > a,
+                   (a / dt + _QI_SRC) / np.where(_QI_SNK > 0, _QI_SNK, 1.0) * omsm, 1.0)
+    np.testing.assert_array_equal(r, ref)
+    assert np.count_nonzero(ref < 1.0) >= 4
+
+
+def test_mg2_qi_ratio_smooth_default_gaps():
+    """KNOWN DIFFERENCE per case at the default width: the smooth factor
+    trims the sinks by up to 0.69 % where the hard ratio is near 1, is 1/the
+    hard ratio far from it, and never exceeds min(1, ratio) (so q_i >= 0)."""
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+    a, dt, omsm = 1.0e-5, 600.0, 1.0 - 1.0e-5
+    src, snk = jnp.asarray(_QI_SRC), jnp.asarray(_QI_SNK)
+    rh = np.asarray(W.mg2_qi_conservation_ratio(a, src, snk, dt, omsm, 0.0))
+    rs = np.asarray(W.mg2_qi_conservation_ratio(a, src, snk, dt, omsm, _QI_W))
+    _gap_close(rs - rh, _QI_GAP)
+    rmin = np.minimum(1.0, (a / dt + _QI_SRC) * omsm / np.where(_QI_SNK > 0, _QI_SNK, 1e-300))
+    assert np.all(rs <= rmin)
+
+
+def test_mg2_qi_ratio_gradient_at_default():
+    from jax.test_util import check_grads
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+
+    def f(x, y, z):
+        return W.mg2_qi_conservation_ratio(1e-5 * x, 1e-9 * y, 1e-8 * z, 600.0,
+                                           1.0 - 1.0e-5, _QI_W)
+    for z in (1.6667, 1.8, 3.0):
+        check_grads(f, tuple(map(jnp.asarray, (1.0, 1.0, z))), order=2,
+                    modes=["rev"], eps=1e-4, atol=1e-5, rtol=1e-4)
+    g = jax.grad(f, argnums=2)(jnp.asarray(1.0), jnp.asarray(0.0), jnp.asarray(1.6667))
+    assert np.isfinite(float(g)) and float(g) < 0.0  # through the switch

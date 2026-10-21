@@ -12,6 +12,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
+from legoesm.core.smooth import smooth_clamp, smooth_min
 from legoesm.thermo import (
     mixing_ratio_to_specific_humidity,
     saturation_mixing_ratio,
@@ -1035,18 +1036,28 @@ def mg2_snow_slope(q_sic, N_sic, config):
                                 config.lams_min, config.lams_max)
 
 
-def _mg2_size_dist_basic(q, N, shape, lam_min, lam_max, min_mean_mass=None):
+def _mg2_size_dist_basic(q, N, shape, lam_min, lam_max, min_mean_mass=None,
+                         log_width=0.0):
     """MG2 ``size_dist_param_basic`` for an exponential PSD (eff_dim 3,
     micro_mg_utils.F90:481-516) -> ``(N_adj, lam)``; see :func:`mg2_snow_slope`.
-    ``min_mean_mass`` caps ``N <= q/min_mean_mass`` first (the ice props)."""
+    ``min_mean_mass`` caps ``N <= q/min_mean_mass`` first (the ice props).
+    ``log_width > 0`` replaces the hard slope clamp by a LogSumExp clamp of
+    ``ln lam`` of that width, with ``N`` re-adjusted to the smooth slope
+    everywhere; ``0`` is MG2's hard clamp."""
     active = q > MG2_QSMALL
     q_safe = jnp.where(active, q, 1.0)
     if min_mean_mass is not None:
         N = jnp.minimum(N, q_safe / min_mean_mass)
-    lam_raw = safe_pow(shape * N / q_safe, 1.0 / 3.0)
-    lam = jnp.clip(lam_raw, lam_min, lam_max)
-    n_adj = jnp.where((lam_raw < lam_min) | (lam_raw > lam_max),
-                      lam ** 3 * q_safe / shape, N)
+    if log_width > 0.0:
+        ln_raw = jnp.log(jnp.maximum(shape * N / q_safe, 1.0e-300)) / 3.0
+        lam = jnp.exp(smooth_clamp(ln_raw, math.log(lam_min), math.log(lam_max),
+                                   1.0 / log_width))
+        n_adj = lam ** 3 * q_safe / shape
+    else:
+        lam_raw = safe_pow(shape * N / q_safe, 1.0 / 3.0)
+        lam = jnp.clip(lam_raw, lam_min, lam_max)
+        n_adj = jnp.where((lam_raw < lam_min) | (lam_raw > lam_max),
+                          lam ** 3 * q_safe / shape, N)
     return (jnp.where(active, n_adj, N), jnp.where(active, lam, 0.0))
 
 
@@ -1712,15 +1723,45 @@ _MG2_ICE_D_MIN_M = 1.0e-6      # ice_lambda_bounds = 1/[2 dcs, 1 um] (micro_mg_u
 _MG2_MIN_MEAN_MASS_ICE = 1.0e-20  # min_mean_mass_ice [kg] (micro_mg_utils.F90:174)
 
 
-def mg2_ice_slope(q_i, N_i, rho_ice, dcs):
+def mg2_ice_slope(q_i, N_i, rho_ice, dcs, log_width=0.0):
     """MG2 ``size_dist_param_basic(mg_ice_props, qiic, niic, lami)``
     (micro_mg2_0.F90:1333) -> ``(niic, lami)``: ``N_i <= q_i/1e-20 kg``, then
     ``lami = (pi rhoi N_i/q_i)^(1/3)`` held inside ``1/[2 dcs, 1 um]`` with
     ``N_i`` re-adjusted to the bound.  Per-mass number; ``lami = 0`` where
-    ``q_i <= qsmall``."""
+    ``q_i <= qsmall``.
+
+    KNOWN DIFFERENCE (RULE 5): MG2 clamps ``lami`` with a hard ``if``; with
+    ``log_width > 0`` (``MorrisonConfig.mg2_ice_slope_log_width``) the clamp
+    is a LogSumExp clamp of ``ln lami`` and ``niic`` follows the smooth slope
+    everywhere, so ``lami``/``niic`` and the Ferrier rates differ from MG2
+    near the bounds (measured gaps: tests/atmosphere/microphysics/unit/
+    test_mg2_ice_snow_oracle.py).  ``log_width = 0`` recovers MG2 exactly.
+    No invariant is lost: the slope stays inside the bounds to O(width)."""
     return _mg2_size_dist_basic(jnp.clip(q_i, 0.0), jnp.clip(N_i, 0.0),
                                 rho_ice * jnp.pi, 1.0 / (2.0 * dcs),
-                                1.0 / _MG2_ICE_D_MIN_M, _MG2_MIN_MEAN_MASS_ICE)
+                                1.0 / _MG2_ICE_D_MIN_M, _MG2_MIN_MEAN_MASS_ICE,
+                                log_width=log_width)
+
+
+def mg2_qi_conservation_ratio(q_avail, src, snk, dt, omsm, width=0.0):
+    """MG2 conservation of qi (micro_mg2_0.F90:1717-1735): the factor on the
+    ice sinks ``snk`` (autoconversion + sublimation) so that they take at most
+    ``q_avail + src dt``, x omsm.  MG2: ``ratio = (q_avail/dt + src)/snk *
+    omsm`` where ``(snk - src) dt > q_avail``, else 1.
+
+    KNOWN DIFFERENCE (RULE 5): with ``width > 0``
+    (``MorrisonConfig.mg2_qi_limit_width``) the factor is the LogSumExp
+    smooth minimum of 1 and that ratio, which never exceeds the hard
+    ``min(1, ratio)``, so q_i still cannot go negative; it trims the sinks by
+    up to ``width ln 2`` where the ratio is near 1 and is 1 to rounding far
+    from it (measured gaps: test_mg2_ice_snow_oracle.py).  ``width = 0`` is
+    MG2's hard form exactly."""
+    has = snk > 0.0
+    r = jnp.where(has, (q_avail / dt + src) * omsm / jnp.where(has, snk, 1.0),
+                  1.0e30)
+    if width > 0.0:
+        return smooth_min(jnp.ones_like(r), r, 1.0 / width)
+    return jnp.where((snk - src) * dt > q_avail, r, 1.0)
 
 
 def ice_autoconversion_mg2(q_i, N_i, lami, dcs, T):

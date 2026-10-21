@@ -1059,7 +1059,7 @@ class MorrisonConfig(NamedTuple):
     # that pairing rather than letting it run.
     liquid_from_closure: bool = False
     # RULE 5 smoothing widths of two CAM6 MG2 limits (0 = MG2's hard form;
-    # values PENDING USER, see the KNOWN DIFFERENCE in _warm_rain.py):
+    # values approved by user 2026-10-21, see the KNOWN DIFFERENCE in _warm_rain.py):
     # LogSumExp width of the ice-slope clamp in ln(lami) (mg2_ice_slope) and
     # of the qi-conservation factor (mg2_qi_conservation_ratio).
     mg2_ice_slope_log_width: float = 0.01

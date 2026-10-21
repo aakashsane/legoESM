@@ -404,7 +404,7 @@ def test_mg2_ice_limit_credits_only_vapour_limited_deposition(dt):
 
 # --- RULE 5: the two MG2 limits are smooth by default ------------------------
 # Gaps measured 2026-10-21 at the MorrisonConfig default widths (values
-# PENDING USER); a change to either smooth form or width re-measures these.
+# approved by user 2026-10-21); a change to either smooth form or width re-measures these.
 _SLOPE_W, _QI_W = 0.01, 0.01
 _SLOPE_N = np.array([1.0, 5.0, 6.0, 6.366, 7.0, 1.0e5, 6.0e9, 6.366e9, 7.0e9, 1.0e20])
 _SLOPE_LAM_GAP = np.array([

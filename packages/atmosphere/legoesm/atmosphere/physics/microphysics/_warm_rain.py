@@ -1738,7 +1738,8 @@ def mg2_ice_slope(q_i, N_i, rho_ice, dcs, log_width=0.0):
     everywhere, so ``lami``/``niic`` and the Ferrier rates differ from MG2
     near the bounds (measured gaps: tests/atmosphere/microphysics/unit/
     test_mg2_ice_snow_oracle.py).  ``log_width = 0`` recovers MG2 exactly.
-    No invariant is lost: the slope stays inside the bounds to O(width)."""
+    No invariant is lost: the slope stays inside the bounds to O(width).
+    Default width 0.01 approved by user 2026-10-21."""
     return _mg2_size_dist_basic(jnp.clip(q_i, 0.0), jnp.clip(N_i, 0.0),
                                 rho_ice * jnp.pi, 1.0 / (2.0 * dcs),
                                 1.0 / _MG2_ICE_D_MIN_M, _MG2_MIN_MEAN_MASS_ICE,
@@ -1757,7 +1758,7 @@ def mg2_qi_conservation_ratio(q_avail, src, snk, dt, omsm, width=0.0):
     ``min(1, ratio)``, so q_i still cannot go negative; it trims the sinks by
     up to ``width ln 2`` where the ratio is near 1 and is 1 to rounding far
     from it (measured gaps: test_mg2_ice_snow_oracle.py).  ``width = 0`` is
-    MG2's hard form exactly."""
+    MG2's hard form exactly.  Default width 0.01 approved by user 2026-10-21."""
     # sinks below 1e-30 kg/kg/s: ratio >= q/dt/1e-30 >> 1 either way, so the
     # sentinel keeps fp32 r finite without changing the factor (1).
     has = snk > 1.0e-30

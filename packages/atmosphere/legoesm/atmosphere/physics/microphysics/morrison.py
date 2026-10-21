@@ -51,6 +51,7 @@ References
 
 from __future__ import annotations
 
+import functools
 import math
 
 import equinox as eqx
@@ -342,7 +343,10 @@ def morrison_microphysics(
     # CAM's Goff-Gratch (micro_mg2_0.F90:113-115, :909-916); other modes keep
     # the shared Tetens / Clausius-Clapeyron curves.  Static Python gate.
     if config.warm_rain_incloud:
-        qsat_water_fn, qsat_ice_fn = _qsat_water_goff_gratch, _qsat_ice_goff_gratch
+        qsat_water_fn = functools.partial(_qsat_water_goff_gratch,
+                                          cap_sharpness=config.cam_qsat_cap_sharpness)
+        qsat_ice_fn = functools.partial(_qsat_ice_goff_gratch,
+                                        cap_sharpness=config.cam_qsat_cap_sharpness)
     else:
         qsat_water_fn = _saturation_specific_humidity
         qsat_ice_fn = _saturation_specific_humidity_ice

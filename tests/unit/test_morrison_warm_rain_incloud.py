@@ -381,9 +381,15 @@ def test_lane_guard_needs_clubb_and_the_subcycle():
     # the MPAS-only lane requirement fails at BUILD time, before any step
     cc6 = __import__("legoesm.atmosphere.physics.clouds.config",
                      fromlist=["CloudConfig"]).CloudConfig(scheme="cam6_clubb")
-    assert callable(make_microphysics_physics(mc, "mpas", 60.0, cloud_config=cc6))
+    from legoesm.atmosphere.physics.turbulence.clubb import CLUBBConfig
+    # aist is cut at CLUBB's top: the run's CLUBBConfig is required
+    with pytest.raises(ValueError, match="needs the run's CLUBBConfig"):
+        make_microphysics_physics(mc, "mpas", 60.0, cloud_config=cc6)
+    assert callable(make_microphysics_physics(mc, "mpas", 60.0, cloud_config=cc6,
+                                              clubb_config=CLUBBConfig()))
     with pytest.raises(ValueError, match="MPAS lane only"):
-        make_microphysics_physics(mc, "hydrostatic", 60.0, cloud_config=cc6)
+        make_microphysics_physics(mc, "hydrostatic", 60.0, cloud_config=cc6,
+                                  clubb_config=CLUBBConfig())
     with pytest.raises(ValueError, match="MPAS lane only"):
         _mpas_physics_hydrostatic()
 
@@ -401,11 +407,12 @@ def test_microphysics_reads_clubbs_cloud_fraction_from_the_same_substep(monkeypa
     real_upd = ti._carry_update_with_cloud_fraction
     real_micro = mi.morrison_microphysics
     real_aist = mi.cam6_ice_stratus_fraction
-    aists = []
+    aists, aist_kw = [], []
 
     def aist(*a, **k):
         out = real_aist(*a, **k)
         aists.append(np.asarray(out))
+        aist_kw.append(k)
         return out
 
     def upd(carry_field, carry_val, turb_out):
@@ -425,12 +432,21 @@ def test_microphysics_reads_clubbs_cloud_fraction_from_the_same_substep(monkeypa
     tr = dict(state.tracers)
     tr["q_i"] = state.T.replace(data=1.0e-5 * top, name="q_i", units="kg/kg")
     tr["q_v"] = tr["q_v"].replace(data=jnp.maximum(tr["q_v"].data, 2.0e-3 * top))
+    # the MG2 mode carries the snow number (refused without it)
+    tr["N_s"] = state.T.replace(data=jnp.zeros_like(state.T.data), name="N_s",
+                                units="1/kg")
     state = state._replace(tracers=tr)
     fn, cfg = _mpas_physics(True, n=2)
     ps = init_physics_state(*state.T.data.shape, cfg)
     ps = ps._replace(cloud_fraction=jnp.full(state.T.data.shape, 0.123))
     fn(state, mesh, sigma, phys_state=ps)
     assert len(written) == len(read) == len(aists) == 2
+    # the run's CLUBB top reaches aist (clubb_intr.F90:2535 cut)
+    from legoesm.atmosphere.physics.turbulence.clubb import CLUBBConfig
+    _c = CLUBBConfig()
+    assert all(k == dict(trop_cloud_top_press=_c.trop_cloud_top_press,
+                         trop_cloud_taper_lnp_width=_c.trop_cloud_taper_lnp_width)
+               for k in aist_kw)
     for w, r, ai in zip(written, read, aists):
         np.testing.assert_array_equal(
             np.maximum(np.clip(w.reshape(r.shape), 0.0, 1.0), ai), r)

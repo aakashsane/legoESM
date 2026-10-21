@@ -37,6 +37,14 @@ HARD, HARD_CAP = 1.0e-12, 1.0e12
 T_SNOW = C.T_freeze + 2.0
 
 
+def _qvi_mg2(T, p):
+    """MG2's ice-saturation humidity on the scheme's own CAM Goff-Gratch curves:
+    qvl at or above 0 C, qvi below (micro_mg2_0.F90:909-916)."""
+    from legoesm.thermo import (saturation_specific_humidity_goff_gratch as qvl,
+                                saturation_specific_humidity_ice_goff_gratch as qvi)
+    return jnp.where(T >= C.T_freeze, qvl(T, p), qvi(T, p))
+
+
 def _fx():
     return dict(np.load(FIXTURE))
 
@@ -167,8 +175,7 @@ def test_morrison_snow_melt_rate_off_and_number_needed():
     # PSMLT rate is off; MG2 only melts above +2 C)
     snow = jnp.asarray(fx["col_q_c"]) > 0
     T = jnp.where(snow, C.T_freeze + 1.0, jnp.asarray(fx["col_T"]))
-    from legoesm.thermo import saturation_specific_humidity_ice
-    fx["col_q_v"] = np.asarray(saturation_specific_humidity_ice(T, jnp.asarray(fx["col_p_full"])))
+    fx["col_q_v"] = np.asarray(_qvi_mg2(T, jnp.asarray(fx["col_p_full"])))
     out = _snow_run(fx, jnp.where(snow, 1e-4, 0.0), jnp.where(snow, 3e4, 0.0), T,
                     hyd=dict(q_r=z, N_r=z))
     assert np.abs(np.asarray(out.dq_r_dt)[np.asarray(snow)]).max() < 1e-12
@@ -184,11 +191,14 @@ def test_graupel_heat_cap_reads_the_premelted_temperature(monkeypatch):
     T = jnp.where(cell, T_SNOW + 1.0, jnp.asarray(fx["col_T"]))
     q_s = jnp.where(cell, 5.0e-4, 0.0)          # pre-apply melts half of it (ramp at +1 K)
     q_g = jnp.where(cell, 1.0e-2, 0.0)
-    from legoesm.thermo import saturation_specific_humidity_ice
-    fx["col_q_v"] = np.asarray(saturation_specific_humidity_ice(T, jnp.asarray(fx["col_p_full"])))
+    fx["col_q_v"] = np.asarray(_qvi_mg2(T, jnp.asarray(fx["col_p_full"])))
     monkeypatch.setattr(M, "graupel_melting_pgmlt",
                         lambda q_g, *a, **k: jnp.clip(q_g, 0.0) / dt)
-    cfg = _cfg(fall_a_g=0.0)
+    # graupel vapour exchange runs on the SAM saturation curve, the vapour here
+    # on MG2's Goff-Gratch one: switch it off so only melting moves heat
+    # graupel vapour exchange runs on the SAM saturation curve, the vapour here
+    # on MG2's Goff-Gratch one: off, so only melting moves heat
+    cfg = _cfg(fall_a_g=0.0, do_graupel_deposition=False)
     z = jnp.zeros_like(q_s)
     out = _snow_run(fx, q_s, jnp.where(cell, 3e4, 0.0), T, cfg=cfg,
                     hyd=dict(q_g=q_g, q_r=z, N_r=z))
@@ -200,7 +210,7 @@ def test_graupel_heat_cap_reads_the_premelted_temperature(monkeypatch):
     # graupel melt together cool the cell exactly to 0 C, not below (a cap
     # reading the start T instead ends the cell 0.17 K below 0 C, measured)
     T_end = np.asarray(T) + np.asarray(out.dT_dt) * dt
-    assert np.allclose(T_end[c], C.T_freeze, rtol=0.0, atol=1e-9)
+    assert np.allclose(T_end[c], C.T_freeze, rtol=0.0, atol=1e-6)   # rounded cap: ~1e-8 K
 
 
 def test_post_sedimentation_point_is_wired(monkeypatch):
@@ -212,8 +222,7 @@ def test_post_sedimentation_point_is_wired(monkeypatch):
     nlev = fx["col_T"].shape[1]
     lev = np.arange(nlev)[None, :] * np.ones_like(fx["col_T"])
     T = jnp.asarray(np.where(lev < nlev // 2, 268.0, 281.0))
-    from legoesm.thermo import saturation_specific_humidity_ice
-    fx["col_q_v"] = np.asarray(saturation_specific_humidity_ice(T, jnp.asarray(fx["col_p_full"])))
+    fx["col_q_v"] = np.asarray(_qvi_mg2(T, jnp.asarray(fx["col_p_full"])))
     top = jnp.asarray((lev >= nlev // 2 - 3) & (lev < nlev // 2))
     # snow in the warm cells too: their pre-apply melt cools them 0.33 K before the
     # post point, so the post point's temperature differs from the start T
@@ -270,11 +279,104 @@ def test_pre_apply_leaves_cells_it_does_not_enter():
     enter the pre-apply there, so nothing is clipped or restored."""
     fx = A._fx()
     T = jnp.full_like(jnp.asarray(fx["col_T"]), 250.0)
-    from legoesm.thermo import saturation_specific_humidity_ice
-    fx["col_q_v"] = np.asarray(saturation_specific_humidity_ice(T, jnp.asarray(fx["col_p_full"])))
+    fx["col_q_v"] = np.asarray(_qvi_mg2(T, jnp.asarray(fx["col_p_full"])))
     neg = jnp.full_like(T, -1.0e-9)
     z = jnp.zeros_like(T)
     out = _snow_run(fx, neg, z, T, hyd=dict(q_r=neg, N_r=z))
     m, _ = W.mg2_instant_snow_melt(T, neg, z, 2.0)
     assert not np.asarray(m).any()
     assert np.abs(np.asarray(out.dq_s_dt)).max() < 1e-15
+
+
+def test_graupel_melt_switches_on_smoothly(monkeypatch):
+    """Under the switch the graupel melt is scaled by the smooth step (0 at 0 C,
+    full after 2 K) times the rounded heat cap (user decision 2026-10-21 b):
+    with a small demand (heat never binds) the melt is exactly step x demand."""
+    fx = A._fx()
+    dt = float(fx["dt"])
+    cell = jnp.asarray(fx["col_q_c"]) > 0
+    dTs = np.array([-0.3, 0.0, 0.5, 1.0, 1.5, 2.5])
+    k = np.asarray(cell).nonzero()
+    T = np.asarray(fx["col_T"]).copy()
+    for j, (a, b) in enumerate(zip(*k)):
+        T[a, b] = C.T_freeze + dTs[j % len(dTs)]
+    T = jnp.asarray(T)
+    fx["col_q_v"] = np.asarray(_qvi_mg2(T, jnp.asarray(fx["col_p_full"])))
+    demand = 1.0e-8                                   # kg/kg/s: 6e-6 per step, heat ample
+    monkeypatch.setattr(M, "graupel_melting_pgmlt",
+                        lambda q_g, *a, **kw: jnp.where(q_g > 0, demand, 0.0))
+    q_g = jnp.where(cell, 1.0e-3, 0.0)
+    z = jnp.zeros_like(q_g)
+    # production melt sharpness 2 /K (W = 2 K); the oracle tests' hard limit makes W ~ 4e-6 K
+    cfg = _cfg(fall_a_g=0.0, do_graupel_deposition=False, do_graupel_rain_accretion=False)._replace(melt_sharpness=2.0)
+    out = _snow_run(fx, z, z, T, cfg=cfg,
+                    hyd=dict(q_g=q_g, q_r=z, N_r=z))
+    c = np.asarray(cell)
+    x = np.asarray(T)[c] - C.T_freeze
+    want = np.asarray(smoothstep_quintic(jnp.asarray(x / 2.0))) * demand
+    got = -np.asarray(out.dq_g_dt)[c]
+    assert np.allclose(got, want, rtol=1e-6, atol=1e-20)
+    assert (got[x <= 0] == 0).all() and (got[(x > 0) & (x < 2)] < demand).all()
+
+
+def test_graupel_melt_gradient_is_smooth_through_0C():
+    """Finite-difference check of d(graupel melt)/dT through the whole scheme at
+    T - 0 C = 0.5 K (inside the step) and 1e-3 K (just above the threshold)."""
+    fx = A._fx()
+    cell = jnp.asarray(fx["col_q_c"]) > 0
+    q_g = jnp.where(cell, 1.0e-3, 0.0)
+    z = jnp.zeros_like(q_g)
+    cfg = _cfg(fall_a_g=0.0, do_graupel_deposition=False)._replace(melt_sharpness=2.0)
+
+    def melt(dT):
+        T = jnp.where(cell, C.T_freeze + dT, jnp.asarray(fx["col_T"]))
+        f2 = dict(fx, col_q_v=_qvi_mg2(T, jnp.asarray(fx["col_p_full"])))
+        out = _snow_run(f2, z, z, T, cfg=cfg, hyd=dict(q_g=q_g, q_r=z, N_r=z))
+        return -jnp.sum(jnp.where(cell, out.dq_g_dt, 0.0))
+
+    for x in (0.5, 1.0e-3):
+        g = float(jax.grad(melt)(x))
+        h = 1e-4 * max(x, 1e-2)
+        fd = (float(melt(x + h)) - float(melt(x - h))) / (2 * h)
+        assert np.isfinite(g) and g > 0 and np.isclose(g, fd, rtol=2e-3), (x, g, fd)
+
+
+def test_graupel_caps_are_rounded_not_hard(monkeypatch):
+    """Under the switch PGMLT is called without dt (its hard heat and
+    all-of-the-graupel caps off) and both limits are smooth_min(1, r, 100):
+    heat-limited and graupel-limited cells match the rounded forms exactly."""
+    fx = A._fx()
+    dt = float(fx["dt"])
+    cell = jnp.asarray(fx["col_q_c"]) > 0
+    seen = {}
+    k = np.asarray(cell).nonzero()
+    T = np.asarray(fx["col_T"]).copy()
+    q_g = np.zeros_like(T)
+    demand = 3.0e-5                            # 1.8e-2 per step
+    dt_ = float(fx["dt"])
+    # past the 2 K step, so only the caps act: heat-limited, tiny graupel, and
+    # graupel exactly at its rounded corner (q_g/dt == demand) with ample heat
+    for j, (a, b) in enumerate(zip(*k)):
+        T[a, b] = C.T_freeze + (3.0, 3.0, 10.0)[j % 3]
+        q_g[a, b] = (1.0e-2, 1.0e-6, demand * dt_)[j % 3]
+    T, q_g = jnp.asarray(T), jnp.asarray(q_g)
+    fx["col_q_v"] = np.asarray(_qvi_mg2(T, jnp.asarray(fx["col_p_full"])))
+
+    def pg(q, *a, dt=None, **kw):
+        seen["dt"] = dt
+        return jnp.where(q > 0, demand, 0.0)
+
+    monkeypatch.setattr(M, "graupel_melting_pgmlt", pg)
+    z = jnp.zeros_like(q_g)
+    out = _snow_run(fx, z, z, T, cfg=_cfg(fall_a_g=0.0, do_graupel_deposition=False, do_graupel_rain_accretion=False),
+                    hyd=dict(q_g=q_g, q_r=z, N_r=z))
+    assert seen["dt"] is None
+    c = np.asarray(cell)
+    from legoesm.core.smooth import smooth_min
+    r_q = np.asarray(q_g)[c] / dt / demand
+    m1 = demand * np.asarray(smooth_min(jnp.ones_like(jnp.asarray(r_q)), jnp.asarray(r_q), 100.0))
+    r_h = C.c_pd * (np.asarray(T)[c] - C.T_freeze) / (C.L_f * m1 * dt)
+    want = m1 * np.asarray(smooth_min(jnp.ones_like(jnp.asarray(r_h)), jnp.asarray(r_h), 100.0))
+    got = -np.asarray(out.dq_g_dt)[c]
+    assert np.allclose(got, want, rtol=1e-10)
+    assert (r_h < 1).any() and (r_q < 1).any() and (np.abs(r_q - 1.0) < 1e-12).any()

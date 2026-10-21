@@ -61,6 +61,7 @@ import jax.numpy as jnp
 from legoesm import constants
 from legoesm.thermo import saturation_specific_humidity as _saturation_specific_humidity
 from legoesm.thermo import saturation_specific_humidity_goff_gratch as _qsat_water_goff_gratch
+from legoesm.core.smooth import smooth_min
 from legoesm.thermo import saturation_specific_humidity_ice as _saturation_specific_humidity_ice
 from legoesm.thermo import saturation_specific_humidity_ice_goff_gratch as _qsat_ice_goff_gratch
 from legoesm.thermo import homogeneous_freezing_rh_factor as _homogeneous_freezing_rh_factor
@@ -78,6 +79,8 @@ from legoesm.atmosphere.physics.microphysics._warm_rain import (
     mg2_cloud_sedimentation,
     mg2_instant_ice_melt_homog_freeze,
     mg2_droplet_number_readjust,
+    mg2_phase_change_fraction,
+    MG2_CAP_SHARPNESS,
     RAMP_WIDTH_PER_SHARPNESS,
     mg2_incloud_warm_rain_inputs,
     mg2_inprecip_rain,
@@ -371,6 +374,10 @@ def morrison_microphysics(
     # PSMLT/NSUBS/PGSACW and its Cooper-like nucleation does not count snow, so
     # those SAM double-moment pieces stay off in this mode.
     mg2_snow = bool(config.warm_rain_incloud) and snow_double_moment
+    # MG2 has no graupel; in MG2 mode do_graupel still selects it (user decision
+    # 2026-10-21 item 14a): with do_graupel=False frozen rain follows MG2
+    # (snow, or cloud ice), with do_graupel=True the graupel paths stay on.
+    mg2_route = mg2_snow and not config.do_graupel
     if mg2_snow:
         # micro_mg2_0.F90:1147-1169: snow above T_freeze + 2 K melts to rain
         # INSTANTANEOUSLY on the state every process then sees (T itself is
@@ -1072,7 +1079,16 @@ def morrison_microphysics(
     #     applies the donor + sensible-heat caps; melt_graupel is the SOLE q_g
     #     sink so the sed extra_sink below accounts for it (no double-clamp).
     #     Tropical graupel mostly melts before reaching the surface.
-    if config.do_graupel and config.do_graupel_melting:
+    if config.do_graupel and config.do_graupel_melting and _prog_nc:
+        # Under the switch PGMLT's two hard caps (heat, all of the graupel) are
+        # replaced by rounded ones (user decisions 2026-10-20 2b, 2026-10-21 b):
+        # the raw rate, then smooth_min against q_g/dt here, the heat below.
+        _rate_g = graupel_melting_pgmlt(q_g, T, p_full, rho, config, dt=None, N_g=N_g_arg)
+        _has_g = _rate_g > 0.0
+        _r_g = (jnp.clip(q_g, 0.0) / dt) / jnp.where(_has_g, _rate_g, 1.0)
+        melt_graupel = jnp.where(_has_g, _rate_g * jnp.maximum(
+            smooth_min(jnp.ones_like(_r_g), _r_g, MG2_CAP_SHARPNESS), 0.0), 0.0)
+    elif config.do_graupel and config.do_graupel_melting:
         melt_graupel = graupel_melting_pgmlt(
             q_g, T, p_full, rho, config, dt=dt, N_g=N_g_arg)
     else:
@@ -1091,9 +1107,18 @@ def morrison_microphysics(
     _T_cap = T - constants.L_f * minstsm / constants.c_pd if mg2_snow else T  # latent-ok: MG2 oracle constant (xlf)
     heat_avail = (constants.c_pd * jnp.maximum(_T_cap - constants.T_freeze, 0.0)
                   / (constants.L_f * jnp.maximum(dt, 1.0e-12)))
-    melt_heat_scale = jnp.where(
-        total_melt > heat_avail,
-        heat_avail / jnp.maximum(total_melt, 1.0e-30), 1.0)
+    if _prog_nc:
+        # Under the switch only graupel melts at a rate: melt_ice and
+        # melt_snow are zeroed above (ice and snow melt instantly, MG2), so this
+        # scale is graupel's.  Same smooth step (0 at 0 C, full after W) times
+        # rounded heat cap as the instant melts (user decision 2026-10-21 b).
+        melt_heat_scale = mg2_phase_change_fraction(
+            _T_cap - constants.T_freeze, total_melt * dt,
+            RAMP_WIDTH_PER_SHARPNESS / config.melt_sharpness, MG2_CAP_SHARPNESS)
+    else:
+        melt_heat_scale = jnp.where(
+            total_melt > heat_avail,
+            heat_avail / jnp.maximum(total_melt, 1.0e-30), 1.0)
     melt_ice = melt_ice * melt_heat_scale
     melt_snow = melt_snow * melt_heat_scale
     melt_graupel = melt_graupel * melt_heat_scale
@@ -1352,7 +1377,7 @@ def morrison_microphysics(
     # (riming_s − pgsacw), graupel gains pgsacw (mass conserved). The snow loses
     # number NSCNG = ρ_sn/(ρ_g−ρ_sn)·pgsacw/MG0·ρ (bounded by N_s/dt).
     if (snow_double_moment and config.do_graupel
-            and config.do_snow_to_graupel and not mg2_snow):
+            and config.do_snow_to_graupel and not mg2_route):
         pgsacw = snow_to_graupel_pgsacw(
             q_c, q_s, N_s, riming_s, rho, config, dt)
         # NSCNG snow-number sink = (ρ_sn/(ρ_g−ρ_sn)·PGSACW)/MG0. PGSACW is a
@@ -1413,7 +1438,7 @@ def morrison_microphysics(
     # 1648-1656 mnuccri/nnuccri; qstend :1893-1895, qitend :1882-1886).
     freeze_to_ice = jnp.zeros_like(freeze_rain)
     freeze_N_to_ice = jnp.zeros_like(freeze_N_r)
-    if mg2_snow:
+    if mg2_route:
         to_ice = ((lamr_ic > MG2_QSMALL)
                   & (1.0 / jnp.where(lamr_ic > MG2_QSMALL, lamr_ic, 1.0)
                      < config.ice_snow_d_auto))
@@ -2417,7 +2442,7 @@ def morrison_microphysics(
         # Frozen rain drops → graupel particles (per-volume freeze_N_r ⇒ /ρ for
         # per-mass N_g); the snow→graupel embryos NSCNG (already per-mass).
         freeze_N_to_graupel = (freeze_N_r / jnp.clip(rho, _RHO_FLOOR)
-                               if config.do_graupel and not mg2_snow
+                               if config.do_graupel and not mg2_route
                                else jnp.zeros_like(q_g))
         dN_g_dt = (freeze_N_to_graupel + nscng
                    - dN_g_melt + dN_g_subl + sed_N_g)

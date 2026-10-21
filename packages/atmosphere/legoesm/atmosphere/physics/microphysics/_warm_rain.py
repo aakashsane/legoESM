@@ -1012,7 +1012,7 @@ def mg2_cloud_sedimentation(q_c, N_c_kg, lcldm, T, rho, p_half, dt, n_substeps_m
 
 
 
-def _mg2_phase_change_fraction(excess_K, mass, width_K, cap_sharpness):
+def mg2_phase_change_fraction(excess_K, mass, width_K, cap_sharpness):
     """Fraction of ``mass`` an MG2 instant melt/freeze converts once the
     temperature is ``excess_K`` past its threshold: the heat-limited fraction
     min(excess*c_p/(L_f*mass), 1) (micro_mg2_0.F90:2621-2631, :2658-2668),
@@ -1050,7 +1050,7 @@ def mg2_instant_ice_melt_homog_freeze(q_c, N_c_kg, q_i, N_i_kg, T, T_homog,
     dumni = jnp.where(dumi < MG2_QSMALL, 0.0, jnp.maximum(N_i_kg, 0.0))
 
     x_m = T - constants.T_freeze
-    f_m = _mg2_phase_change_fraction(x_m, dumi, melt_width_K, cap_sharpness)
+    f_m = mg2_phase_change_fraction(x_m, dumi, melt_width_K, cap_sharpness)
     fired_m = (dumi > 0.0) & (x_m > 0.0)
     melt = f_m * dumi
     q_i1 = jnp.where(fired_m, (1.0 - f_m) * dumi, q_i)
@@ -1060,7 +1060,7 @@ def mg2_instant_ice_melt_homog_freeze(q_c, N_c_kg, q_i, N_i_kg, T, T_homog,
     T1 = T - constants.L_f * melt / constants.c_pd
 
     x_h = T_homog - T1
-    f_h = _mg2_phase_change_fraction(x_h, dumc, freeze_width_K, cap_sharpness)
+    f_h = mg2_phase_change_fraction(x_h, dumc, freeze_width_K, cap_sharpness)
     fired_h = (dumc > 0.0) & (x_h > 0.0)
     frz = f_h * dumc
     q_c2 = jnp.where(fired_h, (1.0 - f_h) * dumc, q_c1)
@@ -1417,10 +1417,10 @@ def mg2_instant_snow_melt(T, q_s, N_s, width_K, cap_sharpness=MG2_CAP_SHARPNESS)
     the melt cannot cool the air below snowmelt).  Here the switch-on is the C2
     step, 0 at snowmelt and full ``width_K`` above, and the min is rounded with
     smooth_min at ``cap_sharpness`` (user decisions 2026-10-20 2a/2b, re-applied
-    on main 2026-10-21 item 1a; see :func:`_mg2_phase_change_fraction`).
+    on main 2026-10-21 item 1a; see :func:`mg2_phase_change_fraction`).
     Returns the melted ``(mass, number) = (f q_s, f N_s)`` [kg/kg, #/kg]."""
     excess = T - (constants.T_freeze + MG2_SNOWMELT_OFFSET_K)
-    frac = _mg2_phase_change_fraction(excess, q_s, width_K, cap_sharpness)
+    frac = mg2_phase_change_fraction(excess, q_s, width_K, cap_sharpness)
     return frac * jnp.maximum(q_s, 0.0), frac * N_s
 
 # --- Seifert & Beheng (2001) warm-rain UNIVERSAL FUNCTIONS ---

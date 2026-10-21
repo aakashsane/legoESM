@@ -24,7 +24,7 @@ keeps the orchestrator's uniform carry schema.
 5. ``convtran`` -- convective transport of the CAM6 ``convtran1``
    constituents the host carries (``CONVTRAN1_TRACERS``; ``tracers=``), on the
    input state, returned as signed column-conserving tendencies in
-   ``ConvectionOutput.tracer_transport``.  ``tracers=None`` transports nothing.
+   ``ConvectionOutput.tracer_transport``.  ``tracers=None`` or ``config.transport_cloud_tracers=False`` transports nothing.
 
 Departures inside the kernels are listed in ``_zm_cam6``.
 
@@ -232,7 +232,7 @@ def zhang_mcfarlane_convection(
         du_dt_conv = dv_dt_conv = None
 
     transport = None
-    if tracers is not None:
+    if tracers is not None and config.transport_cloud_tracers:
         # zm_conv_intr.F90:842: convtran on state1 (ZM's T/Q/U/V updates do
         # not touch these constituents, so this is the input state).
         transport = {

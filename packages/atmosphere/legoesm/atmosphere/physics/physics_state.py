@@ -44,6 +44,10 @@ NO_SFC_T_OVERRIDE: float = -1.0e4
 SFC_T_OVERRIDE_VALID_MIN: float = 1.0
 
 
+# pbuf RELVAR initial value (micro_mg_cam.F90:1058, cam_cesm2_1_rel_60).
+_RELVAR_INIT = 2.0
+
+
 class PhysicsState(NamedTuple):
     """Prognostic physics state — passed through time loop, checkpointable.
 
@@ -265,6 +269,12 @@ class PhysicsState(NamedTuple):
     # turbulence call = CAM's cold start when the initial file has no PBLH
     # (physpkg.F90:419-424).  Appended LAST with a default.
     pblh: jnp.ndarray = None
+    # CAM6 relative cloud-water variance [-] (ncol, nlev) for MG2, written by
+    # prognostic CLUBB (liquid partition) each macmic sub-step and read by the
+    # microphysics of the same sub-step (clubb_intr.F90:2416-2425 -> pbuf
+    # RELVAR).  Seeded at CAM's pbuf initial value; overwritten before any read
+    # on the CLUBB lanes.  Appended LAST.
+    relvar: jnp.ndarray = None
 
 
 # State fields that are run-level INPUTS rather than physics memory.
@@ -463,6 +473,7 @@ def init_physics_state(
         conv_mass_flux_up=jnp.zeros((ncol, nlev + 1), dtype=dtype),
         conv_icwmr=jnp.zeros((ncol, nlev), dtype=dtype),
         pblh=jnp.zeros((ncol,), dtype=dtype),
+        relvar=jnp.full((ncol, nlev), _RELVAR_INIT, dtype=dtype),
     )
 
 
@@ -553,4 +564,5 @@ def update_physics_state(phys_state, updates):
             "conv_mass_flux_up", phys_state.conv_mass_flux_up),
         conv_icwmr=updates.get("conv_icwmr", phys_state.conv_icwmr),
         pblh=updates.get("pblh", phys_state.pblh),
+        relvar=updates.get("relvar", phys_state.relvar),
     )

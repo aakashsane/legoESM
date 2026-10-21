@@ -4661,8 +4661,9 @@ def _source_revision_drift_note(parent_sha, this_sha) -> str | None:
     SHA describes only part of the running code, so equality of two such
     strings is not equality of the code.
 
-    Pure function of the two strings so it is directly testable; ``main`` only
-    prints the result.
+    Pure function of the two strings so it is directly testable; ``main``
+    hands the result to ``_refuse_restart_source_drift``, which refuses the
+    resume on it (a warning with ``LEGOESM_ALLOW_VERSION_DRIFT=1``).
     """
     unknown = {None, "", _SOURCE_REV_UNAVAILABLE}
     if parent_sha in unknown or this_sha in unknown:
@@ -4674,14 +4675,26 @@ def _source_revision_drift_note(parent_sha, this_sha) -> str | None:
         return (f"[warn] --restart-from was written at source revision "
                 f"{parent_sha[:20]} but this leg is running {this_sha[:20]}: "
                 "the model code changed between legs.  The state and "
-                "configuration still validated, so the resume proceeds — but "
-                "attribute results to BOTH revisions.")
+                "configuration validated, but the resume is refused unless "
+                "LEGOESM_ALLOW_VERSION_DRIFT=1; if allowed, attribute results "
+                "to BOTH revisions.")
     why = _revision_ambiguity(this_sha)
     if why:
         return (f"[warn] both legs report {this_sha}, but that string does not "
                 f"pin the code: {why}  Matching markers do not prove matching "
                 "source.")
     return None
+
+
+def _refuse_restart_source_drift(parent_sha, this_sha, path) -> None:
+    """Version-drift rule for ``--restart-from`` (reproducibility decision 3):
+    a restart written by other or unidentifiable code (unknown, mismatched,
+    dirty or mixed-tree revision) is refused on every process unless
+    ``LEGOESM_ALLOW_VERSION_DRIFT`` is set, which downgrades it to a warning."""
+    from legoesm.driver.restart import collective_version_drift_gate
+    note = _source_revision_drift_note(parent_sha, this_sha)
+    collective_version_drift_gate(lambda: [note] if note else [],
+                                  f"restart {path}")
 
 
 def _revision_ambiguity(rev) -> str | None:
@@ -7571,6 +7584,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                         "Lets --C-smag-lap "
                         "be cranked high to damp WBC jets WITHOUT self-CFL at the "
                         "sharp jet. ~0.125 is a safe 2-D Laplacian cap.")
+    p.add_argument("--synthetic-forcing", action="store_true",
+                   help="Use synthetic forcing (no real CORE-II data needed). "
+                        "Explicit opt-in for testing and development only — "
+                        "never the default (a silent fallback would corrupt "
+                        "the NEMO comparison invisibly).")
+    p.add_argument("--forcing-scale", type=float, default=1.0,
+                   help="Scale surface forcing by this factor (default 1.0). "
+                        "Useful for sensitivity tests or reducing cold-start shock.")
+    p.add_argument("--days", type=float, default=None,
+                   help="Run for this many days (overrides --years and --smoke). "
+                        "Useful for short tests that are not the standard 10-day smoke.")
     p.add_argument("--nudge-woa-tau-days", type=float, default=0.0,
                    help="Nudge T,S toward WOA with this timescale [days] from a "
                         "rest start -- gradual cold-start spinup that avoids the "
@@ -9024,13 +9048,13 @@ def main() -> int:
         chl_clim = load_nemo_chl_monthly(
             grid, app_grid_type, lat2d, lon2d, chl_file=args.chl_file,
                                          chl_remap=args.chl_remap)
-    # allow_synthetic=False: this NEMO-faithful pipeline MUST use the real
-    # 6-hourly CORE-II nyf.zarr; a silent fallback to 365 daily synthetic forcing
-    # would corrupt the comparison invisibly. --forcing-path (set via --config
-    # forcing.path) threads the staged data dir into the loader's cache_dir so a
-    # fetch-then-run workflow finds it (#376).
+    # allow_synthetic=False by default: this NEMO-faithful pipeline MUST use the
+    # real 6-hourly CORE-II nyf.zarr; a silent fallback to 365 daily synthetic
+    # forcing would corrupt the comparison invisibly. --forcing-path (set via
+    # --config forcing.path) threads the staged data dir into the loader's
+    # cache_dir so a fetch-then-run workflow finds it (#376).
     forcing = load_core2_nyf(
-        allow_synthetic=False,
+        allow_synthetic=args.synthetic_forcing,
         cache_dir=(Path(args.forcing_path) if args.forcing_path else None),
     )
     n_rec = int(forcing.u10.shape[0])
@@ -9164,7 +9188,10 @@ def main() -> int:
 
     dt = float(args.dt)
     ramp_s = float(args.forcing_ramp_days) * _SEC_PER_DAY
-    total_days = 10.0 if args.smoke else args.years * 365.0
+    if args.days is not None:
+        total_days = float(args.days)
+    else:
+        total_days = 10.0 if args.smoke else args.years * 365.0
     n_steps = int(total_days * _SEC_PER_DAY / dt)
     diag_every = max(1, int(args.diag_every_days * _SEC_PER_DAY / dt))
     steps_per_year = int(365.0 * _SEC_PER_DAY / dt)
@@ -9299,13 +9326,13 @@ def main() -> int:
     # resumes silently.  Recorded always, via _source_revision() — which scopes
     # the query to THIS script's checkout, marks a dirty tree, and returns
     # _SOURCE_REV_UNAVAILABLE instead of silently omitting the field.
-    # DELIBERATELY A WARNING, NOT AN ABORT: chaining a multi-day production run
-    # across a bug fix is a legitimate and expected workflow, and a hard error
-    # would make the feature unusable exactly when it matters.  The state
-    # itself is still validated by the config fingerprint; this line makes the
-    # code drift visible in the log and in the archive so a scorecard is never
-    # attributed to the wrong revision.  It is provenance, NOT a proof of
-    # identical code — see ocean.restart's SCOPE OF THE GUARANTEE.
+    # A resume across a source change is REFUSED (reproducibility decision 3,
+    # approved 2026-10-12; it was a warning before): chaining a production run
+    # across a bug fix stays possible, but explicitly, with
+    # LEGOESM_ALLOW_VERSION_DRIFT=1 (then a warning).  The state itself is
+    # still validated by the config fingerprint.  The revision is provenance,
+    # NOT a proof of identical code — see ocean.restart's SCOPE OF THE
+    # GUARANTEE.
     _restart_src_sha = None
     if args.restart_save or args.restart_from:
         _restart_src_sha = _source_revision()
@@ -9370,10 +9397,8 @@ def main() -> int:
         # Source-revision drift: three DISTINCT outcomes (unknown / mismatch /
         # equal-but-dirty), decided by the pure helper so the logic is unit
         # tested rather than only exercised by a full driver run.
-        _drift_note = _source_revision_drift_note(_rs_meta.get("sha"),
-                                                  _restart_src_sha)
-        if _drift_note:
-            print(_drift_note, flush=True)
+        _refuse_restart_source_drift(_rs_meta.get("sha"), _restart_src_sha,
+                                     _rs_path)
         start_step = int(_rs_meta["step"])
         if start_step >= n_steps:
             # Never exit silently "already at target" (CLAUDE.md run-target
@@ -10320,6 +10345,11 @@ def main() -> int:
         if ramp < 1.0:
             sf = sf._replace(tau_x=sf.tau_x * ramp, tau_y=sf.tau_y * ramp,
                              q_net=sf.q_net * ramp, sw_down=sf.sw_down * ramp)
+        if args.forcing_scale != 1.0:
+            sf = sf._replace(tau_x=sf.tau_x * args.forcing_scale,
+                             tau_y=sf.tau_y * args.forcing_scale,
+                             q_net=sf.q_net * args.forcing_scale,
+                             sw_down=sf.sw_down * args.forcing_scale)
         # Surface chlorophyll for THIS step (calendar-month slice); attaching it
         # switches the PE step to NEMO's RGB penetration.  NOT ramped — Chl is a
         # fixed optical climatology, independent of the dynamical spin-up ramp.

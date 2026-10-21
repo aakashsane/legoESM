@@ -79,6 +79,33 @@ def test_goff_differentiable():
     assert np.isfinite(float(g)) and float(g) > 0.0
 
 
+def test_cam_goff_gratch_saturated_branch_and_gradients():
+    """CAM ``wv_sat_svp_to_qsat`` (wv_sat_methods.F90:180-193) at the default
+    (smooth, RULE 5) cap, away from ``e_sat = p``: q_sat = 1 where e_sat >> p
+    and the epsilo/omeps form where e_sat << p, both to rounding.  The values
+    themselves are checked against the RUNNING Fortran in the MG2 oracle
+    fixtures; here reverse-mode AD is finite in fp64 and fp32."""
+    from legoesm import constants
+    from legoesm.thermo import (
+        saturation_specific_humidity_goff_gratch,
+        saturation_specific_humidity_ice_goff_gratch,
+        saturation_vapor_pressure_goff_gratch,
+    )
+    T = jnp.array([300.0, 300.0])
+    p = jnp.array([1000.0, 1.0e5])                 # e_sat(300 K) ~ 3.5e3 Pa
+    q = np.asarray(saturation_specific_humidity_goff_gratch(T, p))
+    assert q[0] == 1.0
+    es = float(saturation_vapor_pressure_goff_gratch(T)[1])
+    eps = constants.epsilon
+    assert q[1] == pytest.approx(eps * es / (1.0e5 - (1.0 - eps) * es), rel=1e-15)
+    for fn in (saturation_specific_humidity_goff_gratch,
+               saturation_specific_humidity_ice_goff_gratch):
+        for dt in (jnp.float64, jnp.float32):
+            g = jax.grad(lambda t: jnp.sum(fn(t, jnp.full(3, 8.0e4, dt))))(
+                jnp.array([200.0, 250.0, 270.0], dt))
+            assert bool(jnp.all(jnp.isfinite(g))) and bool(jnp.all(g > 0.0))
+
+
 # --- RULE 5: CAM q_sat = 1 cap (limiter class), smooth by default ---
 _CAP_CASES = [(600.0, 1.0e5), (50.0, 60.0), (99.5, 100.0), (100.0, 100.0), (150.0, 100.0)]
 

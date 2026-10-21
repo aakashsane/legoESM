@@ -263,37 +263,14 @@ __param_spec__ = {
     "P3Config": {
         "scheme_key": "atm.micro.P3Config",
         "excluded": {
-            "autoconversion_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
-            "breakup_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "cooper_supi_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "ice_sigmoid_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "melt_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "rho_rim_min": "numerics: solver/smoothing/tolerance/iteration parameter",
-            "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
-            "k_au": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "k_ac": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "x_star": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "k_sc": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "D_eq": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "evap_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "a_v_r": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "b_v_r": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "cooper_T_act": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "dep_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "q_i_min_growth": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "rime_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "rain_rime_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "agg_coeff": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "melt_rate": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "a_v_i": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "b_v_i": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "c_rim_fallspeed": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "rho_rim_accrete": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
-            "rho_ice_ref": "no WRF P3 counterpart: the port refuses a non-default value (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)",
         },
         "params": {
             # --- Specified droplet number (WRF P3 nccnst) ---
-            "Nc_0": {"units": "1/m^3", "bounds": (1e7, 1e9), "tunable_tier": 2, "transform": "sigmoid", "category": "number_concentration", "reference": "Seifert & Beheng (2001)", "shape": None},
+            "Nc_0": {"units": "1/m^3", "bounds": (1e7, 1e9), "tunable_tier": 2, "transform": "sigmoid", "category": "number_concentration", "reference": "WRF v4.8.0 P3 nccnst = 2e8 (module_mp_p3.F:196)", "shape": None},
             # --- Ice nucleation (Cooper 1986) ---
             "N_i0": {"units": "1/m^3", "bounds": (1.0, 50.0), "tunable_tier": 2, "transform": "sigmoid", "category": "ice_nucleation", "reference": "Cooper (1986)", "shape": None},
             "N_i_nuc_max": {"units": "1/m^3", "bounds": (2e4, 5e6), "tunable_tier": 3, "transform": "sigmoid", "category": "ice_nucleation", "reference": "WRF v4.8.0 P3 cap 100/L (module_mp_p3.F:3276)", "shape": None},
@@ -1128,16 +1105,11 @@ class P3Config(NamedTuple):
     for ``mp_physics = 50``: one 2-moment ice category with predicted rime mass
     (q_rim) and rime volume (B_rim), lookup table v5.4_2momI, specified droplet
     number, KK2000 warm rain, Cooper nucleation; oracle-tested to 1e-10 at the
-    hard limit.  Fields it reads: ``Nc_0`` (specified droplet number [1/m^3],
-    WRF ``nccnst``), the Cooper nucleation fields ``N_i0``, ``cooper_a``,
-    ``N_i_nuc_max``, ``cooper_T_nuc``, ``cooper_supi_min``, ``rho_rim_min`` /
-    ``rho_rim_max`` and the three smoothing fields ``ice_sigmoid_sharpness``,
-    ``cooper_supi_sharpness``, ``melt_sharpness`` (the oracle at 1e6 / 1e9 /
-    1e6).  The opt-in ``hard_saturation_adjustment`` guard (not part of WRF
-    P3, default off) is applied after the P3 step as for ml_emulator.  Every
-    other field belonged to the former surrogate and has no WRF
-    P3 counterpart: ``p3.check_p3_config`` raises if one is changed from its
-    default (``P3_FIELDS_WITHOUT_ORACLE_COUNTERPART``).
+    hard limit.  Every field below is read by the port; the three smoothing
+    fields ``ice_sigmoid_sharpness``, ``cooper_supi_sharpness``,
+    ``melt_sharpness`` reach the oracle at 1e6 / 1e9 / 1e6.  The opt-in
+    ``hard_saturation_adjustment`` guard (not part of WRF P3, default off) is
+    applied after the P3 step as for ml_emulator.
 
     Slot reuse in HydrometeorState
     --------------------------------
@@ -1148,77 +1120,33 @@ class P3Config(NamedTuple):
     range from unrimed aggregates (~50 kg/m³) to dense graupel
     (~900 kg/m³).
     """
-    # --- Warm rain (Seifert-Beheng liquid phase) ---
-    k_au: float = 6e2
-    x_star: float = 2.6e-10
-    Nc_0: float = 1e8
-    k_ac: float = 5.25
-    k_sc: float = 1e-3
-    D_eq: float = 1.1e-3
-    breakup_sharpness: float = 1e4
-    a_v_r: float = 130.0
-    b_v_r: float = 0.5
-    evap_coeff: float = 1.0
-    saturation_sharpness: float = 100.0
-    autoconversion_sharpness: float = 10.0
+    # --- Specified droplet number (WRF P3 nccnst, module_mp_p3.F:196) ---
+    Nc_0: float = 2e8               # [1/m³] (user decision 2026-10-21: WRF value)
     # --- Ice nucleation (Cooper 1986, as WRF v4.8.0 P3 runs it) ---
-    # Was 5e3 — 1000x the canonical Cooper base (0.005/L = 5/m³, = MorrisonConfig).
     N_i0: float = 5.0               # Cooper base ice crystal number [1/m³] (= 0.005/L)
     cooper_a: float = 0.304         # Cooper exponent
-    # ORACLE cap: WRF P3 100 L⁻¹·SCF with SCF=1 (module_mp_p3.F:3276). Also bounds the Cooper exponential so cold
-    # tropopause temperatures cannot overflow fp32 (mirrors Morrison).
-    # (Was 5e5 = M2005's 500/L — a documented departure, closed 2026-07-17.)
+    # ORACLE cap: WRF P3 100 L⁻¹·SCF with SCF=1 (module_mp_p3.F:3276). Also
+    # bounds the Cooper exponential so cold tropopause temperatures cannot
+    # overflow fp32 (mirrors Morrison).
     N_i_nuc_max: float = 1.0e5      # [1/m³] = 100 /L
-    cooper_T_act: float = 265.0     # Mixed-phase process gate (dep/riming/agg) [K]
     # Nucleation-specific ORACLE gate (WRF module_mp_p3.F:3272): T < −15 °C AND
     # supi >= 0.05, smoothed by ice_sigmoid_sharpness / cooper_supi_sharpness.
     cooper_T_nuc: float = 258.15    # Nucleation activation temperature [K] (−15 °C)
     cooper_supi_min: float = 0.05   # Min ice supersaturation for nucleation [-]
     ice_sigmoid_sharpness: float = 5.0
     cooper_supi_sharpness: float = 200.0  # Sigmoid sharpness on supi gate [-]
-    # --- Ice depositional growth ---
-    dep_coeff: float = 1e-3
-    q_i_min_growth: float = 1e-9    # Minimum effective q_i for deposition [kg/kg]
-    # --- Cloud riming (ice collects cloud droplets) ---
-    rime_coeff: float = 0.5         # Collection efficiency E_ri [-]
-    # --- Rain riming (ice collects rain drops, freezes) ---
-    rain_rime_coeff: float = 0.1    # Collection efficiency E_rr [-]
-    # --- Self-collection / aggregation (N_i reduction) ---
-    agg_coeff: float = 1e-3         # Aggregation rate [1/s]
-    # --- Melting ---
-    melt_rate: float = 5e-3         # Melting rate [1/s]
     melt_sharpness: float = 2.0     # Sigmoid sharpness near T_freeze [1/K]
-    # --- P3 fall speed: V_t = a_v_i * (q_i*rho_ratio)^b_v_i * density_factor ---
-    a_v_i: float = 40.0             # Base fall speed coefficient
-    b_v_i: float = 0.3              # Fall speed exponent
     # --- Rime density limits [kg/m³] ---
     rho_rim_min: float = 50.0       # Minimum rime density (unrimed aggregates)
     rho_rim_max: float = 900.0      # Maximum rime density (dense graupel)
-    # --- Fall speed density enhancement ---
-    # V_t *= (rho_rim / rho_ice_ref)^c_rim_fallspeed
-    c_rim_fallspeed: float = 0.4    # Density enhancement exponent [-]
-    rho_ice_ref: float = 500.0      # Reference rime density for scaling [kg/m³]
-    # --- Accreted rime density (for dB_rim/dt from riming) ---
-    rho_rim_accrete: float = 400.0  # Density of newly accreted rime [kg/m³]
-    # --- Bulk ice density (for B_rim from nucleation) ---
-    rho_ice: float = constants.rho_ice  # Solid ice density [kg/m³]
     # --- Hard (iterated) saturation-adjustment guard (opt-in) ---
-    # See ``_warm_rain.saturation_adjustment`` / ``KesslerConfig``.  Newton-
-    # iterated saturation adjustment that lands q_v ON the liquid saturation
-    # curve where q_v > hard_sat_adjust_threshold * q_sat (conserving
-    # c_pd*T + L_v*q_v exactly).  Default OFF => byte-identical smooth path.
+    # See ``_warm_rain.saturation_adjustment``.  Newton-iterated saturation
+    # adjustment that lands q_v ON the liquid saturation curve where
+    # q_v > hard_sat_adjust_threshold * q_sat (conserving c_pd*T + L_v*q_v
+    # exactly).  Default OFF => byte-identical smooth path.
     hard_saturation_adjustment: bool = False
     hard_sat_adjust_threshold: float = 1.1   # RH trigger q_v > thr*q_sat [-]
     hard_sat_max_heating_K: float = 5.0      # per-step latent-heating cap [K]
-
-    # --- IFS/SAM homogeneous-freezing ice-supersaturation allowance ---
-    # gSAM cloud.f90 (Khairoutdinov 2023, after IFS): pristine air below
-    # 235 K may stay ice-supersaturated up to rh_homo = 2.583 - T/207.8
-    # (~1.45 at 235 K, ~1.67 at 190 K); the allowance is withdrawn the
-    # moment cloud ice exists.  NOT PART OF THE WRF P3 PORT: the field stays
-    # only so an old deck that changes it fails loudly
-    # (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART); the scheme never reads it.
-    homogeneous_ice_supersaturation: bool = True
 
 
 class MicrophysicsMLEmulatorConfig(NamedTuple):

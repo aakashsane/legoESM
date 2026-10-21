@@ -33,6 +33,6 @@ test "$(grep -c nctend_sed tap/micro_mg2_0.F90)" -eq 3
 test "$(grep -c nstepc_tap tap/micro_mg2_0.F90)" -eq 2
 test "$(diff "$CAM/micro_mg2_0.F90" tap/micro_mg2_0.F90 | grep -c '^>')" -eq 8
 (cd tap && gfortran $FF -I.. -c "$CAM/micro_mg_utils.F90" micro_mg2_0.F90 \
-   && gfortran $FF -DMG2_TAP -I. -o ../mg2_tap "$HERE/mg2_driver.F90" ../wv_sat_methods.o \
+   && gfortran $FF -DMG2_TAP -I. -I.. -o ../mg2_tap "$HERE/mg2_driver.F90" ../wv_sat_methods.o \
       micro_mg_utils.o micro_mg2_0.o)
 echo BUILD_OK

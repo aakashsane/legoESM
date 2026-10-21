@@ -86,5 +86,7 @@ def test_infinite_sharpness_is_the_exact_hard_limit():
     assert jnp.array_equal(smooth_min(x, y, inf), jnp.minimum(x, y))
     assert jnp.array_equal(smooth_relu(x, inf), jnp.maximum(x, 0.0))
     assert jnp.array_equal(smooth_clamp(x, -1.0, 1.0, inf), jnp.clip(x, -1.0, 1.0))
+    import numpy as np
+    assert jnp.array_equal(sigmoid_switch(x, np.float64(inf)), (x >= 0).astype(x.dtype))
     # a traced sharpness still takes the smooth path
     assert float(jax.jit(lambda s: sigmoid_switch(jnp.array(0.0), s))(10.0)) == 0.5

@@ -76,8 +76,7 @@ GSAM_RH_HOMO_T_MAX = 235.0
 GSAM_QCI_GATE = 1.0e-8
 
 # p3 is not listed: it is a faithful WRF P3 port, which has no rh_homo
-# allowance (that is SAM cloud.f90), and P3Config.homogeneous_ice_supersaturation
-# raises when changed (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART).
+# allowance (that is SAM cloud.f90); P3Config has no such field.
 ICE_SCHEMES = ("morrison", "thompson")
 # The liquid guard (opt-in post-step adjustment) is still carried by p3.
 LIQUID_SCHEMES = ICE_SCHEMES + ("p3",)

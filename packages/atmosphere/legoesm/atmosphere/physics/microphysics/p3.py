@@ -399,19 +399,6 @@ def p3_lookup_table_path() -> Path:
     return path
 
 
-# P3Config fields with NO counterpart in WRF P3 (mp_physics = 50): the faithful
-# port does not read them, so a non-default value raises instead of being
-# silently ignored.
-P3_FIELDS_WITHOUT_ORACLE_COUNTERPART = (
-    "k_au", "x_star", "k_ac", "k_sc", "D_eq", "breakup_sharpness", "a_v_r",
-    "b_v_r", "evap_coeff", "saturation_sharpness", "autoconversion_sharpness",
-    "cooper_T_act", "dep_coeff", "q_i_min_growth", "rime_coeff",
-    "rain_rime_coeff", "agg_coeff", "melt_rate", "a_v_i", "b_v_i",
-    "c_rim_fallspeed", "rho_ice_ref", "rho_rim_accrete", "rho_ice",
-    "homogeneous_ice_supersaturation",
-)
-
-
 class P3Tables(NamedTuple):
     """P3 lookup tables (numpy, fp64).
 
@@ -503,18 +490,6 @@ def p3_lookup_tables(path: str | None = None) -> P3Tables:
     itab, itabcoll = read_p3_lookup_table_1(path)
     vn, vm, revap = _rain_tables()
     return P3Tables(itab=itab, itabcoll=itabcoll, vn=vn, vm=vm, revap=revap)
-
-
-def check_p3_config(config: P3Config) -> None:
-    """Raise if a P3Config field without a WRF P3 counterpart is changed."""
-    default = P3Config()
-    bad = [f for f in P3_FIELDS_WITHOUT_ORACLE_COUNTERPART
-           if getattr(config, f) != getattr(default, f)]
-    if bad:
-        raise ValueError(
-            "P3 is a faithful port of WRF v4.8.0 P3 (mp_physics=50); these "
-            "P3Config fields belonged to the former surrogate and have no WRF P3 "
-            f"counterpart: {bad}.  Leave them at their defaults.")
 
 
 # ---------------------------------------------------------------- helpers
@@ -805,7 +780,6 @@ def p3_step(T, q_v, hydrometeors: HydrometeorState, p_full, rho, dz, dt,
     liquid-equivalent].  Raises (``equinox.error_if``; NaN outputs and
     gradients) if a column needs more sedimentation sub-steps than the maximum.
     """
-    check_p3_config(config)
     tb = tables if tables is not None else p3_lookup_tables()
     dtype = T.dtype
     itab = jnp.asarray(tb.itab, dtype)

@@ -12,8 +12,8 @@ legoESM constants (the tier-1 oracle-fixture glue, recorded in ``meta``).
 Tolerance (user decision 2026-10-19): max relative error <= 1e-10 in fp64 with
 every existing sharpness field at its hard-switch limit.  Relative error is
 ``|a-b| / max(|a|, |b|)`` (0 where both are exactly 0); no floor.  The oracle's
-specified droplet number is passed as ``Nc_0`` (the P3Config default is a
-pending decision, see the PR).
+specified droplet number is passed as ``Nc_0`` (equal to the P3Config
+default, WRF ``nccnst`` = 2e8, since the user decision of 2026-10-21).
 """
 from __future__ import annotations
 
@@ -392,9 +392,7 @@ def test_wrong_table_bytes_raise(tmp_path, monkeypatch):
         P3.p3_lookup_table_path()
 
 
-@pytest.mark.parametrize("field", P3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART)
-def test_surrogate_fields_without_oracle_counterpart_raise(field):
-    default = getattr(P3Config(), field)
-    new = (not default) if isinstance(default, bool) else default * 2 + 1
-    with pytest.raises(ValueError, match=field):
-        P3.check_p3_config(P3Config()._replace(**{field: new}))
+def test_default_droplet_number_is_wrf_nccnst():
+    """User decision 2026-10-21: the P3 default specified droplet number is
+    WRF's nccnst (module_mp_p3.F:196)."""
+    assert P3Config().Nc_0 == WRF_NCCNST

@@ -11,7 +11,9 @@ of the three lanes that run legoESM's atmospheric physics:
   applied to the DEPOSITION target of morrison / thompson (p3: faithful WRF P3, no allowance).
 * **LIQUID** — no liquid super-saturation: the excess is condensed onto the
   saturation curve.  Implemented as the in-scheme
-  ``hard_saturation_adjustment`` guard, which is opt-in.
+  ``hard_saturation_adjustment`` guard, which is opt-in; the sam-flavour
+  Morrison instead runs gSAM's exact ``satadj_liquid`` on every call and
+  refuses the opt-in (checked as a refusal, ``LIQUID_GUARD_REJECTED``).
 
 Three lanes, defined by which code builds the microphysics config:
 
@@ -76,8 +78,7 @@ GSAM_RH_HOMO_T_MAX = 235.0
 GSAM_QCI_GATE = 1.0e-8
 
 # p3 is not listed: it is a faithful WRF P3 port, which has no rh_homo
-# allowance (that is SAM cloud.f90), and P3Config.homogeneous_ice_supersaturation
-# raises when changed (p3.P3_FIELDS_WITHOUT_ORACLE_COUNTERPART).
+# allowance (that is SAM cloud.f90); P3Config has no such field.
 ICE_SCHEMES = ("morrison", "thompson")
 # The liquid guard (opt-in post-step adjustment) is still carried by p3.
 LIQUID_SCHEMES = ICE_SCHEMES + ("p3",)
@@ -397,7 +398,11 @@ def section_2b_target_isolation() -> list[str]:
     they are held to that: a nonzero residual there is a regression, and the
     bound is the measurement rather than a round number.
 
-    p3 does NOT reduce to it, and that is an OPEN measured fact rather than a
+    The p3 row is the gSAM P3 port that preceded the WRF port (#2077); the WRF
+    port has no rh_homo allowance, so this section now iterates morrison and
+    thompson only and the paragraph below is historical.
+
+    p3 did NOT reduce to it, and that was an OPEN measured fact rather than a
     tolerance to widen.  Silencing Cooper removed morrison's 237748 % residual
     entirely but left p3's 35 % untouched, so p3 carries a second
     q_v-dependent term at this cell that the allowance does not pass through.

@@ -270,6 +270,7 @@ def _split_diff(fx, monkeypatch, cfg, qs):
     c = np.asarray(cell)
     d = {k: (np.asarray(getattr(out, k)) - np.asarray(getattr(base, k)))[c]
          for k in ("dq_i_dt", "dq_s_dt", "dq_g_dt", "dN_i_dt", "dq_c_dt", "dT_dt", "dN_c_dt")}
+    d["ice_scale"] = np.abs(np.asarray(out.dq_i_dt)[c]).max()
     left, m, n = (np.asarray(x)[c] for x in so["split"])
     total = np.asarray(sk["split_in"])[c]
     s = np.asarray(sk["rime"])[c] / np.where(total > 0, total, 1.0)   # cloud-water limiter scale
@@ -285,7 +286,9 @@ def test_splinters_are_wired(monkeypatch):
     for qs in (2.0e-5, 5.0e-3):
         d, m, n, left, s, _, total = _split_diff(fx, monkeypatch, _cfg(), qs)
         assert (m > 0).all() and (n > 0).all() and (s > 0).all() and (s <= 1).all()
-        tol = 1e-12 * np.abs(d["dq_i_dt"]).max()
+        # + 4 ulps of the whole ice tendency: the MG2 cloud-ice Bergeron (S10.6)
+        # makes it ~1e7 x the splinter mass, so summation order shows
+        tol = 1e-12 * np.abs(d["dq_i_dt"]).max() + 4 * np.finfo(float).eps * d["ice_scale"]
         assert np.abs(d["dq_i_dt"] - s * m).max() <= tol + 1e-9 * np.abs(s * m).max()
         assert np.abs(d["dq_i_dt"] + d["dq_s_dt"] + d["dq_g_dt"]).max() <= 1e-8 * np.abs(d["dq_i_dt"]).max()
         assert np.allclose(d["dN_i_dt"], n, rtol=1e-7)
@@ -367,3 +370,35 @@ def test_whole_scheme_gradient_through_0C_and_splinter_corners():
         h = 1e-4
         fd = (float(f(x + h)) - float(f(x - h))) / (2 * h)
         assert np.isfinite(g) and np.isclose(g, fd, rtol=5e-3, atol=1e-6 * abs(fd)), (x, g, fd)
+
+
+def test_splinters_are_sources_of_the_ice_limiters(monkeypatch):
+    """S10.6: MG2's qi conservation counts the splinter mass (scaled with
+    riming, x s) and its ni conservation the splinter number (unscaled) among
+    the cloud-ice sources (micro_mg2_0.F90:1717-1761)."""
+    fx = A._fx()
+
+    def run(kill):
+        calls = []
+        real = M.mg2_qi_conservation_ratio
+
+        def spy(*a, **k):
+            calls.append([np.asarray(x) for x in a[:3]])
+            return real(*a, **k)
+
+        with monkeypatch.context() as mp:
+            mp.setattr(M, "mg2_qi_conservation_ratio", spy)
+            cell, _, seen = _wired(dict(fx), mp, _cfg(), 2.0e-5, kill)
+        return np.asarray(cell), calls, seen
+
+    c, base, sk = run(True)
+    _, out, so = run(False)
+    assert len(base) == len(out) == 2          # qi limiter, then ni limiter
+    m, n = (np.asarray(x)[c] for x in so["split"][1:])
+    total = np.asarray(sk["split_in"])[c]
+    s = np.asarray(sk["rime"])[c] / np.where(total > 0, total, 1.0)
+    dqi = (out[0][1] - base[0][1])[c]
+    dni = (out[1][1] - base[1][1])[c]
+    ulp = 4 * np.finfo(float).eps        # the sources sum ~1e7 x the splinter mass
+    assert (m > 0).all() and np.allclose(dqi, s * m, rtol=1e-9, atol=ulp * np.abs(out[0][1]).max())
+    assert (n > 0).all() and np.allclose(dni, n, rtol=1e-9, atol=ulp * np.abs(out[1][1]).max())

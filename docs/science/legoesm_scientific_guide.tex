@@ -2000,6 +2000,27 @@ the triangle's three corners are rounded with a smooth minimum and maximum
 number is not (as MG2), and MG2's cap of ice number at the activated ice-nuclei
 number is not applied, because the model has no such number.
 
+\paragraph{Ice and snow vapour growth, ice-to-snow conversion (prognostic droplet number).}
+Under the same switch, cloud ice grows and sublimates as in CAM6 MG2: the
+vapour exchange is $\epsilon_i(q-q_{vi})/A_b$ times the ice cloud fraction, with
+$\epsilon_i=2\pi n_{0i}\rho D_v/\lambda_i^2$ on MG2's ice size distribution
+(density 500\,kg\,m$^{-3}$, slope between $1/(2D_{cs})$ and $1/(1\,\mu$m$)$,
+rounded at sharpness 100) and $A_b=1+L_s^2q_{vi}/(c_pR_vT^2)$.  Deposition and
+the Bergeron transfer of cloud liquid to ice at liquid saturation act below
+0\,\textdegree C through the smooth step ($W=2$\,K), sublimation at all
+temperatures.  Snow takes cloud liquid by the same Bergeron mechanism on the
+in-precipitation snow (MG2's ventilation factor) and sublimates in the clear
+precipitating air; it never grows from vapour, as in MG2.  Cloud ice converts
+to snow with MG2's Ferrier rate on its own size distribution (hard 0\,\textdegree
+C gate, as in CAM), removing MG2's own number.  The rates are then limited in
+MG2's order: ice deposition plus nucleation by the vapour available above ice
+saturation, then cloud ice, ice number and snow against their supplies, and
+finally rain evaporation and snow and ice sublimation so the air does not pass
+water saturation; Morrison's own ice and snow donor clamps are off.  Sublimating
+ice keeps its number, and rain number is removed with the evaporation before
+the last limiter, as MG2.  The saturation factor that production CAM6 applies
+to the vapour saturation is set to one.
+
 \paragraph{Homogeneous ice nucleation.}
 Optionally, haze droplets freeze homogeneously when the ice supersaturation
 exceeds the threshold

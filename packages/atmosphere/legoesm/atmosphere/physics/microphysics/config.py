@@ -1050,8 +1050,10 @@ class MorrisonConfig(NamedTuple):
     # call must pass CLUBB's
     # per-cell ``relvar``.  Under it the warm rain reads the prognostic number
     # (max(N_c, 0), divided by lcldm, no 1 m^-3 floor) and CLUBB's relvar.
-    # False = every pre-existing behaviour, bit for bit
-    # (tests/atmosphere/microphysics/unit/test_morrison_switch_off_golden.py).
+    # False = main's behaviour bit for bit on the configurations without a snow
+    # number (tests/atmosphere/microphysics/unit/test_morrison_switch_off_golden.py);
+    # MG2-snow mode (warm_rain_incloud + snow number) carries the approved
+    # smooth 0 C steps and slope rounding with the switch off too (2026-10-21).
     prognostic_droplet_number: bool = False
 
 

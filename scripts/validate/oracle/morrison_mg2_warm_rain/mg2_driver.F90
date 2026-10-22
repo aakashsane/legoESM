@@ -16,12 +16,15 @@
 ! Tp and qstend, nstend, qrtend, nrtend, tlat before it, and those five tends after it.
 ! A 4th argument P = prognostic droplet number: nccons_in=.false. (ncic = max(nc/lcldm, 0)) and a 19th input
 ! column per level, npccn [1/kg/s]; without it the input has 18 columns and nccons_in=.true. as before.
+! A 5th argument I (with P) adds a 20th input column, naai [1/kg] (MG2 deposition nucleation; 0 otherwise).
+! The tap build (S10.6) also writes tap_ilim1 (25: ice/vapour limiter inputs after the qc limiter),
+! tap_ilim2 (pre, mnuccr, mnuccri, pracs, nnuccri after the rain limiter) and tap_ilim3 (8: the limited rates).
 program mg2_driver
   use micro_mg_utils, only: r8
   use micro_mg2_0, only: micro_mg_init, micro_mg_tend
 #ifdef MG2_TAP
   use micro_mg2_0, only: nctend_stage, nctend_sed, nstepc_tap, tap_pre, tap_post, &
-       tap_snow1, tap_snow2, tap_snow3
+       tap_snow1, tap_snow2, tap_snow3, tap_ilim1, tap_ilim2, tap_ilim3
 #endif
   use wv_sat_methods, only: wv_sat_methods_init
   implicit none
@@ -30,11 +33,11 @@ program mg2_driver
   real(r8), parameter :: latvap = 2.501e6_r8, latice = 3.337e5_r8
   integer :: ncol, nlev, ic, k, m
   real(r8) :: dt, ncnst
-  character(len=512) :: fin, fout, aflag, pflag
-  logical :: uni, prog
+  character(len=512) :: fin, fout, aflag, pflag, iflag
+  logical :: uni, prog, inuc
   integer :: ninp
 #ifdef MG2_TAP
-  integer, parameter :: nout = 53
+  integer, parameter :: nout = 91
 #else
   integer, parameter :: nout = 15
 #endif
@@ -61,8 +64,11 @@ program mg2_driver
   uni = (trim(aflag) == 'T')
   call get_command_argument(4, pflag)
   prog = (trim(pflag) == 'P')
+  call get_command_argument(5, iflag)
+  inuc = (trim(iflag) == 'I')
   ninp = 18
   if (prog) ninp = 19
+  if (inuc) ninp = 20
   call wv_sat_methods_init(r8, tmelt, 273.16_r8, 373.16_r8, 20._r8, rair/rh2o, err)
   open(10, file=trim(fin), status='old')
   read(10, *) ncol, nlev, dt
@@ -86,6 +92,7 @@ program mg2_driver
      icecldf(1,:)=inp(:,17); qsatfac(1,:)=inp(:,18)
      naai = 0._r8; npccn = 0._r8
      if (prog) npccn(1,:) = inp(:,19)
+     if (inuc) naai(1,:) = inp(:,20)
      tnd_qsnow = 0._r8; tnd_nsnow = 0._r8; re_ice = 0._r8
      frzimm = 0._r8; frzcnt = 0._r8; frzdep = 0._r8
      call micro_mg_init(kind=r8, gravit=g, rair=rair, rh2o=rh2o, cpair=cpair, &
@@ -141,6 +148,9 @@ program mg2_driver
         allout(ic,k,36:40) = tap_snow1(1,k,:)
         allout(ic,k,41:48) = tap_snow2(1,k,:)
         allout(ic,k,49:53) = tap_snow3(1,k,:)
+        allout(ic,k,54:78) = tap_ilim1(1,k,:)
+        allout(ic,k,79:83) = tap_ilim2(1,k,:)
+        allout(ic,k,84:91) = tap_ilim3(1,k,:)
 #endif
      end do
   end do

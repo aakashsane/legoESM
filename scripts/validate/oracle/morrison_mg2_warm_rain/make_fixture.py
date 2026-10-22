@@ -397,6 +397,8 @@ def write_prognostic_column_inputs(cols, path):
                        c.get("ns_kg", np.zeros(nlev))[k],
                        c["relvar"][k], 1.0, c["p_full"][k], pdel[k],
                        c["cf"][k], c["cf"][k], c["cf"][k], 1.0, c.get("npccn", np.zeros(nlev))[k]]
+                if "naai" in c:
+                    row.append(c["naai"][k])
                 f.write(" ".join(f"{x:.17e}" for x in row) + "\n")
 
 
@@ -447,8 +449,22 @@ def load_column_outputs(path, ncol, nlev):
                  "snow3_qrtend", "snow3_nrtend", "snow3_tlat")
         for i, k in enumerate(names):
             out[k] = body[:, :, 1 + 36 + i]      # body = (ic, k, driver column j at index j + 1)
+    if extra >= 76:   # S10.6 ice / vapour limiter taps: driver columns 54..91
+        names = (("ilim1_" + k for k in ILIM1) , ("ilim2_" + k for k in ("pre", "mnuccr", "mnuccri", "pracs", "nnuccri")),
+                 ("ilim3_" + k for k in ILIM3))
+        j = 54
+        for group in names:
+            for k in group:
+                out[k] = body[:, :, 1 + j]
+                j += 1
     out["prect"] = prect
     return out
+
+
+ILIM1 = ("vap_dep", "ice_sublim", "mnuccd", "berg", "msacwi", "nsacwi", "prci", "nprci", "bergs",
+         "psacws", "prds", "qcrat", "q", "t", "qi", "ni", "qs", "qc", "qvi", "precip_frac", "icldm",
+         "lcldm", "nnuccd", "prai", "nprai")
+ILIM3 = ("vap_dep", "ice_sublim", "mnuccd", "prci", "nprci", "prds", "pre", "nnuccd")
 
 
 def _git(path, *args):
@@ -471,7 +487,9 @@ def _meta(a):
                    + (" --prognostic-nc-sed" if a.prognostic_nc_sed else "")
                    + (" --prognostic-nc-melt" if getattr(a, "prognostic_nc_melt", False) else "")
                    + (" --prognostic-nc-snow" if getattr(a, "prognostic_nc_snow", False) else "")
-                   + (" --prognostic-nc-rime" if getattr(a, "prognostic_nc_rime", False) else "")))
+                   + (" --prognostic-nc-rime" if getattr(a, "prognostic_nc_rime", False) else "")
+                   + (" --prognostic-nc-ice" if getattr(a, "prognostic_nc_ice", False) else "")
+                   + (" --prognostic-nc-icelim" if getattr(a, "prognostic_nc_icelim", False) else "")))
 
 
 def main_prognostic(a):
@@ -636,6 +654,168 @@ def main_prognostic_rime(a):
     print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
 
 
+ICE_IN = ("T", "q", "qi", "ni_kg", "qcic", "qs", "ns_kg", "precip_frac", "icldm", "lcldm", "p")
+ICE_OUT = ("vap_dep", "ice_sublim", "berg", "bergs", "prds", "prci", "nprci", "qvl", "qvi",
+           "lami", "n0i", "lams", "n0s")
+ICE_DCS = 500.0e-6    # mg2_ice_driver dcs (CAM6 mg2 namelist default)
+
+
+def build_ice_points():
+    """Points from -38 to +3 C (offset off 0 C) with vapour from ice-subsaturated
+    to water-supersaturated, cloud ice from trace (incl. < qsmall) to 2 g/kg with
+    ice and snow slopes below, inside and above their bounds, with and without
+    cloud liquid, at full and partial cloud / precipitation fractions."""
+    from legoesm.thermo import saturation_specific_humidity, saturation_specific_humidity_ice
+    import jax.numpy as jnp
+    rng = np.random.default_rng(106)
+    pts = []
+    for t in 235.15 + 0.0731 + 0.5 * np.arange(83):
+        for _ in range(4):
+            p = rng.uniform(4.0e4, 9.0e4)
+            qvi = float(saturation_specific_humidity_ice(jnp.array(t), jnp.array(p)))
+            qvl = float(saturation_specific_humidity(jnp.array(t), jnp.array(p)))
+            q = rng.uniform(0.7 * qvi, 1.05 * max(qvl, qvi))
+            cf = rng.choice([1.0, 0.3])
+            qi = rng.choice([0.0, 5.0e-19]) if rng.uniform() < 0.1 else 10.0 ** rng.uniform(-7, np.log10(2.0e-3))
+            lam = 10.0 ** rng.uniform(np.log10(500.0), np.log10(2.0e6))
+            ni = lam ** 3 * qi / cf / (np.pi * 500.0) * cf
+            qcic = 0.0 if rng.uniform() < 0.3 else 10.0 ** rng.uniform(-6, np.log10(5.0e-3))
+            pf = rng.choice([1.0, 0.4]) if cf < 1 else 1.0
+            pf = max(pf, cf)
+            qs = 10.0 ** rng.uniform(-8, -2)
+            lams = 10.0 ** rng.uniform(np.log10(300.0), np.log10(2.0e5))
+            ns = lams ** 3 * min(qs / pf, 0.01) / (np.pi * 250.0) * pf
+            pts.append((t, q, qi, ni, qcic, qs, ns, pf, cf, cf, p))
+    return np.array(pts)
+
+
+def main_prognostic_ice(a):
+    pts = build_ice_points()
+    pin, pout = a.build / "ice_pt_in.txt", a.build / "ice_pt_out.txt"
+    np.savetxt(pin, pts, fmt="%.17e", header=str(len(pts)), comments="")
+    subprocess.run([str(a.build / "mg2_ice"), str(pin), str(pout)], check=True)
+    po = np.loadtxt(pout)
+    fx = {f"in_{k}": pts[:, i] for i, k in enumerate(ICE_IN)}
+    fx.update({f"out_{k}": po[:, i] for i, k in enumerate(ICE_OUT)})
+    fx["dcs"] = np.array(ICE_DCS)
+    fx["rhosn"] = np.array(250.0)
+    meta = _meta(a)
+    meta["probe"] = ("mg2_ice_driver.F90: unmodified ice_deposition_sublimation, "
+                     "bergeron_process_snow, evaporate_sublimate_precip, ice_autoconversion")
+    fx["meta"] = np.array(json.dumps(meta))
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(a.out, **fx)
+    print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
+
+
+def build_ice_limiter_columns(cols):
+    """``--prognostic-nc-icelim`` columns (S10.6): cold mixed-phase levels drawn at
+    random so that each MG2 ice / vapour limiter binds somewhere: tiny cloud water
+    under strong Bergeron (q_c limiter), ice nucleation (naai) close to ice
+    saturation (deposition limiter), trace ice sublimating (ice limiter), crystals
+    near the ice->snow size (number limiter), trace snow in dry clear air (snow
+    limiter) and rain + snow + ice evaporating into near-saturated air (the
+    water-supersaturation limiter)."""
+    from legoesm import constants as C
+    from legoesm.thermo import saturation_specific_humidity, saturation_specific_humidity_ice
+    import jax.numpy as jnp
+    base = next(c for c in cols if c["name"] == "trop_deep")
+    nlev = len(base["T"])
+    out = []
+    for j in range(8):
+        rng = np.random.default_rng(1060 + j)
+        ph = 30000.0 + 1500.0 * np.arange(nlev + 1)
+        pf = 0.5 * (ph[1:] + ph[:-1])
+        T = rng.uniform(238.0, 272.5, nlev)
+        rho = pf / (C.R_d * T)
+        qvl = np.asarray(saturation_specific_humidity(jnp.asarray(T), jnp.asarray(pf)))
+        qvi = np.asarray(saturation_specific_humidity_ice(jnp.asarray(T), jnp.asarray(pf)))
+        f = rng.uniform(0.6, 1.0, nlev)
+        qv = np.where(rng.uniform(size=nlev) < 0.5, qvi * f, qvi + (qvl - qvi) * rng.uniform(0, 1.02, nlev))
+        cf = rng.choice([1.0, 0.5, 0.2], nlev)
+        qc = np.where(rng.uniform(size=nlev) < 0.6, 10.0 ** rng.uniform(-9, -3.5, nlev), 0.0) * cf
+        qi = np.where(rng.uniform(size=nlev) < 0.85, 10.0 ** rng.uniform(-9, -3.3, nlev), 0.0)
+        lam = 10.0 ** rng.uniform(np.log10(800.0), 6.0, nlev)
+        ni = lam ** 3 * qi / (np.pi * 500.0)
+        qs = np.where(rng.uniform(size=nlev) < 0.7, 10.0 ** rng.uniform(-9, -3, nlev), 0.0)
+        lams = 10.0 ** rng.uniform(np.log10(600.0), 4.5, nlev)
+        ns = lams ** 3 * qs / (np.pi * 250.0)
+        qr = np.where(rng.uniform(size=nlev) < 0.4, 10.0 ** rng.uniform(-8, -3.5, nlev), 0.0)
+        nr = qr * rho * 1.0e6
+        nc = np.where(qc > 0, rng.uniform(2e7, 2e8, nlev), 0.0)
+        naai = np.where(rng.uniform(size=nlev) < 0.5, rng.uniform(1e3, 3e5, nlev), 0.0)
+        z = np.zeros(nlev)
+        out.append(dict(base, name=f"icelim{j}", T=T, p_half=ph, p_full=pf, rho=rho, cf=cf,
+                        q_c=qc, q_v=qv, q_r=qr, N_r=nr, N_c=nc * rho, nc_kg=nc, q_i=qi, ni_kg=ni,
+                        q_s=qs, ns_kg=ns, relvar=np.ones(nlev), npccn=z, naai=naai))
+    for j in range(4):
+        # targeted: (j < 2) rain + snow evaporating into nearly water-saturated
+        # cloudy air (supersaturation limiter); (j >= 2) ice nucleation and
+        # deposition close to ice saturation (deposition limiter)
+        rng = np.random.default_rng(1070 + j)
+        ph = 30000.0 + 1500.0 * np.arange(nlev + 1)
+        pf = 0.5 * (ph[1:] + ph[:-1])
+        z = np.zeros(nlev)
+        if j < 2:
+            T = np.where(np.arange(nlev) < nlev // 2, rng.uniform(262.0, 285.0, nlev),
+                         rng.uniform(273.4, 288.0, nlev))
+        else:
+            T = rng.uniform(228.0, 262.0, nlev)
+        rho = pf / (C.R_d * T)
+        qvl = np.asarray(saturation_specific_humidity(jnp.asarray(T), jnp.asarray(pf)))
+        qvi = np.asarray(saturation_specific_humidity_ice(jnp.asarray(T), jnp.asarray(pf)))
+        if j < 2:
+            # cloudy upper half; clear, nearly water-saturated lower half that
+            # inherits the precipitation fraction (rain/snow evaporate there)
+            top = np.arange(nlev) < nlev // 2
+            qv = np.where(top, qvl, qvl * rng.uniform(0.997, 0.9999, nlev))
+            cf = np.where(top, rng.uniform(0.8, 0.98, nlev), 1.0e-4)
+            qc = np.where(top, 10.0 ** rng.uniform(-6, -4, nlev) * cf, 0.0)
+            qr = 10.0 ** rng.uniform(-4.5, -3, nlev)
+            qs = 10.0 ** rng.uniform(-5, -3.5, nlev)
+            qi = np.where(top, 10.0 ** rng.uniform(-6, -4, nlev), 0.0)
+            naai = z
+        else:
+            qv = qvi * rng.uniform(1.06, 1.15, nlev)
+            cf = rng.choice([1.0, 0.6], nlev)
+            qc = z
+            qr = z
+            qs = 10.0 ** rng.uniform(-7, -5, nlev)
+            qi = 10.0 ** rng.uniform(-4.5, -3, nlev)
+            naai = rng.uniform(1e5, 1e6, nlev)
+        lam = 10.0 ** rng.uniform(3.0, 4.0, nlev)
+        ni = lam ** 3 * qi / (np.pi * 500.0)
+        ns = (10.0 ** rng.uniform(3.2, 4.2, nlev)) ** 3 * qs / (np.pi * 250.0)
+        nc = np.where(qc > 0, 1.0e8, 0.0)
+        out.append(dict(base, name=f"icelim_t{j}", T=T, p_half=ph, p_full=pf, rho=rho, cf=cf,
+                        q_c=qc, q_v=qv, q_r=qr, N_r=qr * rho * 1.0e6, N_c=nc * rho, nc_kg=nc,
+                        q_i=qi, ni_kg=ni, q_s=qs, ns_kg=ns, relvar=np.ones(nlev), npccn=z,
+                        naai=naai))
+    return out
+
+
+def main_prognostic_icelim(a):
+    cols = build_ice_limiter_columns(build_prognostic_columns(build_columns()))
+    ncol, nlev = len(cols), len(cols[0]["T"])
+    fx = {f"col_{k}": np.stack([c[k] for c in cols])
+          for k in COL_FIELDS + ("nc_kg", "relvar", "npccn", "q_i", "ni_kg", "q_s", "ns_kg", "naai")}
+    fx["col_names"] = np.array([c["name"] for c in cols])
+    fx["dt"] = np.array(DT)
+    fin, fout = a.build / "icelim_col_in.txt", a.build / "icelim_col_out.txt"
+    write_prognostic_column_inputs(cols, fin)
+    subprocess.run([str(a.build / "mg2_tap"), str(fin), str(fout), "F", "P", "I"], check=True)
+    o = load_column_outputs(fout, ncol, nlev)
+    for k in o:
+        fx[f"ora_{k}"] = o[k]
+    meta = _meta(a)
+    meta["probe"] = ("build.sh tap/: micro_mg2_0.F90 + taps incl. S10.6 tap_ilim1 before M:1588, "
+                     "tap_ilim2 before M:1687, tap_ilim3 before M:1855 (64 added lines); naai input")
+    fx["meta"] = np.array(json.dumps(meta))
+    a.out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(a.out, **fx)
+    print("FIXTURE_OK", a.out, a.out.stat().st_size, "bytes", meta["sha"])
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--cam", required=True, type=Path)
@@ -647,6 +827,8 @@ def main(argv=None):
     ap.add_argument("--prognostic-nc-melt", action="store_true")
     ap.add_argument("--prognostic-nc-snow", action="store_true")
     ap.add_argument("--prognostic-nc-rime", action="store_true")
+    ap.add_argument("--prognostic-nc-ice", action="store_true")
+    ap.add_argument("--prognostic-nc-icelim", action="store_true")
     a = ap.parse_args(argv)
     subprocess.run(["bash", str(HERE / "build.sh"), str(a.cam), str(a.build)],
                    check=True)
@@ -662,6 +844,10 @@ def main(argv=None):
         return main_prognostic_snow(a)
     if a.prognostic_nc_rime:
         return main_prognostic_rime(a)
+    if a.prognostic_nc_ice:
+        return main_prognostic_ice(a)
+    if a.prognostic_nc_icelim:
+        return main_prognostic_icelim(a)
     cols = build_columns()
     ncol, nlev = len(cols), len(cols[0]["T"])
     fx = {f"col_{k}": np.stack([c[k] for c in cols]) for k in COL_FIELDS}

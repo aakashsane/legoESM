@@ -115,10 +115,16 @@ def test_activation_pre_apply_moves_the_rates():
 
 
 def _no_bergeron(monkeypatch):
-    """MG2 Bergeron onto snow also drains cloud water here; these tests isolate
-    the riming number sinks, so it is zeroed."""
+    """MG2 Bergeron onto snow and onto cloud ice also drain cloud water here;
+    these tests isolate the riming number sinks, so both are zeroed."""
     from legoesm.atmosphere.physics.microphysics import morrison as M
     monkeypatch.setattr(M, "mg2_bergeron_snow", lambda T, q_cic, *a: jnp.zeros_like(q_cic))
+    real = M.mg2_ice_deposition_sublimation
+
+    def no_berg(*a):
+        dep, subl, berg = real(*a)
+        return dep, subl, jnp.zeros_like(berg)
+    monkeypatch.setattr(M, "mg2_ice_deposition_sublimation", no_berg)
 
 
 def test_cold_riming_number_sinks_and_no_ice_riming(monkeypatch):

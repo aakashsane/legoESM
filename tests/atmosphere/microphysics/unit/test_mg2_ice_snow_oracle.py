@@ -136,7 +136,7 @@ def test_snow_kernels_match_mg2():
         T, rho, mu, uns, i["qcic"], nc_adj / rho, qsic, pgam, lamc, lams, n0s, cfg, 1.0e-9)
     errs["psacws"] = _rel(psacws, o["psacws"])
     errs["npsacws"] = _rel(npsacws, o["npsacws"])
-    errs["bergs"] = _rel(W.mg2_bergeron_snow(T, i["qcic"], qsic, qvl, qvi, eps_s),
+    errs["bergs"] = _rel(W.mg2_bergeron_snow(T, i["qcic"], qsic, qvl, qvi, eps_s, 1.0e-9),
                          o["bergs"])
     errs["prds"] = _rel(W.mg2_snow_sublimation(
         i["qfrac"] * qvl, qvl, qvi, T, eps_s, qsic, i["lcldm"], pf, i["qcic"],
@@ -151,7 +151,7 @@ def test_snow_kernels_match_mg2():
     niic, lami = W.mg2_ice_slope(i["qi"], i["ni"], cfg.rho_cloud_ice, float(fx["dcs"]))
     errs["lami"] = _rel(lami, o["lami"])
     errs["niic"] = _rel(niic, o["niic"])
-    prci, nprci = W.ice_autoconversion_mg2(i["qi"], niic, lami, float(fx["dcs"]), T)
+    prci, nprci = W.ice_autoconversion_mg2(i["qi"], niic, lami, float(fx["dcs"]), T, 1.0e-9)
     errs["prci"] = _rel(prci, o["prci"])
     errs["nprci"] = _rel(nprci, o["nprci"])
     worst = {k: float(np.max(v)) for k, v in errs.items()}
@@ -329,7 +329,7 @@ def test_mg2_ice_slope_bounds():
              hi ** 3 * 1e-12 / (rhoi * np.pi)], rtol=1e-13)
     assert float(ni[3]) <= 1.0e-12 / 1.0e-20
     T = jnp.full(4, 250.0)
-    prci, nprci = W.ice_autoconversion_mg2(q, ni, lam, dcs, T)
+    prci, nprci = W.ice_autoconversion_mg2(q, ni, lam, dcs, T, 1.0e-9)
     d = np.asarray(lam) * dcs
     nprci_mg2 = np.asarray(ni) * np.asarray(lam) / (np.asarray(lam) * 180.0) * np.exp(-d)
     prci_mg2 = (rhoi * np.pi / 6.0) / np.asarray(lam) ** 3 * nprci_mg2 * (((d + 3) * d + 6) * d + 6)
@@ -365,7 +365,7 @@ def test_mg2_ice_conservation_credits_same_step_sources(ice_to_snow):
     Ni = jnp.full((n, 1), 2.0e3)
     z = jnp.zeros_like(T)
     ni, lam = W.mg2_ice_slope(qi, Ni, cfg.rho_cloud_ice, cfg.ice_snow_d_auto)
-    prci, _ = W.ice_autoconversion_mg2(qi, ni, lam, cfg.ice_snow_d_auto, T)
+    prci, _ = W.ice_autoconversion_mg2(qi, ni, lam, cfg.ice_snow_d_auto, T, 1.0e-9)
     assert np.all(np.asarray(prci) * dt > 2.0 * np.asarray(qi))  # limit binds
     hyd = HydrometeorState(q_c=z, q_r=z, q_i=qi, q_s=z, q_g=z, N_c=z + 5.0e7,
                            N_r=z, N_i=Ni, N_s=z)

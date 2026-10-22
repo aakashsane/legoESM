@@ -709,12 +709,17 @@ def _true_soil_dH(T0, T1, theta, th, n=4000):
 #   near-freezing melt, Tf-0.2 K:   on 0.16 / 2.12    off   0.23 / 2.41
 # The residual is the apparent-heat-capacity linearisation of main's soil
 # scheme (main's own rain-on-frozen test measures 44 W/m2); the node does not
-# add to it.  Limits below sit just above the measured node-on values.
+# add to it.  The node covers the snow-cover fraction f = tanh(SWE/crit)
+# (f = 0.29 and 0.10 here), so the bare share (1-f) of the flux reaches the
+# near-freezing soil directly and the residual moves from the whole-cover
+# node values above toward the node-off ones (2026-10-22, sub-stepped):
+#   cold snowfall 62.35 W/m2, rain on frozen 25.95 W/m2.
+# Limits below sit just above these measured node-on values.
 _FT_CASES = {
     "cold_snowfall": dict(T0=-0.3, th=0.30, swe=15.0, Ts=262.0, Ta=258.0,
-                          P=1.0e-5, Ps=1.0e-5, limit=1.0, fusion=False),
+                          P=1.0e-5, Ps=1.0e-5, limit=63.0, fusion=False),
     "rain_on_frozen": dict(T0=-4.0, th=0.20, swe=5.0, Ts=None, Ta=276.0,
-                           P=2.0e-4, Ps=0.0, limit=15.0, fusion=True),
+                           P=2.0e-4, Ps=0.0, limit=26.0, fusion=True),
 }
 
 

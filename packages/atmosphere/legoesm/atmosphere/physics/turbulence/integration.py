@@ -146,6 +146,14 @@ def materialize_sub_config(config: TurbulenceConfig) -> TurbulenceConfig:
     return config
 
 
+def resolved_clubb_config(config: TurbulenceConfig):
+    """The ``CLUBBConfig`` dispatch will run, or ``None`` unless
+    ``config.scheme == "clubb"``.  Consumers of CLUBB's top (the cam6_clubb
+    ice-stratus cut in radiation, MG2 and the CMOR cloud diagnostics) read it
+    from here, so they see the same config the closure runs with."""
+    return materialize_sub_config(config).clubb if config.scheme == "clubb" else None
+
+
 def get_turbulence_fn(config: TurbulenceConfig):
     """Select the turbulence backend based on config.scheme."""
     if config.scheme == "smagorinsky":
@@ -481,7 +489,9 @@ def _carry_update_with_cloud_fraction(carry_field, carry_val, turb_out):
     ``pblh`` (CAM's pbuf ``pblh``, written by clubb_intr.F90:2616): deep
     convection reads it one step lagged for its launch-level bound
     (convect_deep.F90:266).  Schemes with no PDF cloud closure leave
-    ``cloud_fraction=None`` and publish only ``pblh`` plus their carry.
+    ``cloud_fraction=None`` and publish only ``pblh`` plus their carry; a PDF
+    closure that also returns ``relvar`` (prognostic CLUBB) publishes it next
+    to ``cloud_fraction`` for MG2.
     combined.py only merges the dict when ``field_name`` (the registered carry
     field) is not None, which holds for every scheme (turbulence_carry_field
     never returns None).
@@ -489,6 +499,8 @@ def _carry_update_with_cloud_fraction(carry_field, carry_val, turb_out):
     updates = {"pblh": turb_out.h_pbl}
     if turb_out.cloud_fraction is not None:
         updates["cloud_fraction"] = turb_out.cloud_fraction
+        if turb_out.relvar is not None:
+            updates["relvar"] = turb_out.relvar
     if carry_field is not None and carry_val is not None:
         updates[carry_field] = carry_val
     return updates

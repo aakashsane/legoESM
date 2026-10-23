@@ -825,6 +825,7 @@ def _call_radiation_backend(
     q_ice: jnp.ndarray | None = None,
     n_ice: jnp.ndarray | None = None,
     n_cloud: jnp.ndarray | None = None,
+    n_cloud_in_cloud: bool = False,
     ghg_vmr_override: dict | None = None,
     f_day: jnp.ndarray | None = None,
     rrtmgp_solver=None,
@@ -843,6 +844,7 @@ def _call_radiation_backend(
     conv_icwmr: jnp.ndarray | None = None,
     clear_sky_toa: bool = False,
     column_mesh=None,
+    clubb_config=None,
 ):
     """Call configured radiation backend with a unified integration interface.
 
@@ -862,6 +864,9 @@ def _call_radiation_backend(
         Cloud liquid water mixing ratio (ncol, nlev) [kg/kg].
     q_ice : jnp.ndarray or None
         Cloud ice mixing ratio (ncol, nlev) [kg/kg].
+    n_cloud_in_cloud : bool
+        ``n_cloud`` is an in-cloud (aerosol/CCN) droplet number, not the
+        grid-mean tracer; see ``compute_cloud_properties``.
     ghg_vmr_override : dict or None
         Runtime GHG VMR overrides passed to RRTMGP (e.g. transient CO2).
     f_day : jnp.ndarray or None
@@ -1023,12 +1028,14 @@ def _call_radiation_backend(
             q_ice=q_ice,
             n_ice=n_ice,
             n_cloud=n_cloud,
+            n_cloud_in_cloud=n_cloud_in_cloud,
             conv_precip=conv_precip,
             cloud_fraction_override=cloud_fraction_override,
             lat=lat,
             conv_mass_flux_up=conv_mass_flux_up,
             conv_icwmr=conv_icwmr,
             p_half=p_half,
+            clubb_config=clubb_config,
         )
         if cloud_config.cap_floor_on:
             from legoesm.atmosphere.physics.clouds.cloud_fraction import apply_cap_cloud_floor
@@ -1223,6 +1230,7 @@ def make_radiation_physics(
     nc_from_aerosol: bool = False,
     activation_config=None,
     use_clubb_cloud_fraction: bool = False,
+    clubb_config=None,
 ) -> Callable:
     """Create a physics function for radiation matching a model's signature.
 
@@ -1347,7 +1355,8 @@ def make_radiation_physics(
                                             column_mesh=column_mesh,
                                             nc_from_aerosol=nc_from_aerosol,
                                             activation_config=activation_config,
-                                            use_clubb_cloud_fraction=use_clubb_cloud_fraction)
+                                            use_clubb_cloud_fraction=use_clubb_cloud_fraction,
+                                            clubb_config=clubb_config)
     elif model_type == "nonhydrostatic":
         return _make_nonhydrostatic_radiation(radiation_config, rrtmgp_solver,
                                                ml_ozone_coefs=ml_ozone_coefs)
@@ -1365,13 +1374,15 @@ def make_radiation_physics(
             sfc_emissivity_override=sfc_emissivity_override,
             use_clubb_cloud_fraction=use_clubb_cloud_fraction,
             column_mesh=column_mesh,
+            clubb_config=clubb_config,
         )
     elif model_type == "mpas":
         return _make_mpas_radiation(radiation_config, rrtmgp_solver,
                                      ml_ozone_coefs=ml_ozone_coefs,
                                      column_mesh=column_mesh,
                                      nc_from_aerosol=nc_from_aerosol,
-                                     use_clubb_cloud_fraction=use_clubb_cloud_fraction)
+                                     use_clubb_cloud_fraction=use_clubb_cloud_fraction,
+                                     clubb_config=clubb_config)
     else:
         raise ValueError(
             f"Unknown model_type: {model_type!r}. "
@@ -1392,6 +1403,7 @@ def _make_hydrostatic_radiation(
     nc_from_aerosol: bool = False,
     activation_config=None,
     use_clubb_cloud_fraction: bool = False,
+    clubb_config=None,
 ) -> Callable:
     """Create radiation physics_fn for any hydrostatic model.
 
@@ -1647,6 +1659,7 @@ def _make_hydrostatic_radiation(
         # is gated on the scheme — gray runs the microphysics fill (second
         # indirect effect) but skips this radiation-only first-indirect path
         # instead of computing a droplet field the gray optics would discard.
+        _nc_in_cloud = False
         if nc_from_aerosol and radiation_config.scheme == "rrtmgp":
             # Route through the SAME activation dispatch as the microphysics
             # N_c fill (proxy | arg) so the first (radiation r_eff) and second
@@ -1680,6 +1693,7 @@ def _make_hydrostatic_radiation(
                 ccn_aod=(forcing.get("aerosol_ccn_aod")
                          if forcing is not None else None),
             )
+            _nc_in_cloud = True  # specified in-cloud number (MG2 nccons)
 
         f_day_col = f_day.reshape(ncol) if f_day is not None else None
 
@@ -1794,6 +1808,7 @@ def _make_hydrostatic_radiation(
             q_cloud=q_cloud_col,
             q_ice=q_ice_col,
             n_cloud=n_cloud_col,
+            n_cloud_in_cloud=_nc_in_cloud,
             n_ice=n_ice_col,
             f_day=f_day_col,
             rrtmgp_solver=rrtmgp_solver,
@@ -1811,6 +1826,7 @@ def _make_hydrostatic_radiation(
             solar_spectral_fraction=_ssf_ext,
             tsi=_tsi_ext,
             clear_sky_toa=_clr_sky_fused,
+            clubb_config=clubb_config,
         )
 
         # #843 lean-lane clear-sky second pass: SAME column state and
@@ -2676,6 +2692,7 @@ def _make_spectral_pe_radiation(
     sfc_emissivity_override: jnp.ndarray | float | None = None,
     use_clubb_cloud_fraction: bool = False,
     column_mesh=None,
+    clubb_config=None,
 ) -> Callable:
     """Create radiation physics_fn for SpectralPEModel.
 
@@ -2932,6 +2949,7 @@ def _make_spectral_pe_radiation(
             conv_mass_flux_up=_conv_mf_col,
             conv_icwmr=_conv_icwmr_col,
             column_mesh=column_mesh,
+            clubb_config=clubb_config,
         )
 
         # Reshape heating rate back to (n_lat, n_lon, nlev)

@@ -58,6 +58,11 @@ STATE = ("rtm", "thlm", "um", "vm", "wp2", "wp3", "up2", "vp2", "wprtp",
          "wpthlp", "upwp", "vpwp", "rtp2", "thlp2", "rtpthlp")
 CARRIED = ("rcm", "cloud_frac", "wpthvp", "wp2thvp", "rtpthvp", "thlpthvp",
            "Lscale", "Kh_zm")
+# Post-advance PDF-closure components (Fortran pdf_params on zt) and CAM's
+# qclvar_out, recorded only with CLUBB_FIXTURE_PDF=1 on a build patched by
+# clubb_mg2_relvar/build_oracle.sh (the clubb_mg2_relvar oracle reads them).
+PDF = ("mixt_frac", "chi_1", "chi_2", "rc_1", "rc_2", "cloud_frac_1",
+       "cloud_frac_2", "stdev_chi_1", "stdev_chi_2")
 ENV = ("rtm_forcing", "thlm_forcing", "um_forcing", "vm_forcing",
        "wprtp_forcing", "wpthlp_forcing", "rtp2_forcing", "thlp2_forcing",
        "rtpthlp_forcing", "exner", "p_in_Pa", "p_sfc", "thv_ds_zt",
@@ -161,6 +166,12 @@ def run_case(settings: Path, out: Path, case: str):
     def record(name, st, n):
         for k in STATE + CARRIED:
             res[f"{name}/s{n}/{k}"] = np.array(st[k], dtype=np.float64)
+        if os.environ.get("CLUBB_FIXTURE_PDF") == "1":
+            for k in PDF:
+                res[f"{name}/s{n}/pdf/{k}"] = np.array(
+                    getattr(st["pdf_params"], k), dtype=np.float64)
+            if n > 0:   # CAM's qclvar_out (clubb_mg2_relvar/patch_qclvar_out.py)
+                res[f"{name}/s{n}/qclvar_out"] = np.array(st["qclvar"], dtype=np.float64)
 
     def record_env(name, st):
         gr = st["gr"]

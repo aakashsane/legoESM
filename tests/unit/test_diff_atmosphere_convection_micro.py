@@ -599,6 +599,12 @@ def _call_microphysics(scheme, col, *, T=None, q_v=None, hyd=None):
         from legoesm.atmosphere.physics.microphysics.sundqvist import (
             sundqvist_microphysics,
         )
+        # Zhao-Carr releases only above rh_crit and evaporates only below it,
+        # so a column of uniform RH can do one or the other: dry the lowest
+        # quarter of the column to 0.6x so rain from above evaporates there.
+        nlev = T.shape[1]
+        dry = jnp.where(jnp.arange(nlev) >= nlev - nlev // 4, 0.6, 1.0)
+        args = (T, q_v * dry, *args[2:])
         return sundqvist_microphysics(*args, SundqvistConfig())
     if scheme == "p3":
         from legoesm.atmosphere.physics.microphysics.config import P3Config

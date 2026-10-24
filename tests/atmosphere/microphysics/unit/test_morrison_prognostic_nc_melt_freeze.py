@@ -57,7 +57,7 @@ def _tapped(fx):
 def _helper(raw, melt_w=HARD, frz_w=HARD, T_h=233.15, cap=W.MG2_CAP_SHARPNESS):
     return W.mg2_instant_ice_melt_homog_freeze(
         *(jnp.asarray(raw[k]) for k in ("q_c", "N_c", "q_i", "N_i", "T")), T_h, melt_w, frz_w,
-        cap)
+        cap, presence_top=W.MG2_QSMALL)
 
 
 def _activity(fx):
@@ -128,9 +128,9 @@ def test_smooth_switch_on():
     x = jnp.array([-0.5, 0.0, 0.25, 0.5, 1.0, 2.0, 3.0])
     T = C.T_freeze + x
     z = jnp.zeros(7)
-    out = W.mg2_instant_ice_melt_homog_freeze(z, z, q, z + 1e5, T, 233.15, 2.0, 0.2)
+    out = W.mg2_instant_ice_melt_homog_freeze(z, z, q, z + 1e5, T, 233.15, 2.0, 0.2, presence_top=W.MG2_QSMALL)
     melt = np.asarray(out[5])
-    hard = np.asarray(W.mg2_instant_ice_melt_homog_freeze(z, z, q, z + 1e5, T, 233.15, HARD, HARD)[5])
+    hard = np.asarray(W.mg2_instant_ice_melt_homog_freeze(z, z, q, z + 1e5, T, 233.15, HARD, HARD, presence_top=W.MG2_QSMALL)[5])
     ramp = np.asarray(smoothstep_quintic(x / 2.0))
     assert melt[0] == 0.0 and melt[1] == 0.0
     assert np.allclose(melt, ramp * hard, rtol=1e-14, atol=0.0)
@@ -153,7 +153,7 @@ def test_rounded_cap():
     x = r * C.L_f * q / C.c_pd                       # excess so heat allows r*q
     z = jnp.zeros(5)
     melt = np.asarray(W.mg2_instant_ice_melt_homog_freeze(
-        z, z, z + q, z + 1e5, C.T_freeze + x, 233.15, HARD, HARD)[5]) / q
+        z, z, z + q, z + 1e5, C.T_freeze + x, 233.15, HARD, HARD, presence_top=W.MG2_QSMALL)[5]) / q
     hard = np.minimum(np.asarray(r), 1.0)
     assert (melt <= hard * (1.0 + 1e-13)).all()
     assert np.isclose(hard[2] - melt[2], np.log(2.0) / 100.0, rtol=1e-6)
@@ -167,13 +167,13 @@ def test_gradients():
     def melt_fn(dT, q_gkg):
         z = jnp.zeros_like(dT)
         o = W.mg2_instant_ice_melt_homog_freeze(z + 1e-4, z + 1e8, 1e-3 * q_gkg, z + 1e5,
-                                                C.T_freeze + dT, 233.15, 2.0, 0.2)
+                                                C.T_freeze + dT, 233.15, 2.0, 0.2, presence_top=W.MG2_QSMALL)
         return 1e3 * o[0] + (o[4] - C.T_freeze)
 
     def frz_fn(dT, q_gkg):
         z = jnp.zeros_like(dT)
         o = W.mg2_instant_ice_melt_homog_freeze(1e-3 * q_gkg, z + 1e8, z, z, 233.15 - dT,
-                                                233.15, 2.0, 0.2)
+                                                233.15, 2.0, 0.2, presence_top=W.MG2_QSMALL)
         return 1e3 * o[2] + (o[4] - 233.15)
 
     # in the ramp (twice), past it, and AT the rounded cap's corner (r = 1)
@@ -192,18 +192,18 @@ def test_recipient_raw_and_donor_overwrite():
     its clipped pool (MG2 += / = semantics, M:2634/2645, M:2672/2680)."""
     one = jnp.ones(1)
     q_c, N_c, q_i, N_i, T, melt, frz, chg = W.mg2_instant_ice_melt_homog_freeze(
-        -1e-6 * one, -5.0 * one, 1e-4 * one, 1e5 * one, 280.0 * one, 233.15, 2.0, 0.2)
+        -1e-6 * one, -5.0 * one, 1e-4 * one, 1e5 * one, 280.0 * one, 233.15, 2.0, 0.2, presence_top=W.MG2_QSMALL)
     assert np.isclose(float(q_c[0]), -1e-6 + 1e-4, rtol=1e-12) and float(q_i[0]) == 0.0
     q_c, N_c, q_i, N_i, T, melt, frz, chg = W.mg2_instant_ice_melt_homog_freeze(
-        1e-4 * one, 1e8 * one, -1e-7 * one, -3.0 * one, 220.0 * one, 233.15, 2.0, 0.2)
+        1e-4 * one, 1e8 * one, -1e-7 * one, -3.0 * one, 220.0 * one, 233.15, 2.0, 0.2, presence_top=W.MG2_QSMALL)
     assert np.isclose(float(q_i[0]), -1e-7 + 1e-4, rtol=1e-12) and float(q_c[0]) == 0.0
     # gates on the mass strictly > 0 (not qsmall): 0 < q_i < qsmall still melts
     tiny = W.mg2_instant_ice_melt_homog_freeze(0 * one, 0 * one, 5e-19 * one, 0 * one,
-                                               280.0 * one, 233.15, 2.0, 0.2)
+                                               280.0 * one, 233.15, 2.0, 0.2, presence_top=W.MG2_QSMALL)
     assert float(tiny[5][0]) == 5e-19 and bool(tiny[7][0])
     # no co-firing: a melt cell never freezes
     assert float(W.mg2_instant_ice_melt_homog_freeze(
-        1e-3 * one, 1e8 * one, 1e-3 * one, 1e5 * one, 274.0 * one, 233.15, 2.0, 0.2)[6][0]) == 0.0
+        1e-3 * one, 1e8 * one, 1e-3 * one, 1e5 * one, 274.0 * one, 233.15, 2.0, 0.2, presence_top=W.MG2_QSMALL)[6][0]) == 0.0
 
 
 def test_morrison_wires_the_post_sedimentation_state(monkeypatch):
@@ -213,12 +213,12 @@ def test_morrison_wires_the_post_sedimentation_state(monkeypatch):
     seen = {}
     real = M.mg2_instant_ice_melt_homog_freeze
 
-    def spy(*a):
+    def spy(*a, **k):
         seen["in"] = a
-        seen["out"] = real(*a)
+        seen["out"] = real(*a, **k)
         return seen["out"]
 
-    def ident(q_c, N_c, q_i, N_i, T, *a):
+    def ident(q_c, N_c, q_i, N_i, T, *a, **k):
         z = jnp.zeros_like(q_c)
         return q_c, N_c, q_i, N_i, T, z, z, jnp.zeros(q_c.shape, bool)
 
@@ -286,14 +286,14 @@ def test_readjust_qsmall_edge_keeps_a_negative_number():
     rho, dt = 1.0 * one, 600.0
     N_c, dN = 1.0e6 * one, -2.0e6 / dt * one
     q_post = jnp.array([W.MG2_QSMALL, 2.0 * W.MG2_QSMALL])
-    out = np.asarray(W.mg2_droplet_number_readjust(q_post, N_c + dN * dt, N_c, one, rho, dt, dN))
+    out = np.asarray(W.mg2_droplet_number_readjust(q_post, N_c + dN * dt, N_c, one, rho, dt, dN, presence_top=W.MG2_QSMALL))
     assert out[0] == float(dN[0])                    # untouched: number ends at -1e6
     assert (1.0e6 + out[1] * dt) > 0.0               # reset to a positive number
     # an in-range number is left bit-identical (no round-trip through (N*cf - N_c)/dt)
     q_ok, n_ok = jnp.array([1e-4]), jnp.array([5e7])
     d = jnp.array([1.2345e3])
     assert np.asarray(W.mg2_droplet_number_readjust(q_ok, n_ok + d * dt, n_ok, jnp.ones(1),
-                                                    jnp.ones(1), dt, d))[0] == 1.2345e3
+                                                    jnp.ones(1), dt, d, presence_top=W.MG2_QSMALL))[0] == 1.2345e3
 
 
 def test_no_net_droplet_floor_under_the_switch(monkeypatch):
@@ -301,7 +301,7 @@ def test_no_net_droplet_floor_under_the_switch(monkeypatch):
     the output: MG2 has no net floor (decision 2026-10-20)."""
     fx = A._fx()
 
-    def neg(q_post, N_post, N_c, *a):
+    def neg(q_post, N_post, N_c, *a, **k):
         return -3.0 * jnp.maximum(N_c, 1.0) / float(fx["dt"])
 
     monkeypatch.setattr(M, "mg2_droplet_number_readjust", neg)

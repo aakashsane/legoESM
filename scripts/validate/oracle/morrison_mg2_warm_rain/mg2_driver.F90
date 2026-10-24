@@ -18,13 +18,14 @@
 ! column per level, npccn [1/kg/s]; without it the input has 18 columns and nccons_in=.true. as before.
 ! A 5th argument I (with P) adds a 20th input column, naai [1/kg] (MG2 deposition nucleation; 0 otherwise).
 ! The tap build (S10.6) also writes tap_ilim1 (25: ice/vapour limiter inputs after the qc limiter),
-! tap_ilim2 (pre, mnuccr, mnuccri, pracs, nnuccri after the rain limiter) and tap_ilim3 (8: the limited rates).
+! tap_ilim2 (pre, mnuccr, mnuccri, pracs, nnuccri after the rain limiter) and tap_ilim3 (8: the limited rates);
+! tap_frz (Bigg mnuccr, nnuccr, lamr, qric, nric before the ice/snow split).
 program mg2_driver
   use micro_mg_utils, only: r8
   use micro_mg2_0, only: micro_mg_init, micro_mg_tend
 #ifdef MG2_TAP
   use micro_mg2_0, only: nctend_stage, nctend_sed, nstepc_tap, tap_pre, tap_post, &
-       tap_snow1, tap_snow2, tap_snow3, tap_ilim1, tap_ilim2, tap_ilim3
+       tap_snow1, tap_snow2, tap_snow3, tap_ilim1, tap_ilim2, tap_ilim3, tap_frz
 #endif
   use wv_sat_methods, only: wv_sat_methods_init
   implicit none
@@ -37,7 +38,7 @@ program mg2_driver
   logical :: uni, prog, inuc
   integer :: ninp
 #ifdef MG2_TAP
-  integer, parameter :: nout = 91
+  integer, parameter :: nout = 96
 #else
   integer, parameter :: nout = 15
 #endif
@@ -151,6 +152,7 @@ program mg2_driver
         allout(ic,k,54:78) = tap_ilim1(1,k,:)
         allout(ic,k,79:83) = tap_ilim2(1,k,:)
         allout(ic,k,84:91) = tap_ilim3(1,k,:)
+        allout(ic,k,92:96) = tap_frz(1,k,:)
 #endif
      end do
   end do

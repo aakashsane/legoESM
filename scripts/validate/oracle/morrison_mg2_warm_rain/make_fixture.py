@@ -457,6 +457,9 @@ def load_column_outputs(path, ncol, nlev):
             for k in group:
                 out[k] = body[:, :, 1 + j]
                 j += 1
+    if extra >= 81:   # 2026-10-22 tap_frz: driver columns 92..96
+        for i, k in enumerate(("frz_mnuccr", "frz_nnuccr", "frz_lamr", "frz_qric", "frz_nric")):
+            out[k] = body[:, :, 1 + 92 + i]
     out["prect"] = prect
     return out
 
@@ -489,7 +492,8 @@ def _meta(a):
                    + (" --prognostic-nc-snow" if getattr(a, "prognostic_nc_snow", False) else "")
                    + (" --prognostic-nc-rime" if getattr(a, "prognostic_nc_rime", False) else "")
                    + (" --prognostic-nc-ice" if getattr(a, "prognostic_nc_ice", False) else "")
-                   + (" --prognostic-nc-icelim" if getattr(a, "prognostic_nc_icelim", False) else "")))
+                   + (" --prognostic-nc-icelim" if getattr(a, "prognostic_nc_icelim", False) else "")
+                   + (" --prognostic-nc-frz" if getattr(a, "prognostic_nc_frz", False) else "")))
 
 
 def main_prognostic(a):
@@ -794,14 +798,51 @@ def build_ice_limiter_columns(cols):
     return out
 
 
-def main_prognostic_icelim(a):
-    cols = build_ice_limiter_columns(build_prognostic_columns(build_columns()))
+def build_rain_freezing_columns(cols):
+    """``--prognostic-nc-frz`` columns (2026-10-22, 15a/3a): supercooled rain at
+    -21..-1 C with mean drop sizes 1/lamr of 300-700 um, half of the levels at
+    430-520 um around MG2's Dcs = 500 um (MG2 routes frozen rain to cloud ice
+    where 1/lamr < Dcs; rain above 500 um is pinned to lamr = 1/500 um), in
+    water-saturated full cloud (no rain evaporation)."""
+    from legoesm import constants as C
+    from legoesm.thermo import saturation_specific_humidity
+    import jax.numpy as jnp
+    base = next(c for c in cols if c["name"] == "trop_deep")
+    nlev = len(base["T"])
+    out = []
+    for j in range(6):
+        rng = np.random.default_rng(1080 + j)
+        ph = 40000.0 + 1500.0 * np.arange(nlev + 1)
+        pf = 0.5 * (ph[1:] + ph[:-1])
+        T = rng.uniform(252.0, 272.0, nlev)
+        rho = pf / (C.R_d * T)
+        qv = np.asarray(saturation_specific_humidity(jnp.asarray(T), jnp.asarray(pf)))
+        cf = np.ones(nlev)
+        qc = 10.0 ** rng.uniform(-7, -4, nlev)
+        qr = 10.0 ** rng.uniform(-6, -3, nlev)
+        d = np.where(rng.uniform(size=nlev) < 0.5, rng.uniform(430e-6, 520e-6, nlev),
+                     rng.uniform(300e-6, 700e-6, nlev))
+        nr = (1.0 / d) ** 3 * rho * qr / (np.pi * C.rho_water)      # per volume
+        qi = 10.0 ** rng.uniform(-8, -5, nlev)
+        ni = (10.0 ** rng.uniform(4, 5, nlev)) ** 3 * qi / (np.pi * 500.0)
+        qs = 10.0 ** rng.uniform(-8, -5, nlev)
+        ns = (10.0 ** rng.uniform(3.2, 4.2, nlev)) ** 3 * qs / (np.pi * 250.0)
+        nc = np.full(nlev, 1.0e8)
+        z = np.zeros(nlev)
+        out.append(dict(base, name=f"frz{j}", T=T, p_half=ph, p_full=pf, rho=rho, cf=cf,
+                        q_c=qc, q_v=qv, q_r=qr, N_r=nr, N_c=nc * rho, nc_kg=nc, q_i=qi,
+                        ni_kg=ni, q_s=qs, ns_kg=ns, relvar=np.ones(nlev), npccn=z, naai=z))
+    return out
+
+
+def main_prognostic_icelim(a, builder=None, tag="icelim"):
+    cols = (builder or build_ice_limiter_columns)(build_prognostic_columns(build_columns()))
     ncol, nlev = len(cols), len(cols[0]["T"])
     fx = {f"col_{k}": np.stack([c[k] for c in cols])
           for k in COL_FIELDS + ("nc_kg", "relvar", "npccn", "q_i", "ni_kg", "q_s", "ns_kg", "naai")}
     fx["col_names"] = np.array([c["name"] for c in cols])
     fx["dt"] = np.array(DT)
-    fin, fout = a.build / "icelim_col_in.txt", a.build / "icelim_col_out.txt"
+    fin, fout = a.build / f"{tag}_col_in.txt", a.build / f"{tag}_col_out.txt"
     write_prognostic_column_inputs(cols, fin)
     subprocess.run([str(a.build / "mg2_tap"), str(fin), str(fout), "F", "P", "I"], check=True)
     o = load_column_outputs(fout, ncol, nlev)
@@ -809,7 +850,7 @@ def main_prognostic_icelim(a):
         fx[f"ora_{k}"] = o[k]
     meta = _meta(a)
     meta["probe"] = ("build.sh tap/: micro_mg2_0.F90 + taps incl. S10.6 tap_ilim1 before M:1588, "
-                     "tap_ilim2 before M:1687, tap_ilim3 before M:1855 (64 added lines); naai input")
+                     "tap_ilim2 before M:1687, tap_ilim3 before M:1855, tap_frz before M:1645 (66 added lines); naai input")
     fx["meta"] = np.array(json.dumps(meta))
     a.out.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(a.out, **fx)
@@ -829,6 +870,7 @@ def main(argv=None):
     ap.add_argument("--prognostic-nc-rime", action="store_true")
     ap.add_argument("--prognostic-nc-ice", action="store_true")
     ap.add_argument("--prognostic-nc-icelim", action="store_true")
+    ap.add_argument("--prognostic-nc-frz", action="store_true")
     a = ap.parse_args(argv)
     subprocess.run(["bash", str(HERE / "build.sh"), str(a.cam), str(a.build)],
                    check=True)
@@ -848,6 +890,8 @@ def main(argv=None):
         return main_prognostic_ice(a)
     if a.prognostic_nc_icelim:
         return main_prognostic_icelim(a)
+    if a.prognostic_nc_frz:
+        return main_prognostic_icelim(a, build_rain_freezing_columns, "frz")
     cols = build_columns()
     ncol, nlev = len(cols), len(cols[0]["T"])
     fx = {f"col_{k}": np.stack([c[k] for c in cols]) for k in COL_FIELDS}

@@ -65,7 +65,7 @@ def _points(fx, w=HW, log_width=0.0, psd=1.0e9):
     qvl, qvi = _sat(T, p)
     vd, su, bg = W.mg2_ice_deposition_sublimation(
         g["q"], g["qi"], g["ni_kg"], g["icldm"], T, p, rho, qvl, qvi, cfg.rho_cloud_ice, dcs,
-        log_width, w)
+        log_width, w, presence_top=W.MG2_QSMALL)
     pf = g["precip_frac"]
     qsic, _, lams, n0s = W.mg2_inprecip_snow(g["qs"], g["ns_kg"], pf, cfg, psd_sharpness=psd)
     eps_s, _ = W.mg2_snow_vent_eps(n0s, lams, T, p, rho, cfg)
@@ -135,7 +135,7 @@ def test_gradients_through_the_steps():
         qvl, qvi = _sat(T, p)
         vd, su, bg = W.mg2_ice_deposition_sublimation(
             qvi * qv_rel, qi_gkg * 1e-3, jnp.full_like(T, 1e5), jnp.full_like(T, 0.6), T, p, rho,
-            qvl, qvi, cfg.rho_cloud_ice, 5e-4, cfg.mg2_ice_slope_log_width, 2.0)
+            qvl, qvi, cfg.rho_cloud_ice, 5e-4, cfg.mg2_ice_slope_log_width, 2.0, presence_top=W.MG2_QSMALL)
         nadj, lami = W.mg2_ice_slope(qi_gkg * 1e-3, jnp.full_like(T, 1e5), cfg.rho_cloud_ice, 5e-4,
                                      cfg.mg2_ice_slope_log_width)
         pc, npc = W.ice_autoconversion_mg2(qi_gkg * 1e-3, nadj, lami, 5e-4, T, 2.0)
@@ -160,7 +160,7 @@ def test_deposition_limiter_matches_mg2_at_the_hard_limit():
     a, c, dt = _ilim(fx)
     vd, mn, nn = (np.asarray(x) for x in W.mg2_deposition_limiter(
         a["q"], a["t"], a["qvi"], a["qc"], a["qcrat"], a["vap_dep"], a["mnuccd"], a["nnuccd"],
-        dt, 1.0e-12))
+        dt, 1.0e-12, presence_top=W.MG2_QSMALL))
     for k, g in (("vap_dep", vd), ("mnuccd", mn)):
         w = c[k]
         err = np.abs(g - w).max() / max(np.abs(w).max(), 1e-300)
@@ -199,7 +199,7 @@ def test_limiter_gradients():
     def f(r_qv, r_vd):
         vd, mn, _ = W.mg2_deposition_limiter(
             s["q"] * (1 + r_qv), s["t"], s["qvi"], s["qc"], s["qcrat"], s["vap_dep"] * (1 + r_vd),
-            s["mnuccd"], s["nnuccd"], dt, 1.0 / W.MG2_CAP_SHARPNESS)
+            s["mnuccd"], s["nnuccd"], dt, 1.0 / W.MG2_CAP_SHARPNESS, presence_top=W.MG2_QSMALL)
         return jnp.stack([vd / (1e-30 + s["vap_dep"]), mn / (1e-30 + s["mnuccd"] + 1e-30)])
 
     z = jnp.zeros_like(s["q"])

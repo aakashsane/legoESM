@@ -61,7 +61,7 @@ def _gross(fx, out):
     q = q0 + (out.dq_c_dt - out.qc_budget["sedimentation"]) * dt
     fc, _ = W.mg2_droplet_fall_coefficients(
         q, jnp.asarray(fx["col_nc_kg"]), jnp.maximum(jnp.asarray(fx["col_cf"]), 1e-4),
-        jnp.asarray(fx["col_T"]), rho)
+        jnp.asarray(fx["col_T"]), rho, presence_top=W.MG2_QSMALL)
     gross = np.abs(np.asarray(q0 * fc)) / np.diff(fx["col_p_half"], axis=1)
     # only where MG2's cloud-water limiter binds (the residue cells); plain
     # relative error everywhere else
@@ -176,7 +176,7 @@ def test_substeps_off_is_one_pass():
     r = np.where(qcic >= W.MG2_QSMALL, r_ic / np.where(qcic > 0, np.minimum(qcic, 5e-3), 1.0), 0.0)
     n_pre = fx["col_nc_kg"] + np.asarray(out.qc_budget["autoconversion"]) * r / fx["col_rho"] * dt
     fc, _ = W.mg2_droplet_fall_coefficients(q, jnp.asarray(n_pre), jnp.asarray(lcl),
-                                            jnp.asarray(fx["col_T"]), rho)
+                                            jnp.asarray(fx["col_T"]), rho, presence_top=W.MG2_QSMALL)
     F = np.asarray(fc * q)
     pdel = np.diff(fx["col_p_half"], axis=1)
     d = np.c_[np.zeros((1, 1)), np.minimum(lcl[:, 1:] / lcl[:, :-1], 1.0)]
@@ -193,11 +193,11 @@ def test_cloud_water_exactly_at_qsmall_is_finite():
     qcic > qsmall; exactly at qsmall the slope is 0 (codex review)."""
     q = jnp.asarray([[W.MG2_QSMALL, 1.0e-4]])
     fc, fnc = W.mg2_droplet_fall_coefficients(q, jnp.asarray([[1.0e6, 1.0e8]]), jnp.ones((1, 2)),
-                                              jnp.full((1, 2), 280.0), jnp.ones((1, 2)))
+                                              jnp.full((1, 2), 280.0), jnp.ones((1, 2)), presence_top=W.MG2_QSMALL)
     assert np.isfinite(np.asarray(fc)).all() and np.isfinite(np.asarray(fnc)).all()
     assert float(fc[0, 0]) == 0.0 and float(fc[0, 1]) > 0.0
     out = W.mg2_cloud_sedimentation(q, jnp.asarray([[1.0e6, 1.0e8]]), jnp.ones((1, 2)),
                                     jnp.full((1, 2), 280.0), jnp.ones((1, 2)),
-                                    jnp.asarray([[80000.0, 80500.0, 81000.0]]), 600.0, 16)
+                                    jnp.asarray([[80000.0, 80500.0, 81000.0]]), 600.0, 16, presence_top=W.MG2_QSMALL)
     for a in out[:5]:
         assert np.isfinite(np.asarray(a)).all()

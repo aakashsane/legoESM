@@ -4,7 +4,9 @@ Golden ``oracle_fixtures/morrison_switch_off_golden.npz`` = every output leaf of
 ``morrison_microphysics`` for four switch-off configurations on the MG2 oracle
 columns, a cold copy and a frozen copy (homogeneous freezing active), written by
 ``scripts/validate/oracle/morrison_mg2_warm_rain/make_switch_off_golden.py`` at the
-commit recorded in its meta (before the switch existed).  Compared bitwise.
+commit recorded in its meta.  Compared bitwise.  Regenerated 2026-10-21 on the
+rebase onto main (bit-identical to main) and 2026-10-22 for the smooth Bigg -4 C
+step (user decision 3a: cold column set only, max relative change 1.8e-3).
 """
 from __future__ import annotations
 
@@ -59,4 +61,6 @@ def test_switch_off_is_bit_identical(config):
 def test_switch_defaults_off():
     from legoesm.atmosphere.physics.microphysics.config import MorrisonConfig
     assert MorrisonConfig._field_defaults["prognostic_droplet_number"] is False
-    assert MorrisonConfig._fields[-1] == "prognostic_droplet_number"   # appended: positional ABI
+    # appended (positional ABI), then the two RULE 5 widths of 2026-10-22
+    assert MorrisonConfig._fields[-3:] == (
+        "prognostic_droplet_number", "mg2_presence_ramp_top", "mg2_frozen_rain_ice_ramp_frac")

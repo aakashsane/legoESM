@@ -112,7 +112,8 @@ def test_snow_kernels_match_mg2():
     i = {k[6:]: jnp.asarray(v) for k, v in fx.items() if k.startswith("pt_in_")}
     o = {k[7:]: v for k, v in fx.items() if k.startswith("pt_out_")}
     cfg = resolve_morrison_flavor(MorrisonConfig(
-        morrison_flavor="mg", ice_snow_d_auto=500.0e-6))   # CAM6 micro_mg_dcs
+        morrison_flavor="mg", ice_snow_d_auto=500.0e-6,     # CAM6 micro_mg_dcs
+        melt_sharpness=1.0e9))   # hard limit of the smooth Bigg -4 C step (2026-10-22)
     rho, T, p, pf = i["rho"], i["T"], i["p"], i["precip_frac"]
     qvl = saturation_specific_humidity_goff_gratch(T, p)
     qvi = saturation_specific_humidity_ice_goff_gratch(T, p)

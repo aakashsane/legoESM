@@ -181,6 +181,8 @@ __param_spec__ = {
             "melt_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "mg2_ice_slope_log_width": "numerics: solver/smoothing/tolerance/iteration parameter",
             "mg2_qi_limit_width": "numerics: solver/smoothing/tolerance/iteration parameter",
+            "mg2_presence_ramp_top": "numerics: solver/smoothing/tolerance/iteration parameter",
+            "mg2_frozen_rain_ice_ramp_frac": "numerics: solver/smoothing/tolerance/iteration parameter",
             "nuc_T_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "nuc_rh_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
@@ -1055,6 +1057,16 @@ class MorrisonConfig(NamedTuple):
     # MG2-snow mode (warm_rain_incloud + snow number) carries the approved
     # smooth 0 C steps and slope rounding with the switch off too (2026-10-21).
     prognostic_droplet_number: bool = False
+    # RULE 5 smoothing of the CAM6 MG2 condensate-presence test q >= qsmall
+    # (1e-18 kg/kg) in the ported droplet-number and cloud-ice code: the C2 step
+    # reaches 1 at this value [kg/kg]; 1e-18 = MG2's hard test (user decision
+    # 2026-10-22, 1a; KNOWN DIFFERENCE in _warm_rain.mg2_presence).
+    mg2_presence_ramp_top: float = 1.0e-17
+    # RULE 5 smoothing of MG2's frozen-rain destination (cloud ice where the
+    # mean drop 1/lamr < Dcs, else snow): ramp over this fraction of Dcs below
+    # it; 0 = MG2's hard test (user decision 2026-10-22, 15a; KNOWN DIFFERENCE
+    # in _warm_rain.mg2_frozen_rain_ice_fraction).
+    mg2_frozen_rain_ice_ramp_frac: float = 0.1
 
 
 # Hard ceiling of ``sed_cfl_substeps_max`` wherever it is set (leaf, applier,

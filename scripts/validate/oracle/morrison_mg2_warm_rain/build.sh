@@ -30,7 +30,7 @@ mkdir -p tap
 # and tap_post (tends after homogeneous freezing, before M:2687).
 # S10.3 adds nctend right before M:2501 (after all sedimentation) and the
 # droplet sub-step count of the cloud sedimentation loop.
-sed -e '0,/^contains$/s//real(r8), public :: nctend_stage(1,512) = 0._r8\nreal(r8), public :: nctend_sed(1,512) = 0._r8\ninteger, public :: nstepc_tap(1) = 0\nreal(r8), public :: tap_pre(1,512,10) = 0._r8\nreal(r8), public :: tap_post(1,512,5) = 0._r8\nreal(r8), public :: tap_snow1(1,512,5) = 0._r8\nreal(r8), public :: tap_snow2(1,512,8) = 0._r8\nreal(r8), public :: tap_snow3(1,512,5) = 0._r8\nreal(r8), public :: tap_ilim1(1,512,25) = 0._r8\nreal(r8), public :: tap_ilim2(1,512,5) = 0._r8\nreal(r8), public :: tap_ilim3(1,512,8) = 0._r8\ncontains/' \
+sed -e '0,/^contains$/s//real(r8), public :: nctend_stage(1,512) = 0._r8\nreal(r8), public :: nctend_sed(1,512) = 0._r8\ninteger, public :: nstepc_tap(1) = 0\nreal(r8), public :: tap_pre(1,512,10) = 0._r8\nreal(r8), public :: tap_post(1,512,5) = 0._r8\nreal(r8), public :: tap_snow1(1,512,5) = 0._r8\nreal(r8), public :: tap_snow2(1,512,8) = 0._r8\nreal(r8), public :: tap_snow3(1,512,5) = 0._r8\nreal(r8), public :: tap_ilim1(1,512,25) = 0._r8\nreal(r8), public :: tap_ilim2(1,512,5) = 0._r8\nreal(r8), public :: tap_ilim3(1,512,8) = 0._r8\nreal(r8), public :: tap_frz(1,512,5) = 0._r8\ncontains/' \
     -e 's/^  nctend = nctend + npccn$/&\n  nctend_stage = 0._r8\n  nctend_stage(1:mgncol,1:nlev) = nctend/' \
     -e 's/^  ! get new update for variables that includes sedimentation tendency$/  nctend_sed = 0._r8\n  nctend_sed(1:mgncol,1:nlev) = nctend\n&/' \
     -e 's/^        faloutc  = fc(i,:)  \* dumc(i,:)$/        nstepc_tap(i) = nstep\n&/' \
@@ -40,6 +40,7 @@ sed -e '0,/^contains$/s//real(r8), public :: nctend_stage(1,512) = 0._r8\nreal(r
     -e 's/^   if (do_cldice) then$/  tap_pre = 0._r8\n  tap_pre(1:mgncol,1:nlev,1) = dumc\n  tap_pre(1:mgncol,1:nlev,2) = dumnc\n  tap_pre(1:mgncol,1:nlev,3) = dumi\n  tap_pre(1:mgncol,1:nlev,4) = dumni\n  tap_pre(1:mgncol,1:nlev,5) = t + tlat\/cpp*deltat\n  tap_pre(1:mgncol,1:nlev,6) = qctend\n  tap_pre(1:mgncol,1:nlev,7) = nctend\n  tap_pre(1:mgncol,1:nlev,8) = qitend\n  tap_pre(1:mgncol,1:nlev,9) = nitend\n  tap_pre(1:mgncol,1:nlev,10) = tlat\n&/' \
     -e 's/^     ! remove any excess over-saturation, which is possible due to non-linearity when adding$/  tap_post = 0._r8\n  tap_post(1:mgncol,1:nlev,1) = qctend\n  tap_post(1:mgncol,1:nlev,2) = nctend\n  tap_post(1:mgncol,1:nlev,3) = qitend\n  tap_post(1:mgncol,1:nlev,4) = nitend\n  tap_post(1:mgncol,1:nlev,5) = tlat\n&/' \
     -e 's/^        !PMC 12\/3\/12: ratio is also frac of step w\/ liquid.$/        tap_ilim1(i,k,:) = [vap_dep(i,k), ice_sublim(i,k), mnuccd(i,k), berg(i,k), msacwi(i,k), nsacwi(i,k), prci(i,k), nprci(i,k), bergs(i,k), psacws(i,k), prds(i,k), qcrat(i,k), q(i,k), t(i,k), qi(i,k), ni(i,k), qs(i,k), qc(i,k), qvi(i,k), precip_frac(i,k), icldm(i,k), lcldm(i,k), nnuccd(i,k), prai(i,k), nprai(i,k)]\n&/' \
+    -e 's/^        mnuccri(i,k)=0._r8$/        tap_frz(i,k,:) = [mnuccr(i,k), nnuccr(i,k), lamr(i,k), qric(i,k), nric(i,k)]\n&/' \
     -e 's/^        if (pre(i,k) < 0._r8) then$/        tap_ilim2(i,k,:) = [pre(i,k), mnuccr(i,k), mnuccri(i,k), pracs(i,k), nnuccri(i,k)]\n&/' \
     -e 's/^     ! Big "administration" loop enforces conservation, updates variables$/     tap_ilim3(1:mgncol,k,1) = vap_dep(:,k)\n     tap_ilim3(1:mgncol,k,2) = ice_sublim(:,k)\n     tap_ilim3(1:mgncol,k,3) = mnuccd(:,k)\n     tap_ilim3(1:mgncol,k,4) = prci(:,k)\n     tap_ilim3(1:mgncol,k,5) = nprci(:,k)\n     tap_ilim3(1:mgncol,k,6) = prds(:,k)\n     tap_ilim3(1:mgncol,k,7) = pre(:,k)\n     tap_ilim3(1:mgncol,k,8) = nnuccd(:,k)\n&/' \
     "$CAM/micro_mg2_0.F90" > tap/micro_mg2_0.F90
@@ -57,7 +58,10 @@ test "$(grep -c tap_snow3 tap/micro_mg2_0.F90)" -eq 7
 test "$(grep -c tap_ilim1 tap/micro_mg2_0.F90)" -eq 2
 test "$(grep -c tap_ilim2 tap/micro_mg2_0.F90)" -eq 2
 test "$(grep -c tap_ilim3 tap/micro_mg2_0.F90)" -eq 9
-test "$(diff "$CAM/micro_mg2_0.F90" tap/micro_mg2_0.F90 | grep -c '^>')" -eq 64
+# 2026-10-22 adds tap_frz (Bigg mnuccr, nnuccr and lamr, qric, nric before the
+# frozen-rain ice/snow split, M:1645).
+test "$(grep -c tap_frz tap/micro_mg2_0.F90)" -eq 2
+test "$(diff "$CAM/micro_mg2_0.F90" tap/micro_mg2_0.F90 | grep -c '^>')" -eq 66
 # S10.4 claim: between the homogeneous-freezing block and the final number
 # clear, nctend is written only by the nccons branch (off in the P driver), the
 # droplet re-adjust and the clear; qctend only under allow_sed_supersat (off).

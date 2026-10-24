@@ -121,8 +121,8 @@ def _no_bergeron(monkeypatch):
     monkeypatch.setattr(M, "mg2_bergeron_snow", lambda T, q_cic, *a: jnp.zeros_like(q_cic))
     real = M.mg2_ice_deposition_sublimation
 
-    def no_berg(*a):
-        dep, subl, berg = real(*a)
+    def no_berg(*a, **k):
+        dep, subl, berg = real(*a, **k)
         return dep, subl, jnp.zeros_like(berg)
     monkeypatch.setattr(M, "mg2_ice_deposition_sublimation", no_berg)
 
@@ -187,7 +187,7 @@ def _with_sedimentation(fx, out, q_c, N_c, dN_pre, T):
     dqc_pre = out.dq_c_dt - out.qc_budget["sedimentation"]
     _, sed_n, _, _, _, _ = W.mg2_cloud_sedimentation(
         q_c + dqc_pre * dt, (N_c + dN_pre * dt) / rho, cf, T, rho,
-        jnp.asarray(fx["col_p_half"]), dt, _cfg().sed_cfl_substeps_max)
+        jnp.asarray(fx["col_p_half"]), dt, _cfg().sed_cfl_substeps_max, presence_top=W.MG2_QSMALL)
     dN = dN_pre + sed_n * rho
     # S10.4 final droplet re-adjust (no ice melt / homogeneous freezing at 258 K)
     q_ic = jnp.minimum(jnp.maximum(q_c + out.dq_c_dt * dt, 0.0) / cf, W.KK2000_CAM6_QC_MAX)

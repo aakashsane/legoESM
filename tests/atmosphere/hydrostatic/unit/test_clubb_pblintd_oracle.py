@@ -113,7 +113,12 @@ def test_generator_rebuilds_the_committed_inputs(fx, tmp_path):
     spec.loader.exec_module(mf)
     d = mf.build_inputs(np.load(mf.SRC))
     for k, v in d.items():
-        np.testing.assert_array_equal(v, fx[f"in_{k}"], err_msg=k)
+        if k == "exner":
+            # derived via libm pow, whose last bit differs across machines
+            np.testing.assert_allclose(v, fx["in_exner"], rtol=1e-15, atol=0,
+                                       err_msg=k)
+        else:
+            np.testing.assert_array_equal(v, fx[f"in_{k}"], err_msg=k)
     p = tmp_path / "o.txt"
     p.write_text("1 2 3 4 5\n6 7 8 9 10\n")
     o = mf.parse_outputs(p, 2)

@@ -318,7 +318,8 @@ def solve_land_on_devices(step, args, is_col, mesh, keep):
     then cut to the real slots ``keep``.  ``is_col`` is ``args``' tree of
     booleans marking the per-column array leaves (split over the devices);
     every other leaf is shared.  Every OUTPUT leaf must be per column (its
-    shape follows the column count, traced at two counts), else ValueError.
+    leading axis follows the column count, traced at two counts), else
+    ValueError.
     The step's whole-run
     counters would be per shard there, so they are recounted from their
     masks over the real slots.  Returns ``(state, response, carbon,
@@ -352,12 +353,13 @@ def solve_land_on_devices(step, args, is_col, mesh, keep):
         return [jax.ShapeDtypeStruct(((n,) + tuple(x.shape[1:])) if c
                                      else x.shape, x.dtype)
                 for x, c in zip(arrs, arr_col)]
-    # an output is per column when its shape follows the column count
+    # an output is per column when its LEADING axis follows the column count
     a_out = jax.eval_shape(body, *shapes(n_slot))
     b_out = jax.eval_shape(body, *shapes(n_slot + 1))
     shared = [jax.tree_util.keystr(k) for (k, a), b in zip(
         jax.tree_util.tree_flatten_with_path(a_out)[0],
-        jax.tree_util.tree_leaves(b_out)) if a.shape == b.shape]
+        jax.tree_util.tree_leaves(b_out))
+        if not a.shape or b.shape != (a.shape[0] + 1,) + a.shape[1:]]
     if shared:
         raise ValueError(
             f"land step outputs {shared} are not per column; the device "

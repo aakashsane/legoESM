@@ -81,10 +81,14 @@ def test_sharded_solve_is_the_one_call_solve(n_dev):
         np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
 
 
-def test_a_shared_output_is_refused():
+@pytest.mark.parametrize("bad", [
+    lambda r: jnp.sum(r),                           # column-dependent scalar
+    lambda r: jnp.stack([r, r]),                    # columns not leading
+])
+def test_a_shared_output_is_refused(bad):
     def step(st, cfg, d):
         o = _step(st, cfg, d)
-        return (o[0], jnp.sum(o[1]), o[2], o[3])    # column-dependent scalar
+        return (o[0], bad(o[1]), o[2], o[3])
     cols = np.arange(6)
     slots, keep = shard_land_columns(cols, 1)
     mesh = Mesh(np.array(jax.devices()[:1]), ("land",))

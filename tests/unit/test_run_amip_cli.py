@@ -1937,7 +1937,7 @@ def test_aimip_classical_overrides_spectral_refused(tmp_path):
     args = parser.parse_args(["--dataset", "analytical",
                               "--discretization", "spectral",
                               "--aimip-classical-checkpoint", ckpt])
-    with pytest.raises(SystemExit, match="spectral"):
+    with pytest.raises(SystemExit, match="AIMIP-classical forces tiedtke"):
         _apply_aimip_classical_overrides(args)
 
 
@@ -2440,8 +2440,13 @@ def test_config_yaml_round_trips_authoritative_values():
     # observed ocean rain all ran with it off.  cam6_clubb refuses it anyway
     # (deepcu is CAM6's own deep-convective cloud term), so it stays pinned.
     assert cfg.convective_cloud is False
-    assert cfg.surface_gustiness_zi == 300.0
-    assert cfg.convective_precip_efficiency == pytest.approx(0.8)
+    # surface_gustiness_zi removed 2026-10-19 (user): inert on large_yeager_cesm
+    # (CESM gust_fac = 0); the coastal ocean-surface flux is on (#1320).
+    assert cfg.surface_gustiness_zi is None
+    assert cfg.ocean_flux_on_ocean_surface is True
+    # No convective_precip_efficiency row: ZM has no precip-efficiency field,
+    # so the 0.8 the deck carried was read by nothing (oracle audit 2026-10-18).
+    assert cfg.convective_precip_efficiency is None
     # User table 2026-09-24, "production now, matches CAM6", three rows set
     # EXPLICITLY so nothing rests on a code default (the defaults are the
     # opposite of all three): the closure's liquid handed to cloud water; the
@@ -2490,6 +2495,10 @@ def _assert_optics_thinning(cfg, *, thinned: bool):
     # The MPAS lane's own builder (model_driver._run_column), so the pin reads
     # the config the run would radiate with, not the YAML.
     from legoesm.driver.model_driver import _standalone_cloud_config
+    from legoesm.driver.physics_pipeline import turbulence_config_for
+    from legoesm.atmosphere.physics.turbulence.integration import (
+        resolved_clubb_config,
+    )
     cloud_cfg = _standalone_cloud_config(
         cfg, cfg.cloud_scheme, allow_convective_cloud=True)
     assert cloud_cfg.cloud_partial_coverage_optics == "none"
@@ -2504,7 +2513,9 @@ def _assert_optics_thinning(cfg, *, thinned: bool):
         q_ice=jnp.zeros_like(q_c),
         cloud_fraction_override=jnp.full((1, 4), 0.5),
         # cam6_clubb's tropopause switch needs these; harmless to the others.
-        lat=jnp.zeros((1,)), p_half=p_half)
+        lat=jnp.zeros((1,)), p_half=p_half,
+        # cam6_clubb's aist top cut reads the run's resolved CLUBB config.
+        clubb_config=resolved_clubb_config(turbulence_config_for(cfg)))
     raw = q_c * dp / constants.g
     ratio = float(jnp.sum(props.lwp) / jnp.sum(raw))
     if thinned:
@@ -4059,7 +4070,8 @@ def test_hard_saturation_adjustment_requires_a_guarded_scheme():
         HARD_SAT_GUARD_EXEMPT,
     )
     parser = build_arg_parser()
-    assert set(HARD_SAT_GUARD_EXEMPT) == {"sdm", "fast_sbm", "none"}
+    assert set(HARD_SAT_GUARD_EXEMPT) == {"sdm", "fast_sbm", "none", "kessler",
+                                          "seifert_beheng"}
     for micro in sorted(HARD_SAT_GUARD_EXEMPT):
         cfg = build_config_from_args(_postprocess_args(parser.parse_args([
             "--dataset", "analytical", "--microphysics", micro,
@@ -4078,9 +4090,8 @@ def test_hard_saturation_adjustment_accepted_by_every_guarded_scheme():
     )
     parser = build_arg_parser()
     exposed = [s for s in HARD_SAT_GUARD_SCHEMES
-               if s in {"kessler", "sundqvist", "seifert_beheng", "morrison",
-                        "thompson", "p3"}]
-    assert len(exposed) == 6, exposed
+               if s in {"sundqvist", "morrison", "thompson", "p3"}]
+    assert len(exposed) == 4, exposed
     for micro in exposed:
         cfg = build_config_from_args(_postprocess_args(parser.parse_args([
             "--dataset", "analytical", "--microphysics", micro,
@@ -4100,6 +4111,20 @@ def test_morrison_flavor_round_trips():
     d = build_config_from_args(_postprocess_args(
         parser.parse_args(["--dataset", "analytical"]), parser))
     assert d.morrison_flavor == "mg"
+
+
+def test_morrison_ice_snow_d_auto_round_trips():
+    """--morrison-ice-snow-d-auto (and the deck key) reach ExperimentConfig;
+    default unset (None = the flavor's DCS)."""
+    parser = build_arg_parser()
+    cfg = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--microphysics", "morrison",
+        "--morrison-ice-snow-d-auto", "3.0e-4",
+    ]), parser))
+    assert cfg.morrison_ice_snow_d_auto == 3.0e-4
+    d = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert d.morrison_ice_snow_d_auto is None
 
 
 def test_morrison_flavor_yaml_route():
@@ -4729,14 +4754,18 @@ def test_persistent_dgrid_flag_flows_to_config_1028():
 def test_clubb_trop_cloud_top_press_reaches_the_turbulence_kernel():
     """The CLUBB upper domain limit (CAM trop_cloud_top_press) was a scheme
     field no run could set; the flag threads it through the same single source
-    the prognostic flag uses, and None keeps the scheme's own 0 (off)."""
+    the prognostic flag uses, and None keeps the scheme's own default, CAM6's
+    namelist 100 Pa (namelist_defaults_cam.xml:1295)."""
+    from legoesm.atmosphere.physics.turbulence.integration import (
+        resolved_clubb_config,
+    )
     from legoesm.driver.physics_pipeline import turbulence_config_for
     parser = build_arg_parser()
     cfg_off = build_config_from_args(_postprocess_args(parser.parse_args(
         ["--dataset", "analytical", "--turbulence", "clubb"]), parser))
     assert cfg_off.clubb_trop_cloud_top_press is None
     tc_off = turbulence_config_for(cfg_off)
-    assert tc_off.clubb is None or tc_off.clubb.trop_cloud_top_press == 0.0
+    assert resolved_clubb_config(tc_off).trop_cloud_top_press == 100.0
     cfg_on = build_config_from_args(_postprocess_args(parser.parse_args(
         ["--dataset", "analytical", "--turbulence", "clubb",
          "--clubb-trop-cloud-top-press", "15000"]), parser))
@@ -5262,6 +5291,36 @@ def test_production_deck_pins_the_zm_land_fraction_policy():
     assert keys["zm_land_fraction"] == "required"
 
 
+def test_zm_transport_cloud_tracers_flows_to_config_and_kernel():
+    """--[no-]zm-transport-cloud-tracers threads CLI -> ExperimentConfig ->
+    ZhangMcFarlaneConfig and survives the AMIP export; default on (CAM6)."""
+    from legoesm.driver.config import ExperimentConfig
+    from legoesm.driver.physics_pipeline import _resolve_convection
+    parser = build_arg_parser()
+    base = ["--dataset", "analytical", "--convection", "zhang_mcfarlane"]
+    cfg_on = build_config_from_args(_postprocess_args(parser.parse_args(base), parser))
+    cfg_off = build_config_from_args(_postprocess_args(parser.parse_args(
+        base + ["--no-zm-transport-cloud-tracers"]), parser))
+    assert cfg_on.zm_transport_cloud_tracers is True
+    assert cfg_off.zm_transport_cloud_tracers is False
+    assert _resolve_convection(cfg_on)[1].transport_cloud_tracers is True
+    assert _resolve_convection(cfg_off)[1].transport_cloud_tracers is False
+    for c in (cfg_on, cfg_off):
+        assert ExperimentConfig.from_amip_config(
+            c.to_amip_config()).zm_transport_cloud_tracers == c.zm_transport_cloud_tracers
+    # a quoted YAML "false" reaches the config as a str (truthy); refuse it
+    with pytest.raises(ValueError, match="zm_transport_cloud_tracers"):
+        cfg_on._replace(zm_transport_cloud_tracers="false").validate_strict()
+
+
+def test_production_deck_pins_zm_tracer_transport_on():
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    for deck in ("amip_production.yaml", "amip_production_fv3duo_c24.yaml"):
+        keys = load_yaml_config(
+            str(_repo_root() / "config" / "amip" / deck), build_arg_parser())
+        assert keys["zm_transport_cloud_tracers"] is True, deck
+
+
 def test_production_deck_pins_the_reference_aod():
     """User decision 2026-10-15: production's reference AOD (0.03) is a deck
     row, not the run_amip default; the duo deck inherits it via include."""
@@ -5465,3 +5524,85 @@ def test_production_deck_selects_log_form_vapour_filter():
     cfg = build_config_from_args(parser.parse_args([]))
     assert cfg.dycore.mpas_vert4_log_form_tracers == ("q_v",)
     assert cfg.dycore.mpas_vert4_flux_form_tracers == ()
+
+
+_DRY_BASE = ["--grid-type", "latlon", "--dataset", "analytical", "--dry-run"]
+
+
+def test_dry_run_reports_missing_input_and_returns_1(tmp_path, capsys):
+    from scripts.run.run_amip import main
+    gone = str(tmp_path / "no_such_restart.npz")
+    assert main(_DRY_BASE + ["--restart-from", gone]) == 1
+    out = capsys.readouterr().out
+    assert "MISSING" in out and gone in out
+    assert "Setup..." not in out
+
+
+def test_dry_run_all_present_returns_0(tmp_path, capsys):
+    from scripts.run.run_amip import main
+    here = tmp_path / "restart.npz"
+    here.write_bytes(b"")
+    assert main(_DRY_BASE + ["--restart-from", str(here)]) == 0
+    out = capsys.readouterr().out
+    assert "all input files present" in out and "MISSING" not in out
+
+
+def test_dry_run_builtin_topography_is_not_a_file(capsys):
+    from scripts.run.run_amip import main
+    assert main(_DRY_BASE + ["--topography", "gaussian"]) == 0
+    assert "not used  topography" in capsys.readouterr().out
+
+
+def test_dry_run_reports_missing_ml_stats(tmp_path, capsys):
+    from scripts.run.run_amip import main
+    gone = str(tmp_path / "no_such_stats.npz")
+    assert main(_DRY_BASE + ["--physics-parameterization-stats", gone]) == 1
+    out = capsys.readouterr().out
+    assert "MISSING" in out and gone in out
+
+
+def test_dry_run_reports_missing_aimip_checkpoint_before_loading(tmp_path, capsys):
+    from scripts.run.run_amip import main
+    gone = str(tmp_path / "no_such_aimip.eqx")
+    assert main(_DRY_BASE + ["--aimip-classical-checkpoint", gone]) == 1
+    out = capsys.readouterr().out
+    assert "MISSING" in out and gone in out
+
+
+def test_dry_run_finds_suffixless_aimip_checkpoint(tmp_path, capsys):
+    from scripts.run.run_amip import main
+    (tmp_path / "epoch_0019.eqx").write_bytes(b"")
+    assert main(_DRY_BASE + ["--aimip-classical-checkpoint",
+                             str(tmp_path / "epoch_0019")]) == 0
+    assert "MISSING" not in capsys.readouterr().out
+
+
+def test_dry_run_suffixless_aimip_checkpoint_checks_the_eqx_file(tmp_path, capsys):
+    from scripts.run.run_amip import main
+    (tmp_path / "exp1").mkdir()  # the literal path exists; the loader opens exp1.eqx
+    assert main(_DRY_BASE + ["--aimip-classical-checkpoint",
+                             str(tmp_path / "exp1")]) == 1
+    assert "MISSING" in capsys.readouterr().out
+    (tmp_path / "exp1.eqx").mkdir()  # a directory is not a checkpoint file
+    assert main(_DRY_BASE + ["--aimip-classical-checkpoint",
+                             str(tmp_path / "exp1")]) == 1
+
+
+def test_dry_run_keeps_aimip_spectral_refusal(tmp_path):
+    from scripts.run.run_amip import main
+    gone = str(tmp_path / "no_such_aimip.eqx")
+    with pytest.raises(SystemExit, match="AIMIP-classical forces tiedtke"):
+        main(["--grid-type", "gaussian", "--discretization", "spectral",
+              "--dataset", "analytical", "--dry-run",
+              "--aimip-classical-checkpoint", gone])
+
+
+def test_dry_run_exit_code_reaches_the_shell(tmp_path):
+    import subprocess
+    gone = str(tmp_path / "no_such_restart.npz")
+    proc = subprocess.run(
+        [sys.executable, "scripts/run/run_amip.py", *_DRY_BASE,
+         "--restart-from", gone],
+        capture_output=True, text=True, env={**__import__("os").environ,
+                                             "JAX_PLATFORMS": "cpu"})
+    assert proc.returncode == 1, proc.stderr[-2000:]

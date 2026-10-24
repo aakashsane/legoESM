@@ -316,13 +316,12 @@ _ATM_SCALAR_PARAM_MAP: dict[str, str] = {
     # hard saturation-adjustment trigger + heating cap -> _resolve_microphysics
     # (physics_pipeline, via apply_microphysics_experiment_flags; the MPAS
     # post-step drain reads the same threaded sub-config in model_driver).
-    # One flat scalar serves ALL SEVEN guarded schemes -- the five bulk
-    # warm-rain ones plus the Sundqvist diagnostic scheme and the ML emulator,
+    # One flat scalar serves ALL SIX guarded schemes -- the four bulk
+    # microphysics ones (morrison, p3, seifert_beheng, thompson) plus the
+    # Sundqvist diagnostic scheme and the ML emulator,
     # which gained the same guard when it was made uniform (only the active
     # scheme's sub-config is built, so one scalar is unambiguous). Keep this
     # block in step with microphysics/config.HARD_SAT_GUARD_SCHEMES.
-    "atm.micro.KesslerConfig.hard_sat_adjust_threshold": "hard_sat_adjust_threshold",
-    "atm.micro.KesslerConfig.hard_sat_max_heating_K": "hard_sat_max_heating_K",
     "atm.micro.MorrisonConfig.hard_sat_adjust_threshold": "hard_sat_adjust_threshold",
     "atm.micro.MorrisonConfig.hard_sat_max_heating_K": "hard_sat_max_heating_K",
     "atm.micro.P3Config.hard_sat_adjust_threshold": "hard_sat_adjust_threshold",
@@ -346,13 +345,9 @@ _ATM_SCALAR_PARAM_MAP: dict[str, str] = {
     # gravity wave drag -> gwd_config_for (physics_pipeline), which every lane
     # (FV pipeline / MPAS / spectral) now routes through.  Before it, these
     # scalars existed on ExperimentConfig but NO production path read them.
-    # ``tau_max`` is tier 3 (a numerics clip), so the tier-1/2 reachability
-    # audit does not require it — it is mapped anyway because the same resolver
-    # threads it and the map's contract is "what the pipeline actually threads".
     "atm.gwd.HinesConfig.total_rms_wind": "hines_total_rms_wind",
     "atm.gwd.HinesConfig.Fmax": "hines_Fmax",
     "atm.gwd.McFarlaneConfig.directional_spread": "mcfarlane_directional_spread",
-    "atm.gwd.McFarlaneConfig.tau_max": "mcfarlane_tau_max",
     # NOTE: ``mcfarlane_k_wave`` is threaded too but has NO ``__param_spec__``
     # entry (its computed 2*pi/100e3 default is not a float literal, so the
     # AST-based spec gate never required one) — there is no qualified name to

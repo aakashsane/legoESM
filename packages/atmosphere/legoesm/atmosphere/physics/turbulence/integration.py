@@ -52,6 +52,7 @@ from legoesm.atmosphere.physics.turbulence.mynn25 import mynn25_turbulence
 from legoesm.atmosphere.physics.turbulence.clubb import clubb_turbulence
 from legoesm.atmosphere.physics.turbulence.clubb_lite import clubb_lite_turbulence
 from legoesm.atmosphere.physics.turbulence.holtslag_boville import (
+    cam_pblintd_height,
     holtslag_boville_turbulence,
 )
 from legoesm.atmosphere.physics.turbulence.ysu import ysu_turbulence
@@ -143,6 +144,14 @@ def materialize_sub_config(config: TurbulenceConfig) -> TurbulenceConfig:
         from legoesm.atmosphere.physics.turbulence.clubb import CLUBBConfig
         return config._replace(clubb=CLUBBConfig())
     return config
+
+
+def resolved_clubb_config(config: TurbulenceConfig):
+    """The ``CLUBBConfig`` dispatch will run, or ``None`` unless
+    ``config.scheme == "clubb"``.  Consumers of CLUBB's top (the cam6_clubb
+    ice-stratus cut in radiation, MG2 and the CMOR cloud diagnostics) read it
+    from here, so they see the same config the closure runs with."""
+    return materialize_sub_config(config).clubb if config.scheme == "clubb" else None
 
 
 def get_turbulence_fn(config: TurbulenceConfig):
@@ -269,32 +278,6 @@ def _prognostic_clubb_lat_kwargs(carry_field, lat_fn):
     if carry_field != "clubb_moments":
         return {}
     return {"lat": lat_fn()}
-
-
-def _prognostic_clubb_rad_kwargs(carry_field, phys_state, nCells, nlev, dtype):
-    """Radheating kwargs for the ``turb_fn`` call, prognostic CLUBB only.
-
-    Returns ``{"rad_dT_dt": array}`` when the resolved scheme is prognostic
-    CLUBB (``carry_field == "clubb_moments"``, a STATIC build-time decision)
-    and the host hands a ``phys_state`` whose cached ``rad_heating`` slot is
-    populated; otherwise ``{}`` so every other scheme and the diagnostic
-    CLUBB path stay byte-identical (their kernels do not accept the kwarg).
-    The decision never depends on array values, only on ``carry_field`` and
-    None-ness, so it is a pure Python branch resolved at trace time.
-
-    CACHE LAG NOTE: ``combined.py`` updates ``PhysicsState.rad_heating`` AFTER
-    the turbulence step runs, so the array seen here is from the PRECEDING
-    radiation solve (one step stale).  That is the documented contract: the
-    thlp2 budget's radiative source term uses the latest cached heating
-    available at turbulence time.
-    """
-    if carry_field != "clubb_moments":
-        return {}
-    rad_heating = (getattr(phys_state, "rad_heating", None)
-                   if phys_state is not None else None)
-    if rad_heating is None:
-        return {}
-    return {"rad_dT_dt": jnp.asarray(rad_heating, dtype=dtype).reshape(nCells, nlev)}
 
 
 from legoesm.atmosphere.physics._shared import (
@@ -502,17 +485,22 @@ def _carry_update_with_cloud_fraction(carry_field, carry_val, turb_out):
     (``carry_field`` -> ``carry_val``: tke / qke / clubb_moments) is co-located
     under its own key so it still evolves across the step.
 
-    Schemes with no PDF cloud closure leave ``cloud_fraction=None`` -> we return
-    the plain ``carry_val``, byte-identical to the pre-existing (bare value, not
-    dict) contract.  combined.py only merges the dict when ``field_name`` (the
-    registered carry field) is not None, which holds for every cf-producing
-    scheme today (CLUBB carries ``tke``); a diagnostic scheme that ever set cf
-    with ``carry_field=None`` would need combined.py's ``field_name is not None``
-    guard relaxed for the dict branch first.
+    The diagnosed PBL height ``turb_out.h_pbl`` is always published as
+    ``pblh`` (CAM's pbuf ``pblh``, written by clubb_intr.F90:2616): deep
+    convection reads it one step lagged for its launch-level bound
+    (convect_deep.F90:266).  Schemes with no PDF cloud closure leave
+    ``cloud_fraction=None`` and publish only ``pblh`` plus their carry; a PDF
+    closure that also returns ``relvar`` (prognostic CLUBB) publishes it next
+    to ``cloud_fraction`` for MG2.
+    combined.py only merges the dict when ``field_name`` (the registered carry
+    field) is not None, which holds for every scheme (turbulence_carry_field
+    never returns None).
     """
-    if turb_out.cloud_fraction is None:
-        return carry_val
-    updates = {"cloud_fraction": turb_out.cloud_fraction}
+    updates = {"pblh": turb_out.h_pbl}
+    if turb_out.cloud_fraction is not None:
+        updates["cloud_fraction"] = turb_out.cloud_fraction
+        if turb_out.relvar is not None:
+            updates["relvar"] = turb_out.relvar
     if carry_field is not None and carry_val is not None:
         updates[carry_field] = carry_val
     return updates
@@ -1017,11 +1005,17 @@ def _make_mpas_turbulence(
         if getattr(_surf, "ocean_q_sfc_saline", False):
             # Sea water at the SURFACE pressure (the coupled lane's convention)
             # for the ocean fraction: replace that fraction's fresh-water share
-            # of the blend; the land share is untouched.
+            # of the blend; the land share is untouched.  SPECIFIC humidity,
+            # like the air humidity it is differenced with (CESM ssq = 0.98 x
+            # saturation specific humidity): the saturation curve's MIXING
+            # RATIO is converted before the salinity factor.
             from legoesm.core.bulk_flux import ocean_surface_q_sat
-            _q_ocean = ocean_surface_q_sat(
-                T_sfc, p_s.reshape(nCells), thermo_convention=_surf.thermo_convention,
-                bulk_scheme=_surf.bulk_scheme, saline_factor=_Q_SAT_SALINE_FACTOR)
+            from legoesm.thermo import mixing_ratio_to_specific_humidity
+            _q_ocean = _Q_SAT_SALINE_FACTOR * mixing_ratio_to_specific_humidity(
+                ocean_surface_q_sat(
+                    T_sfc, p_s.reshape(nCells),
+                    thermo_convention=_surf.thermo_convention,
+                    bulk_scheme=_surf.bulk_scheme))
             _fo = (1.0 - jnp.asarray(f_land, dtype=q_sfc.dtype).reshape(nCells)
                    if f_land is not None else 1.0)
             q_sfc = q_sfc + _fo * (_q_ocean - _q_sfc_fresh)
@@ -1074,12 +1068,14 @@ def _make_mpas_turbulence(
             else:
                 _T_bulk = jnp.asarray(_T_oc, dtype=T_sfc.dtype).reshape(nCells)
                 if getattr(_surf, "ocean_q_sfc_saline", False):
+                    # Specific humidity, as the blended path's ocean share.
                     from legoesm.core.bulk_flux import ocean_surface_q_sat
-                    _q_bulk = ocean_surface_q_sat(
-                        _T_bulk, p_s.reshape(nCells),
-                        thermo_convention=_surf.thermo_convention,
-                        bulk_scheme=_surf.bulk_scheme,
-                        saline_factor=_Q_SAT_SALINE_FACTOR)
+                    from legoesm.thermo import mixing_ratio_to_specific_humidity
+                    _q_bulk = _Q_SAT_SALINE_FACTOR * mixing_ratio_to_specific_humidity(
+                        ocean_surface_q_sat(
+                            _T_bulk, p_s.reshape(nCells),
+                            thermo_convention=_surf.thermo_convention,
+                            bulk_scheme=_surf.bulk_scheme))
                 else:
                     _q_bulk = saturation_specific_humidity(_T_bulk, p_full_col[:, -1])
             # Through the shared helper rather than an inline copy: this
@@ -1169,13 +1165,9 @@ def _make_mpas_turbulence(
         if _liquid_partition:
             _sfc_kw = dict(_sfc_kw, q_c=_qc_col)
 
-        # Radiative-heating kwargs: prognostic CLUBB only, and only when the
-        # host cached a rad_heating.  CACHE LAG: combined.py refreshes the
-        # cache AFTER turbulence, so this is the PRECEDING radiation solve's
-        # heating.  {} (no kwarg at all) for every other scheme and the
-        # diagnostic CLUBB path — their turb_fn signatures do not accept it.
-        _rad_kw = _prognostic_clubb_rad_kwargs(
-            carry_field, phys_state, nCells, nlev, _state_dtype)
+        # No radiative thlp2 source is handed to CLUBB: CAM6 applies it only
+        # under clubb_cloudtop_cooling (do_cldcool), default .false.
+        # (namelist_defaults_cam.xml cesm2_1_rel :1200; clubb_intr.F90 :1935).
 
         def _mesh_lat():
             if not hasattr(mesh, "latCell"):
@@ -1191,7 +1183,7 @@ def _make_mpas_turbulence(
                 u_col, v_col, T_col, q_v_col, tke_in,
                 p_full_col, p_half_col, z_full, z_half,
                 T_sfc, q_sfc, rho, dt, step_config,
-                **_sfc_kw, **_rad_kw,
+                **_sfc_kw,
                 **_prognostic_clubb_lat_kwargs(carry_field, _mesh_lat),
             )
             tke_out = tke_new
@@ -1207,6 +1199,25 @@ def _make_mpas_turbulence(
                 f"turbulence scheme {scheme_name!r} accepted the liquid "
                 "partition but returned no dq_c_dt, so the liquid removed from "
                 "vapour would vanish. This is a scheme bug, not a config one.")
+        if scheme_name == "clubb" and _surface_flux is not None:
+            # CAM6 PBL height (oracle row 48): clubb_intr.F90:2594-2617 runs
+            # hb_diff::pblintd on state1 AFTER the CLUBB update
+            # (physics_update at :2251; geopotential_t re-derives zm/zi from
+            # the updated T, q), with the coupler's surface stress, sensible
+            # heat and water flux (cam_in%wsx/wsy/shf/cflx) and the hb_diff
+            # constants; ZM reads it next step (convect_deep.F90:266).
+            _T_p = T_col + dt * turb_out.dT_dt
+            _q_p = q_v_col + dt * turb_out.dq_v_dt
+            _zf_p, _zh_p = _compute_heights_from_sigma(
+                _T_p, p_half_col, q_v=_q_p)
+            turb_out = turb_out._replace(h_pbl=cam_pblintd_height(
+                _T_p, _q_p, u_col + dt * turb_out.du_dt,
+                v_col + dt * turb_out.dv_dt, p_full_col, _zf_p, _zh_p,
+                _surface_flux[0], _surface_flux[1], turb_out.shflx,
+                turb_out.evap_sfc,
+                sigma_coord.pressure_at_full(
+                    jnp.asarray(constants.p_ref, dtype=T_col.dtype)),
+                turbulence_config.holtslag_boville))
 
         # Cell → edge tendency projection.  Average the cell tendencies
         # of the two cells flanking each edge, then project onto the

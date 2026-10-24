@@ -1005,7 +1005,7 @@ def make_physics_config(
         )
     # IN-SCHEME liquid super-saturation guard (the IFS/SAM "no liquid
     # super-saturation" half; the ice half is the Koop/Kärcher homogeneous-
-    # freezing allowance, which lives inside morrison/thompson/p3 and needs no
+    # freezing allowance, which lives inside morrison/thompson and needs no
     # switch here).  Threaded through the SHARED
     # ``apply_microphysics_experiment_flags`` so a scheme that cannot carry the
     # flag raises instead of silently ignoring it — never a private copy of
@@ -2768,6 +2768,9 @@ def tune_category_winner(
         include_tier0=include_tier0,
         exclude=exclude,
         dtype=jnp.float64,
+        # candidate zero = the run's own value of an unset-able field (e.g.
+        # Morrison DCS by flavour), not the class default
+        scheme_configs={scheme_key: subcfg},
     )
     if not params.constraints:
         return base_cfg, [], default_run, EMPTY_TUNE_STATS
@@ -3031,6 +3034,7 @@ def tune_focused_params(
         tier=tier,
         include=tuple(include),
         dtype=jnp.float64,
+        scheme_configs={k: v[1] for k, v in resolved.items()},
     )
     constraints = [c for c in params.constraints if c.name in set(include)]
     missing = sorted(set(include) - {c.name for c in constraints})

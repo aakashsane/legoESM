@@ -79,3 +79,18 @@ def test_sharded_solve_is_the_one_call_solve(n_dev):
                     jax.tree_util.tree_leaves(got)):
         assert np.asarray(a).dtype == np.asarray(b).dtype
         np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+
+def test_a_shared_output_is_refused():
+    def step(st, cfg, d):
+        o = _step(st, cfg, d)
+        return (o[0], jnp.sum(o[1]), o[2], o[3])    # column-dependent scalar
+    cols = np.arange(6)
+    slots, keep = shard_land_columns(cols, 1)
+    mesh = Mesh(np.array(jax.devices()[:1]), ("land",))
+    x = jnp.ones(slots.size)
+    with pytest.raises(ValueError, match=r"\[1\]"):
+        solve_land_on_devices(step, (x, _Cfg(x, jnp.ones(3), "x"),
+                                     jnp.asarray(0.0)),
+                              (True, _Cfg(True, False, False), False),
+                              mesh, keep)

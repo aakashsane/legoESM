@@ -317,8 +317,9 @@ def solve_land_on_devices(step, args, is_col, mesh, keep):
     run one equal shard per device of the 1-D ``mesh`` under a shard_map,
     then cut to the real slots ``keep``.  ``is_col`` is ``args``' tree of
     booleans marking the per-column array leaves (split over the devices);
-    every other leaf is shared.  An OUTPUT leaf is per-column when its shape
-    follows the column count (traced at two counts).  The step's whole-run
+    every other leaf is shared.  Every OUTPUT leaf must be per column (its
+    shape follows the column count, traced at two counts), else ValueError.
+    The step's whole-run
     counters would be per shard there, so they are recounted from their
     masks over the real slots.  Returns ``(state, response, carbon,
     surface)`` like the step."""
@@ -354,19 +355,23 @@ def solve_land_on_devices(step, args, is_col, mesh, keep):
     # an output is per column when its shape follows the column count
     a_out = jax.eval_shape(body, *shapes(n_slot))
     b_out = jax.eval_shape(body, *shapes(n_slot + 1))
-    out_specs = jax.tree_util.tree_map(
-        lambda a, b: P(axis) if a.shape != b.shape else P(), a_out, b_out)
-    # check_vma off: the canopy scan carries start replicated.  Invariant:
-    # the land step has no shared output (counters recounted below); a new
-    # one that depended on the columns would differ per device.  The
-    # one-call gate reports every shared output and its device copies.
+    shared = [jax.tree_util.keystr(k) for (k, a), b in zip(
+        jax.tree_util.tree_flatten_with_path(a_out)[0],
+        jax.tree_util.tree_leaves(b_out)) if a.shape == b.shape]
+    if shared:
+        raise ValueError(
+            f"land step outputs {shared} are not per column; the device "
+            "split can only return per-column outputs (and the three "
+            "fallback/held counters, recounted here)")
+    # check_vma off: the canopy scan carries start replicated.  Safe only
+    # because every output is per column (checked above).
     out = shard_map(
         body, mesh=mesh,
         in_specs=tuple(P(axis) if c else P() for c in arr_col),
-        out_specs=out_specs, check_vma=False)(*arrs)
+        out_specs=jax.tree_util.tree_map(lambda _: P(axis), a_out),
+        check_vma=False)(*arrs)
     keep = jnp.asarray(keep)
-    out = jax.tree_util.tree_map(
-        lambda o, sp: o[keep] if sp != P() else o, out, out_specs)
+    out = jax.tree_util.tree_map(lambda o: o[keep], out)
     state, resp, carbon, sfc = out
 
     def count(m):

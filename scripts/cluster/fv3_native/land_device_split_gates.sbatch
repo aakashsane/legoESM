@@ -9,7 +9,8 @@
 #   MODE=cpu6  (1 node): this tree, 6 host devices (face layout), finite.
 #   MODE=win24 (3 nodes x 8 ranks x 4 cpus, CPU gloo, M7 harness settings):
 #              24 processes vs 1 process with 24 host devices, windows kt=2
-#              pad=4, every checkpoint leaf BITWISE.
+#              pad=4, CLUBB cloud fraction OFF in both arms (the windows
+#              layout refuses it), every checkpoint leaf BITWISE.
 # sbatch examples:
 #   MODE=gpu   sbatch -N1 --gres=gpu:2 --constraint=a100 --exclusive -t 06:00:00 THIS
 #   MODE=cpu6  sbatch -N1 -n1 -c 24 --mem=120G -t 12:00:00 THIS
@@ -110,7 +111,8 @@ win24)
   source /etc/profile.d/modules.sh; module load openmpi/gcc/64/4.1.7a1
   for v in $(env | sed -n 's/^\(MPITRAMPOLINE_[A-Z_]*\)=.*/\1/p'); do unset "$v"; done
   export JAX_CPU_COLLECTIVES_IMPLEMENTATION=gloo
-  WIN="--fv3-duo-windows 2 --fv3-duo-window-pad 4"
+  # gate deck only: the windows layout refuses CLUBB cloud fraction
+  WIN="--fv3-duo-windows 2 --fv3-duo-window-pad 4 --no-use-clubb-cloud-fraction"
   arm win1 "$WT" "XLA_FLAGS='--xla_cpu_max_isa=AVX --xla_force_host_platform_device_count=24'" -- srun -N 1 -n 1 --mpi=pmix -- $WIN || RC=1
   arm win24 "$WT" -- srun -N "$SLURM_JOB_NUM_NODES" -n 24 --mpi=pmix --kill-on-bad-exit=0 "$WT/scripts/cluster/fv3_native/bind_rank.sh" -- --distributed --distributed-mode spmd $WIN || RC=1
   compare win24 win1 bitwise || RC=1

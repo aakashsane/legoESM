@@ -299,8 +299,8 @@ def _call_convection(scheme, col, *, T=None, q_v=None, u=None, v=None,
         from legoesm.atmosphere.physics.convection.config import (
             ZhangMcFarlaneConfig,
         )
-        from legoesm.atmosphere.physics.convection.zhang_mcfarlane import (
-            zhang_mcfarlane_convection,
+        from tests._zm_cold_start import (  # ZM at CAM's cold-start pblh = 0
+            zm_cold_start as zhang_mcfarlane_convection,
         )
         out, _prof = zhang_mcfarlane_convection(
             T, q_v, p_full, p_half, u, v, carry, _DT,

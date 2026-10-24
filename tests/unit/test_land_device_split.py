@@ -93,7 +93,7 @@ def test_a_shared_output_is_refused(bad):
     slots, keep = shard_land_columns(cols, 1)
     mesh = Mesh(np.array(jax.devices()[:1]), ("land",))
     x = jnp.ones(slots.size)
-    with pytest.raises(ValueError, match=r"\[1\]"):
+    with pytest.raises(ValueError, match=r"\[.\[1\].\] are not per column"):
         solve_land_on_devices(step, (x, _Cfg(x, jnp.ones(3), "x"),
                                      jnp.asarray(0.0)),
                               (True, _Cfg(True, False, False), False),

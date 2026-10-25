@@ -1093,7 +1093,11 @@ def _call_radiation_backend(
         _n_sub = int(getattr(cloud_config, "cloud_n_subcolumns",
                              _sub.N_SUBCOLUMNS_DEFAULT))
         _ncol = T.shape[0]
-        _mask = _sub.generate_subcolumns(cloud_props.cloud_fraction, _n_sub)
+        # CAM draws different uniforms in every column; the per-column shift
+        # (seeded from the bottom pressure, as for mcica) does the same, so a
+        # layer with cf < 1/n_sub is cloudy in some columns instead of never.
+        _mask = _sub.generate_subcolumns(cloud_props.cloud_fraction, _n_sub,
+                                         shift=_sub.cam_seed_shift(p_full))
         _lwp, _iwp = _sub.subcolumn_paths(
             _mask, cloud_props.cloud_fraction, cloud_props.lwp, cloud_props.iwp)
         _rad_kwargs = _sub.expand_kwargs(_rad_kwargs, _n_sub, _ncol)

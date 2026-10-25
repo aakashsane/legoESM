@@ -1263,7 +1263,9 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
             if _defer_dlf:
                 # ZM's dlf is a hand-off to the CLUBB host, not carried state.
                 _upd = dict(r_pre[6])
-                dlf = _upd.pop("conv_dlf").reshape(state.T.data.shape)
+                dlf = _upd.pop("conv_dlf", None)   # None: no q_i, booked as liquid
+                if dlf is not None:
+                    dlf = dlf.reshape(state.T.data.shape)
                 r_pre = r_pre[:6] + (_upd,) + r_pre[7:]
             acc = _add_scaled(acc, r_pre, 1.0)
             state_m = _advance_state(state_m, r_pre[0], r_pre[1], r_pre[2],

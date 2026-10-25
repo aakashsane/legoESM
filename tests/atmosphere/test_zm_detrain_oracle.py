@@ -35,7 +35,7 @@ from legoesm.atmosphere.physics.convection.zhang_mcfarlane import (
     cam6_detrain_condensate,
 )
 from legoesm.core.field import Field
-from tests.atmosphere.test_zm_pblh_oracle import _rel
+from tests.atmosphere.test_zm_pblh_oracle import TRACERS, _fp64_policy, _rel  # noqa: F401
 
 jax.config.update("jax_enable_x64", True)
 
@@ -248,6 +248,55 @@ def test_macmic_hands_dlf_to_every_clubb_substep(monkeypatch):
                                    rtol=1e-14)
     # ZM's own q_c tendency no longer carries dlf (it is booked by the CLUBB host)
     np.testing.assert_array_equal(np.asarray(out.tracer_tendencies["q_c"].data), 0.0)
+
+
+def _zm_bridge(fx, defer, names):
+    """The real hydrostatic/MPAS ZM bridge on the ZM oracle fixture columns,
+    carrying the convtran1 tracers in ``names``."""
+    import types
+
+    from legoesm.atmosphere.physics.combined import PhysicsConfig
+    from legoesm.atmosphere.physics.convection.config import ConvectionConfig
+    from legoesm.atmosphere.physics.convection.integration import make_convection_physics
+    from legoesm.atmosphere.physics.physics_state import (
+        init_physics_state,
+        update_physics_state,
+    )
+    from legoesm.core.state import HydrostaticState
+    from legoesm.grids.vertical import make_cam6_l32_levels
+    ncol, nlev = fx["T"].shape
+    tracers = {"q_v": Field(jnp.asarray(fx["q"]))}
+    tracers.update({nm: Field(jnp.asarray(fx[key])) for key, nm, _ in TRACERS if nm in names})
+    state = HydrostaticState(
+        u=Field(jnp.asarray(fx["u"])), v=Field(jnp.asarray(fx["v"])),
+        T=Field(jnp.asarray(fx["T"])), p_s=Field(jnp.asarray(fx["p_s"])),
+        phis=Field(jnp.zeros((ncol,))), tracers=tracers)
+    ps = update_physics_state(init_physics_state(ncol, nlev, PhysicsConfig()),
+                              {"cloud_fraction": jnp.asarray(fx["cld"]),
+                               "pblh": jnp.asarray(fx["pblh"])})
+    fn = make_convection_physics(ConvectionConfig(scheme="zhang_mcfarlane"), model_type="mpas",
+                                 dt=float(fx["dt"]), defer_detrainment=defer)
+    return fn(state, types.SimpleNamespace(land_frac=jnp.asarray(fx["land"])),
+              make_cam6_l32_levels(), phys_state=ps)
+
+
+def test_real_zm_bridge_hands_dlf_over_instead_of_booking_it():
+    """With deferral the bridge books only the convective transport into q_c
+    and hands CAM's dlf over (once, not twice); without q_i it keeps the
+    pre-existing all-liquid booking and hands nothing over."""
+    fx = dict(np.load(ROOT / "tests" / "atmosphere" / "oracle_fixtures" / "zm_pblh_cam.npz"))
+    all_names = tuple(nm for _, nm, _ in TRACERS)
+    tend, carry = _zm_bridge(fx, True, all_names)
+    assert _rel(carry["conv_dlf"], fx["oracle_dlf"]) <= TOL
+    assert _rel(tend.tracer_tendencies["q_c"].data, fx["oracle_dqc_convtran"]) <= TOL
+    off, c_off = _zm_bridge(fx, False, all_names)
+    assert "conv_dlf" not in c_off
+    no_qi = tuple(n for n in all_names if n != "q_i")
+    t2, c2 = _zm_bridge(fx, True, no_qi)
+    assert "conv_dlf" not in c2
+    for t in (off, t2):
+        assert _rel(t.tracer_tendencies["q_c"].data,
+                    fx["oracle_dlf"] + fx["oracle_dqc_convtran"]) <= TOL
 
 
 def test_no_deferral_off_the_production_combination():

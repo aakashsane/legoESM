@@ -350,7 +350,8 @@ def make_convection_physics(
         (``dq_c_conv_dt``) is NOT booked into ``q_c``; it is published as
         ``"conv_dlf"`` ``(ncol, nlev)`` in the returned carry dict for the
         combined physics to hand to the CLUBB host, which books it per
-        macmic sub-step as CAM6 does (clubb_intr.F90:2345-2376).
+        macmic sub-step as CAM6 does (clubb_intr.F90:2345-2386).  Only when
+        the state carries both ``q_c`` and ``q_i``; otherwise unchanged.
 
     Returns
     -------
@@ -884,10 +885,14 @@ def _make_hydrostatic_convection(
             _to_sfc = _to_sfc or _tr.rain_is_net_flux
             if _dq_r_conv is not None and not _has_qr and not _to_sfc:
                 dq_c_conv_dt = dq_c_conv_dt + _dq_r_conv.reshape(shape_3d)
-            if defer_detrainment:
-                # CAM6: ZM's own physics_update carries no cloud water; the
-                # CLUBB host books dlf per macmic sub-step (clubb_intr.F90:
-                # 2345-2376), so it leaves here as a carry, not a tendency.
+            # CAM6: ZM's own physics_update carries no cloud water; the CLUBB
+            # host books dlf per macmic sub-step into CLDLIQ and CLDICE
+            # (clubb_intr.F90:2345-2386), so it leaves here as a hand-off, not
+            # a tendency -- when the state carries both receiving species
+            # (otherwise the pre-existing all-liquid booking is kept).
+            _defer = (defer_detrainment and state.tracers is not None
+                      and "q_c" in state.tracers and "q_i" in state.tracers)
+            if _defer:
                 _dlf_pub = dq_c_conv_dt.reshape(ncol, nlev)
                 dq_c_conv_dt = jnp.zeros_like(dq_c_conv_dt)
             tracer_tends = {
@@ -987,7 +992,7 @@ def _make_hydrostatic_convection(
                     "together (the CAM6 deepcu consumer refuses one without "
                     f"the other); got mass_flux_up={conv_out.mass_flux_up is not None}, "
                     f"icwmr={conv_out.icwmr is not None}.")
-            if defer_detrainment:
+            if _defer:
                 conv_prog_out = {**conv_prog_out, "conv_dlf": _dlf_pub}
             if conv_out.mass_flux_up is not None:
                 _mf_pub = {

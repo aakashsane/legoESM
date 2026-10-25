@@ -73,9 +73,10 @@ __physics_contract__ = {
         "atmosphere); tendencies are d/dt of the column state; mass flux "
         "s_aw > 0 upward."
     ),
-    # The oracle's column water change does not equal qfx exactly (sum of
-    # rho*dz*(dqv+dqc+dqi) differs from qfx by up to 7 % on the fixture); the
-    # port reproduces the oracle's column integrals to 1e-10, not a closure.
+    # The oracle's column water change is not qfx: sum rho*dz*(dqv+dqc+dqi) =
+    # max(qfx, 0)*rhosfc/rho(kts) on the fixture (its bottom flux is scaled by
+    # rhosfc/rho(kts), and mynn_tendencies' qvflux limiter, as written, zeroes
+    # every downward surface moisture flux).  The port reproduces it.
     "conserves": ["none"],
     "differentiable": True,
     "reference": (
@@ -827,7 +828,7 @@ def dmp_mf(zw, dz, p, rho, u, v, w, thl, thv, tk, qt, qv, qc, qke, qsq,
     dxsa = 1.0 - jnp.minimum(jnp.maximum((_MF_DXSA_HI - dx) / (_MF_DXSA_HI - _MF_DXSA_LO), 0.0), 1.0)
     lsv = jnp.stack(ls)
     wminl = _MF_ENT_WMIN0 + lsv * _MF_ENT_WMIN_L
-    entfac0 = _MF_ENTFAC * jnp.minimum(_MF_ENT_QKE_HI, jnp.maximum(_MF_ENT_QKE_LO, jnp.sqrt(qkebl)))
+    entfac0 = _MF_ENTFAC * jnp.minimum(_MF_ENT_QKE_HI, jnp.maximum(_MF_ENT_QKE_LO, _sqrt0(qkebl)))
     zlim = jnp.minimum(pblh + _MF_ENT_DZ_TOP, _MF_ENT_ZMAX)
 
     def z2(row):
@@ -1074,7 +1075,7 @@ def mym_level2(zw, dz, xland, pblh, u, v, thl, thv, thlv, th, p, exner, qke,
     n = th.shape[0]
     i = jnp.arange(n)
     up = i >= 1
-    ugrid = jnp.sqrt(u[0] ** 2 + v[0] ** 2)
+    ugrid = _sqrt0(u[0] ** 2 + v[0] ** 2)
     taper = 1.0 - _ESS_TAPER * jnp.minimum(1.0, jnp.maximum(0.0, ugrid - _ESS_UONSET) / _ESS_URANGE)
     clam0 = jnp.where(xland - _XLAND_WATER >= 0.0, _ESS_CLAM_WATER * taper, _ESS_CLAM_LAND)
     dzk = 0.5 * (dz + _prev(dz))
@@ -1211,7 +1212,7 @@ def mym_length(xland, dz, dx, zw, rmol, fltv, u, v, qke, qpe, dtv, pblh, theta,
     i = jnp.arange(n)
     up = i >= 1
     water = xland - _XLAND_WATER >= 0.0
-    ugrid = jnp.sqrt(u[0] ** 2 + v[0] ** 2)
+    ugrid = _sqrt0(u[0] ** 2 + v[0] ** 2)
     uonset = _ML_UONSET
     wt_u1 = 1.0 - _ML_WTU1 * jnp.minimum(1.0, jnp.maximum(0.0, ugrid - uonset) / _ML_URANGE)
     wt_u2 = 1.0 - 0.5 * jnp.minimum(1.0, jnp.maximum(0.0, ugrid - uonset) / _ML_URANGE)

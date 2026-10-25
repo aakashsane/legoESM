@@ -59,9 +59,12 @@ def _args(fx, g, s, dtype=jnp.float64):
             + [jnp.asarray(fx[p + k][:, 0], dtype) for k in SURF])
 
 
-def _run(fx, g, s, dtype=jnp.float64, inter=False):
-    return mynnedmf_column(*_args(fx, g, s, dtype), initflag=(s == 1),
-                           return_intermediates=inter)
+_JIT = jax.jit(mynnedmf_column, static_argnames=("initflag", "return_intermediates"))
+
+
+def _run(fx, g, s, dtype=jnp.float64, inter=False, jit=True):
+    f = _JIT if jit else mynnedmf_column
+    return f(*_args(fx, g, s, dtype), initflag=(s == 1), return_intermediates=inter)
 
 
 @pytest.fixture(scope="module")
@@ -98,6 +101,8 @@ def test_intermediates_match_oracle(fx, runs, g):
         ours = np.asarray(inter[key[len(f"{g}_s3_dump_"):]])
         if ours.size != ref.size:      # interface arrays carry one extra level
             ours = ours[:, :ref.shape[1]]
+        if key.endswith("_dump_sgm"):  # the oracle never assigns sgm(kte)
+            ours, ref = ours[:, :-1], ref[:, :-1]
         worst[key] = _err(ours, ref)
     assert max(worst.values()) <= TOL, {k: v for k, v in worst.items() if v > TOL}
 
@@ -132,8 +137,8 @@ def test_column_budgets_close_as_the_oracle(fx, runs, g):
 
 
 def test_eager_jit_parity(fx):
-    eager = _run(fx, "l32", 3)
-    jitted = jax.jit(lambda *a: mynnedmf_column(*a))(*_args(fx, "l32", 3))
+    eager = _run(fx, "l32", 3, jit=False)
+    jitted = _run(fx, "l32", 3)
     for k in eager._fields:
         assert _err(getattr(jitted, k), getattr(eager, k)) <= TOL, k
 
@@ -155,7 +160,20 @@ def _loss(xs, init):
 @pytest.mark.parametrize("g", GROUPS)
 @pytest.mark.parametrize("s", (1, 3))
 def test_grad_finite(fx, dtype, g, s):
-    grads = jax.grad(_loss)(_args(fx, g, s, dtype), s == 1)
+    grads = jax.jit(jax.grad(_loss), static_argnums=1)(_args(fx, g, s, dtype), s == 1)
     bad = [k for k, v in zip(LEVEL + SURF, grads) if not np.all(np.isfinite(np.asarray(v)))]
     assert not bad, bad
 
+
+
+def test_grad_finite_calm_wind_and_zero_qke(fx):
+    """Reviewer inputs: lowest-level wind exactly 0 (column 0) and carried
+    qke = 0 (column 1); the forward value is the oracle's either way."""
+    xs = _args(fx, "l32", 3)
+    names = LEVEL + SURF
+    for k in ("u", "v"):
+        xs[names.index(k)] = xs[names.index(k)].at[0, 0].set(0.0)
+    xs[names.index("qke")] = xs[names.index("qke")].at[1].set(0.0)
+    grads = jax.jit(jax.grad(_loss), static_argnums=1)(xs, False)
+    bad = [k for k, v in zip(names, grads) if not np.all(np.isfinite(np.asarray(v)))]
+    assert not bad, bad

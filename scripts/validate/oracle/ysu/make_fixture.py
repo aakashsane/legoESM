@@ -19,6 +19,8 @@ shear of 0.5 m/s per level (so the free-atmosphere K differs from the in-PBL K
 at the tie interface): its 13-level constant-
 theta_v layer then ties the first-guess bulk Ri with ``brcr = 0`` exactly, so
 the PBL top lands exactly on level ``kpbl-1`` (``brint = 0``).
+A separate 8-level column (``up_*`` keys, see ``upper_endpoint_column``)
+puts the PBL top exactly on level ``kpbl`` by rounding.
 Constants handed to the oracle are legoESM's (``legoesm.constants``), as
 ``bl_ysu_run`` (the JAX port) uses.
 """
@@ -75,6 +77,37 @@ def columns(src):
     return names, d
 
 
+def upper_endpoint_column():
+    """One 8-level column (codex review): theta = [300, 290, 300+ulp, 310, 320,
+    330, 340, 350] K bottom-up, 100 m layers (8 levels: the oracle's get_pblh,
+    always called, indexes past a column that ends below 500 m), no moisture or surface flux, br = 0.  The first
+    crossing at level 3 has brup ~ 1e-14, so brint rounds to 1 and hpbl lands
+    exactly on za(kpbl) = 250 m; that interface is above the PBL in the oracle.
+    The level-3 temperature is the smallest one whose T/pi (computed as the
+    oracle does) exceeds level 1's."""
+    p_half = np.linspace(90400.0, 100000.0, 9)                         # top-first
+    p_full = 0.5 * (p_half[:-1] + p_half[1:])
+    exner = (p_full / C.p_ref) ** C.kappa
+    th = np.array([350.0, 340.0, 330.0, 320.0, 310.0, 300.0, 290.0, 300.0])  # top-first
+    T = th * exner
+    th1 = T[7] / exner[7]
+    t3 = th1 * exner[5]
+    while not t3 / exner[5] > th1:
+        t3 = np.nextafter(t3, np.inf)
+    while np.nextafter(t3, -np.inf) / exner[5] > th1:
+        t3 = np.nextafter(t3, -np.inf)
+    T[5] = t3
+    u = np.full(8, 5.0)
+    u[5] = 100.0
+    d = dict(u=u, v=np.zeros(8), T=T, q=np.zeros(8),
+             p_full=p_full, p_half=p_half, exner=exner, dz=np.full(8, 100.0),
+             zi=np.arange(800.0, -1.0, -100.0), ust=0.3, hfx=0.0, qfx=0.0,
+             wspd=5.0, br=0.0, psim=np.log(50.0 / 0.1), psih=np.log(50.0 / 0.1), znt=0.1,
+             xland=1.0, u10=5.0 * np.log(10.0 / 0.1) / np.log(50.0 / 0.1), v10=0.0)
+    return {k: np.atleast_1d(np.asarray(v, float))[None, :] if np.ndim(v) else
+            np.array([float(v)]) for k, v in d.items()}
+
+
 def write_inputs(path, d, dt):
     def wr(f, a):
         f.write(" ".join(repr(float(x)) for x in np.ravel(a)) + "\n")
@@ -125,6 +158,11 @@ def main():
         print(r.stdout, r.stderr)
         assert r.returncode == 0, r
         ora = parse_outputs(fout, ncol)
+        up = upper_endpoint_column()
+        write_inputs(fin, up, dt)
+        r = subprocess.run([a.driver, str(fin), str(fout), "0"], capture_output=True, text=True)
+        assert r.returncode == 0, r
+        ora.update({f"up_{k}": v for k, v in parse_outputs(fout, 1).items()})
     gfortran = subprocess.run(["gfortran", "--version"], capture_output=True,
                               text=True).stdout.split("\n")[0]
     meta = dict(oracle=ORACLE, compiler=gfortran + " -O2 -DDOUBLE_PRECISION -fdefault-real-8",
@@ -137,7 +175,8 @@ def main():
                        "interface below level k (oracle exch(k+1)=xkz(k)); kpbl 1-based "
                        "from the surface")
     np.savez_compressed(a.out, meta=json.dumps(meta), dt=dt,
-                        **{f"in_{k}": v for k, v in d.items()}, **ora)
+                        **{f"in_{k}": v for k, v in d.items()},
+                        **{f"up_in_{k}": v for k, v in up.items()}, **ora)
     print("WROTE", a.out, Path(a.out).stat().st_size, "bytes")
 
 

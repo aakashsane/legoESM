@@ -77,6 +77,7 @@ def _sfc(fx, dtype=jnp.float64):
 
 
 def _kernel(fx, sharp=HARD, dtype=jnp.float64, **over):
+    """bl_ysu_run on fixture-style inputs (``in_*`` keys)."""
     f = {k: jnp.asarray(over.get(k, fx[f"in_{k}"]), dtype) for k in
          ("u", "v", "T", "q", "p_full", "p_half", "exner", "dz", "ust", "hfx", "qfx")}
     return bl_ysu_run(f["u"], f["v"], f["T"], f["q"], f["p_full"], f["p_half"],
@@ -153,6 +154,20 @@ def test_fixture_exercises_every_branch(fx):
     zq = np.concatenate([[0.0], np.cumsum(fx["in_dz"][t, ::-1])])
     za = 0.5 * (zq[:-1] + zq[1:])
     assert fx["ora_kpbl"][t] > 2 and fx["ora_hpbl"][t] == za[fx["ora_kpbl"][t] - 2]
+
+
+def test_pbl_top_rounded_onto_level_kpbl_matches_oracle(fx):
+    """8-level column whose PBL top rounds exactly onto za(kpbl): the interface
+    there is above the PBL (free-atmosphere K), as in the oracle."""
+    up = {k[3:]: v for k, v in fx.items() if k.startswith("up_")}
+    up["dt"] = fx["dt"]
+    o = _kernel(up)
+    assert int(o.kpbl[0]) == int(up["ora_kpbl"][0]) == 3
+    zq = np.concatenate([[0.0], np.cumsum(up["in_dz"][0, ::-1])])
+    assert up["ora_hpbl"][0] == 0.5 * (zq[2] + zq[3])
+    worst = _kernel_errors(up, o)
+    print("upper-endpoint column vs oracle", worst)
+    assert max(worst.values()) <= TOL, worst
 
 
 def test_wrapper_wrf_path_matches_oracle(fx):

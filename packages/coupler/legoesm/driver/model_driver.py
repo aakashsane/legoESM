@@ -10681,6 +10681,15 @@ class ModelDriver:
         owned_ids = None
         n_owned = 0
         try:
+            # Drain queued device work FIRST.  The compiled step's mpi4jax
+            # collectives run on COMM_WORLD on an XLA thread after Python has
+            # returned; a host collective issued below on the same
+            # communicator can then cross-match it ("collective tags 2 and 14
+            # do not match", or a hang) — seen 3/3 at 4 nodes, gone 2/2 with
+            # this wait.  effects_barrier covers mpi4jax's ordered effects,
+            # live_arrays any computation whose outputs nobody holds here.
+            jax.effects_barrier()
+            jax.block_until_ready(jax.live_arrays())
             # The gather helper uses COMM_WORLD; a partition built on a
             # different communicator would silently mis-assemble (or hang).
             # Checked HERE, inside the preflight, so a mismatch on one rank

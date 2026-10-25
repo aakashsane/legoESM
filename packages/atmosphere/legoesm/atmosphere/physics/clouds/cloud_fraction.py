@@ -537,11 +537,15 @@ def _two_region_inhomogeneity_factor(
 
     NOT YET FAITHFUL to ecRad Tripleclouds (1.7.2), the oracle this option is
     named after (tier-2 audit, 2026-10-19).  This is a per-layer grey
-    surrogate: on ecRad's own meridian columns at fsd = 1.0 it gives -8.2
-    W/m2 of TOA reflected SW against Tripleclouds' -18.2 (45%) and +0.17
-    W/m2 of OLR against +3.04 (5%).  Tripleclouds solves vertically
-    overlapped thin/thick regions explicitly, splits them lognormally (the
-    1 +/- fsd split here leaves the thin half empty at fsd = 1), and solves
+    surrogate: on ecRad's own meridian columns, the change from fsd = 0 to
+    fsd = 1.0 is -8.2 W/m2 of TOA reflected SW against Tripleclouds' -18.2
+    (45%) and +0.17 W/m2 of OLR against +3.04 (5%), with the oracle run at
+    overlap_param = 1 (maximally coherent inhomogeneity; the IFS default
+    overlap and decorrelation would give a smaller oracle effect).
+    Tripleclouds solves vertically overlapped thin/thick regions
+    explicitly, splits them from a lognormal or (ecRad 1.7.2 default) gamma
+    distribution (the 1 +/- fsd split here leaves the thin half empty at
+    fsd = 1), and solves
     the LW with the regions too, instead of reusing a factor derived from SW
     reflectance.  A faithful port needs a region-resolved solver;
     which overlap and decorrelation it uses is a pending user decision.

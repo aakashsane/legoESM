@@ -338,7 +338,7 @@ def test_mg2_ice_slope_bounds():
     np.testing.assert_allclose(prci[:3], prci_mg2[:3], rtol=1e-12)
 
 
-@pytest.mark.parametrize("ice_to_snow", ["m2005_autoconv", "mg_ferrier"])
+@pytest.mark.parametrize("ice_to_snow", [None, "mg_ferrier"])   # mg refuses any other (2026-10-24 1a)
 def test_mg2_ice_conservation_credits_same_step_sources(ice_to_snow):
     """MG2 conservation of qi (micro_mg2_0.F90:1717-1735): ice->snow
     autoconversion + sublimation may take q_i PLUS this step's ice sources

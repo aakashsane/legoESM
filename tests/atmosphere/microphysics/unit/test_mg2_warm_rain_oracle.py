@@ -64,7 +64,11 @@ def _rel(a, b):
 def _production_morrison():
     """The production deck's MorrisonConfig, resolved as the MPAS column lane
     builds it (run_amip parser -> build_config_from_args ->
-    apply_microphysics_experiment_flags -> thread_morrison_scalars)."""
+    apply_microphysics_experiment_flags -> thread_morrison_scalars), on the
+    droplet-number switch-off lane as the deck ran it before 2026-10-24
+    (aerosol-specified droplet number, nc_from_aerosol): the deck now selects
+    the prognostic number, whose activation input a bare scheme call does not
+    supply, and the MG2 fixtures carry a specified droplet number."""
     from scripts.run.run_amip import build_arg_parser, build_config_from_args
 
     from legoesm.atmosphere.physics.microphysics.config import (
@@ -88,7 +92,9 @@ def _production_morrison():
         liquid_from_closure=cfg._liquid_partition_resolved(),
         hard_sat_adjust_threshold=getattr(cfg, "hard_sat_adjust_threshold", None),
         hard_sat_max_heating_K=getattr(cfg, "hard_sat_max_heating_K", None))
-    return thread_morrison_scalars(cfg, "morrison", m)
+    m = thread_morrison_scalars(cfg, "morrison", m)
+    assert m.prognostic_droplet_number and not m.nc_from_aerosol
+    return m._replace(prognostic_droplet_number=False, nc_from_aerosol=True)
 
 
 def _run_columns(fx, cfg, relvar=None):

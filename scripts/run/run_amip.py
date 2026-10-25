@@ -2162,6 +2162,20 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "Needs --turbulence clubb, cloud scheme "
                              "cam6_clubb and "
                              "cld_macmic_num_steps>=2.")
+    parser.add_argument("--morrison-prognostic-droplet-number",
+                        action=argparse.BooleanOptionalAction,
+                        default=ExperimentConfig._field_defaults[
+                            "morrison_prognostic_droplet_number"],
+                        dest="morrison_prognostic_droplet_number",
+                        help="CAM6 MG2 prognostic droplet number with CAM6 "
+                             "prescribed-aerosol activation (MPAS lane). "
+                             "Needs --cam6-aerosol-dir.")
+    parser.add_argument("--cam6-aerosol-dir", type=str,
+                        default=ExperimentConfig._field_defaults["cam6_aerosol_dir"],
+                        dest="cam6_aerosol_dir",
+                        help="Directory of the CAM6 PPE member-000 aerosol "
+                             "climatology and MAM4 property files (sha256-pinned) "
+                             "read by --morrison-prognostic-droplet-number.")
     parser.add_argument("--morrison-flavor", choices=["mg", "sam"],
                         default="mg", dest="morrison_flavor",
                         help="Morrison parameter flavor: 'mg' (E3SM/CESM "
@@ -2918,6 +2932,8 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         morrison_sed_cfl_substeps_strict=args.morrison_sed_cfl_substeps_strict,
         morrison_do_graupel=args.morrison_do_graupel,
         morrison_warm_rain_incloud=args.morrison_warm_rain_incloud,
+        morrison_prognostic_droplet_number=args.morrison_prognostic_droplet_number,
+        cam6_aerosol_dir=args.cam6_aerosol_dir,
         land_canopy_rh_cap_smoothing_width=args.land_canopy_rh_cap_smoothing_width,
         land_canopy_zeta_cap_smoothing_width=args.land_canopy_zeta_cap_smoothing_width,
         land_canopy_most_n_iters=args.land_canopy_most_n_iters,

@@ -16,12 +16,14 @@ and bndry for latitude (:1539-1540), ``lininterp3d2d``/``lininterp2d1d``.  No
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NamedTuple
 
 import jax.numpy as jnp
 import numpy as np
 
 from legoesm.atmosphere.physics.microphysics.cam6_modal_aerosol import (
     MAM4_SPECIES,
+    Cam6ModeProps,
     read_pinned_netcdf,
 )
 from legoesm.atmosphere.physics.radiation.rrtmgp.optics.cam_lininterp import lininterp_2d, lininterp_init
@@ -202,3 +204,51 @@ def interpolate_to_model(rec_m, rec_p, ps_m, ps_p, fact1, hyam, hybm, p0, pmid):
     datain = _time_interp(fact1, rec_m, rec_p)
     pin = p0 * hyam + ps[..., None] * hybm
     return vert_interp(pin, pmid, datain)
+
+
+class Cam6AerosolActivation(NamedTuple):
+    """Start-up constants of the prescribed-aerosol droplet activation: mode
+    properties, the PPE file's hybrid coefficients, CAM's ``trop_cloud_top_lev``
+    (0-based) and the static mixing-substep bound ``n_max``."""
+    props: Cam6ModeProps
+    hyam: np.ndarray
+    hybm: np.ndarray
+    p0: float
+    top_lev: int
+    n_max: int
+
+
+def trop_cloud_top_lev(pref_mid, trop_cloud_top_press: float) -> int:
+    """0-based ``ref_pres`` ``press_lim_idx(trop_cloud_top_press, top=.true.)``
+    (ref_pres.F90:126, :150-160): first level with ``pref_mid > p``, else ``pver``."""
+    above = np.nonzero(np.asarray(pref_mid) > trop_cloud_top_press)[0]
+    return int(above[0]) if above.size else len(pref_mid)
+
+
+def aerosol_at_model_levels(aer: dict, setup: Cam6AerosolActivation, pmid):
+    """Per-step ``forcing["cam6_aerosol"]`` (``{"rec": {var: (2, lev, ncol)},
+    "PS": (2, ncol), "fact1": ()}``) time- and vertically interpolated to
+    ``pmid`` (ncol, nlev): ``(aer_num (nmode, ncol, nlev) [1/kg], aer_mass)``,
+    ``aer_mass`` a per-mode tuple of (nspec, ncol, nlev) [kg/kg] in MAM4_SPECIES order."""
+    def one(var):
+        r = aer["rec"][var]
+        return interpolate_to_model(r[0].T, r[1].T, aer["PS"][0], aer["PS"][1], aer["fact1"],
+                                    setup.hyam, setup.hybm, setup.p0, pmid)
+    num = jnp.stack([one(v) for v in PPE_NUMBER_FIELDS])
+    mass = tuple(jnp.stack([one(f"{s}_a{m + 1}") for s in sp]) for m, sp in enumerate(MAM4_SPECIES))
+    return num, mass
+
+
+def cam6_aerosol_forcing(data_dir, t: float, lon_w, lat_w, held=None):
+    """Host side of CAM ``prescribed_aero_adv``: the two records bracketing model
+    time ``t`` [noleap days since Jan 1], reloaded only when the bracket moves
+    (user decision 2026-10-24, 2a), plus this step's ``fact1``.  Returns
+    ``(held, forcing_entry)``; pass ``held`` back on the next call."""
+    months = bracket(CLIM_RECORD_TIMES, t)
+    if held is None or held[0] != months:
+        recs = load_bracket_records(data_dir, months, lon_w, lat_w)
+        held = (months, {"rec": {k: jnp.asarray(v) for k, v in recs.items() if k != "PS"},
+                         "PS": jnp.asarray(recs["PS"])})
+    n, np1 = months
+    fact1 = time_fact1(CLIM_RECORD_TIMES[n], CLIM_RECORD_TIMES[np1], t, NOLEAP_ONE_YR)
+    return held, {**held[1], "fact1": jnp.asarray(fact1)}

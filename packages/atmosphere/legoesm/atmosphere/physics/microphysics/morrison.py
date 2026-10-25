@@ -206,7 +206,8 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     ``snow_aggregation_eii`` 0.1         0.5      (eii; ice→snow & snow self-agg)
     ``rho_snow``           100 kg/m³     250      (rhosn)
     ``fall_b_i``           0.865         1.0      (bi)
-    ``ice_to_snow_scheme`` m2005_autoconv mg_ferrier (180-s Ferrier prci)
+    ``ice_to_snow_scheme`` m2005_autoconv mg_ferrier (180-s Ferrier prci; only
+                           when unset, None: mg refuses another value)
     ``lamr_min``           1/2800 µm     1/500 µm (lam_bnd_rain, :169)
     ``rain_selfcoll_scheme`` sb2001      mg2      (Beheng -8 nr qr rho, :1359;
                                                   only replaces the sb2001
@@ -221,6 +222,11 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
     """
     config = resolve_unset_ice_snow_d_auto(config)
     if config.morrison_flavor == "mg":
+        if config.ice_to_snow_scheme not in (None, "mg_ferrier"):
+            raise ValueError(
+                f"ice_to_snow_scheme={config.ice_to_snow_scheme!r} under "
+                "morrison_flavor='mg', which sets 'mg_ferrier'; leave it unset or "
+                "select morrison_flavor='sam'.")
         # Self-collection: the mg set replaces the SAM DEFAULT ("sb2001") by
         # MG2's Beheng form; any other selection ("legacy", "mg2", or a typo
         # that the dispatcher must reject) is left as the caller set it.
@@ -236,6 +242,8 @@ def resolve_morrison_flavor(config: MorrisonConfig) -> MorrisonConfig:
             rain_selfcoll_scheme=selfcoll,
         )
     elif config.morrison_flavor == "sam":
+        if config.ice_to_snow_scheme is None:
+            return config._replace(ice_to_snow_scheme="m2005_autoconv")
         return config
     raise ValueError(
         f"Unknown morrison_flavor: {config.morrison_flavor!r}; "

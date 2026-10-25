@@ -781,7 +781,10 @@ class MorrisonConfig(NamedTuple):
     #     N_i always and credits N_s under double-moment snow (an earlier
     #     "dropped — single-moment snow" note here was stale).
     #   "heuristic" = the legacy constant-rate agg_coeff·q_i·f_ice.
-    ice_to_snow_scheme: str = "m2005_autoconv"
+    # None = the flavour's (resolve_morrison_flavor): sam "m2005_autoconv",
+    # mg "mg_ferrier"; under mg any other explicit value raises (user
+    # decision 2026-10-24, 1a: the mg preset never overwrites a choice).
+    ice_to_snow_scheme: str | None = None
     # DCS [m]; None = the flavour's (resolve_morrison_flavor at scheme entry):
     # SAM clice_snow_Dauto 250 um, mg = CAM6 MG2 micro_mg_dcs 500 um
     # (namelist_defaults_cam.xml:1244).  An explicit value always wins.
@@ -1318,6 +1321,7 @@ def apply_microphysics_experiment_flags(
     morrison_do_graupel: bool | None = None,
     morrison_warm_rain_scheme: str | None = None,
     morrison_warm_rain_incloud: bool | None = None,
+    morrison_prognostic_droplet_number: bool | None = None,
 ):
     """Thread ExperimentConfig-level microphysics switches onto a per-scheme
     sub-config NamedTuple, raising LOUDLY on a scheme that lacks the field.
@@ -1500,6 +1504,16 @@ def apply_microphysics_experiment_flags(
                 f"scheme (got {scheme!r}).")
         scheme_config = scheme_config._replace(
             warm_rain_incloud=morrison_warm_rain_incloud)
+    if morrison_prognostic_droplet_number is not None:
+        if not isinstance(morrison_prognostic_droplet_number, bool):
+            raise TypeError("morrison_prognostic_droplet_number must be a bool, got "
+                            f"{morrison_prognostic_droplet_number!r}")
+        if scheme != "morrison":
+            raise ValueError(
+                "morrison_prognostic_droplet_number is only read by the morrison "
+                f"scheme (got {scheme!r}).")
+        scheme_config = scheme_config._replace(
+            prognostic_droplet_number=morrison_prognostic_droplet_number)
     if morrison_warm_rain_scheme is not None:
         if scheme != "morrison":
             raise ValueError(

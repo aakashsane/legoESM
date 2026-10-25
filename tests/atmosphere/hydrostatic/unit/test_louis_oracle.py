@@ -121,23 +121,23 @@ def _masked(a, m):
 
 def test_stable_diffusivities_match_openifs_vdfexcu(fx, monkeypatch):
     _, Ri, Km, Kh = _captured(fx, monkeypatch, _arm(fx, "ifs"))
-    # Ri is legoESM's (it was the oracle's input PRI): regression pin, not an oracle match
-    assert _err(Ri, fx["ifs_Ri"], True) <= TOL
     m = fx["ifs_Ri"] > 0.0
     assert m.sum() >= 700
     e = {"km": _err(_masked(Km, m), _masked(fx["ora_ifs_km"], m), True),
-         "kh": _err(_masked(Kh, m), _masked(fx["ora_ifs_kh"], m), True)}
+         "kh": _err(_masked(Kh, m), _masked(fx["ora_ifs_kh"], m), True),
+         # Ri is legoESM's (it was the oracle's input PRI): regression pin only
+         "ri_pin": _err(Ri, fx["ifs_Ri"], True)}
     print("Louis stable vs OpenIFS vdfexcu, hard limit, max rel err", e)
     assert max(e.values()) <= TOL, e
 
 
 def test_unstable_diffusivities_match_icon_louis79(fx, monkeypatch):
     _, Ri, Km, Kh = _captured(fx, monkeypatch, _arm(fx, "icon"))
-    assert _err(Ri, fx["icon_Ri"], True) <= TOL
     m = fx["icon_Ri"] < 0.0
     assert m.sum() >= 30
     e = {"km": _err(_masked(Km, m), _masked(fx["ora_icon_km"], m), True),
-         "kh": _err(_masked(Kh, m), _masked(fx["ora_icon_kh"], m), True)}
+         "kh": _err(_masked(Kh, m), _masked(fx["ora_icon_kh"], m), True),
+         "ri_pin": _err(Ri, fx["icon_Ri"], True)}
     print("Louis unstable vs ICON mo_turb_vdiff_diag:518-530, hard limit, max rel err", e)
     assert max(e.values()) <= TOL, e
 

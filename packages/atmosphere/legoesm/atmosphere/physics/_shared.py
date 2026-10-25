@@ -656,9 +656,10 @@ def louis_stability_functions(
 
     NOT-YET-FAITHFUL legacy path (``z_full_pair`` omitted;
     used ONLY by YSU's free-atmosphere local-K branch, whose own oracle is a
-    separate scheme): the unstable geometry is ``l²/(dz² + 1e-10)`` in place
-    of ``sqrt(G)``.  This form is not the running ECHAM/ICON code (it gives a
-    4-20x weaker unstable enhancement on the tier-2 audit columns).  YSU reads
+    separate scheme): the unstable geometry factor is ``1/(dz² + 1e-10)`` in
+    place of ``sqrt(G)``.  This form is not the running ECHAM/ICON code (its
+    unstable enhancement f_m was median 3.8x, up to 20x weaker on the tier-2
+    audit columns).  YSU reads
     only ``f_m``, so the stable heat form does not reach it.
 
     Parameters

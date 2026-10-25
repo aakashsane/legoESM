@@ -103,7 +103,8 @@ def test_faithful_ltg82_split_prandtl_direction_and_km_invariance():
     """LTG82: Pr_t = K_m/K_h < 1 unstable, > 1 stable; K_m independent of b_heat.
 
     b_heat > b enhances heat mixing more than momentum when unstable (f_h > f_m)
-    and suppresses it more when stable (f_h < f_m); b_heat = b -> f_h == f_m.
+    and suppresses it more when stable (f_h < f_m); b_heat = b -> f_h == f_m on
+    the UNSTABLE branch only (stable heat multiplies by sqrt(1+d*Ri)).
     Because only the numerator carries b_heat, f_m must NOT move with b_heat.
     """
     l_mix, dz = np.full(1, 30.0), np.full(1, 50.0)
@@ -115,7 +116,7 @@ def test_faithful_ltg82_split_prandtl_direction_and_km_invariance():
     fm_s, fh_s = _call([0.5], l_mix, dz, b, c, d, b_heat=b_h)
     assert fh_s[0] < fm_s[0]  # heat more suppressed (stable)
 
-    # b_heat = b recovers the Louis-1979 single function.
+    # b_heat = b: unstable heat function equals momentum (stable ones differ).
     fm_eq, fh_eq = _call([-0.5], l_mix, dz, b, c, d, b_heat=b)
     assert np.allclose(fh_eq, fm_eq, rtol=1e-12, atol=1e-14)
 

@@ -827,85 +827,20 @@ def test_bh_long_tail_larger_flux_on_dyer_baseline_schemes(bulk_scheme):
         "the collapsing dyer1974 -5*zeta form")
 
 
-# Verbatim PRE-CHANGE psi_m_coare/psi_h_coare (HEAD a8c6ad91a, before the
-# selectable stable branch), same pattern as _old_psi_m/_old_psi_h above:
-# the STRICT byte-identity guard for the default path, independent of dtype,
-# platform, and pinned-constant tolerance.
-def _old_psi_m_coare(zeta):
-    zeta_c = jnp.clip(zeta, -10.0, 10.0)
-    zeta_neg = jnp.minimum(zeta_c, -1e-10)
-    zeta_pos = jnp.maximum(zeta_c, 1e-10)
-    x = jnp.power(1.0 - 15.0 * zeta_neg, 0.25)
-    psi_k = (
-        2.0 * jnp.log((1.0 + x) / 2.0)
-        + jnp.log((1.0 + x ** 2) / 2.0)
-        - 2.0 * jnp.arctan(x)
-        + jnp.pi / 2.0
-    )
-    y = jnp.power(1.0 - 10.15 * zeta_neg, 1.0 / 3.0)
-    sqrt3 = jnp.sqrt(3.0)
-    psi_c = (
-        1.5 * jnp.log((1.0 + y + y ** 2) / 3.0)
-        - sqrt3 * jnp.arctan((1.0 + 2.0 * y) / sqrt3)
-        + jnp.pi / sqrt3
-    )
-    f = zeta_neg ** 2 / (1.0 + zeta_neg ** 2)
-    unstable = (1.0 - f) * psi_k + f * psi_c
-    c = jnp.minimum(50.0, 0.35 * zeta_pos)
-    stable = -(
-        (1.0 + zeta_pos)
-        + 0.6667 * (zeta_pos - 14.28) * jnp.exp(-c)
-        + 8.525
-    )
-    return jnp.where(zeta_c < 0.0, unstable, stable)
-
-
-def _old_psi_h_coare(zeta):
-    zeta_c = jnp.clip(zeta, -10.0, 10.0)
-    zeta_neg = jnp.minimum(zeta_c, -1e-10)
-    zeta_pos = jnp.maximum(zeta_c, 1e-10)
-    x = jnp.sqrt(1.0 - 15.0 * zeta_neg)
-    psi_k = 2.0 * jnp.log((1.0 + x) / 2.0)
-    y = jnp.power(1.0 - 34.15 * zeta_neg, 1.0 / 3.0)
-    sqrt3 = jnp.sqrt(3.0)
-    psi_c = (
-        1.5 * jnp.log((1.0 + y + y ** 2) / 3.0)
-        - sqrt3 * jnp.arctan((1.0 + 2.0 * y) / sqrt3)
-        + jnp.pi / sqrt3
-    )
-    f = zeta_neg ** 2 / (1.0 + zeta_neg ** 2)
-    unstable = (1.0 - f) * psi_k + f * psi_c
-    c = jnp.minimum(50.0, 0.35 * zeta_pos)
-    stable = -(
-        jnp.power(1.0 + 2.0 * zeta_pos / 3.0, 1.5)
-        + 0.6667 * (zeta_pos - 14.28) * jnp.exp(-c)
-        + 8.525
-    )
-    return jnp.where(zeta_c < 0.0, unstable, stable)
-
-
-def test_coare3_default_byte_identical_pinned():
-    """(ii) Default stability_scheme keeps coare3 byte-identical: the default
-    and explicit-"dyer1974" calls reproduce the VERBATIM pre-change psi
-    functions EXACTLY (array-equal over both regimes — the strict guard), and
-    the lane fluxes match the pre-change pinned values (captured at HEAD
-    a8c6ad91a, fp64, this exact column/config) as a cross-machine anchor."""
-    z = jnp.linspace(-10.0, 10.0, 401)
-    for new_fn, old_fn in ((psi_m_coare, _old_psi_m_coare),
-                           (psi_h_coare, _old_psi_h_coare)):
-        np.testing.assert_array_equal(
-            np.asarray(new_fn(z)), np.asarray(old_fn(z)))
-        np.testing.assert_array_equal(
-            np.asarray(new_fn(z, "dyer1974")), np.asarray(old_fn(z)))
-
+def test_coare3_default_pinned():
+    """Default stability_scheme on coare3 = the AeroBulk 1.0.0 native stable
+    branch; the lane fluxes are pinned (fp64, this exact column/config) as a
+    cross-machine anchor.  Re-pinned when coare3 became the faithful AeroBulk
+    TURB_COARE3P0 port (oracle match: tests/core/test_aerobulk_coare3p0_oracle.py);
+    the previous pins (HEAD a8c6ad91a) were the surrogate's values."""
     tau_x, tau_y, shflx, lhflx, ustar = _lane_fluxes("coare3", "dyer1974")
     # fp64 pins; loose enough for a float32 default run, tight enough that
     # any stable-branch drift (BH swap is ~3e-4 relative) trips it.
     rtol = 1e-12 if shflx.dtype == jnp.float64 else 2e-5
-    np.testing.assert_allclose(float(shflx[0]), -2.024613552826373e+02, rtol=rtol)
-    np.testing.assert_allclose(float(lhflx[0]), -1.071036570631257e+01, rtol=rtol)
-    np.testing.assert_allclose(float(tau_x[0]), -2.848185923255397e-02, rtol=rtol)
-    np.testing.assert_allclose(float(ustar[0]), 1.426330793967515e-01, rtol=rtol)
+    np.testing.assert_allclose(float(shflx[0]), -2.0196643581309854e+02, rtol=rtol)
+    np.testing.assert_allclose(float(lhflx[0]), -1.1222758372661751e+01, rtol=rtol)
+    np.testing.assert_allclose(float(tau_x[0]), -2.8429723376928992e-02, rtol=rtol)
+    np.testing.assert_allclose(float(ustar[0]), 1.4250243952029382e-01, rtol=rtol)
 
 
 def test_dyer_baseline_schemes_full_path_pinned():
@@ -929,16 +864,16 @@ def test_dyer_baseline_schemes_full_path_pinned():
 def test_coare3_return_2m_scheme_sensitive():
     """The 2 m diagnostic follows the selected stable branch on coare3 (the
     scheme-matched ``psi_h_coare(zeta_d, stability_scheme)`` call): on the
-    stable column T_2m moves by ~18 K between the default and the SHEBA
+    stable column T_2m moves by ~15 K between the default and the SHEBA
     tail, and stays inside the physical [T_sfc, T_atm] bracket (unclipped
     interior values at z_diag = 2 m < z_t).
 
     The PINNED grachev value also locks the DIAGNOSTIC psi call in
     isolation: reverting only ``psi_h_coare(zeta_d, stability_scheme)`` to
     the unthreaded ``psi_h_coare(zeta_d)`` (keeping the main-loop threading)
-    was measured to shift T_2m from 277.078 K to 296.031 K on this column —
-    an interior, unclipped 19 K move — so the pin fails loudly on it
-    (codex R2 non-vacuity check, verified empirically 2026-08-02).
+    was measured (pre-AeroBulk-port code, 2026-08-02) to shift T_2m by an
+    interior, unclipped 19 K on this column, so the pin fails loudly on it
+    (codex R2 non-vacuity check).
     """
     col = _stable_column()
     kw = dict(z_ref=10.0, z0_init=1e-4, scheme="coare3", n_iter=5,
@@ -953,10 +888,10 @@ def test_coare3_return_2m_scheme_sensitive():
     assert np.all(np.abs(t2m_g - t2m_d) > 1.0), (t2m_d, t2m_g)
     for t2m in (t2m_d, t2m_g):
         assert np.all(t2m > 220.0) and np.all(t2m < 300.0)
-    # Pinned pre-captured fp64 values (HEAD a8c6ad91a + fix, this column).
+    # Pinned fp64 values of the AeroBulk TURB_COARE3P0 port (this column).
     rtol = 1e-12 if out_d[5].dtype == jnp.float64 else 2e-5
-    np.testing.assert_allclose(float(t2m_d[0]), 258.915887220388, rtol=rtol)
-    np.testing.assert_allclose(float(t2m_g[0]), 277.077916797258, rtol=rtol)
+    np.testing.assert_allclose(float(t2m_d[0]), 258.80926272241834, rtol=rtol)
+    np.testing.assert_allclose(float(t2m_g[0]), 273.5002425313306, rtol=rtol)
 
     # psi-level lock of the scheme-matched contract (stable side only).
     z_pos = jnp.linspace(1e-3, 10.0, 200)

@@ -177,15 +177,15 @@ def test_column_water_budget_closes(fx):
 
 
 def _tendency_grads(fx, dtype, cfg_kw):
-    f = {k: jnp.asarray(fx[f"in_{k}"], dtype) for k in ("T", "q", "u")}
+    f = {k: jnp.asarray(fx[f"in_{k}"], dtype) for k in ("T", "q", "u", "zm")}
 
-    def loss(T, q, u):
+    def loss(T, q, u, zm):  # zm: the full-level heights the unstable geometry reads
         fx2 = dict(fx)
-        fx2.update(in_T=T, in_q=q, in_u=u)
+        fx2.update(in_T=T, in_q=q, in_u=u, in_zm=zm)
         o = _run(fx2, cfg_kw, dtype=dtype)
         return (jnp.sum(o.dT_dt ** 2) * 1e8 + jnp.sum(o.dq_v_dt ** 2) * 1e14
                 + jnp.sum(o.du_dt ** 2) * 1e6 + jnp.sum(o.Km) + jnp.sum(o.Kh))
-    return jax.grad(loss, argnums=(0, 1, 2))(f["T"], f["q"], f["u"])
+    return jax.grad(loss, argnums=(0, 1, 2, 3))(f["T"], f["q"], f["u"], f["zm"])
 
 
 @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])

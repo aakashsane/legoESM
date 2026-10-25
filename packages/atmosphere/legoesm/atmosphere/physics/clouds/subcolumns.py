@@ -30,9 +30,12 @@ stratified set ``(i+0.5)/n_sub``, independently permuted per layer from a
 table fixed at import, offset per column and layer by a shift seeded from the
 fractional part of the bottom-layer pressure (:func:`cam_seed_shift`; the
 same uniforms the ``mcica`` path uses; CAM seeds from four bottom pressures).  Over
-columns whose shifts spread over [0, 1), each layer keeps the uniform
-marginal, so a layer with ``cf < 1/n_sub`` is cloudy in some columns and
-its cloud is kept on average, as in CAM.  Columns with the same bottom
+columns whose shifts spread over [0, 1), a layer with ``cf < 1/n_sub`` is
+cloudy in some columns and its cloud is kept on average to within the
+shift's non-uniformity: layer ``k`` offsets by
+``frac((1 + k*sqrt2)*shift + k*golden)``, which is not exactly uniform (for
+an isolated cf = 0.01 in the second layer the mean cloudy fraction over
+uniform shifts is 0.00984).  Columns with the same bottom
 pressure (e.g. an idealized uniform state, or integer pressures, which
 give a zero shift) share one set of subcolumns.  There is
 no PRNG state in the hot loop, and the result is reproducible.  Without the

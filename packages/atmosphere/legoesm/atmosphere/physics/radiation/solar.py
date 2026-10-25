@@ -435,8 +435,9 @@ def perpetual_equinox_insolation(
         Q(lat) = (S_0 / pi) * cos(lat)   for |lat| < pi/2
 
     This is the equinox diurnal mean. It is NOT the Frierson et al. (2006)
-    forcing: FHZ06 and Isca's default gray setup use the annual-mean P2
-    profile ``0.25*S_0*(1 + del_sol*P2(lat))`` (Isca v1.0
+    forcing: FHZ06 and Isca's default gray setup use the annual-mean
+    profile ``0.25*S_0*(1 + del_sol*p2)`` with Isca's normalisation
+    ``p2 = (1 - 3*sin(lat)**2)/4`` and ``del_sol = 1.4`` (Isca v1.0
     ``two_stream_gray_rad.F90`` l.452-454); Isca uses this ``cos(lat)`` form
     only for its SCHNEIDER_LIU scheme (l.450). The two differ by up to
     ``0.075*S_0`` (about 102 W/m^2) at the poles.

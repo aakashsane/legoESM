@@ -28,8 +28,9 @@ the net surface flux both vanish (``rce_surface_net_flux → 0``,
 heating rate is a flux divergence, so its column integral telescopes to the
 TOA-minus-surface net flux to round-off (tier-2 oracle audit: <= 3e-14 W m⁻² on
 eight columns); there is no O(1) closure residual.  Note that the sigma levels
-are built at the precision policy's dtype (float32) even under
-``JAX_ENABLE_X64``, so ``p_top`` is 999.99997765 Pa rather than 1000 Pa.
+are built at the precision policy's compute dtype, not at the x64 flag: under
+the default float32 policy they are float32 even with ``JAX_ENABLE_X64``, and
+``p_top`` is then 999.99997765 Pa rather than 1000 Pa.
 
 Everything is pure JAX, so the stepped column and its equilibrium are
 ``jax.grad``-differentiable (e.g. d(T_sfc_eq)/d(insolation) for sensitivity).

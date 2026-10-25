@@ -1786,6 +1786,12 @@ def mynnedmf_column(dz, u, v, w, th, tk, p, exner, rho, sqv, sqc, sqi,
     cold start, mym_initialize, then builds them).  ``uoce``/``voce`` (ocean
     surface current) default to zero.  Returns :class:`MYNNOutput` (and the
     oracle's intermediate fields when ``return_intermediates``).
+
+    Input domain is the oracle's: finite inputs, ``qke >= 0``, ``qsq >= 0``
+    and ``wspd > 0`` (the oracle's surface drag divides by ``wspd``; at
+    ``wspd = 0`` it produces 0/0 and so does this port).  A negative surface
+    moisture flux is dropped by the oracle (mynn_tendencies' ``qvflux``
+    limiter), and the port reproduces that.
     """
     ncol = th.shape[0]
     dtype = th.dtype

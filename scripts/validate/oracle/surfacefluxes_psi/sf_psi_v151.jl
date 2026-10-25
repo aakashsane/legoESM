@@ -26,4 +26,6 @@ for (k, p) in sets
   end
   writedlm(out * "_" * k * ".txt", A)
 end
+# the source Julia actually loaded, checked by make_fixture.py
+println("SF_SRC ", pkgdir(SurfaceFluxes))
 println("SF_V151_OK ", pkgversion(SurfaceFluxes), " ClimaParams ", pkgversion(ClimaParams))

@@ -20,7 +20,6 @@ import json
 import os
 import subprocess
 import tempfile
-import tomllib
 from pathlib import Path
 
 import numpy as np
@@ -40,15 +39,13 @@ def zeta_grid():
     return np.concatenate([-pos[::-1], [0.0], pos])
 
 
-def check_developed_source(env, ver):
-    """The SurfaceFluxes source this environment loads is the pinned SHA, unmodified."""
-    man = tomllib.loads((Path(env) / "Manifest.toml").read_text())
-    path = Path(env) / man["deps"]["SurfaceFluxes"][0]["path"]
-    sha = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], check=True,
+def check_loaded_source(path, ver):
+    """The SurfaceFluxes source Julia loaded (pkgdir) is the pinned SHA, unmodified."""
+    sha = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], check=True,
                          capture_output=True, text=True).stdout.strip()
     if sha != SHA[ver]:
         raise SystemExit(f"{path} is at {sha}, expected {SHA[ver]}")
-    if subprocess.run(["git", "-C", str(path), "diff", "--quiet", "HEAD", "--", "src"]).returncode:
+    if subprocess.run(["git", "-C", path, "diff", "--quiet", "HEAD", "--", "src"]).returncode:
         raise SystemExit(f"{path} src/ has local changes")
 
 
@@ -65,12 +62,16 @@ def main(argv=None):
         zf = Path(td) / "zeta.txt"
         np.savetxt(zf, z, fmt="%.17e")
         for ver, env in (("151", a.env151), ("0120", a.env0120)):
-            check_developed_source(env, ver)
             out = Path(td) / f"sf{ver}"
             r = subprocess.run([a.julia, f"--project={env}", str(HERE / f"sf_psi_v{ver}.jl"),
                                 str(out), str(zf)], check=True, env=dict(os.environ),
                                capture_output=True, text=True)
-            ok = r.stdout.strip().splitlines()[-1]
+            lines = r.stdout.strip().splitlines()
+            ok = lines[-1]
+            src = [ln.split(" ", 1)[1] for ln in lines if ln.startswith("SF_SRC ")]
+            if len(src) != 1:
+                raise SystemExit(f"oracle run did not report its SurfaceFluxes source: {lines}")
+            check_loaded_source(src[0], ver)
             want = EXPECT[ver]
             if not ok.startswith(want):
                 raise SystemExit(f"oracle environment reports {ok!r}, expected {want!r}")

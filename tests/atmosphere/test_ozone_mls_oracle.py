@@ -68,9 +68,12 @@ def test_layer_means_match_gsam(fx, grid):
 def test_columns_are_independent(fx):
     """Several columns in one call give each column's own answer."""
     ph = np.stack([fx["ifs137/p_half"], fx["ifs137/p_half"] * 0.9])
-    lay, _ = mls_ozone_layer_vmr(jnp.asarray(ph))
-    np.testing.assert_array_equal(np.asarray(lay[0]),
-                                  np.asarray(mls_ozone_layer_vmr(jnp.asarray(ph[:1]))[0][0]))
+    lay, above = mls_ozone_layer_vmr(jnp.asarray(ph))
+    for c in range(ph.shape[0]):
+        one, one_above = mls_ozone_layer_vmr(jnp.asarray(ph[c:c + 1]))
+        np.testing.assert_array_equal(np.asarray(lay[c]), np.asarray(one[0]))
+        np.testing.assert_array_equal(np.asarray(above[c]), np.asarray(one_above[0]))
+    assert not np.array_equal(np.asarray(lay[0]), np.asarray(lay[1]))
 
 
 @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])

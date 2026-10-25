@@ -1,8 +1,7 @@
 ! gSAM 1.8.8 tracesini oracle (SRC/RAD_RRTM/rad.f90 lines 1219-1431, #included VERBATIM
 ! as tracesini.inc by build.sh).  The module below stands in for the gSAM modules
-! tracesini reads (grid, params, rad state, MPI helpers).  ggr cancels in the O3 result
-! (path/ggr, then *ggr/dp); it is set to legoESM's constants.g so round-off follows the
-! same operations as the port.  Built with -fdefault-real-8 (gSAM's default reals in fp64).
+! tracesini reads (grid, params, rad state, MPI helpers); ggr is gSAM's own value
+! (SRC/consts.f90).  Built with -fdefault-real-8 (gSAM's default reals in fp64).
 module sam_stub
   use parkind, only : kind_rb, kind_im
   use rrlw_ncpar, only : maxAbsorberNameLength, status, getAbsorberIndex
@@ -12,7 +11,7 @@ module sam_stub
   logical :: masterproc = .true., dompi = .false.
   character(len=512) :: rundatadir
   integer :: year = 2000
-  real, parameter :: ggr = 9.80616
+  real(8), parameter :: ggr = 9.79764d0
   real :: nxco2 = 1.
   logical :: notracegases = .false., docurrentco2 = .false.
   real(kind_rb), allocatable, dimension(:) :: o3, co2, ch4, n2o, o2, cfc11, cfc12, cfc22, ccl4

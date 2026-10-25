@@ -120,14 +120,15 @@ def mls_ozone_layer_vmr(p_half: jnp.ndarray):
         finite when ``p_half[:, 0] == 0`` (that layer then has no thickness).
 
     The operations follow the oracle's order (surface-up cumulative path,
-    ``(dp/ggr)*tr`` per piece, difference times ``ggr/dp``), so round-off
-    matches; ``ggr`` cancels analytically and is ``constants.g`` here.
+    ``(dp/ggr)*tr`` per piece, difference times ``ggr/dp``) with gSAM's
+    ``ggr`` (``constants.g_gsam``; it cancels analytically), so round-off
+    matches.
     """
     p_half = jnp.asarray(p_half)
     dt = p_half.dtype
     pm = jnp.asarray(_P_TABLE, dtype=dt)
     tr = jnp.asarray(_O3_TABLE, dtype=dt)
-    ggr = jnp.asarray(constants.g, dtype=dt)
+    ggr = jnp.asarray(constants.g_gsam, dtype=dt)
     n_press = _P_TABLE.shape[0]
 
     presi = p_half[:, ::-1] / 100.0                  # (ncol, nz) hPa, surface first

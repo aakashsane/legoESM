@@ -27,9 +27,9 @@ UNIFORMS.  CAM draws fresh KISS uniforms per (subcolumn, column, layer),
 seeded from the fractional part of the bottom-layer pressures, so every
 column samples a different set of subcolumns.  Here the uniforms are the
 stratified set ``(i+0.5)/n_sub``, independently permuted per layer from a
-table fixed at import, offset per column and layer by a shift seeded -- as
-CAM seeds KISS -- from the fractional part of the bottom-layer pressure
-(:func:`cam_seed_shift`; the same uniforms the ``mcica`` path uses).  Each
+table fixed at import, offset per column and layer by a shift seeded from the
+fractional part of the bottom-layer pressure (:func:`cam_seed_shift`; the
+same uniforms the ``mcica`` path uses; CAM seeds from four bottom pressures).  Each
 layer keeps the exact uniform marginal, so a layer with ``cf < 1/n_sub`` is
 cloudy in some columns and its cloud is kept on average, as in CAM.  There is
 no PRNG state in the hot loop, and the result is reproducible.  Without the
@@ -205,15 +205,17 @@ def max_random_mask(u, cloud_fraction):
 
 
 def cam_seed_shift(p_full):
-    """Per-column subcolumn shift ``(ncol,)`` in [0, 1), seeded as CAM seeds KISS.
+    """Per-column subcolumn shift ``(ncol,)`` in [0, 1), state-seeded like CAM.
 
-    CAM's McICA seeds its generator from the fractional part of the
-    bottom-layer pressures (mcica_subcol_gen_sw.f90, ``kiss_seed``), so the
-    draw is state-derived: independent of the domain decomposition and with no
-    PRNG state to carry.  This takes the fractional part of the lowest-layer
-    pressure [Pa] (index -1 = model bottom).  Columns with IDENTICAL bottom
-    pressure share a shift, as they share a seed in CAM.  Gradient-stopped:
-    the mask is a sampling device, not a function of pressure.
+    CAM's McICA seeds KISS from the fractional parts of the bottom FOUR
+    layer pressures (mcica_subcol_gen_sw.f90:293-296), so its draw is
+    state-derived: independent of the domain decomposition, with no PRNG
+    state to carry.  This shift (the one the ``mcica`` path has used) takes
+    only the fractional part of the lowest-layer pressure [Pa] (index -1 =
+    model bottom): columns with identical bottom pressure share a shift even
+    where CAM's seeds would differ, and an fp32 pressure quantises it (to
+    1/128 near 1e5 Pa).  Gradient-stopped: the mask is a sampling device,
+    not a function of pressure.
     """
     return jax.lax.stop_gradient(jnp.mod(jnp.asarray(p_full)[:, -1], 1.0))
 

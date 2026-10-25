@@ -206,3 +206,64 @@ def test_spectral_lane_returns_constituent_diffusion():
     # one diffusion operator for every constituent (CAM gw_diff_tend per m):
     # a tracer twice q_v gets exactly twice the tendency
     np.testing.assert_array_equal(np.asarray(tend.tracers["q_c"].data), 2.0 * dq)
+
+
+# --------------------------------------------------------------------------
+# lane proof: the model_type="mpas" factory is what the MPAS _run_column lane
+# (primitive_eq_mpas._step_jit, static self) and the FV3-duo column lane
+# (make_physics(model_type="mpas"), jit closing over self) both call.  The
+# mesh and coordinate are closed over, as in those steps.
+# --------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def mpas_lane():
+    from legoesm.atmosphere.forcing.idealized.held_suarez import (
+        held_suarez_init_mpas,
+    )
+    from legoesm.grids.vertical import make_cam6_l32_levels
+    from legoesm.grids.voronoi import create_voronoi_mesh
+    mesh = create_voronoi_mesh(subdivision_level=1, lloyd_iterations=2)
+    coord = make_cam6_l32_levels()
+    state = held_suarez_init_mpas(mesh, coord, T_init=290.0,
+                                  perturbation_amplitude=0.0)
+    ncell, nlev = state.T.data.shape
+    rng = np.random.default_rng(0)
+    q = jnp.broadcast_to(jnp.linspace(1e-5, 1.5e-2, nlev), (ncell, nlev))
+    state = state._replace(
+        u=state.u.replace(
+            data=jnp.asarray(rng.standard_normal(state.u.data.shape) * 8.0)),
+        T=state.T.replace(data=jnp.asarray(
+            290.0 - 70.0 * np.linspace(1.0, 0.0, nlev)[None, :]
+            + rng.standard_normal((ncell, nlev)))),
+        tracers={nm: state.T.replace(data=val, name=nm, units="kg/kg")
+                 for nm, val in (("q_v", q), ("q_c", 2.0 * q))})
+    mesh = mesh._replace(land_frac=jnp.ones(ncell),
+                         subgrid_topo_stddev=jnp.full(ncell, 400.0))
+    return mesh, coord, state
+
+
+def test_mpas_column_lane_diffuses_tracers_under_jit(mpas_lane):
+    from legoesm.atmosphere.physics.gravity_wave_drag import integration as gi
+    from legoesm.atmosphere.physics.gravity_wave_drag.config import (
+        GravityWaveDragConfig,
+    )
+    mesh, coord, state = mpas_lane
+    fn = gi._make_mpas_gwd(GravityWaveDragConfig(scheme="mcfarlane"), 300.0)
+    out = jax.jit(lambda st: fn(st, mesh, coord))(state)
+    tend = out[0] if isinstance(out, tuple) else out
+    tt = tend.tracer_tendencies
+    dq = np.asarray(tt["q_v"].data)
+    assert np.abs(dq).max() > 0.0
+    np.testing.assert_array_equal(np.asarray(tt["q_c"].data), 2.0 * dq)
+
+
+def test_mpas_column_lane_zero_top_raises_under_jit(mpas_lane):
+    from legoesm.atmosphere.physics.gravity_wave_drag import integration as gi
+    from legoesm.atmosphere.physics.gravity_wave_drag.config import (
+        GravityWaveDragConfig,
+    )
+    mesh, coord, state = mpas_lane
+    coord0 = coord._replace(A_half=coord.A_half.at[0].set(0.0))
+    fn = gi._make_mpas_gwd(GravityWaveDragConfig(scheme="mcfarlane"), 300.0)
+    with pytest.raises(ValueError, match="model-top"):
+        jax.jit(lambda st: fn(st, mesh, coord0))(state)

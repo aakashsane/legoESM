@@ -13,6 +13,12 @@ the audit's constructed surface-layer state; sha256 recorded in ``meta``).
 Two more columns are appended: copies of the stable land columns
 ``polar_dry`` and ``nocturnal_elevated`` with ``xland = 2`` (water), so the
 fixture reaches the oracle's Rossby-number critical-Ri branch over water.
+A third appended column, ``tibet_deep_mixed_noflux``, is ``tibet_deep_mixed``
+with zero surface heat and water flux, ``br = 0`` and an added zonal wind
+shear of 0.5 m/s per level (so the free-atmosphere K differs from the in-PBL K
+at the tie interface): its 13-level constant-
+theta_v layer then ties the first-guess bulk Ri with ``brcr = 0`` exactly, so
+the PBL top lands exactly on level ``kpbl-1`` (``brint = 0``).
 Constants handed to the oracle are legoESM's (``legoesm.constants``), as
 ``bl_ysu_run`` (the JAX port) uses.
 """
@@ -36,6 +42,7 @@ ORACLE = dict(repo="wrf-model/WRF", tag="v4.8.0",
 LEV = ("u", "v", "T", "q", "p_full", "exner", "dz")
 SFC = ("ust", "hfx", "qfx", "wspd", "br", "psim", "psih", "znt", "xland", "u10", "v10")
 WATER_COPIES = ("polar_dry", "nocturnal_elevated")
+TIE_COPY = "tibet_deep_mixed"
 
 
 def constants_vector(dt):
@@ -57,6 +64,12 @@ def columns(src):
     d = {k: np.concatenate([v, v[idx]], axis=0) for k, v in d.items()}
     d["xland"][-len(idx):] = 2.0
     names = names + [f"{n}_water" for n in WATER_COPIES]
+    t = names.index(TIE_COPY)
+    d = {k: np.concatenate([v, v[t:t + 1]], axis=0) for k, v in d.items()}
+    for k in ("hfx", "qfx", "lhflx", "br"):
+        d[k][-1] = 0.0
+    d["u"][-1] = d["u"][-1] + 0.5 * np.arange(d["u"].shape[1])[::-1]   # shear: 0.5 m/s per level
+    names = names + [f"{TIE_COPY}_noflux"]
     d["exner"] = (d["p_full"] / C.p_ref) ** C.kappa
     d["dz"] = d["zi"][:, :-1] - d["zi"][:, 1:]
     return names, d
@@ -118,7 +131,7 @@ def main():
                 constants=dict(zip(("cp", "g", "rovcp", "rd", "rovg", "ep1", "ep2", "karman",
                                     "xlv", "rv", "dt"), constants_vector(dt))),
                 inputs_sha256=hashlib.sha256(Path(a.inputs).read_bytes()).hexdigest(),
-                names=names, water_copies=list(WATER_COPIES),
+                names=names, water_copies=list(WATER_COPIES), tie_copy=TIE_COPY,
                 setup="ysu_topdown_pblmix=F, f_qc=f_qi=F, nmix=0, no BEP, ctopo/uox absent",
                 layout="arrays top-first (index 0 = model top); exch_* entry k = K of the "
                        "interface below level k (oracle exch(k+1)=xkz(k)); kpbl 1-based "

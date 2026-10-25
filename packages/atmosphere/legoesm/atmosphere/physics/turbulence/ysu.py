@@ -347,8 +347,8 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
       is the oracle's ``brint`` exactly.
     * ``region_sharpness``: the in-PBL (``k < kpbl``) vs above-PBL selection of
       the diffusivities and of the in-PBL nonlocal fluxes, as
-      ``1 - sigmoid(s*(za(k)/hpbl - 1))`` (``k < kpbl`` iff ``za(k) < hpbl``
-      when ``kpbl > 1``).
+      ``1 - sigmoid(s*(za(k)/hpbl - 1))`` (``k < kpbl`` iff ``za(k) <= hpbl``
+      when ``kpbl > 1``; equality counts as inside at any sharpness).
     * ``ri_sharpness``: the ``ri < 0`` unstable/stable selection of the
       free-atmosphere diffusivity, as ``sigmoid(s*ri)``; each branch is
       evaluated at ``min(ri,0)`` / ``max(ri,0)``, its value at ``ri = 0``,
@@ -546,8 +546,11 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     km_e = jnp.clip(jnp.sqrt(_PRPBL * kh_e * km_f), _XKZMINM, _XKZMAX)
 
     # --- PBL / above-PBL selection ---
-    wp = jnp.where(kpbl > 1, 1.0, 0.0)[:, None] * (1.0 - jax.nn.sigmoid(
-        region_sharpness * (za[:, :-1] / hpbl[:, None] - 1.0)))
+    # za(k) == hpbl happens only when brint = 0 put hpbl on level kpbl-1 (an
+    # exact tie below the crossing), and that interface is in the PBL
+    zr = za[:, :-1] / hpbl[:, None] - 1.0
+    wp = jnp.where(kpbl > 1, 1.0, 0.0)[:, None] * jnp.where(
+        zr == 0.0, 1.0, 1.0 - jax.nn.sigmoid(region_sharpness * zr))
     kh_a = jnp.where(ent, kh_e, kh_f)
     Kh = wp * kh_p + (1.0 - wp) * kh_a
     Kq = wp * kq_p + (1.0 - wp) * kh_a

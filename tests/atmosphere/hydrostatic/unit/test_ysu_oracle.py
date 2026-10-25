@@ -6,6 +6,7 @@ WRF v4.8.0 (06d4240ae989cc3e50af412bb472df3d9048783c; physics_mmm
 compiled unmodified (gfortran 8.5.0, fp64 -fdefault-real-8) with
 ``scripts/validate/oracle/ysu/{build.sh,ysu_driver.F90,make_fixture.py}`` on
 the 20-column tier-2 audit set plus two water copies of stable land columns
+and a zero-flux copy of tibet_deep_mixed
 (metadata in the npz ``meta``).  Oracle setup: topdown off, qc=qi=0, no BEP,
 ctopo absent -- the clear-sky path ``bl_ysu_run`` (the JAX port) implements.
 
@@ -147,6 +148,11 @@ def test_fixture_exercises_every_branch(fx):
     for n in ("polar_dry", "nocturnal_elevated"):
         assert fx["ora_hpbl"][names.index(n)] != fx["ora_hpbl"][names.index(n + "_water")]
     assert np.all(fx["ora_delta"][pbl] > 0) and np.all(fx["ora_delta"][~pbl] == 0)
+    # a PBL top exactly on level kpbl-1 (brint = 0 after an exact bulk-Ri tie)
+    t = names.index("tibet_deep_mixed_noflux")
+    zq = np.concatenate([[0.0], np.cumsum(fx["in_dz"][t, ::-1])])
+    za = 0.5 * (zq[:-1] + zq[1:])
+    assert fx["ora_kpbl"][t] > 2 and fx["ora_hpbl"][t] == za[fx["ora_kpbl"][t] - 2]
 
 
 def test_wrapper_wrf_path_matches_oracle(fx):

@@ -24,14 +24,17 @@ Given the same uniforms the masks are identical to the running CAM code
 (``tests/atmosphere/test_max_random_subcolumns_oracle.py``).
 
 UNIFORMS.  CAM draws fresh KISS uniforms per (subcolumn, column, layer),
-seeded from the fractional part of the bottom-layer pressures, so every
-column samples a different set of subcolumns.  Here the uniforms are the
+seeded from the fractional parts of the bottom four layer pressures, so
+columns with different pressure digits sample different subcolumns.  Here the uniforms are the
 stratified set ``(i+0.5)/n_sub``, independently permuted per layer from a
 table fixed at import, offset per column and layer by a shift seeded from the
 fractional part of the bottom-layer pressure (:func:`cam_seed_shift`; the
-same uniforms the ``mcica`` path uses; CAM seeds from four bottom pressures).  Each
-layer keeps the exact uniform marginal, so a layer with ``cf < 1/n_sub`` is
-cloudy in some columns and its cloud is kept on average, as in CAM.  There is
+same uniforms the ``mcica`` path uses; CAM seeds from four bottom pressures).  Over
+columns whose shifts spread over [0, 1), each layer keeps the uniform
+marginal, so a layer with ``cf < 1/n_sub`` is cloudy in some columns and
+its cloud is kept on average, as in CAM.  Columns with the same bottom
+pressure (e.g. an idealized uniform state, or integer pressures, which
+give a zero shift) share one set of subcolumns.  There is
 no PRNG state in the hot loop, and the result is reproducible.  Without the
 per-column shift (``shift=None``) every column would reuse ONE table and a
 layer with ``0 < cf < 1/(2 n_sub)`` could never be cloudy unless cloud is

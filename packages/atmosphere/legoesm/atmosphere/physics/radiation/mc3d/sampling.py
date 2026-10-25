@@ -165,10 +165,12 @@ def isotropic_direction(key: Array, dtype) -> Array:
 def free_path(key: Array, majorant: Array) -> Array:
   """Sample a free-flight distance for Woodcock tracking.
 
-  microhh ``sample_tau``: ``tau = -log(1 - u + Float_epsilon)`` (the machine
-  epsilon of the working precision keeps the log finite), divided by the
-  majorant extinction.
+  microhh: ``tau = sample_tau(u) = -log(1 - u + Float_epsilon)`` (the machine
+  epsilon of the working precision keeps the log finite) and the step
+  ``dn = max(Float_epsilon, tau / k_ext_null)`` (raytracer_kernels.cu:212),
+  so a step is never negative or zero.
   """
   u = jax.random.uniform(key, dtype=majorant.dtype)
   eps = jnp.finfo(majorant.dtype).eps
-  return -jnp.log(-u + 1.0 + eps) / majorant
+  tau = -1.0 * jnp.log(-u + 1.0 + eps)
+  return jnp.maximum(eps, tau / majorant)

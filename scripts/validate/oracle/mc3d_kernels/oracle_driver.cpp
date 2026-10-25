@@ -5,7 +5,9 @@
 // usage: oracle_driver <dir>   (little-endian; int32 headers, float64 arrays)
 //  henyey_in.bin : n; g[n], u[n]                      -> henyey_out.bin : mu[n]
 //  rayl_in.bin   : n; u[n]                            -> rayl_out.bin   : mu[n]
-//  tau_in.bin    : n; u[n]                            -> tau_out.bin    : tau[n]
+//  tau_in.bin    : n; u[n], k[n]                      -> tau_out.bin    : dn[n]
+//                  dn = max(Float_epsilon, sample_tau(u) / k): the step of
+//                  src_kernels_cuda_rt/raytracer_kernels.cu:212 (that expression, copied)
 //  mie_in.bin    : n_mie, n_r, n; cdf[n_mie], ang[n_r*n_mie], u[n], reff[n] -> mie_out.bin : ang[n]
 //  knull_in.bin  : nx,ny,nz,kx,ky,kz; kext[nx*ny*nz] (x fastest) -> knull_out.bin : kn[kx*ky*kz]
 #include <cstdio>
@@ -32,8 +34,11 @@ int main(int argc, char** argv) {
     std::vector<double> o(n); for (int i = 0; i < n; ++i) o[i] = henyey(Float(g[i]), Float(u[i])); wr(d + "/henyey_out.bin", o); }
   { FILE* f = op(d + "/rayl_in.bin", "rb"); int n = ri(f); auto u = rd(f, n); fclose(f);
     std::vector<double> o(n); for (int i = 0; i < n; ++i) o[i] = rayleigh(Float(u[i])); wr(d + "/rayl_out.bin", o); }
-  { FILE* f = op(d + "/tau_in.bin", "rb"); int n = ri(f); auto u = rd(f, n); fclose(f);
-    std::vector<double> o(n); for (int i = 0; i < n; ++i) o[i] = sample_tau(Float(u[i])); wr(d + "/tau_out.bin", o); }
+  { FILE* f = op(d + "/tau_in.bin", "rb"); int n = ri(f); auto u = rd(f, n); auto k = rd(f, n); fclose(f);
+    std::vector<double> o(n);
+    for (int i = 0; i < n; ++i) { const Float tau = sample_tau(Float(u[i])); const Float k_ext_null = Float(k[i]);
+      o[i] = max(Float_epsilon, tau / k_ext_null); }
+    wr(d + "/tau_out.bin", o); }
   { FILE* f = op(d + "/mie_in.bin", "rb"); int nm = ri(f), nr = ri(f), n = ri(f);
     auto cdf = rd(f, nm); auto ang = rd(f, (size_t)nr * nm); auto u = rd(f, n); auto re = rd(f, n); fclose(f);
     std::vector<double> o(n);

@@ -62,7 +62,7 @@ def test_fixture_provenance(fx):
 def test_henyey_greenstein(fx, inject_uniform):
     g = jnp.asarray(fx["g"])
     assert float(jnp.min(jnp.abs(g))) >= 1e-3
-    ours = jax.vmap(sampling.henyey_greenstein_mu)(jnp.asarray(fx["u"]), g)
+    ours = jax.vmap(sampling.henyey_greenstein_mu)(jnp.asarray(fx["u_hg"]), g)
     assert float(_rel(ours, fx["henyey_oracle"]).max()) <= TOL
 
 
@@ -71,9 +71,8 @@ def test_rayleigh(fx, inject_uniform):
     assert float(_rel(ours, fx["rayleigh_oracle"]).max()) <= TOL
 
 
-def test_free_path_is_sample_tau(fx, inject_uniform):
-    one = jnp.asarray(1.0, jnp.float64)
-    ours = jax.vmap(lambda u: sampling.free_path(u, one))(jnp.asarray(fx["u_edge"]))
+def test_free_path_is_the_kernel_step(fx, inject_uniform):
+    ours = jax.vmap(sampling.free_path)(jnp.asarray(fx["u_edge"]), jnp.asarray(fx["k_fp"]))
     assert float(_rel(ours, fx["tau_oracle"]).max()) <= TOL
 
 

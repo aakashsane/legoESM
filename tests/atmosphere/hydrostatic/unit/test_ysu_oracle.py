@@ -186,6 +186,18 @@ def test_wrapper_wrf_path_matches_oracle(fx):
     assert max(worst.values()) <= TOL, worst
 
 
+def test_wrf_path_exports_kh_iface(fx):
+    """The WRF path exports Kh_iface like every interface-native scheme: the
+    oracle's exch_h on the interior interfaces, zero at model top and surface."""
+    out = _wrapper(fx, HARD_CFG)
+    k = np.asarray(out.Kh_iface)
+    assert k.shape == (out.Kh.shape[0], out.Kh.shape[1] + 1)
+    np.testing.assert_array_equal(k[:, 0], 0.0)
+    np.testing.assert_array_equal(k[:, -1], 0.0)
+    np.testing.assert_array_equal(k[:, 1:-1], np.asarray(out.Kh)[:, :-1])
+    assert np.max(k) > 0.0
+
+
 def test_surrogate_only_fields_refused_on_wrf_path(fx):
     with pytest.raises(ValueError, match="Ri_crit"):
         _wrapper(fx, dict(Ri_crit=0.3))

@@ -650,7 +650,8 @@ def _ysu_wrf_turbulence(u, v, T, q_v, p_full, p_half, z_full, z_half, T_sfc,
     return TurbulenceOutput(
         du_dt=o.du_dt, dv_dt=o.dv_dt, dT_dt=o.dT_dt, dq_v_dt=o.dq_v_dt,
         Km=o.exch_m, Kh=o.exch_h, shflx=shflx, lhflx=lhflx, evap_sfc=evap,
-        ustar=ustar, h_pbl=o.hpbl)
+        ustar=ustar, h_pbl=o.hpbl,
+        Kh_iface=half_to_iface_zero_ends(o.exch_h[:, :-1]))
 
 
 def ysu_turbulence(

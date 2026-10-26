@@ -141,8 +141,9 @@ def _manifest_summary(snapshot_path):
     the snapshot PATH loses them the moment the directory is renamed.
 
     TWO LAYOUTS.  The canonical writer -- used by every lane, FESOM included
-    since #2102 -- nests everything under ``run`` and ``reproducibility`` and
-    records the commit under ``legoESM.commit``.  FESOM manifests written
+    since #2102 -- is NESTED: the command line is ``run.command_line``, the
+    dirty flag is under ``reproducibility``, and the commit is
+    ``legoESM.commit``.  FESOM manifests written
     BEFORE #2102 are FLAT: the command line is ``argv`` and the SHA is
     top-level ``git_sha``.  Reading only the nested one returned all-None for
     every such old FESOM arm (measured 2026-09-16) --

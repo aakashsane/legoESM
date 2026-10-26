@@ -348,8 +348,9 @@ def _mixing_ratio_from_esat(e_sat: jax.Array, p: jax.Array) -> jax.Array:
     beta = 20 smooth cap are fixed (no hard-limit setting).  Tier-2 oracle
     audit, fp64: a constant offset of -1.03e-10 kg/kg for small r; at a
     364 Pa model top the cap at r = 1 binds, and after ``q = r/(1 + r)``
-    q_sat is 30 % below CAM ``svp_to_qsat``; r and q are negative for
-    T <= 152.4 K at p >= 7e4 Pa.  In fp32 the cap cancels catastrophically:
+    q_sat is 30 % below CAM ``svp_to_qsat``; r and q go negative where the
+    true r falls below the offset (on the audit's 0.05 K grid: only at
+    p >= 7e4 Pa, warmest such point 152.4 K; the cutoff depends on p).  In fp32 the cap cancels catastrophically:
     where q_sat < 1e-5 the error vs the unsmoothed formula has median 1.4 %
     and max 87 %.  CAM instead returns q = 1 when p <= e_s; CLUBB returns
     r = epsilon when p - e_s < 1.

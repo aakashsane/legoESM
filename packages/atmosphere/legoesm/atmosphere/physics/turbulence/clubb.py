@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 7175)
+Table of contents (sections, in order; flag reference table at line 7216)
 -----------------------------------------------------------------------------
   1. [line  352] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  473] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -50,7 +50,7 @@ Table of contents (sections, in order; flag reference table at line 7175)
   18. [line  5329] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  6090] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  6095] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 
@@ -6952,6 +6952,7 @@ def clubb_turbulence_prognostic(
         sfc_energy_in = diags["sfc_energy_in"]
         clubbtop = diags.get("clubbtop")
         Kh_full = flip_vertical(diags["Kh_zt"])
+        Kh_iface = flip_vertical(diags["Kh_zm"])
         cloud_frac_a = diags["cloud_frac"]
         rcp2_a = diags["rcp2_zt"]
         rcm_relvar_a = diags.get("rcm_relvar")
@@ -7004,6 +7005,7 @@ def clubb_turbulence_prognostic(
         clubbtop = (diag_stk["clubbtop"][-1] if "clubbtop" in diag_stk
                     else None)
         Kh_full = flip_vertical(diag_stk["Kh_zt"][-1])
+        Kh_iface = flip_vertical(diag_stk["Kh_zm"][-1])
         # Final sub-step, like Kh: the cloud fraction must correspond to the
         # moments being returned as the carry, not to a sub-cycle average of
         # states the host never sees.
@@ -7075,7 +7077,11 @@ def clubb_turbulence_prognostic(
         evap_sfc=surface_moisture_flux(config.surface, lhflx, T_sfc),
         ustar=ustar,
         h_pbl=h_pbl, cloud_fraction=cloud_fraction_td, dq_c_dt=dq_c_dt,
-        relvar=relvar)
+        relvar=relvar,
+        # CAM6 activation inputs (microp_aero/dropmixnuc): khzm_out of the LAST
+        # sub-step's advance (clubb_intr.F90:1915, :1997, surface interface
+        # included) and the end-of-sub-cycle wp2 left in WP2_nadv (:1987).
+        Kh_iface=Kh_iface, wp2_iface=flip_vertical(new_moments.wp2))
     return output, pack_clubb_moments(new_moments)
 
 

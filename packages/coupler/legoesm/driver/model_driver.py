@@ -5217,6 +5217,53 @@ class ModelDriver:
             return temp[self._owned_face_ids]
         return self._gather_spmd_tree_to_host(temp)
 
+    def _cam6_activation_setup(self, phys_cfg, dt_micro):
+        """Start-up constants of CAM6 prescribed-aerosol droplet activation
+        (Morrison ``prognostic_droplet_number``, MPAS lane) plus the host
+        horizontal weights of the aerosol climatology for the physics columns.
+        ``n_max`` is evaluated on this start-up state (user decision B10)."""
+        from legoesm.atmosphere.physics.microphysics.cam6_aerosol_climatology import (
+            PPE_RAW_FILE, PPE_SHA256, Cam6AerosolActivation, horizontal_weights,
+            read_hybrid_coefficients, trop_cloud_top_lev)
+        from legoesm.atmosphere.physics.microphysics.cam6_dropmixnuc import (
+            nsubmix_upper_bound)
+        from legoesm.atmosphere.physics.microphysics.cam6_modal_aerosol import (
+            load_cam6_mode_props, read_pinned_netcdf)
+        from legoesm.atmosphere.physics.microphysics.integration import (
+            cam6_activation_columns)
+        from legoesm.atmosphere.physics.turbulence.integration import (
+            resolved_clubb_config)
+        from pathlib import Path
+        data_dir = self.config.cam6_aerosol_dir
+        hyam, hybm, p0 = read_hybrid_coefficients(data_dir)
+        # CAM ref_pres: pref_mid = hyam*ps0 + hybm*psr, ps0 = psr = 1e5 Pa (hycoef.F90:122)
+        pref_mid = np.asarray(self.sigma.pressure_at_full(jnp.asarray(constants.p_ref)))
+        top_lev = trop_cloud_top_lev(
+            pref_mid, resolved_clubb_config(phys_cfg.turbulence).trop_cloud_top_press)
+        p_s, lat = self._owned_p_s_and_lat()
+        T = jnp.asarray(self._owned_temp())
+        q_v = self.state.tracers["q_v"].data
+        q_v = (q_v[self._owned_face_ids] if self._owned_face_ids is not None
+               else self._gather_spmd_tree_to_host(q_v))
+        nlev = self.sigma.sigma_full.shape[0]
+        ncol = int(np.prod(np.shape(p_s)))
+        p_s = jnp.asarray(p_s).reshape(ncol)
+        T_col = T.reshape(ncol, nlev)
+        q_v_col = jnp.asarray(q_v).reshape(ncol, nlev)
+        p_full = self.sigma.pressure_at_full(p_s).reshape(ncol, nlev)
+        p_half = self.sigma.pressure_at_half(p_s).reshape(ncol, nlev + 1)
+        pmid, pint, rpdel, zm = cam6_activation_columns(T_col, q_v_col, p_full, p_half)
+        n_max = nsubmix_upper_bound(T_col, pmid, pint, rpdel, zm, dt_micro, top_lev)
+        with read_pinned_netcdf(Path(data_dir) / PPE_RAW_FILE, PPE_SHA256) as d:
+            file_lat = np.asarray(d["lat"][:], dtype=np.float64)
+            file_lon = np.asarray(d["lon"][:], dtype=np.float64)
+        lon_w, lat_w = horizontal_weights(
+            file_lat, file_lon, np.asarray(lat).reshape(ncol),
+            np.asarray(self._owned_lon()).reshape(ncol))
+        setup = Cam6AerosolActivation(load_cam6_mode_props(data_dir), hyam, hybm, p0,
+                                      top_lev, n_max)
+        return setup, (lon_w, lat_w)
+
     def _precompute_external_forcing(self, day, p_s, lat, temp=None, lon=None):
         """Pre-compute ozone/aerosol/GHG fields outside JIT boundary.
 
@@ -13144,11 +13191,21 @@ class ModelDriver:
                 f"{cfg.cld_macmic_num_steps} x at "
                 f"{DT_PHYS / cfg.cld_macmic_num_steps:.1f} s inside each "
                 "physics step, after the convective increment")
+        _cam6_act, _cam6_hw = None, None
+        if cfg.morrison_prognostic_droplet_number:
+            _cam6_act, _cam6_hw = self._cam6_activation_setup(
+                phys_cfg, DT_PHYS / cfg.cld_macmic_num_steps)
+            logger.info(
+                f"  CAM6 droplet activation: prescribed aerosol from "
+                f"{cfg.cam6_aerosol_dir}, top_lev={_cam6_act.top_lev}, "
+                f"mixing substeps <= {_cam6_act.n_max}")
+
         def _build_physics(_cfg, need_rad=True):
             """The lane's make_physics call (one copy for the full and the
             held-radiation variants; exported to mpas_diff_step so a caller
             can rebuild the SAME physics from a config with traced params)."""
             return make_physics(_cfg, model_type="mpas", dt=DT_PHYS,
+                                cam6_activation=_cam6_act,
                                 budget_ledger_level_weight=_ledger_weight,
                                 column_mesh=_column_mesh, need_rad=need_rad,
                                 f_land=(_f_land_cells
@@ -14465,6 +14522,7 @@ class ModelDriver:
             False)) or bool(getattr(self.config, "bechtold_use_ifs_capdcycl",
                                     False))
         _last_force_day = None
+        _cam6_held = None
         # External CMIP6 forcing (ozone file / aerosol / transient GHG) on
         # the MPAS path: threaded through the same per-step TRACED
         # ``forcing`` dict as T_sfc, refreshed at daily cadence.  The
@@ -14654,6 +14712,13 @@ class ModelDriver:
                 # seeds at its fresh init (CAM pbuf value 2) and is rewritten
                 # by CLUBB before the microphysics reads it in every sub-step.
                 "relvar",
+                # clubb_wp2_iface / clubb_kh_iface / cloud_fraction_old
+                # (2026-10-24, user decision 3a): CAM6 droplet-activation
+                # inputs; the CLUBB pair is rewritten before every read and a
+                # zero CLDO is CAM's cold start (micro_mg_cam.F90:1047).
+                "clubb_wp2_iface",
+                "clubb_kh_iface",
+                "cloud_fraction_old",
             })
             if _any_physstate:
                 from legoesm.atmosphere.physics.physics_state import (
@@ -15121,7 +15186,8 @@ class ModelDriver:
             # radiation=none (where _sst_forcing is False) — else coupling would
             # silently freeze. SST re-sampling below stays gated on _sst_forcing.
             if (_sst_forcing or _ext_forcing or _solar_ext
-                    or self._segment_callback is not None):
+                    or self._segment_callback is not None
+                    or _cam6_act is not None):
                 # Anchored on the ABSOLUTE step from the run's day-0 origin:
                 # ``START_DAY + step*DT`` rounds differently from the unbroken
                 # run's ``0 + (start_step+step)*DT`` (1 ulp at step 219 of a
@@ -15321,6 +15387,16 @@ class ModelDriver:
                 _forcing = dict(_forcing_daily)
                 _forcing["day_of_year"] = jnp.asarray(_doy)
                 _forcing["seconds_of_day"] = jnp.asarray(_sod)
+                if _cam6_act is not None:
+                    # CAM prescribed_aero_adv: the two monthly records held on
+                    # device, reloaded when the bracket moves, linearly
+                    # interpolated to this step's start time (noleap days since
+                    # Jan 1; user decision 2026-10-24, 1 and 2a).
+                    from legoesm.atmosphere.physics.microphysics.cam6_aerosol_climatology import (  # noqa: E501
+                        NOLEAP_ONE_YR, cam6_aerosol_forcing)
+                    _cam6_held, _forcing["cam6_aerosol"] = cam6_aerosol_forcing(
+                        cfg.cam6_aerosol_dir, _force_day % NOLEAP_ONE_YR,
+                        *_cam6_hw, held=_cam6_held)
                 # Surface heat fluxes for the convective diurnal-cycle CAPE
                 # subtraction, which is what delays land storms from noon to
                 # late afternoon.  They are the PREVIOUS step's: turbulence

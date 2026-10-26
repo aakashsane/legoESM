@@ -61,6 +61,7 @@ from legoesm.atmosphere.physics._shared import (
     half_to_full,
     surface_buoyancy_flux,
     virtual_temperature,
+    half_to_iface_zero_ends,
 )
 from legoesm.atmosphere.physics.turbulence.config import HoltslagBovilleConfig
 from legoesm.atmosphere.physics.turbulence.pbl_height import (
@@ -316,6 +317,7 @@ def holtslag_boville_turbulence(
         ustar=ustar,
         h_pbl=hb.h_pbl,
         wtheta_flux=wtheta_flux,
+        Kh_iface=half_to_iface_zero_ends(hb.Kh_half),
     )
 
 

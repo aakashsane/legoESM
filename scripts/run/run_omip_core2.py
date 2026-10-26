@@ -2870,15 +2870,20 @@ def _write_fesom_manifest(out, args, model, lane, n_steps, dt, total_days):
     (process 0) for the run-end state digest."""
     from legoesm.driver.restart import write_run_manifest_on_root
     from legoesm.ocean.config import FesomRunRecord
-    record = FesomRunRecord(
-        runtime_config=model.config, lane=lane, n_steps=int(n_steps),
-        dt_seconds=float(dt), total_days=float(total_days),
+    forcing = dict(
         emp_freshwater=bool(args.emp_freshwater), dm2dc=bool(args.dm2dc),
         sw_rgb_chl=bool(args.sw_rgb_chl),
         prognostic_sea_ice=bool(args.prognostic_sea_ice),
         sss_restore=bool(args.sss_restore),
         sss_restore_channel=args.sss_restore_channel,
-        runoff=bool(args.runoff),
+        runoff=bool(args.runoff))
+    if lane == "fesom_b1_unforced":
+        # B1 applies none of these forcings (user decision 2026-10-26), so
+        # it records that instead of the parser defaults it never used.
+        forcing = dict.fromkeys(forcing, "not_applicable")
+    record = FesomRunRecord(
+        runtime_config=model.config, lane=lane, n_steps=int(n_steps),
+        dt_seconds=float(dt), total_days=float(total_days), **forcing,
         nemo_monthly_init=(list(args.nemo_monthly_init)
                            if args.nemo_monthly_init is not None else None),
         woa_init=bool(args.woa_init),

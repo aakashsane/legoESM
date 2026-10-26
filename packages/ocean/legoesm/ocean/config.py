@@ -626,13 +626,14 @@ class FesomRunRecord(NamedTuple):
     n_steps: int
     dt_seconds: float
     total_days: float
-    emp_freshwater: bool = False
-    dm2dc: bool = False
-    sw_rgb_chl: bool = False
-    prognostic_sea_ice: bool = False
-    sss_restore: bool = False
+    # Forcing controls; the unforced B1 lane records "not_applicable".
+    emp_freshwater: bool | str = False
+    dm2dc: bool | str = False
+    sw_rgb_chl: bool | str = False
+    prognostic_sea_ice: bool | str = False
+    sss_restore: bool | str = False
     sss_restore_channel: str | None = None
-    runoff: bool = False
+    runoff: bool | str = False
     nemo_monthly_init: list | None = None
     woa_init: bool = False
     vmix_config: object = None

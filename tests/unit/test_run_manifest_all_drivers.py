@@ -205,7 +205,14 @@ def test_fesom_lanes_write_a_valid_manifest(tmp_path, lane):
     assert isinstance(rec, FesomRunRecord)
     assert rec.lane == lane and rec.n_steps == 48 and rec.total_days == 1.0
     assert rec.runtime_config == model.config
-    assert rec.sss_restore_channel == "water_flux"
+    forcing = ("emp_freshwater", "dm2dc", "sw_rgb_chl", "prognostic_sea_ice",
+               "sss_restore", "sss_restore_channel", "runoff")
+    if lane == "fesom_b1_unforced":
+        # User decision 2026-10-26: B1 applies none of these forcings.
+        assert all(getattr(rec, f) == "not_applicable" for f in forcing)
+    else:
+        assert [getattr(rec, f) for f in forcing] == [
+            True, False, True, False, True, "water_flux", False]
     # #2102 bundle: the two NEMO init paths, the resolved fesom_jax
     # background mixing, and the TKE card the model ran.
     assert rec.nemo_monthly_init == ["t_init.nc", "s_init.nc"]

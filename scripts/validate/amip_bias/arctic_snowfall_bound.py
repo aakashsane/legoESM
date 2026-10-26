@@ -42,6 +42,8 @@ def era5_daily(path, dates, mlat, mlon):
     e = xr.open_dataset(path)
     v = next(iter(e.data_vars))
     have = [str(t)[:10] for t in e.time.values]
+    if len(set(have)) != len(have):
+        raise SystemExit(f"FATAL: {path} holds duplicate dates")
     lat = np.asarray(e.lat, float); lon = np.asarray(e.lon, float) % 360.0
     out = []
     for s in dates:
@@ -72,7 +74,11 @@ def main(argv=None):
         mlat = np.asarray(d.lat, float); mlon = np.asarray(d.lon, float) % 360.0
         dates = dates_of(d)
         land = rb._land_mask(run, mlat, mlon)
+        if land is None:
+            raise SystemExit(f"FATAL: {run} published no fx sftlf; land-only scores impossible")
         ym = dates[0][:7]
+        if dates[-1][:7] != ym:
+            raise SystemExit(f"FATAL: {run} day window {dates[0]}..{dates[-1]} spans two months")
         sf = era5_daily(f"{a.era5_dir}/sf_{ym}.nc", dates, mlat, mlon)
         tp = era5_daily(f"{a.era5_dir}/tp_{ym}.nc", dates, mlat, mlon)
         prd = pr * KG_M2_S_TO_MM_PER_DAY

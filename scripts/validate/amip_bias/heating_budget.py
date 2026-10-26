@@ -381,6 +381,10 @@ def rlutcs_replay(fns, state, mesh, sig, forcing, phys_state, rad_int, real_back
     o = {m: run(m) for m in ("base", "dT", "dq", "both")}
     d0 = float(np.abs(o["base"] - prod["cs"][0]).max())
     gate(d0 < 1e-6, f"I1 replay = production clear-sky call (max|d rlutcs| {d0:.1e} W/m2)")
+    # The perturbed calls must not leave the captured state changed: re-solve
+    # the unperturbed call LAST and require it to equal the first one.
+    d1 = float(np.abs(run("base") - o["base"]).max())
+    gate(d1 < 1e-6, f"I2 base re-solved after the arms is unchanged (max|d rlutcs| {d1:.1e} W/m2)")
     g = {m: float((v * w).sum()) for m, v in o.items()}
     print(f"\nall {area.size} columns, captured instant, clear-sky stream of the production solve")
     print(f"  base rlutcs                        {g['base']:8.2f} W/m2")

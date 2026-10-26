@@ -72,6 +72,9 @@ def era5_days(day_dir, dates, mlat, mlon):
     mx, mn, me = [], [], []
     for s in dates:
         e = xr.open_dataset(f"{day_dir}/2t_{s}.nc")
+        want = np.array([np.datetime64(f"{s}T{h:02d}:00") for h in range(24)])
+        if not np.array_equal(e.time.values.astype("datetime64[m]"), want):
+            raise SystemExit(f"FATAL: ERA5 file for {s} does not hold hours 00..23 UTC of that day")
         v = next(iter(e.data_vars))
         lat = np.asarray(e.lat, float); lon = np.asarray(e.lon, float) % 360.0
         arr = np.asarray(e[v], float)
@@ -101,6 +104,11 @@ def main(argv=None):
         mlat = np.asarray(dx.lat, float); mlon = np.asarray(dx.lon, float) % 360.0
         dates = dates_of(dx)
         land = rb._land_mask(run, mlat, mlon)
+        if land is None:
+            raise SystemExit(f"FATAL: {run} published no fx sftlf; land-only scores impossible")
+        if dates[0][:7] != dates[-1][:7]:
+            raise SystemExit(f"FATAL: {run} day window {dates[0]}..{dates[-1]} spans two months; "
+                             "the monthly self-checks would compare different windows")
         for f in (tmax, tmin, tmean):
             if not np.isfinite(f).all():
                 raise SystemExit(f"FATAL: {run} day table has non-finite values")

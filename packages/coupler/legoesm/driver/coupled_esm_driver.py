@@ -3148,7 +3148,8 @@ class CoupledESMDriver:
             # resumed segment's radiation must see the restored box, as the
             # uninterrupted run's did (its override was set at the end of the
             # checkpointed segment).  Callers restore the atmosphere first, so
-            # the mole fraction uses the restored p_s.
+            # the mole fraction uses the restored p_s.  The air-mass sum is an
+            # MPI collective: every rank must call this load (all do today).
             self._update_co2_radiation()
 
         # Restore surface state (land, ice, lake, accumulator, carbon) from its

@@ -254,7 +254,13 @@ hard_sat_ice_curve: false          # the ice-curve blend of that same
                                    # is off, set explicitly so no row rests
                                    # on a default.  User table row 3.
 homogeneous_ice_nucleation: true
-aerosol_ccn: true
+aerosol_ccn: false                 # off with the prognostic droplet number (user
+                                   # decision 2026-10-24): CAM6 MG2 cannot run both.
+morrison_prognostic_droplet_number: true  # CAM6 MG2 prognostic droplet number,
+                                   # activation = CAM6 microp_aero_run on the
+                                   # prescribed PPE-000 MAM4 climatology (user
+                                   # decision 2026-10-24).
+cam6_aerosol_dir: /work/bb1596/b309178/diffESM/legoesm_ap/data/cam6_optics
 energy_consistent_moisture_clip: true
 
 # ---- convection ---------------------------------------------------------------

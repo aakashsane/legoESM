@@ -501,6 +501,11 @@ def _carry_update_with_cloud_fraction(carry_field, carry_val, turb_out):
         updates["cloud_fraction"] = turb_out.cloud_fraction
         if turb_out.relvar is not None:
             updates["relvar"] = turb_out.relvar
+    # CAM6 droplet-activation inputs (prognostic CLUBB only; None otherwise).
+    if turb_out.wp2_iface is not None:
+        updates["clubb_wp2_iface"] = turb_out.wp2_iface
+    if turb_out.Kh_iface is not None:
+        updates["clubb_kh_iface"] = turb_out.Kh_iface
     if carry_field is not None and carry_val is not None:
         updates[carry_field] = carry_val
     return updates

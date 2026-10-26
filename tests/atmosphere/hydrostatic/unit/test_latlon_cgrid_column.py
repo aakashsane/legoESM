@@ -616,3 +616,46 @@ def test_div4_reaches_the_adapter_step_with_the_step_dt(setup):
     half = col2.step(col2.from_bundle(nat), 0.5 * DT).native
     np.testing.assert_array_equal(np.asarray(half.u),
                                   np.asarray(dyn(1.0).step(nat, 0.5 * DT).u))
+
+
+def test_driver_checkpoint_div4_stamp_refuses_a_different_scale(tmp_path):
+    """Checkpoints record the run's div-4 scale; a file without the stamp
+    counts as 0; a resume whose scale differs is refused (user decision
+    2026-10-26), so a pre-stamp checkpoint refuses only a damping-on run."""
+    from legoesm.driver.model_driver import ModelDriver
+
+    def cfg(d, scale, **over):
+        c = _driver_cfg(d, **over)
+        return c._replace(dycore=c.dycore._replace(mpas_div_damp4_scale=scale))
+
+    def written(scale):
+        d = tmp_path / f"w{scale}"
+        d.mkdir()
+        c = cfg(d, scale, days=1)
+        c = c._replace(output=c.output._replace(checkpoint_days=1))
+        drv = ModelDriver(c, output_dir=d)
+        drv.setup()
+        assert drv.run() == "COMPLETED"
+        f = d / "checkpoint_day_0001.npz"
+        with np.load(f) as z:
+            assert float(z["latloncol_div4_scale"]) == scale
+            unstamped = {k: z[k] for k in z.files if k != "latloncol_div4_scale"}
+        old = d / "checkpoint_day_0002.npz"
+        np.savez(old, **unstamped)
+        return f, old
+
+    def resume(f, scale):
+        d = tmp_path / f"r{scale}_{f.parent.name}_{f.stem}"
+        d.mkdir()
+        drv = ModelDriver(cfg(d, scale, days=1), output_dir=d)
+        drv.setup()
+        return drv.load_checkpoint(f)
+
+    off, old = written(0.0)
+    on, _ = written(1.0)
+    assert resume(off, 0.0)[1] == pytest.approx(1.0)
+    assert resume(old, 0.0)[1] == pytest.approx(1.0)   # no stamp == 0
+    assert resume(on, 1.0)[1] == pytest.approx(1.0)
+    for f, scale in ((off, 1.0), (old, 1.0), (on, 0.0)):
+        with pytest.raises(ValueError, match="div-4 damping scale"):
+            resume(f, scale)

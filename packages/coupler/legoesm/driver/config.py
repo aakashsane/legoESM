@@ -1541,6 +1541,7 @@ class ExperimentConfig(NamedTuple):
     # truncated literal would silently perturb the default kernel.
     mcfarlane_k_wave: float = 2.0 * math.pi / 100e3  # McFarlaneConfig.k_wave [1/m]
     mcfarlane_directional_spread: float = 1.0   # McFarlaneConfig.directional_spread
+    mcfarlane_effgw_oro: float = 0.125          # McFarlaneConfig.effgw_oro [1] (#1712)
     # Morrison ice-microphysics tunables (active when microphysics='morrison'
     # — silently filtered out by hasattr when Sundqvist/Kessler is active).
     morrison_bergeron_rate: float = 1e-3        # MorrisonConfig.bergeron_rate [1/s]
@@ -4459,7 +4460,7 @@ class ExperimentConfig(NamedTuple):
         for _f in ("mcfarlane_k_wave", "mcfarlane_directional_spread",
                    "hines_total_rms_wind", "hines_Fmax",
                    "e3sm_cam_taubgnd", "e3sm_cam_c0", "e3sm_cam_launch_p",
-                   "e3sm_cam_effgw"):
+                   "e3sm_cam_effgw", "mcfarlane_effgw_oro"):
             _v = getattr(self, _f)
             if not math.isfinite(_v) or _v <= 0.0:
                 errors.append(
@@ -4544,6 +4545,11 @@ class ExperimentConfig(NamedTuple):
             errors.append(
                 f"e3sm_cam_effgw must be a finite efficiency <= 1.0, "
                 f"got {self.e3sm_cam_effgw!r}"
+            )
+        if self.mcfarlane_effgw_oro > 1.0:
+            errors.append(
+                f"mcfarlane_effgw_oro must be a finite efficiency <= 1.0, "
+                f"got {self.mcfarlane_effgw_oro!r}"
             )
         if not math.isfinite(self.e3sm_cam_taubgnd) or \
                 self.e3sm_cam_taubgnd > 1.0e-2:

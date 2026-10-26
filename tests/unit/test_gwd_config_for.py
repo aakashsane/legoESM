@@ -58,9 +58,11 @@ def test_mcfarlane_scalars_reach_the_leaf():
         gravity_wave_drag="mcfarlane",
         mcfarlane_k_wave=1.0e-4,
         mcfarlane_directional_spread=0.5,
+        mcfarlane_effgw_oro=0.3,
     ))
     assert got.mcfarlane.k_wave == 1.0e-4
     assert got.mcfarlane.directional_spread == 0.5
+    assert got.mcfarlane.effgw_oro == 0.3
 
 
 def test_hines_scalars_reach_the_leaf():
@@ -204,6 +206,9 @@ def test_physics_state_seed_honours_a_nested_override():
     ("hines_Fmax", -0.1),
     ("mcfarlane_k_wave", float("inf")),
     ("mcfarlane_directional_spread", -1.0),
+    ("mcfarlane_effgw_oro", -0.1),
+    ("mcfarlane_effgw_oro", float("nan")),
+    ("mcfarlane_effgw_oro", 1.5),
 ])
 def test_validate_strict_rejects_nonpositive_or_nonfinite(field, bad):
     """A negative Fmax makes clip(drag, 0, Fmax) return the NEGATIVE cap at
@@ -241,3 +246,14 @@ def test_kernel_buildable_for_every_wired_scheme(scheme):
         mcfarlane_directional_spread=0.6)))
     assert fn is not None
     assert name
+
+
+def test_effgw_oro_params_route_reaches_the_leaf():
+    """``atm.gwd.McFarlaneConfig.effgw_oro`` (#1712) is --params-reachable:
+    mapped onto the flat scalar that gwd_config_for overlays."""
+    from legoesm.driver.run_config_yaml import build_atm_scalar_param_map
+
+    amap = build_atm_scalar_param_map()
+    assert amap["atm.gwd.McFarlaneConfig.effgw_oro"] == "mcfarlane_effgw_oro"
+    assert (ExperimentConfig._field_defaults["mcfarlane_effgw_oro"]
+            == GravityWaveDragConfig().mcfarlane.effgw_oro == 0.125)

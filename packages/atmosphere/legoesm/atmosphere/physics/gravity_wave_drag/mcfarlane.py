@@ -17,7 +17,7 @@ Algorithm (k = 0 model top; interface k sits above midpoint k)
    pressure is the arithmetic interface mean (CAM ``Coords1D(pint)``).
 2. Land scaling (``gw_lndscl_sgh``): ``effgw = effgw_oro*landfrac`` and
    ``sgh/sqrt(landfrac)`` where ``landfrac >= epsilon(1._r8)``, both zero
-   elsewhere (``effgw_oro = 0.125``).
+   elsewhere (``McFarlaneConfig.effgw_oro``, default 0.125).
 3. ``gw_oro_src``: displacement ``hdsp = 2*sgh``; dp-weighted source averages
    of ``rho = pmid/(R_d*T)``, ``u``, ``v``, ``nm`` over every midpoint the
    mountain penetrates (full column, shared ``depth_averaged_oro_source``);
@@ -139,7 +139,6 @@ __physics_contract__ = {
 }
 
 # --- CAM6 fixed gravity-wave parameters (ESCOMP/CAM cam_cesm2_1_rel_60) ---
-_EFFGW_ORO = 0.125        # namelist_defaults_cam.xml effgw_oro (non-WACCM L32) [1]
 _N2MIN = 5.0e-5           # gw_common.F90 gw_prof n2min [1/s^2]
 _OROHMIN_M = 10.0         # gw_oro.F90 orohmin: minimum displacement [m]
 _TAUMIN_PA = 1.0e-10      # gw_common.F90 taumin [Pa]
@@ -300,11 +299,11 @@ def mcfarlane_gwd(
     else:
         sgh = jnp.clip(jnp.asarray(h_topo_col), 0.0, None).astype(u.dtype)
     if land_frac_col is None:
-        effgw = jnp.full((ncol,), _EFFGW_ORO, dtype=u.dtype)
+        effgw = jnp.full((ncol,), config.effgw_oro, dtype=u.dtype)
     else:
         lf = jnp.asarray(land_frac_col).astype(u.dtype)
         on_land = lf >= _LANDFRAC_MIN
-        effgw = jnp.where(on_land, _EFFGW_ORO * lf, 0.0)
+        effgw = jnp.where(on_land, config.effgw_oro * lf, 0.0)
         sgh = jnp.where(on_land, sgh / jnp.sqrt(jnp.where(on_land, lf, 1.0)), 0.0)
     # ``is True``: flag already resolved above.
     hdsp = sgh * (2.0 if config.use_e3sm_hdsp is True else 1.0)

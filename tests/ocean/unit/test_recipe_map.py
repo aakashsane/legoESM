@@ -89,22 +89,21 @@ def test_tags_match_actual_assembled_dycore():
     eos_linear_runners = {"eady_uniform", "eady_instability", "held_larichev",
                           "global_overturning"}
 
-    # Experiments whose runner does not build its dycore through the generic
-    # setup below, so the fingerprint would certify a config that never runs.
-    fingerprint_exempt = {
-        "inertia_gravity_wave_channel": (
-            "channel runner forces implicit_cn barotropic solver; generic "
-            "fingerprint setup is not what runs"),
-    }
-
     def fingerprint(cfg):
+        # Grouped lat-lon configs (#501) nest barotropic_solver in a
+        # sub-config, so plain getattr misses it; read flat names.
+        get = getattr(cfg, "flat_get", None)
+        if get is not None:
+            return {f: get(f) for f in _SCHEME}
         return {f: getattr(cfg, f, None) for f in _SCHEME if hasattr(cfg, f)}
 
     for name, v in AVAILABLE_EXPERIMENTS.items():
-        if name in fingerprint_exempt:
-            continue
         cfg = v["config_class"]()
-        if "create_model_config" in v:
+        if name == "inertia_gravity_wave_channel":
+            # Runner builds its own dycore, not the generic setup (#2114).
+            from run_ocean_test_matrix import igw_channel_model_config
+            mc = igw_channel_model_config()
+        elif "create_model_config" in v:
             mc = v["create_model_config"](cfg)
         elif name == "dino":
             from legoesm.grids.latlon import create_mercator_grid

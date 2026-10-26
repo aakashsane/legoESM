@@ -28,7 +28,7 @@ EXPERIMENT_RECIPES: dict[str, str] = {
     # NEMO-style dycore — the benchmark must measure the production step.
     "bench": "legoesm_nemo_like_v1",
     # IGW channel runner builds the default config + barotropic_solver=
-    # implicit_cn (wave-speed gate). Fingerprint-exempt in test_recipe_map (#2114).
+    # implicit_cn (wave-speed gate; igw_channel_model_config, #2114).
     "inertia_gravity_wave_channel": "default_wright_implicit_cn_v1",
     # --- legoESM default dycore, linear EOS (runner injects eos_linear) ---
     "global_overturning": "legoesm_linear_v1",

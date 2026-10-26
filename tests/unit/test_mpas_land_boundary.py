@@ -1027,6 +1027,13 @@ def test_ocean_surface_auto_resolved_into_driver_config(kw, want):
     assert d._input_config.ocean_flux_on_ocean_surface is want
 
 
+def test_ocean_surface_truthy_non_bool_is_still_validated():
+    """A truthy non-boolean (a YAML-quoted "true") is checked like True."""
+    with pytest.raises(ValueError, match="radiation='none'"):
+        _eligible_cfg(radiation="none",
+                      ocean_flux_on_ocean_surface="true").validate_strict()
+
+
 def test_ocean_surface_flag_refused_off_the_mpas_lane():
     with pytest.raises(ValueError, match="not the MPAS lane"):
         _cdgrid_cfg(ocean_flux_on_ocean_surface=True).validate_strict()

@@ -4731,7 +4731,8 @@ class ExperimentConfig(NamedTuple):
                     "See docs/user-guide/climateeval_evaluation.md."
                 )
 
-        if self.ocean_flux_on_ocean_surface is True:
+        # Truthy, not ``is True``: a loader-kept string "true" is checked too.
+        if self.ocean_flux_on_ocean_surface:
             _ok, _why = ocean_flux_surface_eligibility(self)
             if not _ok:
                 errors.append(

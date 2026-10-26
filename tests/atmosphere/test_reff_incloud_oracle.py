@@ -111,8 +111,8 @@ def test_dead_number_reff_ignores_deep_convective_cover(z):
     assert donor not in cols
     mf[cols] = mf[donor]
     kw["conv_mass_flux_up"] = jnp.asarray(mf)
-    kw["conv_icwmr"] = jnp.asarray(np.broadcast_to(
-        np.asarray(z["conv_icwmr"])[donor], mf.shape).copy())
+    icw = np.asarray(z["conv_icwmr"])
+    kw["conv_icwmr"] = jnp.asarray(np.broadcast_to(icw[donor], icw.shape).copy())
     props = compute_cloud_properties(**kw, n_cloud_in_cloud=True,
                                      clubb_config=CLUBBConfig())
     cover = np.asarray(props.cloud_fraction)

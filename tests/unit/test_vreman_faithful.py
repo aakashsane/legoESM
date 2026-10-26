@@ -221,10 +221,9 @@ def test_gradient_finite_at_rest_and_matches_fd():
 
 
 def test_kink_subgradient_is_zero_not_one_sided_derivative():
-    # DEPARTURE #1 honesty: at the Bβ=0 kink the double-where returns a finite
-    # SUBGRADIENT (0), NOT the classical derivative (which does not exist). With
-    # A=diag(1,t,0) (Δ=1), ν_t(t) = c·|t|/√(1+t²): the one-sided slopes are ∓c at
-    # t=0 but AD returns 0 — a valid subgradient (0 ∈ [-c,c]), AD-safe, no NaN.
+    # With A=diag(1,t,0) (Δ=1), the raw closed form is ν_t(t) = c·|t|/√(1+t²)
+    # (one-sided slopes ∓c at t=0); the author's zero-guard makes ν_t ≡ 0 for
+    # |t| < 1e-6, so AD returns 0 there — finite, no NaN.
     c = 0.07
 
     def nu_of_t(t):
@@ -232,13 +231,14 @@ def test_kink_subgradient_is_zero_not_one_sided_derivative():
                            1.0, 1.0, 1.0, c)
 
     g0 = float(jax.grad(nu_of_t)(jnp.asarray(0.0)))
-    assert math.isfinite(g0) and g0 == 0.0            # subgradient, not ±c
-    # the TRUE one-sided slopes are ±c, which AD deliberately does NOT return
-    # (h = 1e-3 keeps Bβ = h² well above the author's 1e-12 zero-guard):
+    assert math.isfinite(g0) and g0 == 0.0            # guarded side, not ±c
+    # With the author's zero-guard ν_t ≡ 0 for |t| < 1e-6 (Bβ = t² < 1e-12), so
+    # AD's 0 is the true local derivative; OUTSIDE that interval the secant
+    # slopes are ±c (h = 1e-3 keeps Bβ = h² well above the guard):
     h = 1e-3
     n0 = float(nu_of_t(jnp.asarray(0.0)))
     right = (float(nu_of_t(jnp.asarray(h))) - n0) / h
     left = (n0 - float(nu_of_t(jnp.asarray(-h)))) / h
     assert right == pytest.approx(c, abs=1e-4)         # +c
     assert left == pytest.approx(-c, abs=1e-4)         # -c
-    assert abs(g0 - right) > 0.06 and abs(g0 - left) > 0.06   # AD ≠ one-sided
+    assert abs(g0 - right) > 0.06 and abs(g0 - left) > 0.06   # AD ≠ secant

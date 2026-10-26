@@ -452,13 +452,37 @@ def _ledger_level_weight(config, sigma):
     return sigma_band_weight(sigma.sigma_half, float(band[0]), float(band[1]))
 
 
+def _auto_ice_skin(cfg):
+    from legoesm.driver.config import resolve_ice_skin_prognostic
+    return resolve_ice_skin_prognostic(
+        cfg._replace(ice_skin_prognostic=None))[0]
+
+
+def _auto_sea_ice_albedo(cfg):
+    from legoesm.driver.config import resolve_sea_ice_albedo_scheme
+    return resolve_sea_ice_albedo_scheme(
+        cfg._replace(sea_ice_albedo_scheme="auto"))
+
+
+# AUTO-default fields (user decision 2026-10-26): ModelDriver.setup
+# replaces the AUTO default by its resolved value before this wall runs,
+# so each is accepted at its default OR at exactly what AUTO resolves to
+# in this config (the closed lane: skin off, constant albedo).  Any other
+# value is still refused.  Path -> fn(config) -> resolved AUTO value.
+_FV3_DUO_AUTO_RESOLVED = {
+    "ice_skin_prognostic": _auto_ice_skin,
+    "sea_ice_albedo_scheme": _auto_sea_ice_albedo,
+}
+
+
 def _refuse_fv3_duo_non_default(config: ExperimentConfig) -> None:
     """Refuse EVERY non-default, non-allow-listed field, all at once.
 
     Diffs the incoming config field-by-field against a freshly
     constructed default instance and raises ONE error naming every
     offending path and value, so a mis-built launch script is fixed in
-    one round-trip instead of field-by-field.
+    one round-trip instead of field-by-field.  An AUTO-default field
+    (``_FV3_DUO_AUTO_RESOLVED``) also passes at its resolved value.
     """
     defaults = dict(_flatten_config_fields(type(config)()))
     offending = [
@@ -466,6 +490,8 @@ def _refuse_fv3_duo_non_default(config: ExperimentConfig) -> None:
         for path, val in _flatten_config_fields(config)
         if path not in _FV3_DUO_ALLOWED_NONDEFAULT
         and not (val == defaults[path])
+        and not (path in _FV3_DUO_AUTO_RESOLVED
+                 and val == _FV3_DUO_AUTO_RESOLVED[path](config))
     ]
     if offending:
         listing = ", ".join(f"{p}={v!r}" for p, v in offending)

@@ -550,7 +550,8 @@ class TestCarbonRadiationCoupling(unittest.TestCase):
 
         g = np.asarray(jax.grad(mass_after)(flux))
         area = np.asarray(driver._atm.grid.grid_area, np.float64)
-        np.testing.assert_allclose(g, area * dt, rtol=1e-12)
+        # float32 cotangent (flux dtype): same 1e-6 as the earlier grad check.
+        np.testing.assert_allclose(g, area * dt, rtol=1e-6)
         # MPAS-style halo: non-owned cells hold NaN; they must not reach the
         # value or the gradient.
         own = np.ones(p_s.shape, bool)

@@ -213,3 +213,28 @@ def test_cam_table_clamp_default_gradients(T):
     jax.config.update("jax_enable_x64", True)
     check_grads(lambda t: saturation_specific_humidity_cam_table(t, jnp.float64(1.0e6)),
                 (jnp.float64(T),), order=2, modes=("rev",), eps=1e-4)
+
+
+def test_cam_table_is_built_in_fp64_then_cast():
+    """Follow-up row 4: CAM builds estbl in r8 (wv_saturation.F90:226); an
+    fp32 run reads that table cast once, not a table evaluated in fp32.  The
+    first build happens inside a jit trace, under fp32."""
+    import numpy as np
+
+    from legoesm import thermo
+    thermo._cam_svp_table_fp64.cache_clear()
+    with jax.enable_x64(False):
+        q32 = jax.jit(lambda t: thermo.saturation_specific_humidity_cam_table(
+            t, jnp.float32(8.0e4)))(jnp.float32(250.0))
+        t32 = np.asarray(thermo.cam_svp_table(jnp.float32))
+        direct32 = np.asarray(thermo.saturation_vapor_pressure_trans(
+            127.16 + jnp.arange(t32.size, dtype=jnp.float32)))
+    with jax.enable_x64(True):
+        t64 = np.asarray(thermo.cam_svp_table(jnp.float64))
+        direct64 = np.asarray(thermo.saturation_vapor_pressure_trans(
+            127.16 + jnp.arange(t64.size, dtype=jnp.float64)))
+    assert q32.dtype == jnp.float32 and np.isfinite(q32)
+    assert t32.dtype == np.float32 and t64.dtype == np.float64
+    np.testing.assert_array_equal(t64, direct64)
+    np.testing.assert_array_equal(t32, t64.astype(np.float32))
+    assert np.any(direct32 != t32)  # the fp32-evaluated table differs

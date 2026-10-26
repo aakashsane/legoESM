@@ -68,7 +68,7 @@ def test_a_handful_of_recipes_cover_the_matrix():
     used = set(EXPERIMENT_RECIPES.values())
     assert used == {"default_wright_v1", "legoesm_linear_v1",
                     "eady_weno5_v1", "nemo_dino_v1",
-                    "legoesm_nemo_like_v1"}
+                    "legoesm_nemo_like_v1", "default_wright_implicit_cn_v1"}
 
 
 @pytest.mark.slow

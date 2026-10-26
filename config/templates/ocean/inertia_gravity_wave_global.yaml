@@ -14,7 +14,8 @@ experiment:
     Inertia-gravity (Poincaré) wave propagation: a barotropic-equivalent
     shallow-water benchmark of the C-grid IGW dispersion relation and the
     Coriolis / free-surface pressure-gradient coupling. A low-tier dynamical
-    sanity setup.
+    sanity setup. On the sphere the constant-f0 wave is not an eigenmode, so
+    no wave-speed gate is constructible here (#2114).
   data: []
   conservation_gates: [volume]
 model:

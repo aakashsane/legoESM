@@ -87,14 +87,18 @@ def test_matches_gfortran_oracle(k):
     np.testing.assert_array_equal(np.asarray(got)[:, :top_lev - 1], 0.0)
 
 
-def test_nan_beyond_static_substep_bound_and_grad_finite():
+def test_raises_beyond_static_substep_bound_and_grad_finite():
+    """A column needing more mixing sub-steps than the bound raises, eager and
+    under jit (user decision 2026-10-26: a clear error, not a silent NaN)."""
     _, top_lev, props, cases = _parse()
     dt, cols = cases[0]
     T, pmid, pdel, zm, pint, nc, wsub, cldn, cldo, liq, kvh, aer_num, aer_mass = _arrays(cols)
     args = (T, pmid, pint, 1.0 / pdel, zm, kvh, wsub, cldn, cldo, liq, dt, aer_num, aer_mass, props,
             top_lev - 1)
-    out = cam6_dropmixnuc(nc, *args, 1)                 # bound too small for these columns
-    assert np.isnan(np.asarray(out)[:, top_lev - 1:]).all(axis=1).any()
+    small = lambda x: cam6_dropmixnuc(x, *args, 1)     # bound too small for these columns
+    for call in (small, jax.jit(small)):
+        with pytest.raises(Exception, match="mixing sub-steps than the bound n_max=1"):
+            np.asarray(call(nc))
     n_max = nsubmix_upper_bound(T, pmid, pint, 1.0 / pdel, zm, dt, top_lev - 1)
     g = jax.grad(lambda x: jnp.sum(cam6_dropmixnuc(x, *args, n_max)))(nc)
     assert np.all(np.isfinite(np.asarray(g)))

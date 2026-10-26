@@ -11,9 +11,12 @@ interstitial aerosol from the state (``loadaer`` phase 1); the supplied
 cloud-borne aerosol is zero (user decision 2026-10-16).
 
 Mixing substeps: CAM's ``nsubmix = int(dtmicro/(0.9 dtmin)) + 1`` (:940-950) has no
-cap.  JAX needs a static scan length ``n_max``, computed once at start-up by
-:func:`nsubmix_upper_bound` (user decision B10); a column needing more substeps
-returns NaN.
+cap.  JAX needs a static scan length ``n_max``, computed by
+:func:`nsubmix_upper_bound` from the state the run starts from -- the start-up
+state, or the restart state on a restart (user decisions B10, 2026-10-26).  A
+column needing more substeps raises (``equinox.error_if``, the Morrison strict
+sub-step gate's pattern) and its tendency is NaN (the poison that keeps the
+failure visible under ``jit(grad)``, where the check is not run).
 
 Arrays are top-first, ``(ncol, nlev)`` on layers and ``(ncol, nlev+1)`` on
 interfaces; aerosol inputs carry a leading mode axis.
@@ -21,6 +24,7 @@ interfaces; aerosol inputs carry a leading mode axis.
 
 from __future__ import annotations
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 
@@ -39,7 +43,7 @@ __physics_contract__ = {
         "aer_num": "1/kg (per mode)", "aer_mass": "kg/kg (per mode, per species)",
     },
     "outputs": {"tendnd": "1/kg/s (droplet-number tendency handed to the microphysics)"},
-    "sign_convention": "tendnd > 0 = droplet source; qcld kept >= 0 by explmix; NaN where nsubmix > n_max",
+    "sign_convention": "tendnd > 0 = droplet source; qcld kept >= 0 by explmix; raises (NaN poison) where nsubmix > n_max",
     "conserves": ["none"],
     "differentiable": True,
     "reference": "CAM6 ndrop.F90 dropmixnuc/explmix (Abdul-Razzak & Ghan 2000; Ghan et al. 1997)",
@@ -251,7 +255,13 @@ def cam6_dropmixnuc(ncldwtr, temp, pmid, pint, rpdel, zm, kvh, wsub, cldn, cldo,
     (qcld, R, C), _ = jax.lax.scan(substep, (qcld, R, C), jnp.arange(n_max, dtype=temp.dtype))
     qcld = jnp.where(cldn == 0.0, 0.0, qcld)
     tendnd = (jnp.maximum(qcld, _QCLD_FLOOR) - ncldwtr) * dtinv
-    tendnd = jnp.where((nsubmix > n_max)[:, None], jnp.nan, tendnd)
+    over = nsubmix > n_max
+    tendnd = eqx.error_if(
+        jnp.where(over[:, None], jnp.nan, tendnd), jnp.any(over),
+        f"CAM6 dropmixnuc: a column needs more turbulent-mixing sub-steps than the "
+        f"bound n_max={n_max} computed from the state this run started from; restart "
+        f"from the latest checkpoint (the bound is recomputed on the restart state) "
+        f"or shorten the microphysics sub-step")
     pad = jnp.zeros((tendnd.shape[0], top_lev), dtype=tendnd.dtype)
     return jnp.concatenate([pad, tendnd], axis=1)[:, :nlev_full]
 

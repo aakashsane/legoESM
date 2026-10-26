@@ -19,15 +19,16 @@ Fortran, http://www.vremanresearch.nl/Vreman_Subgridmodel_Fortran.txt —
 ``if (bbeta.lt.1d-12) eddyv=0``; the threshold is DIMENSIONAL (Bβ in m⁴/s⁴) and
 is ported unchanged.  The author's comment
 ``in case of single precision (real*4): "if (bbeta.lt.1d-6) then"`` is NOT
-ported: the guard is 1e-12 at every precision (open question).  ``ν_floor`` is an optional legoESM additive background
-viscosity, default 0, with no counterpart in the oracle.)
+ported: the guard is 1e-12 at every precision (open question).  ``ν_floor``
+is an optional legoESM additive background viscosity, default 0, with no
+counterpart in the oracle.)
 
 with ``c ≈ 2.5 C_s²`` (≈0.07 for C_s=0.17). ν_t ≥ ν_floor ≥ 0 by construction
 (for c ≥ 0). Key properties FOR c>0 AND filter widths Δ_m>0: ν_t = ν_floor
 (→ 0 only when ν_floor=0) when the resolved velocity-gradient tensor has
-rank ≤ 1 (Bβ=0 ⟺ rank a ≤ 1), and also at quiescent points with
-0 < Bβ < 1e-12 (the author's guard) — i.e. rest (rank 0) or all gradients aligned with
-a single spatial direction (rank 1), e.g. a laminar 1-D shear ∂u/∂z; a genuine
+rank ≤ 1 (Bβ=0 ⟺ rank a ≤ 1) — i.e. rest (rank 0) or all gradients aligned with
+a single spatial direction (rank 1), e.g. a laminar 1-D shear ∂u/∂z — and also
+at quiescent points with 0 < Bβ < 1e-12 (the author's guard); a genuine
 3-D strain OR a merely rank-2 "two-dimensional" flow such as diag(∂u/∂x,∂v/∂y,0)
 gives ν_t > ν_floor, so this is a rank ≤ 1 property, NOT a generic 2-D one. The
 PER-DIRECTION filter widths Δx,Δy,Δz make it well-behaved on ANISOTROPIC grids
@@ -70,9 +71,12 @@ __physics_contract__ = {
         "gives nu_t > nu_floor."
     ),
     "conserves": ["none"],
-    # AD-safe (finite grad, no NaN) everywhere: the Bbeta < 1e-12 zero-guard is
-    # a hard switch (double-where), so the gradient is 0 on the guarded side and
-    # the forward value jumps from 0 to c*sqrt(1e-12/aa) across the threshold.
+    # AD-safe at rest and at rank <= 1 / quiescent points: the Bbeta < 1e-12
+    # zero-guard is a hard switch (double-where), so the gradient is 0 on the
+    # guarded side and the forward value jumps from 0 to c*sqrt(1e-12/aa)
+    # across the threshold.  NOT finite for unphysical scale combinations where
+    # aa**2 underflows while Bbeta >= 1e-12 (e.g. fp32 |a| ~ 1e-11 1/s with
+    # widths ~ 1e8 m): the reverse divide then gives inf/NaN.
     "differentiable": True,
     "reference": "Vreman (2004), Phys. Fluids 16, 3670, doi:10.1063/1.1785131",
     "idealized_test": (

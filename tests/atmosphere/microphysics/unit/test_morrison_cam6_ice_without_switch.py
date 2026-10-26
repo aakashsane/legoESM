@@ -112,7 +112,10 @@ def test_gradient_through_cam_ice_without_switch():
 
 
 @pytest.mark.parametrize("override", [
-    dict(morrison_flavor="sam", ice_to_snow_scheme="m2005_autoconv"),
+    # liquid_from_closure off: with it on (the deck's value) main's sam-flavour
+    # satadj guard refuses first, so the CAM6 refusal below would be unreached
+    dict(morrison_flavor="sam", ice_to_snow_scheme="m2005_autoconv",
+         liquid_from_closure=False),
     dict(wbf_scheme="bergeron_heuristic"),
     dict(ice_deposition_scheme="heuristic"),
 ])

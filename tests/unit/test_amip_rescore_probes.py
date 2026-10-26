@@ -43,6 +43,7 @@ def test_dates_of_reads_noleap_units():
     d = xr.Dataset(coords={"time": ("time", [0.5, 29.5, 181.5, 210.5],
                                     {"units": "days since 1979-01-01"})})
     assert dn.dates_of(d) == ["1979-01-01", "1979-01-30", "1979-07-01", "1979-07-30"]
+    assert dn.next_date("1979-01-31") == "1979-02-01"
 
 
 def test_launch_argv_accepts_direct_run_line(tmp_path, monkeypatch):

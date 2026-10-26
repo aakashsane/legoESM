@@ -6,7 +6,9 @@ extremes are taken over HOURLY samples of tas that were first regridded to the
 CMOR 5-degree grid (``feed_daily_extremes_native`` -> ``add_extremes_2d``).
 
 ERA5: hourly 2 m temperature (param 167) of the SAME days, from the Levante
-pool, staged to regular-Gaussian netCDF by cdo (one file per day, 24 hours).
+pool, staged to regular-Gaussian netCDF by cdo (one file per day, 24 hours),
+taken at 01:00 .. 24:00 UTC of each day as the model samples it (see
+``era5_days``).
 Each hour is binned onto the model grid with ``regional_bias.bin_to_model``
 FIRST and the daily max / min / mean are taken AFTERWARDS, so both sides use
 the same order of operations (max of box means, hourly sampling).  ClimateEval
@@ -68,13 +70,24 @@ def dates_of(d):
     return out
 
 
+def next_date(s):
+    return str(np.datetime64(s) + np.timedelta64(1, "D"))
+
+
 def era5_days(day_dir, dates, mlat, mlon):
+    """ERA5 hourly 2t of each model day, as the MODEL samples it: the model
+    records the state at the END of each hour (01:00 .. 24:00 UTC) and files
+    it under the hour it covers (``model_driver``: ``sample_bin =
+    (floor(day*24) - 0.5)/24``), so a model day is 01:00 of that day through
+    00:00 of the next.  Needs the file of the day after the window too."""
     mx, mn, me = [], [], []
     for s in dates:
-        e = xr.open_dataset(f"{day_dir}/2t_{s}.nc")
-        want = np.array([np.datetime64(f"{s}T{h:02d}:00") for h in range(24)])
-        if not np.array_equal(e.time.values.astype("datetime64[m]"), want):
-            raise SystemExit(f"FATAL: ERA5 file for {s} does not hold hours 00..23 UTC of that day")
+        a = xr.open_dataset(f"{day_dir}/2t_{s}.nc")
+        b = xr.open_dataset(f"{day_dir}/2t_{next_date(s)}.nc")
+        e = xr.concat([a.isel(time=slice(1, 24)), b.isel(time=slice(0, 1))], dim="time")
+        want = np.array([np.datetime64(f"{s}T00:00") + np.timedelta64(h, "h") for h in range(1, 25)])
+        if not np.array_equal(e.time.values.astype("datetime64[m]"), want.astype("datetime64[m]")):
+            raise SystemExit(f"FATAL: ERA5 hours for model day {s} are not 01:00 {s} .. 00:00 next day")
         v = next(iter(e.data_vars))
         lat = np.asarray(e.lat, float); lon = np.asarray(e.lon, float) % 360.0
         arr = np.asarray(e[v], float)
@@ -82,10 +95,10 @@ def era5_days(day_dir, dates, mlat, mlon):
             arr = arr[:, 0]
         if lat[0] > lat[-1]:
             lat = lat[::-1]; arr = arr[:, ::-1]
-        binned = np.stack([rb.bin_to_model(a, lat, lon, mlat, mlon, label=f"ERA5 2t {s}")
-                           for a in arr])
-        a, b, c = daily_stats(binned)
-        mx.append(a); mn.append(b); me.append(c)
+        binned = np.stack([rb.bin_to_model(x, lat, lon, mlat, mlon, label=f"ERA5 2t {s}")
+                           for x in arr])
+        a_, b_, c_ = daily_stats(binned)
+        mx.append(a_); mn.append(b_); me.append(c_)
     return np.stack(mx), np.stack(mn), np.stack(me)
 
 

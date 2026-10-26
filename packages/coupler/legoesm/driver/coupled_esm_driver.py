@@ -1391,7 +1391,7 @@ class CoupledESMDriver:
             return
 
         # CO2 as ONE global well-mixed box (#1817, user decision 2026-10-26):
-        # a single scalar dry-air CO2 MOLE FRACTION [mol/mol], the unit the
+        # a single scalar CO2 MOLE FRACTION [mol/mol], the unit the
         # radiation override consumes.  No vertical/horizontal structure.
         # float64: an hourly increment is ~1e-6 of the box, below what a
         # float32 scalar can accumulate without percent-level flux loss.
@@ -2466,7 +2466,8 @@ class CoupledESMDriver:
         Sign convention: ``co2_flux`` [kgCO2/m2/s] is POSITIVE INTO THE
         ATMOSPHERE (upward), so a positive flux raises the box.
         d(CO2 mass) [kg] = sum(F * A) * dt; the box CO2 mass is
-        vmr * (M_CO2/M_air) * M_air_total with M_air_total = sum(dp * A) / g.
+        vmr * (M_CO2/M_air) * M_air_total with M_air_total = sum(dp * A) / g
+        (total, i.e. moist, air mass from p_s, as the retired tracer used).
         """
         dp_col = jnp.sum(self._atm.sigma.layer_thickness_dp(p_s), axis=-1)
         air_mass = self._owned_area_sum(dp_col) / constants.g       # [kg]

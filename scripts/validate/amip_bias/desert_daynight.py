@@ -112,10 +112,14 @@ def main(argv=None):
     res = {}
     for run in a.runs:
         dx, tmax = model_day(run, "tasmax")
-        _, tmin = model_day(run, "tasmin")
-        _, tmean = model_day(run, "tas")
+        dn, tmin = model_day(run, "tasmin")
+        dm, tmean = model_day(run, "tas")
         mlat = np.asarray(dx.lat, float); mlon = np.asarray(dx.lon, float) % 360.0
         dates = dates_of(dx)
+        if dates_of(dn) != dates or dates_of(dm) != dates:
+            raise SystemExit(f"FATAL: {run} tasmax / tasmin / tas day tables cover different dates")
+        if len(set(dates)) != len(dates):
+            raise SystemExit(f"FATAL: {run} day table repeats a date")
         land = rb._land_mask(run, mlat, mlon)
         if land is None:
             raise SystemExit(f"FATAL: {run} published no fx sftlf; land-only scores impossible")

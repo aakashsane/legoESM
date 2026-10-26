@@ -73,6 +73,8 @@ def main(argv=None):
         d, pr = model_day(run, "pr")
         mlat = np.asarray(d.lat, float); mlon = np.asarray(d.lon, float) % 360.0
         dates = dates_of(d)
+        if len(set(dates)) != len(dates):
+            raise SystemExit(f"FATAL: {run} day table repeats a date")
         land = rb._land_mask(run, mlat, mlon)
         if land is None:
             raise SystemExit(f"FATAL: {run} published no fx sftlf; land-only scores impossible")

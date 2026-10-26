@@ -1879,15 +1879,13 @@ def main(argv=None, *, build_only=False):
     # configs the driver resolved there (config.resolved_physics), with every
     # config this driver was built from.  The atmosphere's own manifest,
     # written by its ModelDriver in setup, sits at the output root.  A failed
-    # write (or a reproduce / continuation refusal) aborts the run.
+    # write (or a reproduce / continuation refusal) aborts the run.  The
+    # atmosphere entry is the atmosphere's own resolved snapshot (the config
+    # its manifest records), so "auto" settings appear as the values setup
+    # resolved them to.
     coupled_manifest = write_run_manifest_on_root(
         driver.output_dir / "coupled",
-        # The atmosphere record carries the boolean setup resolved for the
-        # ocean_flux_on_ocean_surface AUTO, as the atmosphere's own manifest
-        # does (#1320), so the two records agree.
-        {"runner": "run_coupled", "atmosphere": atm_config._replace(
-            ocean_flux_on_ocean_surface=(
-                driver._atm._input_config.ocean_flux_on_ocean_surface)),
+        {"runner": "run_coupled", "atmosphere": driver._atm._input_config,
          "coupled": coupled_cfg, "coupler": coupler_config,
          "sea_ice": ice_config, "lake": lake_config, "cli_args": vars(args)},
         config_kind="coupled",

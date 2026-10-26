@@ -85,9 +85,9 @@ __physics_contract__ = {
     "idealized_test": (
         "tests/atmosphere/test_amd_oracle.py (AMR-Wind amd_muvel, run); "
         "tests/unit/test_amd_sgs.py + test_amd_faithful.py (all inequalities for "
-        "c_amd >= 0): a pure off-diagonal 1-D shear gives nu_t = nu_floor; nu_t "
-        ">= nu_floor (>= 0 when nu_floor >= 0, never negative); a 3-D field gives "
-        "nu_t > nu_floor; differentiable at rest (arg=0)."
+        "c_amd >= 0): a pure off-diagonal 1-D shear gives nu_t = nu_floor + "
+        "10 eps; nu_t >= nu_floor + 10 eps (never negative when nu_floor >= 0); "
+        "a 3-D field gives nu_t > nu_floor; differentiable at rest (aa=0)."
     ),
 }
 

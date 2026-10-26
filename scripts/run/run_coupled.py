@@ -1882,7 +1882,12 @@ def main(argv=None, *, build_only=False):
     # write (or a reproduce / continuation refusal) aborts the run.
     coupled_manifest = write_run_manifest_on_root(
         driver.output_dir / "coupled",
-        {"runner": "run_coupled", "atmosphere": atm_config,
+        # The atmosphere record carries the boolean setup resolved for the
+        # ocean_flux_on_ocean_surface AUTO, as the atmosphere's own manifest
+        # does (#1320), so the two records agree.
+        {"runner": "run_coupled", "atmosphere": atm_config._replace(
+            ocean_flux_on_ocean_surface=(
+                driver._atm._input_config.ocean_flux_on_ocean_surface)),
          "coupled": coupled_cfg, "coupler": coupler_config,
          "sea_ice": ice_config, "lake": lake_config, "cli_args": vars(args)},
         config_kind="coupled",

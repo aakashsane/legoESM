@@ -140,10 +140,13 @@ def _manifest_summary(snapshot_path):
     dirty tree") live in the run manifest, and a scorecard that only records
     the snapshot PATH loses them the moment the directory is renamed.
 
-    TWO LAYOUTS.  The canonical writer -- which the tripole/MPAS lanes and,
-    since #2102, the FESOM lanes use -- is NESTED: the command line is
-    ``run.command_line``, the dirty flag is under ``reproducibility``, and the
-    commit is ``legoESM.commit``.  FESOM manifests written BEFORE #2102 are
+    THREE LAYOUTS.  The canonical writer -- which the OMIP drivers' tripole/
+    MPAS lanes and, since #2102, their FESOM lanes use -- is NESTED: the
+    command line is ``run.command_line``, the dirty flag is under
+    ``reproducibility``, and the commit is ``legoESM.commit``.  The
+    standalone fesom_jax oracle runner hand-writes its own nested manifest:
+    same ``run.command_line``, but the SHA is ``reproducibility.git_sha`` and
+    there is no dirty flag.  OMIP FESOM manifests written BEFORE #2102 are
     FLAT: the command line is ``argv`` and the SHA is top-level ``git_sha``.
     Reading only the nested one returned all-None for every such old FESOM
     arm (measured 2026-09-16) --

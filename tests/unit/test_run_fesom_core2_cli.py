@@ -194,7 +194,9 @@ def test_manifest_goes_through_the_canonical_writer(tmp_path):
     config keys, and hashes the fesom_jax install path."""
     import json
 
-    import fesom_jax  # noqa: F401 -- the helper reads its install path
+    import pytest
+
+    fesom_jax = pytest.importorskip("fesom_jax")  # the helper reads its path
 
     from legoesm.driver.restart import validate_run_manifest
 
@@ -230,7 +232,11 @@ def test_main_records_the_final_state_digest(tmp_path, monkeypatch):
     from typing import NamedTuple
 
     import jax.numpy as jnp
+    import pytest
 
+    from legoesm.driver.restart import pytree_state_digest
+
+    pytest.importorskip("fesom_jax")
     import fesom_jax.integrate  # noqa: F401
     import fesom_jax.mesh
     import fesom_jax.phc_ic
@@ -253,8 +259,9 @@ def test_main_records_the_final_state_digest(tmp_path, monkeypatch):
                         lambda mesh, dt: None)
     # The installed fesom_jax may predate the TKE flags main() passes.
     monkeypatch.setattr(fesom_jax.tke, "TkeConfig", lambda **kw: kw)
+    # Each step adds 1, so the digest must be of the state AFTER the loop.
     monkeypatch.setattr(fesom_jax.step, "step",
-                        lambda state, *a, **kw: state)
+                        lambda state, *a, **kw: state._replace(T=state.T + 1.0))
     forcing = types.SimpleNamespace(
         static=None, stack=lambda dates: jnp.zeros((len(dates), 1)))
     monkeypatch.setattr(surface_forcing, "build_surface_forcing",
@@ -267,4 +274,6 @@ def test_main_records_the_final_state_digest(tmp_path, monkeypatch):
         "--days", "1", "--dt", "43200", "--output", str(tmp_path)])
     assert m.main() == 0
     man = json.loads((tmp_path / "run_manifest.json").read_text())
-    assert man["result"]["state_digest"]
+    # --days 1 at dt=43200 s is 2 steps: T goes 1 -> 3.
+    assert man["result"]["state_digest"] == pytree_state_digest(
+        _State(T=jnp.full((n, 2), 3.0)))

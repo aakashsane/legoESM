@@ -109,3 +109,38 @@ def test_gradient_finite_on_oracle_columns(fx):
     # Calm columns: CAM's zero unit vector must not poison the cotangent.
     gu0, gT0 = jax.grad(loss, argnums=(0, 1))(0.0 * f["u"], f["T"], 0.0 * f["v"])
     assert bool(jnp.all(jnp.isfinite(gu0))) and bool(jnp.all(jnp.isfinite(gT0)))
+
+
+def _run_stress(f, cfg):
+    j = {k: jnp.asarray(f[k]) for k in ("u", "v", "T", "p_full", "p_half", "z_full",
+                                        "z_half", "rho", "lat", "sgh", "lf", "q",
+                                        "p_ref_half")}
+    return mcfarlane_gwd(
+        j["u"], j["v"], j["T"], j["p_full"], j["p_half"], j["z_full"], j["z_half"],
+        j["rho"], j["lat"], float(f["dt"]), cfg, h_topo_col=j["sgh"],
+        p_ref_half=j["p_ref_half"], land_frac_col=j["lf"], tracers={"q_v": j["q"]},
+        return_stress=True)
+
+
+def test_stress_profile_matches_cam6_oracle_at_hard_limit(fx):
+    """The optional interface stress (#1712) is CAM's ``tau`` after effgw,
+    same per-column metric and 1e-10 bound as the momentum tendencies."""
+    _, tau = _run_stress(fx, _hard_config())
+    assert tau.shape == fx["oracle_tau"].shape
+    assert np.abs(fx["oracle_tau"][:, -1]).max() > 1e-3   # launch exercised
+    err = _rel_err(tau, fx["oracle_tau"])
+    print("tau max rel err vs CAM6 oracle (hard limit):", err)
+    assert err <= 1e-10, err
+
+
+@pytest.mark.parametrize("hard", [False, True])
+def test_return_stress_leaves_tendencies_bit_identical(fx, hard):
+    """Turning the stress output on changes no tendency, bit for bit."""
+    cfg = _hard_config() if hard else McFarlaneConfig()
+    base = _run(fx, cfg)
+    out, _ = _run_stress(fx, cfg)
+    for f in ("du_dt", "dv_dt", "dT_dt", "eps_gwd"):
+        assert np.array_equal(np.asarray(getattr(base, f)),
+                              np.asarray(getattr(out, f))), f
+    assert np.array_equal(np.asarray(base.dq_dt["q_v"]),
+                          np.asarray(out.dq_dt["q_v"]))

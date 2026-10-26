@@ -63,8 +63,8 @@ Behavior/assembly pins: ``tests/atmosphere/hydrostatic/unit/test_smagorinsky_fai
 
 Running-oracle comparison (tier-2 oracle audit, les_sgs_closures, 2026-10-19)
 -------------------------------------------------------------------------------
-The audit fed legoESM's own ``S²``, ``N²`` and mixing length ``C_s·l`` to two
-running kernels (fp64).  The algebra matches; only the floors differ, and those
+The audit fed legoESM's own ``S²`` and ``N²`` to two running kernels (fp64):
+microhh received the length ``C_s·l``, SAM received ``l`` and ``C_s`` separately.  The algebra matches; only the floors differ, and those
 departures are KEPT here pending a user decision (NOT faithful to either kernel):
   * ``stability_form="lilly"`` vs microhh 2.0.2 (736a2f5e) ``diff_smag2.cxx``
     ``calc_evisc``: microhh adds ``dsmall = 1e-9`` to ``2 S_ij S_ij``

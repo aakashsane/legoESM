@@ -140,13 +140,13 @@ def _manifest_summary(snapshot_path):
     dirty tree") live in the run manifest, and a scorecard that only records
     the snapshot PATH loses them the moment the directory is renamed.
 
-    TWO LAYOUTS.  The canonical writer -- used by every lane, FESOM included
-    since #2102 -- is NESTED: the command line is ``run.command_line``, the
-    dirty flag is under ``reproducibility``, and the commit is
-    ``legoESM.commit``.  FESOM manifests written
-    BEFORE #2102 are FLAT: the command line is ``argv`` and the SHA is
-    top-level ``git_sha``.  Reading only the nested one returned all-None for
-    every such old FESOM arm (measured 2026-09-16) --
+    TWO LAYOUTS.  The canonical writer -- which the tripole/MPAS lanes and,
+    since #2102, the FESOM lanes use -- is NESTED: the command line is
+    ``run.command_line``, the dirty flag is under ``reproducibility``, and the
+    commit is ``legoESM.commit``.  FESOM manifests written BEFORE #2102 are
+    FLAT: the command line is ``argv`` and the SHA is top-level ``git_sha``.
+    Reading only the nested one returned all-None for every such old FESOM
+    arm (measured 2026-09-16) --
     the provenance silently vanished for exactly the grid whose configuration
     differs most from the others, which is the case this caveat exists for.
     """

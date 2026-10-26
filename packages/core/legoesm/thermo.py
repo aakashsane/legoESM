@@ -338,17 +338,21 @@ def _mixing_ratio_from_esat(e_sat: jax.Array, p: jax.Array) -> jax.Array:
     """Saturation mixing ratio from a saturation vapour pressure [Pa].
 
     The shared (differentiable, smooth-floored/capped) ``e_sat -> q_sat``
-    conversion used by every saturation curve (Tetens, Goff), so the curve
-    is the ONLY thing that varies between conventions — no re-derived
+    conversion used by the Tetens, Goff, Clausius-Clapeyron ice and
+    CAM-transition curves (:func:`nemo_si3_saturation_over_ice` uses NEMO's
+    own conversion instead), so the curve is the ONLY thing that varies
+    between those conventions — no re-derived
     conversion numerics (#762).
 
     NOT-YET-FAITHFUL to any oracle conversion: the softplus floor and the
     beta = 20 smooth cap are fixed (no hard-limit setting).  Tier-2 oracle
-    audit, fp64: a constant offset of -1.03e-10 kg/kg for small r; q_sat 30 %
-    below CAM ``svp_to_qsat`` at a 364 Pa model top (the cap at r = 1 binds);
-    negative below about 152 K at p >= 7e4 Pa.  In fp32 the cap cancels
-    catastrophically where q_sat < 1e-5 (0.1-87 % errors).  CAM instead
-    returns q = 1 when p <= e_s; CLUBB returns r = epsilon when p - e_s < 1.
+    audit, fp64: a constant offset of -1.03e-10 kg/kg for small r; at a
+    364 Pa model top the cap at r = 1 binds, and after ``q = r/(1 + r)``
+    q_sat is 30 % below CAM ``svp_to_qsat``; r and q are negative for
+    T <= 152.4 K at p >= 7e4 Pa.  In fp32 the cap cancels catastrophically:
+    where q_sat < 1e-5 the error vs the unsmoothed formula has median 1.4 %
+    and max 87 %.  CAM instead returns q = 1 when p <= e_s; CLUBB returns
+    r = epsilon when p - e_s < 1.
     """
     # Smooth floor on denominator: preserves gradients near e_sat ≈ p
     # instead of a hard clip that creates a zero-gradient plateau.
@@ -456,6 +460,10 @@ def nemo_si3_saturation_over_ice(
     p: jax.Array,
 ) -> tuple[jax.Array, jax.Array]:
     """NEMO 5.0.2 Goff-ice specific humidity and analytic ``dq/dT``.
+
+    The cited line numbers match NEMO 5.0.1, which is the version the
+    tier-2 oracle audit ran (fp64: 8.2e-14 max relative on q_sat, 1.6e-13
+    on dq/dT); 5.0.2 itself was not run.
 
     This is the literal operation order of ``sbc_phy.F90:665-711,727-790``.
     It intentionally does not use the smooth generic mixing-ratio conversion:
@@ -566,10 +574,11 @@ def saturation_mixing_ratio_blend(
 
     This is NOT FMS/FV3 behaviour.  FMS ``compute_qs(...,
     es_over_liq_and_ice=.true.)`` (``sat_vapor_pres_k`` ``compute_es_liq_ice_k``)
-    switches from Goff-Gratch ice to water at 0 C with no blend (tier-2 audit:
-    6.0e-2 max relative vs this function, at 263 K); the FMS default
-    ``compute_es_k`` blends the Goff-Gratch VAPOUR PRESSURES over -20..0 C
-    (8.95e-3 max relative).
+    switches from Goff-Gratch ice to water at 0 C with no blend; the FMS
+    default ``compute_es_k`` blends the Goff-Gratch VAPOUR PRESSURES over
+    -20..0 C.  Tier-2 audit, after ``q = r/(1 + r)`` vs the FMS specific
+    humidity: 6.0e-2 max relative vs the flagged switch (at 263 K) and
+    8.95e-3 vs the default blend.
 
     Parameters
     ----------
@@ -604,13 +613,15 @@ def saturation_mixing_ratio_dT(
     T: jax.Array,
     p: jax.Array,
 ) -> jax.Array:
-    """Analytic d(q_sat)/dT of the Tetens mixing ratio with a hard floor.
+    """Slope ``epsilon * (de_sat/dT) * p / max(p - e_sat, 1)**2`` (Tetens).
 
-    Uses the Tetens vapor-pressure formula of ``saturation_vapor_pressure``
-    and a hard ``max(p - e_sat, 1)`` floor.  It is NOT the derivative of
-    ``saturation_mixing_ratio``: its slope omits that function's 150 K
-    clip, softplus floor and smooth cap (tier-2 audit: 5.2e-4 max relative vs
-    ``jax.grad(saturation_mixing_ratio)`` for T >= 151 K, p > 2 e_sat, at
+    The derivative of the unsmoothed ``epsilon e_sat/(p - e_sat)`` where
+    ``p - e_sat >= 1`` Pa and T >= 150 K; where the floor binds it is not
+    the derivative of any of the forward formulas.  ``e_sat`` comes from
+    ``saturation_vapor_pressure`` (150 K clip) but ``de_sat/dT`` uses the
+    unclipped T.  It is NOT the derivative of ``saturation_mixing_ratio``,
+    which has the softplus floor and smooth cap (tier-2 audit: 5.2e-4 max
+    relative vs ``jax.grad(saturation_mixing_ratio)`` for T >= 151 K, p > 2 e_sat, at
     318.9 K and 2e4 Pa).  CLUBB's ``sat_mixrat_liq`` uses no such floor (it
     returns r = epsilon when p - e_sat < 1).  No production caller.
 

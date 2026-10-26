@@ -39,6 +39,10 @@ EXPERIMENT_RECIPES: dict[str, str] = {
     "geostrophic_adjustment": "default_wright_v1",
     "global_barotropic_wind": "default_wright_v1",
     "inertia_gravity_wave": "default_wright_v1",
+    # Channel runner forces barotropic_solver=implicit_cn on top of this
+    # default; the matrix report already grouped it here by name prefix.
+    # Fingerprint-exempt in test_recipe_map (#2114).
+    "inertia_gravity_wave_channel": "default_wright_v1",
     "isomip_plus": "default_wright_v1",
     "lock_exchange": "default_wright_v1",
     "munk_gyre": "default_wright_v1",

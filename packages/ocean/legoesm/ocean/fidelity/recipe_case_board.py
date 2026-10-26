@@ -143,7 +143,7 @@ CASES: tuple[dict, ...] = (
          results=[_r("latlon_cgrid", "default_wright_v1", TODO,
                      "matrix-covered (also: cubed_sphere, mpas, spectral)")]),
     dict(case="inertia_gravity_wave",
-         aliases=(), tests="Poincaré (inertia-gravity) wave",
+         aliases=("inertia_gravity_wave_channel",), tests="Poincaré (inertia-gravity) wave",
          ref_kind=ANALYTIC, ref="Poincaré dispersion (Bishnu 2024 cross-check)",
          results=[_r("latlon_cgrid", "default_wright_v1", TODO,
                      "analytic benchmark; matrix-covered (also: cubed_sphere, mpas)")]),

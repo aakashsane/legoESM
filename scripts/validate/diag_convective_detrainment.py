@@ -97,7 +97,9 @@ def main():
     print(f"[{a.label}] convection scheme = {conv_cfg.scheme}   dt = {dt_phys:.1f} s")
 
     fn = make_convection_physics(conv_cfg, model_type="mpas", dt=dt_phys)
-    out = fn(state, mesh, sc, None, None)
+    # The restored run's own physics carry: ZM reads its PBL height (and
+    # cloud fraction) from it, as in the run (CAM pbuf pblh).
+    out = fn(state, mesh, sc, driver._mpas_phys_state, None)
     tends = out[0] if isinstance(out, tuple) else out
     tr = getattr(tends, "tracer_tendencies", None)
     if tr is None:

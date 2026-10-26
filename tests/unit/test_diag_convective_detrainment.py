@@ -40,3 +40,12 @@ def test_column_integral_zero_rate_is_zero():
     m = _load()
     assert m.column_integral(np.zeros((3, 4)), np.ones((3, 4)),
                              np.full(3, 1 / 3), 9.8) == 0.0
+
+
+def test_convection_reads_the_restored_runs_physics_carry():
+    """Follow-up row 23: ZM refuses a call without the PBL height, so the
+    diagnostic hands the convection the restored run's own physics carry
+    (its pblh), not None."""
+    import inspect
+    src = inspect.getsource(_load().main)
+    assert "fn(state, mesh, sc, driver._mpas_phys_state, None)" in src

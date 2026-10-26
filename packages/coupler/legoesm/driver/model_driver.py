@@ -298,6 +298,97 @@ def gather_land_step(run, ncol, padded, proc, allgather):
             + (jnp.max(g_cnt[:, -1]).astype(jnp.asarray(out[-1]).dtype),))
 
 
+def shard_land_columns(cols, n_dev):
+    """This process's land columns ``cols`` laid out for ``n_dev`` local
+    devices: the same near-equal contiguous shares as the process split
+    (``split_land_columns``), each padded to one length so every device holds
+    one equal shard.  Returns ``(slots, keep)``: the column of every slot
+    (device-major) and the positions of the real slots, in ``cols`` order; a
+    padding slot repeats its share's last column and its result is dropped."""
+    _, padded = split_land_columns(cols, n_dev, 0)
+    width = padded.shape[1]
+    sizes = [s.size for s in np.array_split(np.asarray(cols), n_dev)]
+    keep = np.concatenate([d * width + np.arange(n)
+                           for d, n in enumerate(sizes)])
+    slots = padded.reshape(-1)
+    if not np.array_equal(slots[keep], np.asarray(cols)):
+        raise AssertionError("land device shares do not reproduce the "
+                             "process's columns (split rule changed?)")
+    return slots, keep
+
+
+def solve_land_on_devices(step, args, is_col, mesh, keep):
+    """``step(*args)`` (the land step on packed slots, leading axis = slot)
+    run one equal shard per device of the 1-D ``mesh`` under a shard_map,
+    then cut to the real slots ``keep``.  ``is_col`` is ``args``' tree of
+    booleans marking the per-column array leaves (split over the devices);
+    every other leaf is shared.  Every OUTPUT leaf must be per column (its
+    leading axis follows the column count, traced at two counts), else
+    ValueError.
+    The step's whole-run
+    counters would be per shard there, so they are recounted from their
+    masks over the real slots.  Returns ``(state, response, carbon,
+    surface)`` like the step."""
+    from jax.sharding import PartitionSpec as P
+    from legoesm.parallel.shard_map_compat import shard_map
+
+    n_dev = int(np.prod(mesh.devices.shape))
+    axis = mesh.axis_names[0]
+    leaves, tdef = jax.tree_util.tree_flatten(args)
+    cols = jax.tree_util.tree_leaves(is_col)
+    if len(cols) != len(leaves):
+        raise ValueError("is_col does not match the land step arguments")
+    is_arr = [hasattr(x, "shape") and hasattr(x, "dtype") for x in leaves]
+    arrs = [x for x, a in zip(leaves, is_arr) if a]
+    arr_col = [c for c, a in zip(cols, is_arr) if a]
+    n_slot = {x.shape[0] for x, c in zip(arrs, arr_col) if c}
+    if len(n_slot) != 1 or next(iter(n_slot)) % n_dev:
+        raise ValueError(f"per-column land leaves have leading sizes {n_slot}"
+                         f"; need one size divisible by {n_dev} devices")
+    n_slot = n_slot.pop()
+
+    def body(*a):
+        it = iter(a)
+        o = step(*tdef.unflatten([next(it) if t else x
+                                  for x, t in zip(leaves, is_arr)]))
+        return o[:3] + (o[3]._replace(n_held=None, n_fallback=None,
+                                      n_fallback_rejected=None),)
+
+    def shapes(n):
+        return [jax.ShapeDtypeStruct(((n,) + tuple(x.shape[1:])) if c
+                                     else x.shape, x.dtype)
+                for x, c in zip(arrs, arr_col)]
+    # an output is per column when its LEADING axis follows the column count
+    a_out = jax.eval_shape(body, *shapes(n_slot))
+    b_out = jax.eval_shape(body, *shapes(n_slot + 1))
+    shared = [jax.tree_util.keystr(k) for (k, a), b in zip(
+        jax.tree_util.tree_flatten_with_path(a_out)[0],
+        jax.tree_util.tree_leaves(b_out))
+        if not a.shape or b.shape != (a.shape[0] + 1,) + a.shape[1:]]
+    if shared:
+        raise ValueError(
+            f"land step outputs {shared} are not per column; the device "
+            "split can only return per-column outputs (and the three "
+            "fallback/held counters, recounted here)")
+    # check_vma off: the canopy scan carries start replicated.  Safe only
+    # because every output is per column (checked above).
+    out = shard_map(
+        body, mesh=mesh,
+        in_specs=tuple(P(axis) if c else P() for c in arr_col),
+        out_specs=jax.tree_util.tree_map(lambda _: P(axis), a_out),
+        check_vma=False)(*arrs)
+    keep = jnp.asarray(keep)
+    out = jax.tree_util.tree_map(lambda o: o[keep], out)
+    state, resp, carbon, sfc = out
+
+    def count(m):
+        return None if m is None else jnp.sum(
+            jnp.asarray(m).astype(jnp.int32))
+    return state, resp, carbon, sfc._replace(
+        n_held=count(sfc.held), n_fallback=count(sfc.fallback),
+        n_fallback_rejected=count(sfc.fallback_rejected))
+
+
 def _map_flat_column_leaves(tree, n_tile, global_ncol, fn):
     """Apply ``fn(leaf, n_tile)`` to every array leaf of ``tree`` whose leading
     axis equals ``global_ncol`` (a per-column field); leave all other leaves
@@ -13801,9 +13892,40 @@ class ModelDriver:
                 _land_pack_idx_np, _land_split = split_land_columns(
                     _land_pack_idx_np, jax.process_count(),
                     jax.process_index())
+            # One process driving several devices (the duo's face-shard or
+            # window layouts on one host): this process's land columns are
+            # split over its devices the same way and solved under a
+            # shard_map, one equal shard per device.
+            _land_keep = _land_mesh = None
+            _step_mesh = getattr(self.model, "step_spmd_mesh", None)
+            _land_devs = ([d for d in _step_mesh.devices.flat
+                           if d.process_index == jax.process_index()]
+                          if _step_mesh is not None else [])
+            _land_clm = str(getattr(cfg, "land_surface_scheme", "")) == "clm_ml"
+            if (len(_land_devs) > 1 and not _land_clm
+                    and (_land_split is not None
+                         or not self._is_spmd_multiprocess())
+                    and _land_pack_idx_np.size >= len(_land_devs)):
+                from jax.sharding import Mesh
+                _land_pack_idx_np, _land_keep = shard_land_columns(
+                    _land_pack_idx_np, len(_land_devs))
+                _land_mesh = Mesh(np.array(_land_devs), ("land",))
+            # the device fallback is per process (shares differ by one
+            # column), the process fallback is the same on every process
+            if _land_mesh is None and (
+                    len(_land_devs) > 1
+                    or (jax.process_index() == 0
+                        and self._is_spmd_multiprocess()
+                        and _land_split is None)):
+                logger.warning(
+                    "land: every device solves ALL its land columns "
+                    "(replicated, no speed-up from extra devices): %s",
+                    "clm_ml land is not split" if _land_clm else
+                    "too few land columns to give every device a share")
             _land_pack_on = (
-                str(getattr(cfg, "land_surface_scheme", "")) != "clm_ml"
-                and 0 < _land_pack_idx_np.size < _f_land_cols.shape[0])
+                not _land_clm
+                and (_land_keep is not None
+                     or 0 < _land_pack_idx_np.size < _f_land_cols.shape[0]))
             # An all-ocean MPI rank: nothing to solve.  Its outputs are the
             # packed path's ocean-column fills (zeros, state unchanged), so it
             # costs nothing instead of solving every ocean column.
@@ -13822,6 +13944,10 @@ class ModelDriver:
                 int(_vl_land.partition.n_owned_cells) if _vl_land is not None
                 else _land_ncol_full)
             _land_pack_idx = jnp.asarray(_land_pack_idx_np)
+            # Split over devices: the scatter-back writes the REAL slots only
+            # (a padding slot repeats a real column; its result is dropped).
+            _land_out_idx = (_land_pack_idx if _land_keep is None
+                             else jnp.asarray(_land_pack_idx_np[_land_keep]))
 
             from legoesm.land.multilayer_land import (
                 gather_land_columns, scatter_land_columns, scatter_cells)
@@ -13840,8 +13966,8 @@ class ModelDriver:
                 _lml_lat_p = _land_pack(_lml_lat)
                 _lml_carbon_p = (_land_pack(_lml_carbon)
                                  if _lml_carbon is not None else None)
-                _f_land_cols_p = _f_land_cols[_land_pack_idx]
-                _owned_cols_p = _owned_cols[_land_pack_idx]
+                _f_land_cols_p = _f_land_cols[_land_out_idx]
+                _owned_cols_p = _owned_cols[_land_out_idx]
             else:
                 _lml_cfg_p = _lml_cfg
                 _lml_params_p, _lml_lat_p = _lml_params, _lml_lat
@@ -13880,11 +14006,31 @@ class ModelDriver:
                     _params_in = _land_pack(_p) if _land_pack_on else _p
                 else:
                     _params_in = _lml_params_p
-                new_state, resp, _carbon, _sfc = (
-                    step_multilayer_land_with_diagnostics(
-                        _state_in, _a2s_in, _lml_cfg_p, _lml_umin, _dt_land,
-                        lat=_lml_lat_p, doy=doy, land_params=_params_in,
-                        carbon_state=_lml_carbon_p))
+                if _land_mesh is None:
+                    new_state, resp, _carbon, _sfc = (
+                        step_multilayer_land_with_diagnostics(
+                            _state_in, _a2s_in, _lml_cfg_p, _lml_umin,
+                            _dt_land, lat=_lml_lat_p, doy=doy,
+                            land_params=_params_in,
+                            carbon_state=_lml_carbon_p))
+                else:
+                    # per-column = the leaves the packing gathered (leading
+                    # axis = the full column count before packing)
+                    _full = (land_state, a2s, _lml_cfg,
+                             _p if _lml_update is not None else _lml_params,
+                             _lml_lat, _lml_carbon, doy)
+                    new_state, resp, _carbon, _sfc = solve_land_on_devices(
+                        lambda st, a2s, c, p, la, cb, d: (
+                            step_multilayer_land_with_diagnostics(
+                                st, a2s, c, _lml_umin, _dt_land, lat=la,
+                                doy=d, land_params=p, carbon_state=cb)),
+                        (_state_in, _a2s_in, _lml_cfg_p, _params_in,
+                         _lml_lat_p, _lml_carbon_p, doy),
+                        jax.tree_util.tree_map(
+                            lambda x: (hasattr(x, "shape") and len(x.shape) >= 1
+                                       and x.shape[0] == _land_ncol_full),
+                            _full),
+                        _land_mesh, _land_keep)
                 # resp.albedo is the END-OF-STEP land albedo, already
                 # snow-brightened by the tile (band_albedo / snow_albedo) and
                 # dry-soil-brightened.  It used to be discarded here, so the
@@ -13979,10 +14125,10 @@ class ModelDriver:
                     # response fields into zero-filled cell arrays.
                     new_state = scatter_land_columns(
                         land_state, new_state,
-                        _land_pack_idx, _land_ncol_full)
+                        _land_out_idx, _land_ncol_full)
                     return ((new_state,)
                             + tuple(scatter_cells(
-                                o, _land_pack_idx, _land_ncol_full)
+                                o, _land_out_idx, _land_ncol_full)
                                 for o in (
                                     resp.T_sfc, resp.albedo, resp.q_surface,
                                     resp.shflx, resp.lhflx, resp.surface_mass_flux,

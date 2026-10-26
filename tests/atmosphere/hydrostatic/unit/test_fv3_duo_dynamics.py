@@ -649,6 +649,25 @@ class TestFV3DuoDefaultDenyWall:
         # slice-2 restart: the shared checkpoint cadence is allow-listed
         _refuse_fv3_duo_non_default(_fv3_duo_config(checkpoint_days=1))
 
+    def test_auto_fields_pass_at_their_resolved_value_only(self):
+        """ModelDriver.setup writes each AUTO field's resolved value into
+        the config before the wall runs (user decision 2026-10-26): the
+        resolved value passes, any other non-default value is refused."""
+        from legoesm.driver.component_factory import (
+            _FV3_DUO_AUTO_RESOLVED,
+            _refuse_fv3_duo_non_default,
+        )
+        assert set(_FV3_DUO_AUTO_RESOLVED) == {
+            "ice_skin_prognostic", "sea_ice_albedo_scheme"}
+        resolved = _fv3_duo_config(ice_skin_prognostic=False,
+                                   sea_ice_albedo_scheme="constant")
+        _refuse_fv3_duo_non_default(resolved)  # must not raise
+        for field, value in (("ice_skin_prognostic", True),
+                             ("sea_ice_albedo_scheme", "maykut_untersteiner")):
+            with pytest.raises(ValueError, match=field):
+                _refuse_fv3_duo_non_default(
+                    resolved._replace(**{field: value}))
+
     @pytest.mark.parametrize("field, value", SMUGGLERS)
     def test_each_smuggler_refused_with_path_named(self, field, value):
         from legoesm.driver.component_factory import (

@@ -615,7 +615,11 @@ class FesomRunRecord(NamedTuple):
     ``runtime_config`` is the lane's ``FesomOceanConfig``; the other fields are
     the run controls the FESOM lanes of ``run_omip_core2.py`` recorded in their
     former hand-written manifest, so routing them through the canonical writer
-    drops none of that provenance.
+    drops none of that provenance.  ``vmix_config`` is the legoESM TKE card
+    the model ran (``None`` under ``--fesom-vmix fesom``); ``k_ver``/``a_ver``
+    are the background diffusivity/viscosity the model RESOLVED (fesom_jax's
+    defaults when the config leaves them ``None``); ``nemo_monthly_init`` is
+    the ``[TEMP_NC, SALT_NC]`` pair, ``None`` when the flag was not given.
     """
     runtime_config: object
     lane: str
@@ -629,8 +633,11 @@ class FesomRunRecord(NamedTuple):
     sss_restore: bool = False
     sss_restore_channel: str | None = None
     runoff: bool = False
-    nemo_monthly_init: bool = False
+    nemo_monthly_init: list | None = None
     woa_init: bool = False
+    vmix_config: object = None
+    k_ver: float | None = None
+    a_ver: float | None = None
 
 
 # Run-control fields the ocean YAML can drive, mapped to the

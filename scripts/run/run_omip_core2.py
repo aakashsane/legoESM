@@ -2863,9 +2863,11 @@ def build_fesom_ocean(mesh_dir: str, dt: float, ic_dir: str | None = None, *,
     return grid, z_coord, model, state, H_bathy
 
 
-def _write_fesom_manifest(out, args, model, lane, n_steps, dt,
-                          total_days) -> None:
-    """Write the FESOM lane's run_manifest.json through the canonical writer."""
+def _write_fesom_manifest(out, args, model, lane, n_steps, dt, total_days):
+    """Write the FESOM lane's run_manifest.json through the canonical writer.
+
+    Called at RUN START, as the tripole lane does; returns the manifest path
+    (process 0) for the run-end state digest."""
     from legoesm.driver.restart import write_run_manifest_on_root
     from legoesm.ocean.config import FesomRunRecord
     record = FesomRunRecord(
@@ -2877,10 +2879,13 @@ def _write_fesom_manifest(out, args, model, lane, n_steps, dt,
         sss_restore=bool(args.sss_restore),
         sss_restore_channel=args.sss_restore_channel,
         runoff=bool(args.runoff),
-        nemo_monthly_init=bool(args.nemo_monthly_init),
-        woa_init=bool(args.woa_init))
-    write_run_manifest_on_root(out, record, config_kind="ocean",
-                               runner_tag="run_omip_core2")
+        nemo_monthly_init=(list(args.nemo_monthly_init)
+                           if args.nemo_monthly_init is not None else None),
+        woa_init=bool(args.woa_init),
+        vmix_config=model.vmix_config,
+        k_ver=float(model._params.k_ver), a_ver=float(model._params.a_ver))
+    return write_run_manifest_on_root(out, record, config_kind="ocean",
+                                      runner_tag="run_omip_core2")
 
 
 def run_fesom_b1_smoke(args, grid, z_coord, model, state) -> None:
@@ -2911,6 +2916,9 @@ def run_fesom_b1_smoke(args, grid, z_coord, model, state) -> None:
     print(f"[fesom-b1] UNFORCED smoke: {n_steps} steps of dt={dt}s "
           f"(zero wind stress, no heat/freshwater — plumbing stage only; "
           f"NOT a scored OMIP run)")
+    manifest_path = _write_fesom_manifest(out, args, model,
+                                          "fesom_b1_unforced",
+                                          n_steps, dt, total_days)
     for step in range(1, n_steps + 1):
         state = model.step(state, dt)
         if snap_every and step % snap_every == 0:
@@ -2921,8 +2929,7 @@ def run_fesom_b1_smoke(args, grid, z_coord, model, state) -> None:
         raise SystemExit("fesom B1: non-finite temperature after "
                          f"{n_steps} steps — refusing to report success.")
     write_snapshot(out, "final", state.inner, model.mesh)
-    _write_fesom_manifest(out, args, model, "fesom_b1_unforced",
-                          n_steps, dt, total_days)
+    _record_final_state_digest(manifest_path, state)
     print(f"[fesom-b1] done: {n_steps} steps; snapshots in {out}")
 
 
@@ -3144,6 +3151,9 @@ def run_fesom_forced_loop(args, grid, z_coord, model, state) -> None:
           f"ice={'PROGNOSTIC' if ice_config is not None else 'off'}, "
           f"sss_restore={'on' if sss_restore_cfg is not None else 'off'}, "
           f"runoff={'on' if runoff_monthly is not None else 'off'}")
+    manifest_path = _write_fesom_manifest(out, args, model,
+                                          "fesom_b4_core2_forced",
+                                          n_steps, dt, total_days)
     for step in range(1, n_steps + 1):
         it = _idx_t(step, dt, n_rec)
         _dm2dc_win = None
@@ -3325,8 +3335,7 @@ def run_fesom_forced_loop(args, grid, z_coord, model, state) -> None:
             ice_state, grid, state.land_mask.data)
         print(f"[fesom-forced] final ice: area={_af / 1.0e12:.3f}e6 km2 "
               f"mean_conc={_cf:.3f} max_h={_hf:.3f} m")
-    _write_fesom_manifest(out, args, model, "fesom_b4_core2_forced",
-                          n_steps, dt, total_days)
+    _record_final_state_digest(manifest_path, state)
     print(f"[fesom-forced] done: {n_steps} steps; snapshots in {out}")
 
 

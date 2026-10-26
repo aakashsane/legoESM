@@ -1355,7 +1355,7 @@ def test_wall_default_surface_is_frozen():
 # value (False / 'constant' / False) and refuse the other.  None is
 # allow-listed; the allow-list is unchanged (the AUTO entries came with
 # 4ec338acf -- ice skin, sea-ice albedo -- and merge 7fdf826c7 -- ocean
-# flux; that admission was reviewed there).  The new
+# flux).  The new
 # DEFAULTS are inert here by read: every config field the duo run loop
 # reads is allow-listed, and its Kessler leaf gets no
 # morrison scalar while morrison_ice_snow_d_auto is None.

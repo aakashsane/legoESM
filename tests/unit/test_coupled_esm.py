@@ -428,59 +428,99 @@ class TestCarbonRadiationCoupling(unittest.TestCase):
         self.assertGreater(ov, 1e-4)
         self.assertLess(ov, 1e-3)
 
-    def test_co2_override_is_air_mass_weighted(self):
-        """#1817: radiative CO2 = total CO2 mass / total air mass, not jnp.mean."""
+    def _box_flux(self, driver):
+        """A spatially varying CO2 flux [kgCO2/m2/s], +into the atmosphere."""
+        import numpy as np
+        p_s = driver._atm.state.p_s.data
+        rng = np.random.default_rng(0)
+        return jnp.asarray(rng.normal(0.0, 1e-7, p_s.shape), p_s.dtype)
+
+    def test_co2_box_mass_closure(self):
+        """#1817: box CO2 mass change == area-integrated flux * dt."""
+        import numpy as np
+        from types import SimpleNamespace
+        driver = _make_driver("slab_carbon", days=1)
+        self.assertEqual(np.ndim(driver._co2_vmr), 0)  # one global scalar
+        p_s = driver._atm.state.p_s.data
+        flux = self._box_flux(driver)
+        dt = 3600.0
+        driver._last_sfc_response = SimpleNamespace(co2_flux=flux)
+        m0 = float(driver._co2_box_mass(p_s))
+        driver._step_co2_tracer(dt)
+        m1 = float(driver._co2_box_mass(p_s))
+        area = np.asarray(driver._atm.grid.grid_area, np.float64)
+        expected = float((np.asarray(flux, np.float64) * area).sum() * dt)
+        self.assertNotEqual(expected, 0.0)
+        np.testing.assert_allclose(m1 - m0, expected, rtol=1e-9, atol=0.0)
+
+    def test_radiation_and_land_see_box_value(self):
+        """#1817: radiation, land forcing and the log all read the box scalar."""
+        driver = _make_driver("slab_carbon", days=1)
+        driver.run()  # populates the held radiation the forcing build needs
+        driver._co2_vmr = jnp.asarray(5.0e-4, driver._co2_vmr.dtype)
+        driver._update_co2_radiation()
+        self.assertAlmostEqual(driver._atm._co2_vmr_override, 5.0e-4,
+                               delta=1e-12)
+        co2_land = driver._build_atm_forcing(1.0).co2_ppmv
+        self.assertTrue(bool(jnp.all(jnp.abs(co2_land - 500.0) < 1e-3)))
+        driver._log_coupled_diag(0.0)
+        self.assertAlmostEqual(driver._coupled_diag[-1]["co2_ppmv_mean"],
+                               500.0, delta=1e-3)
+
+    def test_co2_box_grad_finite(self):
+        """#1817: d(box increment)/d(flux) = A dt / M_air_total / (M_CO2/M_air)."""
         import numpy as np
         from legoesm import constants
         driver = _make_driver("slab_carbon", days=1)
-        # Lowest layer twice as rich: plain and mass-weighted means differ.
-        driver._co2_field = driver._co2_field.at[..., -1].multiply(2.0)
-        q = np.asarray(driver._co2_field)
-        dp = np.asarray(driver._atm.sigma.layer_thickness_dp(
-            driver._atm.state.p_s.data))
-        area = np.asarray(driver._atm.grid.grid_area)[..., None]
-        ratio = constants.M_CO2 / constants.M_air
-        expected = float((q * dp * area).sum() / (dp * area).sum()) / ratio
-        unweighted = float(q.mean()) / ratio
-        self.assertGreater(abs(unweighted - expected), 1e-3 * expected)
-        driver._update_co2_radiation()
-        ov = driver._atm._co2_vmr_override
-        self.assertAlmostEqual(ov, expected, delta=1e-6 * expected)  # float32 field
-        # d(mean)/dq = each cell-layer's share of the air mass (dp*area).
-        field0 = driver._co2_field
-
-        def mean_of(field):
-            driver._co2_field = field
-            return driver._co2_global_mean_kgkg()
-
-        g = np.asarray(jax.grad(mean_of)(field0))
-        driver._co2_field = field0
-        share = (dp * area) / (dp * area).sum()
-        np.testing.assert_allclose(g, share, rtol=1e-5, atol=0.0)
+        p_s = driver._atm.state.p_s.data
+        flux = self._box_flux(driver)
+        dt = 3600.0
+        g = np.asarray(jax.grad(
+            lambda f: driver._co2_box_increment(f, p_s, dt))(flux))
+        gp = np.asarray(jax.grad(
+            lambda ps: driver._co2_box_increment(flux, ps, dt))(p_s))
+        self.assertTrue(np.all(np.isfinite(g)) and np.all(np.isfinite(gp)))
+        self.assertTrue(np.any(gp != 0.0))
+        area = np.asarray(driver._atm.grid.grid_area, np.float64)
+        dp = np.asarray(driver._atm.sigma.layer_thickness_dp(p_s), np.float64)
+        air = (dp.sum(-1) * area).sum() / constants.g
+        np.testing.assert_allclose(
+            g, area * dt / air / (constants.M_CO2 / constants.M_air), rtol=1e-6)
         # MPAS-style halo: non-owned cells hold NaN; they must not reach the
         # value or the gradient.
         from types import SimpleNamespace
-        own = np.ones(dp.shape[:-1], bool)
+        own = np.ones(p_s.shape, bool)
         own.reshape(-1)[::3] = False
         driver._atm._voronoi_layout = SimpleNamespace(
             owned_mask_cells=jnp.asarray(own))
-        nan_halo = jnp.where(jnp.asarray(own)[..., None], field0, jnp.nan)
-        state0 = driver._atm.state
-        driver._atm.state = state0._replace(p_s=state0.p_s.replace(
-            data=jnp.where(jnp.asarray(own), state0.p_s.data, jnp.nan)))
-        m = own[..., None]
-        expected_owned = float((q * dp * area * m).sum() / (dp * area * m).sum())
-        self.assertAlmostEqual(float(mean_of(nan_halo)), expected_owned,
-                               delta=1e-6 * expected_owned)
-        self.assertTrue(np.all(np.isfinite(np.asarray(
-            jax.grad(mean_of)(nan_halo)))))
+        nan_flux = jnp.where(jnp.asarray(own), flux, jnp.nan)
+        nan_ps = jnp.where(jnp.asarray(own), p_s, jnp.nan)
+        val = float(driver._co2_box_increment(nan_flux, nan_ps, dt))
+        air_own = (dp.sum(-1) * area * own).sum() / constants.g
+        exp_own = ((np.asarray(flux, np.float64) * area * own).sum() * dt
+                   / air_own / (constants.M_CO2 / constants.M_air))
+        np.testing.assert_allclose(val, exp_own, rtol=1e-6)
+        self.assertTrue(np.all(np.isfinite(np.asarray(jax.grad(
+            lambda f: driver._co2_box_increment(f, nan_ps, dt))(nan_flux)))))
         driver._atm._voronoi_layout = None
-        driver._atm.state = state0
-        driver._co2_field = field0
-        # The logged global mean is the value that forces the radiation.
-        driver._log_coupled_diag(0.0)
-        self.assertAlmostEqual(driver._coupled_diag[-1]["co2_ppmv_mean"],
-                               ov * 1e6, delta=1e-6 * ov * 1e6)
+
+    def test_old_co2_field_checkpoint_refused(self):
+        """#1817: a checkpoint carrying the retired 3-D co2_field is refused."""
+        import tempfile
+        import numpy as np
+        driver = _make_driver("slab_carbon", days=1)
+        with tempfile.TemporaryDirectory() as d:
+            arrays = driver.coupled_checkpoint_arrays()
+            self.assertIn("co2_vmr", arrays)
+            np.savez(Path(d) / "coupled_day_0001.npz", **arrays)
+            driver._co2_vmr = jnp.asarray(0.0, driver._co2_vmr.dtype)
+            driver.load_coupled_checkpoint(1.0, checkpoint_dir=d)
+            self.assertAlmostEqual(float(driver._co2_vmr),
+                                   float(arrays["co2_vmr"]), delta=0.0)
+            arrays["co2_field"] = np.ones((2, 3, 4))
+            np.savez(Path(d) / "coupled_day_0002.npz", **arrays)
+            with self.assertRaisesRegex(ValueError, "co2_field"):
+                driver.load_coupled_checkpoint(2.0, checkpoint_dir=d)
 
 
 class TestSlabSimple(unittest.TestCase):

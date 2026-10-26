@@ -168,20 +168,20 @@ class TestSlabCarbon30Day:
 
     def test_co2_bounded(self, driver):
         """Prognostic CO2 should stay in a physically reasonable range."""
-        if not hasattr(driver, '_co2_field') or driver._co2_field is None:
+        if not hasattr(driver, '_co2_vmr') or driver._co2_vmr is None:
             pytest.skip("No prognostic CO2 tracer")
-        assert jnp.all(jnp.isfinite(driver._co2_field)), "CO2 field has NaN/inf"
+        assert jnp.all(jnp.isfinite(driver._co2_vmr)), "CO2 box is NaN/inf"
         M_CO2, M_air = constants.M_CO2, constants.M_air
-        co2_ppmv = float(driver._co2_global_mean_kgkg()) / (M_CO2 / M_air) * 1e6
+        co2_ppmv = float(driver._co2_vmr) * 1e6
         assert 200.0 < co2_ppmv < 800.0, f"CO2 = {co2_ppmv:.1f} ppmv out of [200,800]"
 
     def test_co2_changed_from_init(self, driver):
         """Carbon cycle should cause at least a small CO2 change."""
-        if not hasattr(driver, '_co2_field') or driver._co2_field is None:
+        if not hasattr(driver, '_co2_vmr') or driver._co2_vmr is None:
             pytest.skip("No prognostic CO2 tracer")
         M_CO2, M_air = constants.M_CO2, constants.M_air
         co2_init_kgkg = driver.coupled_cfg.co2_ppmv_init * 1.0e-6 * (M_CO2 / M_air)
-        co2_now_kgkg = float(driver._co2_global_mean_kgkg())
+        co2_now_kgkg = float(driver._co2_vmr) * (M_CO2 / M_air)
         assert co2_now_kgkg != pytest.approx(co2_init_kgkg, rel=1e-6), (
             "CO2 unchanged from init"
         )
@@ -213,11 +213,11 @@ class TestFullCoupled30Day:
         assert jnp.all(jnp.isfinite(driver.ocean_state.T_sfc.data))
 
     def test_co2_bounded(self, driver):
-        if not hasattr(driver, '_co2_field') or driver._co2_field is None:
+        if not hasattr(driver, '_co2_vmr') or driver._co2_vmr is None:
             pytest.skip("No prognostic CO2 tracer")
-        assert jnp.all(jnp.isfinite(driver._co2_field)), "CO2 field has NaN/inf"
+        assert jnp.all(jnp.isfinite(driver._co2_vmr)), "CO2 box is NaN/inf"
         M_CO2, M_air = constants.M_CO2, constants.M_air
-        co2_ppmv = float(driver._co2_global_mean_kgkg()) / (M_CO2 / M_air) * 1e6
+        co2_ppmv = float(driver._co2_vmr) * 1e6
         assert 200.0 < co2_ppmv < 800.0, f"CO2 = {co2_ppmv:.1f} ppmv out of [200,800]"
 
 

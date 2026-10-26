@@ -118,7 +118,7 @@ class TestCoupledRestart:
 class TestCarbonRestart:
     """slab_carbon: CO2 field should match after restart."""
 
-    def test_carbon_restart_co2_field(self, tmp_path):
+    def test_carbon_restart_co2_vmr(self, tmp_path):
         """slab_carbon 6-day run matches 3+3 with restart."""
         # --- Run A: 6 days straight ---
         dir_a = tmp_path / "run_a"
@@ -129,8 +129,8 @@ class TestCarbonRestart:
         T_ref = np.asarray(driver_a.state.T.data)
         sst_ref = np.asarray(driver_a.ocean_state.T_sfc.data)
         co2_ref = None
-        if hasattr(driver_a, '_co2_field') and driver_a._co2_field is not None:
-            co2_ref = np.asarray(driver_a._co2_field)
+        if hasattr(driver_a, '_co2_vmr') and driver_a._co2_vmr is not None:
+            co2_ref = np.asarray(driver_a._co2_vmr)
 
         # --- Run B: 3 + 3 ---
         dir_b = tmp_path / "run_b"
@@ -160,11 +160,11 @@ class TestCarbonRestart:
         np.testing.assert_allclose(sst_restart, sst_ref, atol=_ATOL, rtol=_RTOL,
                                    err_msg="SST mismatch after carbon restart")
 
-        if co2_ref is not None and hasattr(driver_b2, '_co2_field'):
-            co2_restart = np.asarray(driver_b2._co2_field)
+        if co2_ref is not None and hasattr(driver_b2, '_co2_vmr'):
+            co2_restart = np.asarray(driver_b2._co2_vmr)
             np.testing.assert_allclose(
                 co2_restart, co2_ref, atol=_ATOL, rtol=_RTOL,
-                err_msg="CO2 field mismatch after restart",
+                err_msg="CO2 box mismatch after restart",
             )
 
 

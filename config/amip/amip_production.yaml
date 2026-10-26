@@ -339,8 +339,12 @@ gravity_wave_drag: mcfarlane            # orographic member = CAM6 gw_oro port
                                         # remainder carried down, gw eddy
                                         # diffusion of dse + tracers.  These are
                                         # the McFarlaneConfig code defaults (no
-                                        # deck rows exist for them); the fv3duo
-                                        # deck inherits this row.
+                                        # deck rows exist for them, except
+                                        # effgw_oro below); the fv3duo deck
+                                        # inherits this row.
+mcfarlane_effgw_oro: 0.125              # CAM6 effgw_oro (namelist_defaults_cam
+                                        # non-WACCM L32); explicit so the run
+                                        # records it (#1712).
 hines_launch_p: 70000.0                 # inert (hines not selected); kept equal
                                         # to the Sundqvist/L36 deck.  The e3sm_cam_*
                                         # rows

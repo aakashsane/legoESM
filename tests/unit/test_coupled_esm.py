@@ -584,6 +584,26 @@ class TestCarbonRadiationCoupling(unittest.TestCase):
         finally:
             jax.config.update("jax_enable_x64", True)
 
+    def test_co2_restart_radiation_sees_restored_box(self):
+        """#1817 decision 2026-10-26: after a checkpoint load the first resumed
+        segment's radiation CO2 equals the uninterrupted run's (exact
+        continuation), not the configured value."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            ref = _make_driver("slab_carbon", days=1, output_dir=d)
+            ref.run()
+            ref.save_checkpoint(step=144, day=1.0)
+            ov_ref = ref._atm._co2_vmr_override  # what segment 2 radiation reads
+            self.assertIsNotNone(ov_ref)
+            # Non-vacuity: the box has moved off the configured CO2.
+            self.assertNotEqual(ov_ref, ref.coupled_cfg.co2_ppmv_init * 1.0e-6)
+            resumed = _make_driver("slab_carbon", days=2)
+            self.assertIsNone(getattr(resumed._atm, "_co2_vmr_override", None))
+            ckpt = sorted(Path(d).glob("checkpoint_day_*.npz"))[-1]
+            resumed._atm.load_checkpoint(ckpt)
+            resumed.load_coupled_checkpoint(1.0, checkpoint_dir=d)
+            self.assertEqual(resumed._atm._co2_vmr_override, ov_ref)
+
     def test_co2_checkpoint_roundtrip_and_refusals(self):
         """#1817 decisions 4: restore box mass; refuse co2_field / missing box."""
         import tempfile

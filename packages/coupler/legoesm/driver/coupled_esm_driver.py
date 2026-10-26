@@ -3144,6 +3144,12 @@ class CoupledESMDriver:
 
         if "co2_mass" in data:
             self._co2_mass = jnp.asarray(data["co2_mass"], jnp.float64)
+            # Exact continuation (#1817, user decision 2026-10-26): the first
+            # resumed segment's radiation must see the restored box, as the
+            # uninterrupted run's did (its override was set at the end of the
+            # checkpointed segment).  Callers restore the atmosphere first, so
+            # the mole fraction uses the restored p_s.
+            self._update_co2_radiation()
 
         # Restore surface state (land, ice, lake, accumulator, carbon) from its
         # flattened pytree leaves — atomic + drift-warned via the same helper

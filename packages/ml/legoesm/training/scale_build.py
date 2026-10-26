@@ -475,8 +475,32 @@ def build_latlon_config(cfg, yml):
         # unless the YAML overrides.
         "--rad-update-steps", str(int(yml.get("rad_update_steps", 1))),
     ]
+    # Prognostic sea-ice skin (#2106): auto unless the deck sets true/false.
+    _skin = yml.get("ice_skin_prognostic", "auto")
+    if _skin is True:
+        argv.append("--ice-skin-prognostic")
+    elif _skin is False:
+        argv.append("--no-ice-skin-prognostic")
+    elif _skin != "auto":
+        raise ValueError(
+            f"ice_skin_prognostic must be true, false or auto; got {_skin!r}")
     parsed = ra.build_arg_parser().parse_args(argv)
-    return ra.build_config_from_args(parsed)
+    return resolve_training_ice_skin(ra.build_config_from_args(parsed))
+
+
+def resolve_training_ice_skin(config):
+    """Resolve the ice-skin "auto" once for a trainer, as ModelDriver.setup
+    would for a single-process run, so the ERA5 carries, the physics pipeline
+    and the driver context all see the same explicit value."""
+    from legoesm.driver.config import (
+        resolve_ice_skin_prognostic, resolve_sea_ice_albedo_scheme)
+    on, why = resolve_ice_skin_prognostic(config)
+    config = config._replace(ice_skin_prognostic=on)
+    config = config._replace(
+        sea_ice_albedo_scheme=resolve_sea_ice_albedo_scheme(config))
+    logger.info("  Sea-ice albedo scheme: %s (ice skin %s: %s)",
+                config.sea_ice_albedo_scheme, "ON" if on else "OFF", why)
+    return config
 
 
 # --- campaign-YAML key validation (2026-08-24) ------------------------------
@@ -488,7 +512,8 @@ _WB_CONSUMED_TOP_KEYS = frozenset({
     "classical", "convection", "dt", "era5_cadence_hours",
     "cache_dir", "era5_cloud_condensate", "era5_cloud_zarr", "era5_flux_zarr",
     "era5_surface_fluxes", "era5_zarr", "eval_years",
-    "grad_accum", "grad_clip_norm", "gravity_wave_drag", "loss", "lr",
+    "grad_accum", "grad_clip_norm", "gravity_wave_drag",
+    "ice_skin_prognostic", "loss", "lr",
     "microphysics", "n_epochs", "n_lat", "n_lon", "n_training_days",
     "neural_gcm", "nlev", "optimizer", "rad_update_steps", "radiation",
     "sfno", "smoke_radiation", "spectral", "train_windows", "train_years",
@@ -1681,8 +1706,12 @@ def load_era5_samples(cfg, yml, grid, sigma, *,
         s_ic, s_tg, sst_src = _sample_inputs(
             era5_cfg, sst_cfg, i_ic, i_tg, ds, cloud_ds, flux_ds, at)
         tp = era5_terrain_product(s_ic, grid)
-        ic = era5_to_latlon_carry(s_ic, grid, sigma, target_phis=tp, microphysics=_micro)
-        target = era5_to_latlon_carry(s_tg, grid, sigma, target_phis=tp, microphysics=_micro)
+        _skin = bool(config.ice_skin_prognostic)
+        ic = era5_to_latlon_carry(s_ic, grid, sigma, target_phis=tp,
+                                  microphysics=_micro, ice_skin_prognostic=_skin)
+        target = era5_to_latlon_carry(s_tg, grid, sigma, target_phis=tp,
+                                      microphysics=_micro,
+                                      ice_skin_prognostic=_skin)
         sst = regrid_2d_to_gaussian(sst_src.sst, sst_src.lat, sst_src.lon, grid)
         # Prescribed surface planes the slice carries (spectral names),
         # regridded exactly like sst, then renamed to the driver-path

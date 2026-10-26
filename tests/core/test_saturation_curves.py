@@ -238,3 +238,26 @@ def test_cam_table_is_built_in_fp64_then_cast():
     np.testing.assert_array_equal(t64, direct64)
     np.testing.assert_array_equal(t32, t64.astype(np.float32))
     assert np.any(direct32 != t32)  # the fp32-evaluated table differs
+
+
+def test_cam_qsat_reads_the_fp64_built_table_in_fp32(monkeypatch):
+    """Follow-up row 4, consumer side: an fp32 qsat interpolates the
+    fp64-built table cast to fp32, not an fp32-evaluated table (the two give
+    different q somewhere on a 0.1 K sweep)."""
+    import numpy as np
+
+    from legoesm import thermo
+    with jax.enable_x64(False):
+        T = jnp.arange(180.0, 320.0, 0.1, dtype=jnp.float32)
+        p = jnp.float32(8.0e4)
+        n = thermo.cam_svp_table(jnp.float32).shape[0]
+        direct32 = thermo.saturation_vapor_pressure_trans(
+            127.16 + jnp.arange(n, dtype=jnp.float32))
+        q = np.asarray(thermo.saturation_specific_humidity_cam_table(T, p))
+        cast64 = thermo.cam_svp_table(jnp.float32)
+        monkeypatch.setattr(thermo, "cam_svp_table", lambda dtype: cast64)
+        q_cast = np.asarray(thermo.saturation_specific_humidity_cam_table(T, p))
+        monkeypatch.setattr(thermo, "cam_svp_table", lambda dtype: direct32)
+        q_fp32_table = np.asarray(thermo.saturation_specific_humidity_cam_table(T, p))
+    np.testing.assert_array_equal(q, q_cast)
+    assert np.any(q != q_fp32_table)

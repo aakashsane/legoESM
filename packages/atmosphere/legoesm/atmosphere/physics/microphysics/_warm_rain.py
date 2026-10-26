@@ -1170,12 +1170,19 @@ def mg2_phase_change_fraction(excess_K, mass, width_K, cap_sharpness):
     with the min rounded by smooth_min (never above the hard cap), scaled by a
     C2 step that is exactly 0 at the threshold and 1 after ``width_K``.  Both
     are deliberate departures from CAM for differentiability (user decisions
-    2026-10-20).  0 where ``mass <= 0``.
+    2026-10-20).  0 where ``mass <= 0``.  The heat-limit ratio is computed
+    only where ``mass >= qsmall`` (MG2_QSMALL); below it the fraction is 1
+    (user decision 2026-10-26 b): ``excess/mass`` overflows there (mass
+    1e-219 gave r ~ -8e217 and a NaN gradient through smooth_min, although
+    the ramp is 0).  Below qsmall the cap binds only within ~3e-16 K of
+    the threshold, where the ramp is ~1e-46.
     """
     has = mass > 0.0
-    r = excess_K * constants.c_pd / (constants.L_f * jnp.where(has, mass, 1.0))
+    big = mass >= MG2_QSMALL
+    r = excess_K * constants.c_pd / (constants.L_f * jnp.where(big, mass, 1.0))
     # max(., 0): smooth_min(1, 0) is -3.7e-46, not 0; the ramp is 0 there anyway
-    frac = jnp.maximum(smooth_min(jnp.ones_like(r), r, cap_sharpness), 0.0)
+    frac = jnp.where(big, jnp.maximum(smooth_min(jnp.ones_like(r), r, cap_sharpness), 0.0),
+                     1.0)
     return jnp.where(has, smoothstep_quintic(excess_K / width_K) * frac, 0.0)
 
 
@@ -2266,7 +2273,15 @@ def ice_autoconversion_mg2(q_i, N_i, lami, dcs, T, cold_width_K):
     the mass rate in the 1/lami^3-free form (q_i = rhoi pi N_i/lami^3 for the
     exponential PSD), which stays finite as N_i -> 0 in fp32.  MG2's hard
     ``T <= T_freeze`` is the C2 step, 0 at 0 C and full by -``cold_width_K``
-    (user decision 2026-10-21 S10.6b 5a, item 6a)."""
+    (user decision 2026-10-21 S10.6b 5a, item 6a).
+
+    KNOWN DIFFERENCE (user decision 2026-10-26 a): the step is exactly 0 AT
+    T_freeze at every width, where MG2 (``T <= T_freeze``) converts; on the
+    MG2 ice-rest fixture the 15 points at exactly T_freeze are -100 % (prci
+    and nprci 0), at the hard limit and at the production 2 K width alike;
+    all other points match (test_mg2_ice_rest_oracle.py, FERRIER_0C_GAP).
+    No width recovers the T_freeze point itself; ``melt_sharpness -> inf``
+    recovers MG2 everywhere below it."""
     qi = jnp.clip(q_i, 0.0)
     on = qi > 1.0e-14
     cold = smoothstep_quintic((constants.T_freeze - T) / cold_width_K)

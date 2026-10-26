@@ -187,6 +187,37 @@ def test_gradients():
     assert np.isfinite(np.asarray(g)).all() and np.abs(np.asarray(g)).min() > 0
 
 
+def test_gradient_finite_at_sub_qsmall_mass():
+    """User decision 2026-10-26 (b): the heat-limit ratio is computed only where
+    the mass is >= qsmall, fraction 1 below.  The failing cell is the one the
+    whole-call gradient test hit (test_mg2_ice_rest_oracle, cell 3): ice melt
+    called with dumi = 1.03e-219 kg/kg at 25.15 K below 0 C, where excess/mass
+    overflowed to ~-8e217 and the gradient through smooth_min was NaN."""
+    T = C.T_freeze - 25.15282158
+    m = 1.03282319e-219
+
+    def frac(x, mass):
+        return W.mg2_phase_change_fraction(x, mass, 2.0, W.MG2_CAP_SHARPNESS)
+
+    g = jax.grad(frac, argnums=(0, 1))(jnp.asarray(T - C.T_freeze), jnp.asarray(m))
+    assert all(np.isfinite(float(gi)) for gi in g), g
+
+    def melt(q_i, T_):
+        z = jnp.zeros_like(q_i)
+        o = W.mg2_instant_ice_melt_homog_freeze(z, z, q_i, z + 1.0, T_, 233.15, 2.0, 0.2,
+                                                presence_top=W.MG2_QSMALL)
+        return jnp.sum(o[2]) + jnp.sum(o[4])
+    g = jax.grad(melt, argnums=(0, 1))(jnp.asarray([m]), jnp.asarray([T]))
+    assert all(np.isfinite(np.asarray(gi)).all() for gi in g), g
+    # below qsmall the fraction is the ramp alone (cap fraction 1), above unchanged
+    x = jnp.asarray([0.5, 0.5])
+    q = jnp.asarray([5.0e-19, 1.0e-4])
+    f = np.asarray(frac(x, q))
+    assert f[0] == float(smoothstep_quintic(0.25))
+    r = 0.5 * C.c_pd / (C.L_f * 1.0e-4)
+    assert np.isclose(f[1], float(smoothstep_quintic(0.25)) * min(r, 1.0), rtol=1e-3)
+
+
 def test_recipient_raw_and_donor_overwrite():
     """Negative raw recipient is incremented, not clipped; donor overwritten from
     its clipped pool (MG2 += / = semantics, M:2634/2645, M:2672/2680)."""

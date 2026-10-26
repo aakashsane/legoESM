@@ -306,12 +306,17 @@ def test_fesom_b1_records_the_final_state_digest(tmp_path, monkeypatch):
 
     monkeypatch.setattr(fesom_core2, "write_snapshot", lambda *a, **kw: None)
     model = _SteppingModel()
-    model.step = lambda state, dt: state
+    # Each step adds 1, so the digested state must be the post-loop one.
+    model.step = lambda state, dt: SimpleNamespace(
+        inner=SimpleNamespace(T=state.inner.T + 1.0))
     model.mesh = None
-    final = SimpleNamespace(inner=SimpleNamespace(T=np.ones(3)))
+    initial = SimpleNamespace(inner=SimpleNamespace(T=np.ones(3)))
     digested = []
     monkeypatch.setattr(run_omip_core2, "_record_final_state_digest",
                         lambda path, state: digested.append((path, state)))
     run_omip_core2.run_fesom_b1_smoke(
-        _fesom_lane_args(tmp_path), None, None, model, final)
-    assert digested == [(tmp_path / "run_manifest.json", final)]
+        _fesom_lane_args(tmp_path), None, None, model, initial)
+    [(path, state)] = digested
+    assert path == tmp_path / "run_manifest.json"
+    # 1 day at dt=1800 s is 48 steps.
+    np.testing.assert_array_equal(state.inner.T, np.full(3, 49.0))

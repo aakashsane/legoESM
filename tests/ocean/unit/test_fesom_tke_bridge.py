@@ -210,3 +210,24 @@ def test_run_manifest_records_the_card_and_resolved_mixing(flat_mesh, z_shim,
     run_omip_core2._record_final_state_digest(
         path, create_rest_state(flat_mesh, z_shim, vertical_coordinate="zstar"))
     assert read_run_manifest(path)["result"]["state_digest"]
+
+
+def test_run_manifest_records_overridden_k_ver_a_ver(flat_mesh, z_shim, tmp_path):
+    from legoesm.driver.restart import read_run_manifest
+    from legoesm.ocean.config import ocean_config_from_dict
+    from scripts.run import run_omip_core2
+
+    cfg = FesomOceanConfig(dt=DT, k_ver=2.5e-5, a_ver=3.5e-4,
+                           vertical_coordinate="zstar", constants="fesom")
+    model = FesomOceanModel(flat_mesh, z_shim, cfg)
+    args = SimpleNamespace(
+        emp_freshwater=False, dm2dc=False, sw_rgb_chl=False,
+        prognostic_sea_ice=False, sss_restore=False, sss_restore_channel=None,
+        runoff=False, nemo_monthly_init=None, woa_init=False)
+    path = run_omip_core2._write_fesom_manifest(
+        tmp_path, args, model, "fesom_b1_unforced", n_steps=1, dt=DT,
+        total_days=DT / 86400.0)
+    rec = ocean_config_from_dict(
+        read_run_manifest(path)["config"]["resolved_config"])
+    assert (rec.k_ver, rec.a_ver) == (2.5e-5, 3.5e-4)
+    assert rec.vmix_config is None

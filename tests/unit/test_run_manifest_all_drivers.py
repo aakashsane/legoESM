@@ -287,3 +287,24 @@ def test_fesom_forced_writes_manifest_before_the_loop(tmp_path, monkeypatch):
         run_omip_core2.run_fesom_forced_loop(
             _fesom_lane_args(tmp_path), grid, None, _SteppingModel(), None)
     assert _manifest(tmp_path / "run_manifest.json")
+
+
+def test_fesom_b1_records_the_final_state_digest(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    import scripts.run.run_fesom_core2 as fesom_core2
+    from scripts.run import run_omip_core2
+
+    monkeypatch.setattr(fesom_core2, "write_snapshot", lambda *a, **kw: None)
+    model = _SteppingModel()
+    model.step = lambda state, dt: state
+    model.mesh = None
+    final = SimpleNamespace(inner=SimpleNamespace(T=np.ones(3)))
+    digested = []
+    monkeypatch.setattr(run_omip_core2, "_record_final_state_digest",
+                        lambda path, state: digested.append((path, state)))
+    run_omip_core2.run_fesom_b1_smoke(
+        _fesom_lane_args(tmp_path), None, None, model, final)
+    assert digested == [(tmp_path / "run_manifest.json", final)]

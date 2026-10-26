@@ -5606,3 +5606,25 @@ def test_dry_run_exit_code_reaches_the_shell(tmp_path):
         capture_output=True, text=True, env={**__import__("os").environ,
                                              "JAX_PLATFORMS": "cpu"})
     assert proc.returncode == 1, proc.stderr[-2000:]
+
+
+def test_mcfarlane_effgw_oro_flag_flows_to_config():
+    """--mcfarlane-effgw-oro round-trips into ExperimentConfig (#1712); the
+    default is CAM6's 0.125 and the production deck pins that value."""
+    parser = build_arg_parser()
+    cfg_default = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert cfg_default.mcfarlane_effgw_oro == 0.125
+
+    cfg = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--mcfarlane-effgw-oro", "0.3",
+    ]), parser))
+    assert cfg.mcfarlane_effgw_oro == 0.3
+
+    from pathlib import Path
+    deck = str(Path(__file__).resolve().parents[2]
+               / "config/amip/amip_production.yaml")
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    parser = build_arg_parser()
+    # The deck sets the dest as a parser default, exactly as main() applies it.
+    assert load_yaml_config(deck, parser)["mcfarlane_effgw_oro"] == 0.125

@@ -2115,6 +2115,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
                              "__param_spec__ entry yet (bounds undecided), so "
                              "this flag is its ONLY route -- --params cannot "
                              "reach it.")
+    parser.add_argument("--mcfarlane-effgw-oro", type=float, default=None,
+                        dest="mcfarlane_effgw_oro",
+                        help="CAM6 orographic gravity-wave efficiency "
+                             "effgw_oro (default 0.125, namelist_defaults_cam "
+                             "non-WACCM L32); per-column efficiency is "
+                             "effgw_oro*landfrac. Legal range [0, 1] (#1712).")
     parser.add_argument("--homogeneous-ice-nucleation",
                         action=argparse.BooleanOptionalAction, default=False,
                         dest="homogeneous_ice_nucleation",
@@ -3046,6 +3052,9 @@ def build_config_from_args(args: argparse.Namespace) -> ExperimentConfig:
         mcfarlane_k_wave=(
             args.mcfarlane_k_wave if args.mcfarlane_k_wave is not None
             else _EXPERIMENT_DEFAULTS.mcfarlane_k_wave),
+        mcfarlane_effgw_oro=(
+            args.mcfarlane_effgw_oro if args.mcfarlane_effgw_oro is not None
+            else _EXPERIMENT_DEFAULTS.mcfarlane_effgw_oro),
         ice_skin_prognostic=args.ice_skin_prognostic,
         ice_thickness_m=(
             args.ice_thickness_m

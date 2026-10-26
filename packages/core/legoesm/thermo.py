@@ -42,7 +42,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
-from legoesm.core.smooth import smooth_min
+from legoesm.core.smooth import smooth_clamp, smooth_min
 
 
 def saturation_vapor_pressure(T: jax.Array) -> jax.Array:
@@ -458,37 +458,63 @@ def saturation_vapor_pressure_ice(T: jax.Array) -> jax.Array:
     )
 
 
-# --- CAM liquid->ice saturation transition (CESM2.1 wv_saturation.F90:82) ---
-_CAM_TTRICE_K = 20.0   # ttrice: es blends from water to ice over 0 .. -20 degC
+# --- CAM liquid->ice saturation transition and SVP table (cam_cesm2_1_rel_60) ---
+_CAM_TTRICE_K = 20.0     # ttrice, wv_saturation.F90:82
+_CAM_SVP_TMIN_K = 127.16  # tmin, wv_saturation.F90:79 (table start)
+_CAM_SVP_TMAX_K = 375.16  # tmax, wv_saturation.F90:80
+# limiter class: sharpness of the smooth [tmin, tmax] clamp [1/K] (RULE 5);
+# math.inf = CAM's hard clamp exactly.  Value approved by user 2026-10-21.
+_CAM_SVP_CLAMP_SHARPNESS = 1.0
 
 
 def saturation_vapor_pressure_trans(T: jax.Array) -> jax.Array:
-    """CAM ``wv_sat_svp_trans`` over the shared curves [Pa].
-
-    CESM2.1 ``wv_sat_methods.F90:326-361``: water curve at and above
-    ``T_freeze - ttrice`` (0 below), then for ``T < T_freeze`` the VAPOUR
-    PRESSURE is blended toward ice with weight ``(T_freeze - T)/ttrice``
-    (1 below ``T_freeze - ttrice``).  The water and ice curves are the shared
-    Tetens (:func:`saturation_vapor_pressure`) and Clausius-Clapeyron
-    (:func:`saturation_vapor_pressure_ice`) ones, not CAM's Goff-Gratch.
-    """
+    """CAM ``wv_sat_svp_trans`` [Pa] (wv_sat_methods.F90:326-361) on CAM's
+    default Goff-Gratch curves: water curve at and above ``tmelt - ttrice``
+    (0 below), then for ``T < tmelt`` the vapour pressure is blended toward
+    ice with weight ``(tmelt - T)/ttrice`` (1 below ``tmelt - ttrice``)."""
     tmelt = constants.T_freeze
-    e_liq = jnp.where(T >= tmelt - _CAM_TTRICE_K, saturation_vapor_pressure(T), 0.0)
+    e_liq = jnp.where(T >= tmelt - _CAM_TTRICE_K,
+                      saturation_vapor_pressure_goff_gratch(T), 0.0)
     weight = jnp.where(tmelt - T > _CAM_TTRICE_K, 1.0, (tmelt - T) / _CAM_TTRICE_K)
     return jnp.where(T < tmelt,
-                     weight * saturation_vapor_pressure_ice(T) + (1.0 - weight) * e_liq,
+                     weight * saturation_vapor_pressure_ice_goff_gratch(T)
+                     + (1.0 - weight) * e_liq,
                      e_liq)
 
 
-def saturation_specific_humidity_trans(T: jax.Array, p: jax.Array) -> jax.Array:
-    """Saturation SPECIFIC humidity over the CAM liquid->ice transition curve.
+def saturation_specific_humidity_cam_table(T: jax.Array, p: jax.Array, *,
+                                           clamp_sharpness: float = _CAM_SVP_CLAMP_SHARPNESS,
+                                           cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS
+                                           ) -> jax.Array:
+    """CAM ``qsat`` (wv_saturation.F90:458-503) [kg/kg]: the 1-K table of
+    :func:`saturation_vapor_pressure_trans` from ``tmin`` (``wv_sat_init``,
+    :216-226, ``plenest = ceiling(tmax - tmin) + 2`` entries), linearly
+    interpolated by ``estblf`` (:306-321, ``T`` clamped to [tmin, tmax]), then
+    CAM's ``svp_to_qsat``.  The ``qsat`` ``zm_conv_evap`` calls (zm_conv.F90:1484).
 
-    CAM ``qsat`` (``wv_saturation.F90``): ``svp_trans`` vapour pressure, then
-    ``ε·e/(p − (1−ε)·e)``; here through the shared smooth ``e -> r`` conversion
-    of :func:`saturation_specific_humidity` (``q = r/(1 + r)``).
-    """
-    w_sat = _mixing_ratio_from_esat(saturation_vapor_pressure_trans(T), p)
-    return w_sat / (1.0 + w_sat)
+    KNOWN DIFFERENCE (RULE 5): at the default the [tmin, tmax] clamp is
+    ``smooth_clamp`` with ``clamp_sharpness`` [1/K]; the clamped temperature
+    departs from CAM's by ``~log(1 + exp(-clamp_sharpness d))/clamp_sharpness``
+    K at ``d`` K from a table bound: ``log 2`` K at the bound itself (q 31%
+    high at ``tmin``, 1.8% at 130 K), < 6e-11 relative in q over 150-340 K
+    where ``e_sat/p`` is away from 1 (the cap departs by 1.1e-3 at ``e_sat = p``).
+    The q = 1 cap is :func:`_specific_humidity_from_esat_cam`'s.  CAM exactly
+    is ``clamp_sharpness = cap_sharpness = math.inf``."""
+    plenest = math.ceil(_CAM_SVP_TMAX_K - _CAM_SVP_TMIN_K) + 2
+    estbl = saturation_vapor_pressure_trans(
+        _CAM_SVP_TMIN_K + jnp.arange(plenest, dtype=T.dtype))
+    if math.isinf(clamp_sharpness):
+        t_tmp = jnp.maximum(jnp.minimum(T, _CAM_SVP_TMAX_K) - _CAM_SVP_TMIN_K, 0.0)
+    else:
+        t_tmp = smooth_clamp(T, _CAM_SVP_TMIN_K, _CAM_SVP_TMAX_K,
+                             clamp_sharpness) - _CAM_SVP_TMIN_K
+    # Rounding guard only (smooth_clamp may land an ulp outside the table);
+    # a -1 index would wrap to the last entry.
+    i = jnp.clip(jnp.floor(t_tmp), 0.0, plenest - 2.0)
+    weight = t_tmp - i
+    i = i.astype(jnp.int32)
+    es = (1.0 - weight) * estbl[i] + weight * estbl[i + 1]
+    return _specific_humidity_from_esat_cam(es, p, cap_sharpness=cap_sharpness)
 
 
 def nemo_si3_saturation_over_ice(

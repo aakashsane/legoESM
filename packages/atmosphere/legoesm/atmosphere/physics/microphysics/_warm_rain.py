@@ -12,7 +12,8 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
-from legoesm.core.smooth import smooth_clamp, smooth_max, smooth_min, smoothstep_quintic
+from legoesm.atmosphere.physics.microphysics.output import sedimentation_tendency
+from legoesm.core.smooth import smooth_clamp, smooth_max, smooth_min, smooth_relu, smoothstep_quintic
 from legoesm.thermo import (
     mixing_ratio_to_specific_humidity,
     saturation_mixing_ratio,
@@ -608,6 +609,119 @@ def saturation_adjustment(T, q_v, p_full, dt, sharpness=_DEFAULT_SAT_SHARPNESS, 
     return condensation, q_sat
 
 
+# --- gSAM liquid saturation adjustment (SRC/MICRO_M2005/microphysics.f90
+# satadj_liquid, :1638-1720, called by micro_proc :743 before the M2005 kernel).
+_GSAM_SATADJ_P_MIN = 5000.0      # no adjustment where pres < 5000 Pa (:1664) [Pa]
+_GSAM_SATADJ_THRESH_K = 0.01     # convergence: |dT| <= min(0.01, 0.01*fac_cond*qsat) (:1683) [K]
+_GSAM_SATADJ_THRESH_QFRAC = 0.01  # ... 0.01 of the saturation value (:1683) [-]
+# Newton iteration limit (maxiter, :1650) -- a loop count, never tunable.
+_GSAM_SATADJ_MAXITER = 20
+# Normaliser floor of the smooth excess [kg/kg]: fp32 q_sat underflows to 0 when
+# cold, and a scale whose square underflows makes the gradient NaN.
+_GSAM_SATADJ_SCALE_FLOOR = 1.0e-15
+
+
+def saturation_adjustment_gsam(T, q_v, q_c, p_full, *, excess_sharpness,
+                               qc_floor_sharpness, p_min_width_pa):
+    """gSAM liquid saturation adjustment: the adjusted ``(T, q_v, q_c)``.
+
+    Port of gSAM 1.8.8 ``satadj_liquid`` (SRC/MICRO_M2005/microphysics.f90
+    :1638-1720) as ``micro_proc`` calls it (:743): on total water
+    ``q_t = q_v + q_c`` and liquid-water temperature ``T_l = T - (L_v/c_pd) q_c``
+    the state is put back on the liquid saturation curve, condensing or
+    evaporating cloud as needed.  Per cell::
+
+        q_c = 0;  skip where p < 5000 Pa or q_t <= q_sat(T_l)   (q_v = q_t, T = T_l)
+        dT  = (L/c_p) max(0, q_t - q_sat(T_l)) / (1 + L^2 q_sat/(c_p R_v T_l^2))
+        Newton  dT = f/f',  f = T_l - T1 + (L/c_p) max(0, q_t - q_sat(T1)),
+                f' = 1 + L^2 q_sat(T1)/(c_p R_v T1^2)
+        while |dT| > min(0.01, 0.01 (L/c_p) q_sat(T_l)) and niter < 20
+        if niter > 19: leave the cell unadjusted (q_c = 0, q_v = q_t, T = T_l)
+        q_c = max(0, T1 - T_l)/(L/c_p);  q_v = q_t - q_c;  T = T1
+
+    The iteration count and the convergence test are reproduced exactly (a
+    fixed 19-step masked loop), so the result is the oracle's iterate, not
+    the exact root.  The saturation curve is legoESM's
+    :func:`legoesm.thermo.saturation_specific_humidity` (the oracle fixture is
+    built with the same curve).  Piecewise differentiable: the branch and
+    convergence masks are ``jnp.where`` and the gradient is that of the
+    iterate.  Computed in the state dtype.
+
+    KNOWN DIFFERENCE (RULE 5): three classes of hard switch are smooth unless
+    their field is at the hard limit (``math.inf``, ``math.inf``, ``0.0``):
+
+    * saturation step (``excess_sharpness`` [-]): ``max(0, q_t - q_s)`` is
+      ``s_q smooth_relu((q_t - q_s)/s_q)``, ``s_q = q_sat(T_l) + 1e-15`` kg/kg
+      (the floor keeps cold fp32 cells finite), and the
+      ``q_t > q_sat`` skip is dropped, so a sub-saturated cell runs the same
+      Newton and condenses ``~q_sat log(1 + exp(-s |S - 1|))/s`` (``S`` the
+      saturation ratio; softplus is > 0, so ``T1 >= T_l``).  A small
+      sharpness condenses in dry air: at 1 a dry 280 K cell reaches negative
+      vapour;
+    * positivity (``qc_floor_sharpness`` [1/K]): gSAM's ``max(0, T1 - T_l)``
+      is ``smooth_relu``, adding up to ``log 2/qc_floor_sharpness`` K of
+      condensate-equivalent warming (``T = T_l + (L/c_p) q_c`` keeps ``T_l``
+      conserved); with the smooth excess the hard floor never binds (0 of 146k
+      swept cells), but just above saturation (``T1 - T_l ~ 1/s``) the smooth
+      floor scales the gradient by ``sigmoid(s (T1 - T_l))``, which the tests pin;
+    * on/off threshold (``p_min_width_pa`` [Pa]): the ``p >= 5000 Pa`` gate
+      is ``sigmoid((p - 5000)/width)`` weighting the adjusted state.
+
+    The Newton convergence test and the 20-iteration fallback are loop
+    control, not switched here.
+    """
+    hard_excess = math.isinf(excess_sharpness)
+    if not (excess_sharpness > 0.0 and qc_floor_sharpness > 0.0 and p_min_width_pa >= 0.0):
+        raise ValueError("gSAM satadj needs excess_sharpness > 0, qc_floor_sharpness > 0 "
+                         f"and p_min_width_pa >= 0, got {excess_sharpness}, "
+                         f"{qc_floor_sharpness}, {p_min_width_pa}")
+    fac = constants.L_v / constants.c_pd
+    cp_rv = constants.c_pd * constants.R_v
+    lv2 = constants.L_v ** 2
+    tabs = T - fac * q_c
+    q_t = q_v + q_c
+    qsat1 = saturation_specific_humidity(tabs, p_full)
+
+    def excess(qs):
+        if hard_excess:
+            return jnp.maximum(0.0, q_t - qs)
+        scale = qsat1 + _GSAM_SATADJ_SCALE_FLOOR
+        return scale * smooth_relu((q_t - qs) / scale, excess_sharpness)
+
+    sat = (q_t > qsat1) if hard_excess else jnp.ones_like(q_t, dtype=bool)
+    if p_min_width_pa == 0.0:
+        sat = sat & (p_full >= _GSAM_SATADJ_P_MIN)
+        p_weight = 1.0
+    else:
+        p_weight = jax.nn.sigmoid((p_full - _GSAM_SATADJ_P_MIN) / p_min_width_pa)
+    dtabs = fac * excess(qsat1) / (1.0 + lv2 * qsat1 / (cp_rv * tabs ** 2))
+    tabs1 = tabs + dtabs
+    niter = jnp.ones_like(tabs)
+    thresh = jnp.minimum(_GSAM_SATADJ_THRESH_K,
+                         _GSAM_SATADJ_THRESH_QFRAC * fac * qsat1)
+
+    def body(_, carry):
+        dtabs, tabs1, niter = carry
+        go = (jnp.abs(dtabs) > thresh) & (niter < _GSAM_SATADJ_MAXITER)
+        qs = saturation_specific_humidity(tabs1, p_full)
+        fff = tabs - tabs1 + fac * excess(qs)
+        dfff = 1.0 + lv2 * qs / (cp_rv * tabs1 ** 2)
+        step = fff / dfff
+        return (jnp.where(go, step, dtabs), jnp.where(go, tabs1 + step, tabs1),
+                niter + go.astype(niter.dtype))
+
+    dtabs, tabs1, niter = jax.lax.fori_loop(
+        0, _GSAM_SATADJ_MAXITER - 1, body, (dtabs, tabs1, niter))
+    ok = sat & (niter <= _GSAM_SATADJ_MAXITER - 1)
+    if hard_excess and math.isinf(qc_floor_sharpness):
+        q_c_new = jnp.where(ok, p_weight * jnp.maximum(0.0, tabs1 - tabs) / fac, 0.0)
+        T_adj = tabs1 if p_min_width_pa == 0.0 else tabs + p_weight * (tabs1 - tabs)
+        return jnp.where(ok, T_adj, tabs), q_t - q_c_new, q_c_new
+    dT = jnp.where(ok, p_weight, 0.0) * smooth_relu(tabs1 - tabs, qc_floor_sharpness)
+    q_c_new = dT / fac
+    return tabs + dT, q_t - q_c_new, q_c_new
+
+
 def effective_Nc(N_c, Nc_0, *, predict_Nc=True, nc_specified_field=False):
     """Effective cloud-droplet number for the size distribution / autoconversion.
 
@@ -1109,6 +1223,25 @@ def mg2_droplet_number_readjust(q_c_post, N_c_post, N_c, cf, rho, dt, dN_c_dt, *
 
 
 
+@jax.custom_jvp
+def _div_tangent_safe(x, y):
+    """``x / y``, forward bitwise identical to the division.  The tangent
+    ``(dx - (x/y) dy)/y`` replaces JAX's ``-x dy/y**2``, whose ``y**2``
+    underflows to 0 in fp32 for ``y`` ~ 1e-19 (in-precip rain near qsmall at
+    rho ~ 0.1, oracle row 17) and turns a finite derivative into inf/NaN.
+    First order only: here 2x/y**3 ~ 1e48 exceeds the fp32 range, so fp32
+    second derivatives of the rain chain near qsmall stay non-finite (fp64
+    is finite)."""
+    return x / y
+
+
+@_div_tangent_safe.defjvp
+def _div_tangent_safe_jvp(primals, tangents):
+    (x, y), (dx, dy) = primals, tangents
+    r = x / y
+    return r, (dx - r * dy) / y
+
+
 def mg2_inprecip_rain(q_r, N_r, rho, precip_frac, lamr_min, lamr_max):
     """CAM6 MG2 in-precip rain state ``(q_ric, N_ric, lamr, n0r)``.
 
@@ -1119,7 +1252,10 @@ def mg2_inprecip_rain(q_r, N_r, rho, precip_frac, lamr_min, lamr_max):
     leaves ``[lamr_min, lamr_max]``, it is set to the bound and ``nric`` is
     re-adjusted to match; ``n0r = nric*lamr``; ``lamr = 0`` elsewhere.
     ``N_r``/``N_ric``/``n0r`` are per-VOLUME (this module's rain convention:
-    MG2's per-kg value times rho).
+    MG2's per-kg value times rho).  At ``qric == qsmall`` exactly MG2 (and
+    this port) leave ``lamr = n0r = 0``; consumers gate on ``lamr > 0``
+    (oracle row 18).  The slope's division carries an fp32-safe tangent
+    (:func:`_div_tangent_safe`, oracle row 17); the forward is unchanged.
     """
     q_ric = jnp.minimum(q_r / precip_frac, MG2_QRIC_MAX)
     small = q_ric < MG2_QSMALL
@@ -1128,7 +1264,7 @@ def mg2_inprecip_rain(q_r, N_r, rho, precip_frac, lamr_min, lamr_max):
     active = q_ric > MG2_QSMALL
     cr = jnp.pi * constants.rho_water
     den = jnp.where(active, rho * q_ric, 1.0)
-    lam_raw = safe_pow(cr * N_ric / den, 1.0 / 3.0)
+    lam_raw = safe_pow(_div_tangent_safe(cr * N_ric, den), 1.0 / 3.0)
     lam = jnp.clip(lam_raw, lamr_min, lamr_max)
     N_adj = jnp.where((lam_raw < lamr_min) | (lam_raw > lamr_max),
                       lam ** 3 * den / cr, N_ric)
@@ -1169,7 +1305,10 @@ def rain_evaporation_mg2(q_v, q_sat, T, p, rho, q_ric, lamr, n0r, lcldm,
     ice (``qcic``/``qiic``); ``q_sat`` is MG2's ``qvl``.
     """
     dum = jnp.where(q_cic + q_iic < _MG2_EVAP_CLOUD_QMIN, 0.0, lcldm)
-    active = (precip_frac > dum) & (q_ric >= MG2_QSMALL)
+    # lamr > 0 drops only qric == qsmall exactly, where MG2 itself leaves
+    # lamr = n0r = 0 and evaluates 0 * inf (NaN, oracle row 18); every other
+    # cell is unchanged.
+    active = (precip_frac > dum) & (q_ric >= MG2_QSMALL) & (lamr > 0.0)
     am_evp_st = precip_frac - dum
     one_m_dum = jnp.where(active, 1.0 - dum, 1.0)
     qclr = (q_v - dum * q_sat) / one_m_dum
@@ -1345,7 +1484,14 @@ def mg2_accrete_cloud_water_snow(T, rho, mu, uns, q_cic, N_cic, q_sic, pgam,
     ``uns`` is the PROVISIONAL in-precip snow number fall speed, ``pgam/lamc``
     from :func:`mg2_size_dist_liq`; ``N_cic`` in whatever units the caller wants
     ``npsacws`` in."""
-    active = (q_sic >= MG2_QSMALL) & (q_cic >= MG2_QSMALL)
+    # lamc > 0 (oracle row 31): at qcic == qsmall exactly MG2's
+    # size_dist_param_liq leaves pgam = -100, lamc = 0 (it tests qcic >
+    # qsmall) while this gate is qcic >= qsmall, so dc0 = -99/0 made the rate
+    # NaN forward and backward here.  The compiled oracle returns 0 there
+    # (eci = max(NaN, 0) = 0 in gfortran), as this now does: lamc is 0 only
+    # at that point, so nothing else changes.
+    active = ((q_sic >= MG2_QSMALL) & (q_cic >= MG2_QSMALL)
+              & (lamc > 0.0))
     cold = smoothstep_quintic((constants.T_freeze - T) / cold_width_K)
     lc = jnp.where(active, lamc, 1.0)
     ls = jnp.where(active, lams, 1.0)
@@ -1761,15 +1907,22 @@ def m2005_cloud_droplet_psd(q_c, N_c, rho):
     idx = dumii.astype(jnp.int32) - 1                 # Fortran dnu(dumii), 1-based
     dnu = jnp.asarray(_M2005_DNU, dtype=pgam.dtype)
     nu = dnu[idx] + (dnu[idx + 1] - dnu[idx]) * (pgam - dumii)
+    lamc, lammin, lammax, gamma_ratio, cons26 = _m2005_cloud_slope(
+        qc_s, N_c, rho, pgam)
+    lam_b = jnp.where(lamc < lammin, lammin, lammax)
+    n_bound = lam_b ** 3 * qc_s / gamma_ratio / cons26 * rho
+    clamped = active & ((lamc < lammin) | (lamc > lammax))
+    return pgam, nu, jnp.where(clamped, n_bound, N_c)
+
+
+def _m2005_cloud_slope(qc_s, N_c, rho, pgam):
+    """Unclamped droplet slope ``LAMC`` and its bounds (:1690-1697)."""
     gamma_ratio = (pgam + 1.0) * (pgam + 2.0) * (pgam + 3.0)
     cons26 = jnp.pi / 6.0 * constants.rho_water
     lamc = safe_pow(cons26 * (N_c / rho) * gamma_ratio / qc_s, 1.0 / 3.0)
     lammin = (pgam + 1.0) / _M2005_DROP_DIAM_MAX
     lammax = (pgam + 1.0) / _M2005_DROP_DIAM_MIN
-    lam_b = jnp.where(lamc < lammin, lammin, lammax)
-    n_bound = lam_b ** 3 * qc_s / gamma_ratio / cons26 * rho
-    clamped = active & ((lamc < lammin) | (lamc > lammax))
-    return pgam, nu, jnp.where(clamped, n_bound, N_c)
+    return lamc, lammin, lammax, gamma_ratio, cons26
 
 
 def autoconversion_sb2001(q_c, q_r, N_c_eff, rho):
@@ -2001,6 +2154,12 @@ _MG2_ICE_D_MIN_M = 1.0e-6      # ice_lambda_bounds = 1/[2 dcs, 1 um] (micro_mg_u
 _MG2_MIN_MEAN_MASS_ICE = 1.0e-20  # min_mean_mass_ice [kg] (micro_mg_utils.F90:174)
 
 
+def mg2_ice_lambda_bounds(dcs):
+    """CAM6 MG2 cloud-ice slope bounds ``ice_lambda_bounds = 1/[2 dcs, 1 um]``
+    (micro_mg_utils.F90:294) as ``(lami_min, lami_max)`` [1/m]."""
+    return 1.0 / (2.0 * dcs), 1.0 / _MG2_ICE_D_MIN_M
+
+
 def mg2_ice_slope(q_i, N_i, rho_ice, dcs, log_width=0.0):
     """MG2 ``size_dist_param_basic(mg_ice_props, qiic, niic, lami)``
     (micro_mg2_0.F90:1333) -> ``(niic, lami)``: ``N_i <= q_i/1e-20 kg``, then
@@ -2017,9 +2176,8 @@ def mg2_ice_slope(q_i, N_i, rho_ice, dcs, log_width=0.0):
     No invariant is lost: the slope stays inside the bounds to O(width).
     Default width 0.01 approved by user 2026-10-21."""
     return _mg2_size_dist_basic(jnp.clip(q_i, 0.0), jnp.clip(N_i, 0.0),
-                                rho_ice * jnp.pi, 1.0 / (2.0 * dcs),
-                                1.0 / _MG2_ICE_D_MIN_M, _MG2_MIN_MEAN_MASS_ICE,
-                                log_width=log_width)
+                                rho_ice * jnp.pi, *mg2_ice_lambda_bounds(dcs),
+                                _MG2_MIN_MEAN_MASS_ICE, log_width=log_width)
 
 
 def mg2_deposition_limiter(q_v, T, qvi, q_c, qcrat, vap_dep, mnuccd, nnuccd, dt,
@@ -2699,7 +2857,211 @@ def rain_evaporation_m2005(q_v, q_r, N_r, q_sat, T, p, rho, config, dt=None):
            * safe_pow(lamr, -cons34))
     )
     evap = epsr * jnp.maximum(q_sat - q_v, 0.0) / ab
-    evap = jnp.where(qr_pos > 1.0e-14, evap, 0.0)          # SAM QSMALL skip
+    evap = jnp.where(qr_pos >= _M2005_QSMALL, evap, 0.0)  # EPSR only where QR >= QSMALL (:1990, :3455)
     if dt is not None:
         evap = jnp.minimum(evap, qr_pos / jnp.maximum(dt, 1.0e-12))
     return evap
+
+
+# --- gSAM 1.8.8 M2005, liquid only (doicemicro=.false. => ILIQ=1), SB2001
+# warm rain (dosb_warm_rain=.true. => IRAIN=1), specified droplet number
+# (dopredictNc=.false. => INUM=1): SRC/MICRO_M2005/module_mp_graupel.f90 ---
+_M2005_SMALL_REMOVAL_RH = 0.9     # small liquid evaporated where q_v/q_sat < 0.9 (:1453, :4669) [-]
+_M2005_SMALL_REMOVAL_Q = 1.0e-8   # ... when below 1e-8 kg/kg (:1454-1463, :4670-4679) [kg/kg]
+_M2005_FALL_FILL_MIN = 1.0e-10    # fall speed below this takes the level above's (:4282-4310) [m/s]
+_M2005_STOKES_DENOM = 18.0        # ACN = g*rho_w/(18*mu), Stokes droplet fall speed (:1546)
+
+
+def m2005_rain_psd(q_r, N_r, rho, lamr_min, lamr_max):
+    """M2005 rain slope with gSAM's number reset at the slope bounds.
+
+    Port of module_mp_graupel.f90:1638-1650 (identical cold branch
+    :2548-2560, post-step :4772-4783).  Where ``q_r >= QSMALL``::
+
+        LAMR = (pi rho_w NR/QR)^(1/3)          (NR per kg = N_r/rho)
+        LAMR < LAMMINR or > LAMMAXR:  LAMR = bound,
+                                      N0RR = LAMR^4 QR/(pi rho_w), NR = N0RR/LAMR
+
+    Returns ``(lamr, N_r_adj)``; ``N_r`` per-VOLUME [1/m^3] in and out.  Where
+    ``q_r < QSMALL`` ``N_r_adj = N_r`` (``lamr`` is a placeholder, unused).
+    """
+    active = q_r >= _M2005_QSMALL
+    qr_s = jnp.where(active, q_r, 1.0)
+    lamr = safe_pow(jnp.pi * constants.rho_water * (N_r / rho) / qr_s, 1.0 / 3.0)
+    lam_b = jnp.where(lamr < lamr_min, lamr_min, lamr_max)
+    clamped = active & ((lamr < lamr_min) | (lamr > lamr_max))
+    n_bound = lam_b ** 4 * qr_s / (jnp.pi * constants.rho_water) / lam_b * rho
+    return (jnp.where(clamped, lam_b, lamr),
+            jnp.where(clamped, n_bound, N_r))
+
+
+def _m2005_fill_down(v):
+    """``F(K) = F(K+1)`` where ``F(K) < 1e-10``, top to bottom (:4282-4310).
+
+    ``v`` is (ncol, nlev) TOP-DOWN, so the level above is ``k-1``; the top level
+    keeps its own value; the fill propagates (a filled level feeds the next).
+    """
+    def step(prev, x):
+        cur = jnp.where(x < _M2005_FALL_FILL_MIN, prev, x)
+        return cur, cur
+
+    _, rest = jax.lax.scan(step, v[:, 0], v[:, 1:].T)
+    return jnp.concatenate([v[:, :1], rest.T], axis=1)
+
+
+def m2005_liquid_step(T, q_v, q_c, q_r, N_r, p, rho, dz, dt, N_c_spec, params,
+                      n_substeps_max):
+    """One gSAM M2005 call, liquid only, SB2001 warm rain, specified N_c.
+
+    Port of gSAM 1.8.8 ``M2005MICRO_GRAUPEL`` (SRC/MICRO_M2005/
+    module_mp_graupel.f90) as ``micro_proc`` runs it with ``doicemicro=.false.``
+    (ILIQ=1), ``dosb_warm_rain=.true.`` (IRAIN=1), ``dopredictNc=.false.``
+    (INUM=1, N_c = ``N_c_spec``) and ``dofix_pgam=.false.``; ``ISATADJ=1`` (the
+    caller runs :func:`saturation_adjustment_gsam` first, as micro_proc does).
+    With every ice species absent, the warm (:1609-2214) and cold (:2525-3790)
+    branches compute the same liquid processes (the cold branch's ice-forming
+    terms are zeroed by ILIQ=1, :3545-3553), so one path serves every T:
+
+    1. per level: liquid below 1e-8 kg/kg evaporates where q_v/q_sat < 0.9
+       (q_sat at the incoming T, :1446-1463), then amounts below QSMALL are
+       zeroed (rain number with them);
+    2. rain slope with the number reset at its bounds (:func:`m2005_rain_psd`),
+       droplet shape and slope (:func:`m2005_cloud_droplet_psd`);
+    3. PRC/NPRC1 (:func:`autoconversion_sb2001`), PRA (:func:`accretion_sb2001`),
+       NRAGG (:func:`self_collection_breakup_sb2001`), PRE
+       (:func:`rain_evaporation_m2005`, q_sat and the psychrometric term from
+       step 1, transport properties at the post-removal T);
+    4. q_c conservation (PRC, PRA scaled; NPRC1 is NOT, :2135-2141), q_r
+       conservation (PRE scaled, :2165-2171), tendencies, NSUBR (:2185-2190);
+    5. sedimentation of rain mass+number and cloud mass from the POST-source
+       state (:4131-4450): mass- and number-weighted fall speeds (rain capped
+       at 9.1 (rho_su/rho)^0.54 m/s; droplets Stokes), filled down below the
+       lowest hydrometeor, ``NSTEP = int(max V dt/dz + 1)`` explicit upwind
+       sub-steps per species with the speeds held fixed, surface fallout of
+       rain AND cloud = precipitation;
+    6. state update, then the step-1 removal again on the new state (:4664-
+       4679), QSMALL zeroing, and the rain-number reset at the slope bounds.
+
+    ``N_r`` is per-VOLUME [1/m^3] in and out (gSAM's per-kg NR3D times rho).
+    Arrays are (ncol, nlev) TOP-DOWN (surface last).  ``params`` supplies the
+    gSAM M2005 rain constants (AR, BR, F1R, F2R, LAMMINR/LAMMAXR, RHOSU, the
+    NRAGG constants): a ``MorrisonConfig`` at the sam flavour.  The
+    data-dependent ``NSTEP`` runs in a fixed ``n_substeps_max`` loop (passes
+    past a column's own count are masked); the per-column REQUIRED count is
+    returned so the caller can refuse a column that needs more.  The reused
+    sedimentation routine floors the layer thickness at 1 m
+    (``sedimentation_tendency``); gSAM uses the actual ``dz``, so the port is
+    NOT faithful for layers thinner than 1 m.
+
+    Returns ``(T, q_v, q_c, q_r, N_r, precipitation [kg/m^2/s], required
+    sub-steps (ncol,))``.  Piecewise differentiable (gates are ``jnp.where``
+    with safe placeholders).
+    """
+    def remove_small(T, q_v, q, sub):
+        rm = sub & (q < _M2005_SMALL_REMOVAL_Q)
+        return (jnp.where(rm, T - q * constants.L_v / constants.c_pd, T),
+                jnp.where(rm, q_v + q, q_v), jnp.where(rm, 0.0, q))
+
+    # 1. preamble (:1436-1525); QVQVS is evaluated ONCE, before either removal
+    q_sat = saturation_specific_humidity(T, p)
+    sub = q_v / q_sat < _M2005_SMALL_REMOVAL_RH
+    T, q_v, q_r = remove_small(T, q_v, q_r, sub)
+    T, q_v, q_c = remove_small(T, q_v, q_c, sub)
+    q_c = jnp.where(q_c < _M2005_QSMALL, 0.0, q_c)
+    rain_zero = q_r < _M2005_QSMALL
+    q_r = jnp.where(rain_zero, 0.0, q_r)
+    N_r = jnp.where(rain_zero, 0.0, N_r)
+    _, mu, _ = _air_transport_props(T, p, rho)
+    dum54 = safe_pow(params.rho_su / jnp.clip(rho, _RHO_FLOOR), _FALL_RHO_EXPONENT)
+    arn = params.fall_a_r * dum54
+    acn = constants.g * constants.rho_water / (_M2005_STOKES_DENOM * mu)
+
+    # 2. size distributions (:1632-1708); N_c specified (INUM=1, :1616)
+    N_r = jnp.maximum(0.0, N_r)
+    _, N_r = m2005_rain_psd(q_r, N_r, rho, params.lamr_min, params.lamr_max)
+    N_c = N_c_spec * jnp.ones_like(q_c)
+    _, _, N_c_adj = m2005_cloud_droplet_psd(q_c, N_c, rho)
+
+    # 3. process rates
+    prc, nprc1, _ = autoconversion_sb2001(q_c, q_r, N_c, rho)
+    pra = accretion_sb2001(q_c, q_r, rho)
+    nragg = self_collection_breakup_sb2001(N_r, q_r, rho, params)
+    pre = -rain_evaporation_m2005(q_v, q_r, N_r, q_sat, T, p, rho, params)
+
+    # 4. conservation (:2135-2171), tendencies (:2175-2190).  gSAM scales PRC
+    # and PRA but NOT NPRC1 when the q_c limiter binds (:2135-2141); kept.
+    dum = (prc + pra) * dt
+    lim = (dum > q_c) & (q_c >= _M2005_QSMALL)
+    ratio = q_c / jnp.where(lim, dum, 1.0)
+    prc = jnp.where(lim, prc * ratio, prc)
+    pra = jnp.where(lim, pra * ratio, pra)
+    dum = (-pre - pra - prc) * dt
+    lim = (dum > q_r) & (q_r >= _M2005_QSMALL)
+    ratio = (q_r / dt + pra + prc) / jnp.where(lim, -pre, 1.0)
+    pre = jnp.where(lim, pre * ratio, pre)
+    qv_t = -pre
+    t_t = pre * constants.L_v / constants.c_pd
+    qc_t = -pra - prc
+    qr_t = pre + pra + prc
+    nr_kg = N_r / rho
+    nr_t = nprc1 / rho + nragg / rho
+    evap = pre < 0.0
+    nsubr = (jnp.maximum(-1.0, pre * dt / jnp.where(evap, q_r, 1.0))
+             * nr_kg / dt)
+    nr_t = nr_t + jnp.where(evap, nsubr, 0.0)
+
+    # 5. sedimentation from the post-source state (:4131-4450)
+    dumr = q_r + qr_t * dt
+    dumfnr = jnp.maximum(0.0, nr_kg + nr_t * dt)
+    dumc = q_c + qc_t * dt
+    on_r = dumr >= _M2005_QSMALL
+    dumr_s = jnp.where(on_r, dumr, 1.0)
+    dlamr = jnp.clip(
+        safe_pow(jnp.pi * constants.rho_water * dumfnr / dumr_s, 1.0 / 3.0),
+        params.lamr_min, params.lamr_max)
+    cons4 = math.gamma(4.0 + params.fall_b_r) / 6.0
+    cons6 = math.gamma(1.0 + params.fall_b_r)
+    lam_br = dlamr ** params.fall_b_r
+    vcap = _UMR_FALL_CAP * dum54
+    umr = jnp.minimum(jnp.where(on_r, arn * cons4 / lam_br, 0.0), vcap)
+    unr = jnp.minimum(jnp.where(on_r, arn * cons6 / lam_br, 0.0), vcap)
+    on_c = dumc >= _M2005_QSMALL
+    dumc_s = jnp.where(on_c, dumc, 1.0)
+    pgam, _, _ = m2005_cloud_droplet_psd(dumc_s, N_c_adj, rho)
+    lamc, lammin, lammax, _, _ = _m2005_cloud_slope(
+        dumc_s, jnp.maximum(0.0, N_c_adj), rho, pgam)
+    lamc2 = jnp.clip(lamc, lammin, lammax) ** 2
+    # gSAM UMC = ACN*GAMMA(4+BCN+PGAM)/(LAMC**BCN*GAMMA(PGAM+4)), UNC with
+    # GAMMA(1+BCN+PGAM)/GAMMA(PGAM+1); Stokes BCN = 2 makes each ratio the
+    # exact product below.
+    umc = jnp.where(on_c, acn * (pgam + 4.0) * (pgam + 5.0) / lamc2,  # coeff-ok: Gamma(p+6)/Gamma(p+4), BCN=2
+                    0.0)
+    unc = jnp.where(on_c, acn * (pgam + 1.0) * (pgam + 2.0) / lamc2, 0.0)
+    umr, unr, umc, unc = (_m2005_fill_down(v) for v in (umr, unr, umc, unc))
+    sed_r, sfc_r, req_r = sedimentation_tendency(
+        dumr, rho, umr, dz, dt=dt, return_surface_flux=True,
+        n_substeps_max=n_substeps_max, cfl_speed=unr, return_substeps=True)
+    sed_nr = sedimentation_tendency(
+        dumfnr, rho, unr, dz, dt=dt, n_substeps_max=n_substeps_max,
+        cfl_speed=umr)
+    sed_c, sfc_c, req_c = sedimentation_tendency(
+        dumc, rho, umc, dz, dt=dt, return_surface_flux=True,
+        n_substeps_max=n_substeps_max, cfl_speed=unc, return_substeps=True)
+
+    # 6. update (:4512-4535) and post-step cleanup (:4664-4783)
+    q_c = q_c + (qc_t + sed_c) * dt
+    q_r = q_r + (qr_t + sed_r) * dt
+    nr_kg = nr_kg + (nr_t + sed_nr) * dt
+    T = T + t_t * dt
+    q_v = q_v + qv_t * dt
+    sub = q_v / saturation_specific_humidity(T, p) < _M2005_SMALL_REMOVAL_RH
+    T, q_v, q_r = remove_small(T, q_v, q_r, sub)
+    T, q_v, q_c = remove_small(T, q_v, q_c, sub)
+    q_c = jnp.where(q_c < _M2005_QSMALL, 0.0, q_c)
+    rain_zero = q_r < _M2005_QSMALL
+    q_r = jnp.where(rain_zero, 0.0, q_r)
+    nr_kg = jnp.where(rain_zero, 0.0, jnp.maximum(0.0, nr_kg))
+    _, N_r = m2005_rain_psd(q_r, nr_kg * rho, rho, params.lamr_min,
+                            params.lamr_max)
+    return (T, q_v, q_c, q_r, N_r, sfc_r + sfc_c,
+            jnp.maximum(req_r, req_c))

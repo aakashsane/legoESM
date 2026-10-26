@@ -60,8 +60,7 @@ HARD_SAT_GUARD_DEFAULTS = {
 # Schemes carrying the guard (kept sorted; used in the fail-loud messages below
 # and asserted against the factory by the ratchet).
 HARD_SAT_GUARD_SCHEMES = (
-    "ml_emulator", "morrison", "p3", "seifert_beheng",
-    "sundqvist", "thompson",
+    "ml_emulator", "morrison", "p3", "sundqvist", "thompson",
 )
 # SHRINK-ONLY exemptions.  Each reason was verified in the scheme's own source,
 # not inferred from its name (CLAUDE.md: every allow-list reason string is a
@@ -105,6 +104,16 @@ HARD_SAT_GUARD_EXEMPT = {
         "linearised supersaturation in every CFL subcycle. KesslerConfig keeps "
         "the three guard fields only so an old deck fails loudly: "
         "kessler.py::_require_oracle_defaults raises on any non-default value."
+    ),
+    "seifert_beheng": (
+        "The scheme is gSAM 1.8.8 M2005 (liquid only, SB2001 warm rain): "
+        "seifert_beheng.py calls saturation_adjustment_gsam (gSAM's "
+        "satadj_liquid, a Newton solve onto the liquid saturation curve that "
+        "condenses AND evaporates) on EVERY call before any process rate, so "
+        "the state never leaves the call super-saturated w.r.t. liquid. The "
+        "opt-in guard has no gSAM counterpart: setting it raises (oracle port "
+        "2026-10-20; the guard fields stay on SeifertBehengConfig at their "
+        "standard defaults)."
     ),
     "none": (
         "microphysics='none' has NO scheme function at all -- "
@@ -155,6 +164,9 @@ __param_spec__ = {
     "MorrisonConfig": {
         "scheme_key": "atm.micro.MorrisonConfig",
         "excluded": {
+            "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
+            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
+            "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
             "cam_qsat_cap_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             # Fall-speed power-law EXPONENTS feed math.gamma(4 + b) / math.gamma(1 + b)
             # (morrison.py, _warm_rain.py) to precompute the cons* moment factors.
@@ -301,6 +313,9 @@ __param_spec__ = {
     "SeifertBehengConfig": {
         "scheme_key": "atm.micro.SeifertBehengConfig",
         "excluded": {
+            "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
+            "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
+            "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
             "autoconversion_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "breakup_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
@@ -323,6 +338,11 @@ __param_spec__ = {
         "scheme_key": "atm.micro.SundqvistConfig",
         "excluded": {
             "sigmoid_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
+            # Zhao-Carr namelist coefficients added by the oracle port; whether
+            # (and within which bounds) they are trainable is a pending user decision.
+            "psautco": "physics: Zhao-Carr namelist coefficient; trainability not yet decided",
+            "wminco_liquid": "physics: Zhao-Carr namelist coefficient; trainability not yet decided",
+            "wminco_ice": "physics: Zhao-Carr namelist coefficient; trainability not yet decided",
         },
         "params": {
             # PRIMARY large-scale-condensation knobs (Sundqvist et al. 1989).
@@ -423,36 +443,41 @@ class KesslerConfig(NamedTuple):
 
 
 class SundqvistConfig(NamedTuple):
-    """Configuration for Sundqvist large-scale condensation."""
-    rh_crit: float = 0.8              # Critical relative humidity
-    sigmoid_sharpness: float = 20.0   # Sharpness for smooth activation
-    auto_rate: float = 1e-3           # Autoconversion rate c_0 [1/s]
-    # Critical cloud water for autoconversion: P_auto = c_0·q_c·
-    # (1 − exp(−(q_c/q_c,crit)²)) (Sundqvist 1989).  Suppresses
-    # autoconversion below q_c,crit (drizzle forms only once cloud water
-    # is large enough).  0 → the linear no-threshold limit.
-    qc_crit: float = 5e-4             # [kg/kg]
-    evap_coeff: float = 5e-4          # Sub-cloud evaporation coefficient
+    """Configuration for Sundqvist large-scale microphysics.
+
+    The precipitation stage is a port of the Zhao-Carr scheme (ccpp-physics
+    v7.0.1 ``zhaocarr_precpd_run``); see ``sundqvist.py`` for the field ->
+    oracle-name mapping.  The oracle hard-codes ``qc_crit`` = 3e-4,
+    ``coalescence_enh_coeff`` = 300 and ``bergeron_enh_coeff`` = 0.5.
+    """
+    rh_crit: float = 0.8              # Critical relative humidity (oracle u00k)
+    # Smooth RH_crit gate of the condensation surrogate and of the precipitation
+    # evaporation; the oracle is its hard-switch limit (sharpness -> inf).
+    sigmoid_sharpness: float = 20.0
+    auto_rate: float = 1e-3           # Liquid release rate c_0 [1/s] (oracle prautco)
+    # Critical cloud water m_r of the SBK89 release
+    # (1 - exp(-(m*F1*F2/(m_r*max(b, 0.01)))^2)) [kg/kg] (oracle 1/cmr).
+    qc_crit: float = 5e-4
+    # Rain-evaporation coefficient (oracle evpco):
+    # E = evap_coeff*sqrt(1/dt)*(rh_crit - RH)*(rho dz dt)*sqrt(P_r).
+    evap_coeff: float = 5e-4
     # --- SBK89 (Sec. 5) precipitation-release enhancements ---
-    # Coalescence F1 = 1 + c1·sqrt(P) with P the precipitation flux falling
-    # in from above [kg m^-2 s^-1]: existing precipitation collects cloud
-    # water and accelerates release (F1 ≈ 6 at 1 mm/h with the default).
-    # 0 → enhancement off (plain Sundqvist base autoconversion).
+    # Coalescence F1 = 1 + c1*sqrt(P/dt), P the precipitation [kg m^-2] per
+    # step falling in from above (oracle c1).
     coalescence_enh_coeff: float = 300.0   # c1 [(kg m^-2 s^-1)^-1/2]
-    # Bergeron-Findeisen F2 = 1 + c2·exp(−((T − T_peak)/T_width)²): a smooth
-    # mixed-phase window peaking near −15 °C, where the ice-liquid saturation
-    # difference e_sw − e_si (the Bergeron growth driver) is largest; decays
-    # to ~1 above freezing by construction.  0 → enhancement off.
-    bergeron_enh_coeff: float = 3.0        # peak amplification [-]
+    # Bergeron-Findeisen F2 = 1 + c2*sqrt(min(max(0, 268 K - T), 20 K)) (oracle c2).
+    bergeron_enh_coeff: float = 3.0        # c2 [K^-1/2]
+    # Parameters of the PRE-PORT Gaussian F2; no counterpart in the oracle.
+    # Setting either to a non-default value raises.
     bergeron_T_peak_K: float = constants.T_freeze - 15.0   # [K]
-    bergeron_T_width_K: float = 7.0        # Gaussian half-width [K]
+    bergeron_T_width_K: float = 7.0        # [K]
     # --- Hard (iterated) saturation-adjustment guard (opt-in) ---
     # The SAME guard the five bulk warm-rain schemes carry, with the SAME
     # defaults, applied to Sundqvist's OWN smooth condensation rate through the
     # shared ``_warm_rain.hard_saturation_blend`` (no second implementation).
-    # Default OFF => byte-identical to the published SBK89 smooth path: a
-    # STATIC Python ``if`` in ``diagnose_sundqvist_process_rates``, so the OFF
-    # path never even traces the hard branch.
+    # Default OFF => the smooth condensation surrogate alone: a STATIC Python
+    # ``if`` in ``sundqvist._sundqvist_step``, so the OFF path never even
+    # traces the hard branch.
     #
     # What it changes when ON (Sundqvist is NOT the same failure mode as the
     # five bulk schemes -- documented honestly): Sundqvist's smooth branch
@@ -484,10 +509,24 @@ class SundqvistConfig(NamedTuple):
     hard_saturation_adjustment: bool = False
     hard_sat_adjust_threshold: float = 1.1      # blend knob here, NOT an on/off trigger [-]
     hard_sat_max_heating_K: float = 5.0         # per-step latent-heating cap [K]
+    # --- Zhao-Carr ice route and conversion thresholds ---
+    # Ice -> snow autoconversion coefficient (oracle psautco) [1/s];
+    # psaut = psautco*dt*exp(0.025*(T - 273.16))*max(0, cwm - wmini).
+    psautco: float = 0.0
+    # Condensate left unconverted, wmin = wminco*p/1e5 [kg/kg] (oracle
+    # wminco(1) liquid, wminco(2) ice).
+    wminco_liquid: float = 0.0
+    wminco_ice: float = 0.0
 
 
 class SeifertBehengConfig(NamedTuple):
-    """Configuration for Seifert-Beheng two-moment warm rain."""
+    """Configuration for Seifert-Beheng two-moment warm rain.
+
+    The scheme is gSAM 1.8.8 M2005 (liquid only, SB2001 warm rain, specified
+    droplet number), which reads ONLY ``Nc_0`` (gSAM's NDCNST, per-volume).
+    Every other field belonged to the former proxy rates and has no gSAM
+    counterpart: ``seifert_beheng_microphysics`` raises if one is set.
+    """
     k_au: float = 6e2                # Autoconversion rate [1/(kg*s)]
     x_star: float = 2.6e-10          # Separation mass [kg]
     # ``N_c`` per-volume: see ``_warm_rain.effective_Nc`` Notes.
@@ -513,6 +552,12 @@ class SeifertBehengConfig(NamedTuple):
     hard_saturation_adjustment: bool = False
     hard_sat_adjust_threshold: float = 1.1      # RH trigger q_v > thr*q_sat [-]
     hard_sat_max_heating_K: float = 5.0         # per-step latent-heating cap [K]
+    # gSAM satadj_liquid smooth switches (RULE 5), as MorrisonConfig's; hard
+    # limit = gSAM exactly: math.inf, math.inf, 0.0.  All three values approved
+    # by user 2026-10-21.
+    gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step [-]
+    gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
+    gsam_satadj_p_min_width_pa: float = 100.0     # p >= 5000 Pa gate width [Pa]
 
 
 # Unset Morrison DCS per flavour [m] (MorrisonConfig.ice_snow_d_auto=None,
@@ -558,10 +603,11 @@ class MorrisonConfig(NamedTuple):
     #   "kk2000" (default) = Khairoutdinov-Kogan 2000, the SAM M2005
     #     DEFAULT (IRAIN=0): PRC=1350·qc^2.47·(Nc[#/cm³])^-1.79,
     #     PRA=67·(qc·qr)^1.15. Faithful to the gSAM oracle.
-    #   "seifert_beheng" = the legacy simplified SB proxy (k_au·q_c^2·onset
-    #     sigmoid autoconv + bilinear k_ac·rho·q_c·q_r accretion). NOT the
-    #     published universal functions — only the au/x_* number closure is
-    #     SB-faithful.
+    #   "seifert_beheng" = the same law as "seifert_beheng_sb2001" (below);
+    #     it was a simplified proxy (k_au·q_c^2 onset sigmoid + bilinear
+    #     k_ac accretion) until the 2026-10 oracle port.  The proxy fields
+    #     k_au / x_star / k_ac / autoconversion_sharpness have no gSAM
+    #     counterpart and raise if set under it.
     #   "seifert_beheng_sb2001" = Seifert & Beheng (2001) as gSAM M2005 runs
     #     it (IRAIN=1, module_mp_graupel.f90:1830-1844, :1955-1962): the
     #     phi_au / phi_ac universal-function rates with gSAM's gates, the
@@ -601,8 +647,9 @@ class MorrisonConfig(NamedTuple):
     subgrid_autoconversion: bool = False
     subgrid_rh_crit: float = 0.7     # critical RH for the in-cloud cf (Sundqvist)
     subgrid_cf_min: float = 0.1      # cf floor (caps enhancement at cf_min^-1.47)
-    # Warm rain (Seifert-Beheng knobs; consumed only when
-    # warm_rain_scheme="seifert_beheng")
+    # Former Seifert-Beheng PROXY knobs: k_au / x_star / k_ac are read by no
+    # law (warm_rain_scheme="seifert_beheng" now runs SB2001 as gSAM does and
+    # raises if they are set); Nc_0 is the specified droplet number.
     k_au: float = 6e2
     x_star: float = 2.6e-10
     Nc_0: float = 1e8
@@ -917,7 +964,8 @@ class MorrisonConfig(NamedTuple):
     # saturation curve where q_v > hard_sat_adjust_threshold * q_sat, draining
     # local super-saturation pools the smooth sigmoid path cannot (conserving
     # c_pd*T + L_v*q_v exactly).  Default OFF => byte-identical to the smooth
-    # path.  Threaded from ExperimentConfig via
+    # path (mg flavour).  The sam flavour runs gSAM's satadj_liquid (smooth by default, RULE 5) on
+    # every call and REJECTS this guard.  Threaded from ExperimentConfig via
     # ``apply_microphysics_experiment_flags``.  See
     # ``_warm_rain.saturation_adjustment``.
     hard_saturation_adjustment: bool = False
@@ -1038,6 +1086,12 @@ class MorrisonConfig(NamedTuple):
     # model's only liquid source; ``ExperimentConfig.validate_strict`` refuses
     # that pairing rather than letting it run.
     liquid_from_closure: bool = False
+    # morrison_flavor="sam" gSAM satadj_liquid smooth switches (RULE 5; see
+    # _warm_rain.saturation_adjustment_gsam).  Hard limit = gSAM exactly:
+    # math.inf, math.inf, 0.0.  All three values approved by user 2026-10-21.
+    gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step, on (q_t - q_s)/q_sat [-]
+    gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
+    gsam_satadj_p_min_width_pa: float = 100.0     # on/off, p >= 5000 Pa gate width [Pa]
     # MG2's CAM Goff-Gratch q_sat = 1 cap (RULE 5, limiter class): sharpness
     # on e_sat/p; math.inf = CAM's hard cap.  Value approved by user 2026-10-21.
     cam_qsat_cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS

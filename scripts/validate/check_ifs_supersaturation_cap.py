@@ -11,7 +11,9 @@ of the three lanes that run legoESM's atmospheric physics:
   applied to the DEPOSITION target of morrison / thompson (p3: faithful WRF P3, no allowance).
 * **LIQUID** — no liquid super-saturation: the excess is condensed onto the
   saturation curve.  Implemented as the in-scheme
-  ``hard_saturation_adjustment`` guard, which is opt-in.
+  ``hard_saturation_adjustment`` guard, which is opt-in; the sam-flavour
+  Morrison instead runs gSAM's ``satadj_liquid`` (smooth by default) on every call and
+  refuses the opt-in (checked as a refusal, ``LIQUID_GUARD_REJECTED``).
 
 Three lanes, defined by which code builds the microphysics config:
 
@@ -82,6 +84,18 @@ ICE_SCHEMES = ("morrison", "thompson")
 LIQUID_SCHEMES = ICE_SCHEMES + ("p3",)
 ICE_FIELD = "homogeneous_ice_supersaturation"
 LIQUID_FIELD = "hard_saturation_adjustment"
+# Morrison's sam flavour (the CRM lane's configuration) runs gSAM's
+# liquid saturation adjustment (smooth by default, RULE 5) (satadj_liquid) on every call and REJECTS the
+# opt-in guard, which has no gSAM counterpart: there the liquid half checks the
+# rejection instead of an ON/OFF difference.
+LIQUID_GUARD_REJECTED = ("morrison",)
+
+
+def _is_satadj_refusal(err: ValueError) -> bool:
+    """True only for the sam-flavour refusal of the liquid guard, so an
+    unrelated ValueError cannot certify it."""
+    return "satadj_liquid" in str(err) and LIQUID_FIELD in str(err)
+
 
 # Cold cirrus cell: 215 K at 200 hPa, ice-super-saturated, ICE-FREE (so the
 # allowance applies) — the regime the ramp exists for.
@@ -308,6 +322,24 @@ def section_2_load_bearing() -> list[str]:
           f"control at RH_liq={LIQUID_NOOP_RH:.2f}")
     for scheme in LIQUID_SCHEMES:
         q_vw, restw = _column(WARM_T_K, WARM_P_PA, WARM_RH_LIQ * q_sat_l)
+        if scheme in LIQUID_GUARD_REJECTED:
+            fn, cfg = _scheme_fn_and_config(scheme)
+            T, hyd, p_full, p_half, rho, dz = restw
+            # control: the same column and config with the guard off runs
+            fn(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S, cfg())
+            try:
+                fn(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S,
+                   cfg(**{LIQUID_FIELD: True}))
+            except ValueError as e:
+                if not _is_satadj_refusal(e):
+                    raise
+                print(f"    {scheme}: {LIQUID_FIELD} rejected (gSAM "
+                      "satadj_liquid runs unconditionally)")
+            else:
+                failures.append(
+                    f"{scheme}: {LIQUID_FIELD}=True was accepted although the "
+                    "sam flavour runs gSAM's adjustment unconditionally")
+            continue
         on, off = _on_off(scheme, LIQUID_FIELD, q_vw, restw)
         delta = _report(f"{scheme}: super-saturated", on, off)
         rel = abs(delta) / max(abs(off), 1.0e-30)
@@ -491,6 +523,29 @@ def section_3_reachable() -> list[str]:
                 failures.append(
                     f"{label}/{scheme}: {LIQUID_FIELD} defaults to {liq!r}; it "
                     "is an opt-in and must default False")
+            if (scheme in LIQUID_GUARD_REJECTED
+                    and getattr(sub_on, "morrison_flavor", None) == "sam"):
+                # sam-flavour Morrison runs gSAM's satadj_liquid on every call
+                # and must REFUSE the guard the lane passed through: certify
+                # the refusal by calling the scheme with the lane's config.
+                fn_s, _ = _scheme_fn_and_config(scheme)
+                q_vw, (T, hyd, p_full, p_half, rho, dz) = _column(
+                    WARM_T_K, WARM_P_PA, 0.9 * float(
+                        thermo.saturation_specific_humidity(
+                            jnp.asarray(WARM_T_K), jnp.asarray(WARM_P_PA))))
+                # control: the lane's config with the guard off runs
+                fn_s(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S,
+                     sub_on._replace(**{LIQUID_FIELD: False}))
+                try:
+                    fn_s(T, q_vw, hyd, p_full, p_half, rho, dz, DT_S, sub_on)
+                except ValueError as e:
+                    if not _is_satadj_refusal(e):
+                        raise
+                    continue
+                failures.append(
+                    f"{label}/{scheme}: the sam-flavour config with "
+                    f"{LIQUID_FIELD}=True ran instead of being rejected")
+                continue
             if liq_on is not True:
                 failures.append(
                     f"{label}/{scheme}: asked for {LIQUID_FIELD}=True and the "

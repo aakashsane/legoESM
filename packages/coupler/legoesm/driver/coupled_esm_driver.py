@@ -300,6 +300,15 @@ class CoupledESMDriver:
 
     def setup(self) -> None:
         """Initialize all components."""
+        # 0. The CO2 box needs float64: an hourly increment is ~1e-6 of the
+        #    box, below what a float32 scalar can accumulate without
+        #    percent-level loss.  Refuse BEFORE any component is initialised.
+        if self.coupled_cfg.co2_tracer and not jax.config.read("jax_enable_x64"):
+            raise RuntimeError(
+                "The coupled CO2 box (co2_tracer=True) needs float64: enable "
+                "JAX x64 (JAX_ENABLE_X64=1 or "
+                "jax.config.update('jax_enable_x64', True)) before setup.")
+
         # 1. Atmosphere
         self._atm.setup()
 
@@ -1390,15 +1399,16 @@ class CoupledESMDriver:
         if not cfg.co2_tracer:
             return
 
-        # CO2 as ONE global well-mixed box (#1817, user decision 2026-10-26):
-        # a single scalar CO2 MOLE FRACTION [mol/mol], the unit the
-        # radiation override consumes.  No vertical/horizontal structure.
-        # float64: an hourly increment is ~1e-6 of the box, below what a
-        # float32 scalar can accumulate without percent-level flux loss.
-        self._co2_vmr = jnp.asarray(cfg.co2_ppmv_init * 1.0e-6,
-                                    dtype=jnp.float64)
+        # CO2 as ONE global well-mixed box (#1817, user decisions 2026-10-26):
+        # the prognostic state is the total atmospheric CO2 MASS [kg]; the
+        # mole fraction is derived from the CURRENT total air mass at each
+        # use, so the surface flux is the only thing that changes CO2 mass.
+        # float64 is required (checked at the top of ``setup``).
+        self._co2_mass = (jnp.asarray(cfg.co2_ppmv_init * 1.0e-6, jnp.float64)
+                          * (constants.M_CO2 / constants.M_air)
+                          * self._co2_air_mass(self._atm.state.p_s.data))
         logger.info(f"  CO2 box: init={cfg.co2_ppmv_init:.1f} ppmv "
-                    f"(global well-mixed scalar)")
+                    f"(global well-mixed CO2 mass {float(self._co2_mass):.4e} kg)")
 
     def _override_sst(self):
         """Replace the atmosphere's file-based SST with slab ocean SST."""
@@ -1896,9 +1906,9 @@ class CoupledESMDriver:
             cos_zen = jnp.full_like(p_s, 0.5)
 
         # CO2: prognostic or constant
-        if self.coupled_cfg.co2_tracer and hasattr(self, '_co2_vmr'):
+        if self.coupled_cfg.co2_tracer and hasattr(self, '_co2_mass'):
             # Well-mixed box: the surface sees the global scalar everywhere.
-            co2_ppmv = jnp.full_like(p_s, self._co2_vmr * 1.0e6)
+            co2_ppmv = jnp.full_like(p_s, self._co2_box_vmr() * 1.0e6)
         else:
             # Radiation's CO2 (GHG file / experiment trajectory, else config).
             from legoesm.core.coupling_fields import land_co2_ppmv
@@ -2460,39 +2470,45 @@ class CoupledESMDriver:
             w = jnp.where(own, w, 0.0)
         return global_sum_if_distributed(jnp.sum(w * x))
 
-    def _co2_box_increment(self, co2_flux, p_s, dt):
-        """Change of the well-mixed CO2 box mole fraction over ``dt`` [mol/mol].
+    def _co2_air_mass(self, p_s):
+        """Total atmospheric air mass [kg] = sum(dp_col * A) / g.
 
-        Sign convention: ``co2_flux`` [kgCO2/m2/s] is POSITIVE INTO THE
-        ATMOSPHERE (upward), so a positive flux raises the box.
-        d(CO2 mass) [kg] = sum(F * A) * dt; the box CO2 mass is
-        vmr * (M_CO2/M_air) * M_air_total with M_air_total = sum(dp * A) / g
-        (total, i.e. moist, air mass from p_s, as the retired tracer used).
+        KNOWN DIFFERENCE (user decision 2026-10-26): this is the TOTAL (moist)
+        air mass from p_s, as the retired 3-D tracer used.  A dry-air
+        denominator would give a mole fraction larger by the column water
+        vapour mass fraction (arithmetic estimate: ~25 kg/m2 of
+        ~1e4 kg/m2 of air, i.e. ~0.25 %; not measured in this model).
         """
         dp_col = jnp.sum(self._atm.sigma.layer_thickness_dp(p_s), axis=-1)
-        air_mass = self._owned_area_sum(dp_col) / constants.g       # [kg]
-        dmass_co2 = self._owned_area_sum(co2_flux) * dt              # [kg]
-        return dmass_co2 / air_mass / (constants.M_CO2 / constants.M_air)
+        return self._owned_area_sum(dp_col) / constants.g
 
-    def _co2_box_mass(self, p_s):
-        """Total atmospheric CO2 mass held by the box [kg]."""
-        dp_col = jnp.sum(self._atm.sigma.layer_thickness_dp(p_s), axis=-1)
-        air_mass = self._owned_area_sum(dp_col) / constants.g
-        return self._co2_vmr * (constants.M_CO2 / constants.M_air) * air_mass
+    def _co2_vmr_from_mass(self, co2_mass, p_s):
+        """Box CO2 mole fraction [mol/mol] from CO2 mass [kg] and current p_s."""
+        return co2_mass / self._co2_air_mass(p_s) / (
+            constants.M_CO2 / constants.M_air)
+
+    def _co2_box_vmr(self):
+        """Current box CO2 mole fraction [mol/mol] (air mass from current p_s)."""
+        return self._co2_vmr_from_mass(self._co2_mass, self._atm.state.p_s.data)
 
     def _step_co2_tracer(self, dt):
-        """Add the area-integrated surface CO2 flux to the global box."""
-        if not self.coupled_cfg.co2_tracer or not hasattr(self, '_co2_vmr'):
+        """Add the area-integrated surface CO2 flux to the box CO2 mass.
+
+        Sign convention: ``co2_flux`` [kgCO2/m2/s] is POSITIVE INTO THE
+        ATMOSPHERE (upward); d(CO2 mass) [kg] = sum(F * A) * dt.  No surface
+        response yet -> nothing is added.
+        """
+        if not self.coupled_cfg.co2_tracer or not hasattr(self, '_co2_mass'):
             return
         if self._last_sfc_response is None:
             return
-        self._co2_vmr = self._co2_vmr + self._co2_box_increment(
-            self._last_sfc_response.co2_flux, self._atm.state.p_s.data, dt)
+        self._co2_mass = self._co2_mass + self._owned_area_sum(
+            self._last_sfc_response.co2_flux) * dt
 
     def _update_co2_radiation(self):
         """Feed the CO2 box mole fraction to the next segment's radiation."""
-        if self.coupled_cfg.co2_tracer and hasattr(self, '_co2_vmr'):
-            self._atm._co2_vmr_override = float(self._co2_vmr)
+        if self.coupled_cfg.co2_tracer and hasattr(self, '_co2_mass'):
+            self._atm._co2_vmr_override = float(self._co2_box_vmr())
 
     def _segment_hook(self, driver, day, dt_segment):
         """Callback at each segment boundary: step ocean + coupler.
@@ -2624,14 +2640,14 @@ class CoupledESMDriver:
         GPU stalls per coupling segment.
         """
         sst = self._ocean_surface_KuvC()[0]
-        has_co2 = self.coupled_cfg.co2_tracer and hasattr(self, '_co2_vmr')
+        has_co2 = self.coupled_cfg.co2_tracer and hasattr(self, '_co2_mass')
         has_T_sfc = self._last_sfc_response is not None
 
         terms = [area_weighted_mean(sst, self._ocean_area_w),
                  jnp.min(sst), jnp.max(sst)]
         # co2: the box value that forces the radiation.
         if has_co2:
-            terms.append(jnp.asarray(self._co2_vmr, sst.dtype))
+            terms.append(jnp.asarray(self._co2_box_vmr(), sst.dtype))
         if has_T_sfc:
             terms.append(jnp.mean(self._last_sfc_response.T_sfc))
         host = np.asarray(jnp.stack(terms))
@@ -2955,9 +2971,9 @@ class CoupledESMDriver:
                 arrays["ocean_T_deep"] = np.asarray(
                     self._ocean_state.T_deep.data)
 
-        # CO2 well-mixed box (scalar mole fraction)
-        if hasattr(self, '_co2_vmr') and self._co2_vmr is not None:
-            arrays["co2_vmr"] = np.asarray(self._co2_vmr)
+        # CO2 well-mixed box (scalar CO2 mass [kg])
+        if hasattr(self, '_co2_mass') and self._co2_mass is not None:
+            arrays["co2_mass"] = np.asarray(self._co2_mass)
 
         # Surface state (land, ice, lake, accumulator, carbon) — flatten
         # the pytree into a dict of named arrays for serialization.
@@ -3036,8 +3052,13 @@ class CoupledESMDriver:
             raise ValueError(
                 f"Coupled checkpoint {coupled_path.name} carries the retired 3-D "
                 "'co2_field' CO2 tracer; atmospheric CO2 is now one global "
-                "well-mixed box ('co2_vmr', #1817).  Old CO2 checkpoints are "
+                "well-mixed box ('co2_mass', #1817).  Old CO2 checkpoints are "
                 "refused, not converted: restart this run from scratch.")
+        if self.coupled_cfg.co2_tracer and "co2_mass" not in data:
+            raise ValueError(
+                f"Coupled checkpoint {coupled_path.name} has no 'co2_mass' CO2 "
+                "box value but this run has co2_tracer=True; refusing to "
+                "restart CO2 from its initial value under a continued run.")
 
         # Dynamic 3D ocean (ckpt v2): restore the PROGNOSTIC LatLonCGridOceanState
         # leaves (T,S,u,v,eta,w + any active AB2/SOM/EKE/TKE history) from the
@@ -3121,8 +3142,8 @@ class CoupledESMDriver:
                 ),
             )
 
-        if "co2_vmr" in data:
-            self._co2_vmr = jnp.asarray(data["co2_vmr"])
+        if "co2_mass" in data:
+            self._co2_mass = jnp.asarray(data["co2_mass"], jnp.float64)
 
         # Restore surface state (land, ice, lake, accumulator, carbon) from its
         # flattened pytree leaves — atomic + drift-warned via the same helper

@@ -435,29 +435,86 @@ class TestCarbonRadiationCoupling(unittest.TestCase):
         rng = np.random.default_rng(0)
         return jnp.asarray(rng.normal(0.0, 1e-7, p_s.shape), p_s.dtype)
 
+    def _air_mass(self, driver, p_s, own=None):
+        """Independent total air mass [kg] = sum(dp_col * A) / g (numpy)."""
+        import numpy as np
+        from legoesm import constants
+        area = np.asarray(driver._atm.grid.grid_area, np.float64)
+        dp = np.asarray(driver._atm.sigma.layer_thickness_dp(p_s), np.float64)
+        w = area if own is None else area * own
+        return (dp.sum(-1) * w).sum() / constants.g
+
+    def test_co2_box_init_mass(self):
+        """#1817 decision 6: box = co2_ppmv_init as mass with the initial air mass."""
+        import numpy as np
+        from legoesm import constants
+        driver = _make_driver("slab_carbon", days=1)
+        self.assertEqual(np.ndim(driver._co2_mass), 0)  # one global scalar
+        self.assertEqual(driver._co2_mass.dtype, jnp.float64)
+        ppmv = driver.coupled_cfg.co2_ppmv_init
+        p_s = driver._atm.state.p_s.data
+        expected = (ppmv * 1e-6 * (constants.M_CO2 / constants.M_air)
+                    * float(driver._co2_air_mass(p_s)))
+        np.testing.assert_allclose(float(driver._co2_mass), expected, rtol=1e-12)
+        # The driver's air mass vs an independent numpy one (float32 state
+        # summed in a different order; same 1e-6 as the halo check below).
+        np.testing.assert_allclose(float(driver._co2_air_mass(p_s)),
+                                   self._air_mass(driver, p_s), rtol=1e-6)
+        np.testing.assert_allclose(float(driver._co2_box_vmr()) * 1e6, ppmv,
+                                   rtol=1e-12)
+
+    def test_co2_box_no_response_adds_nothing(self):
+        """#1817 decision 6: a step with no surface response leaves the box."""
+        driver = _make_driver("slab_carbon", days=1)
+        driver._last_sfc_response = None
+        m0 = float(driver._co2_mass)
+        driver._step_co2_tracer(3600.0)
+        self.assertEqual(float(driver._co2_mass), m0)
+
     def test_co2_box_mass_closure(self):
-        """#1817: box CO2 mass change == area-integrated flux * dt."""
+        """#1817: box CO2 mass change == area-integrated flux * dt, exactly."""
         import numpy as np
         from types import SimpleNamespace
         driver = _make_driver("slab_carbon", days=1)
-        self.assertEqual(np.ndim(driver._co2_vmr), 0)  # one global scalar
-        p_s = driver._atm.state.p_s.data
         flux = self._box_flux(driver)
         dt = 3600.0
         driver._last_sfc_response = SimpleNamespace(co2_flux=flux)
-        m0 = float(driver._co2_box_mass(p_s))
+        m0 = float(driver._co2_mass)
         driver._step_co2_tracer(dt)
-        m1 = float(driver._co2_box_mass(p_s))
+        m1 = float(driver._co2_mass)
         area = np.asarray(driver._atm.grid.grid_area, np.float64)
         expected = float((np.asarray(flux, np.float64) * area).sum() * dt)
         self.assertNotEqual(expected, 0.0)
         np.testing.assert_allclose(m1 - m0, expected, rtol=1e-9, atol=0.0)
 
+    def test_co2_box_mass_conserved_when_air_mass_changes(self):
+        """#1817 decision 1: air-mass change moves the mole fraction, not CO2 mass."""
+        import numpy as np
+        driver = _make_driver("slab_carbon", days=1)
+        state0 = driver._atm.state
+        p_s0 = state0.p_s.data
+        m0 = float(driver._co2_mass)
+        v0 = float(driver._co2_box_vmr())
+        driver._atm.state = state0._replace(
+            p_s=state0.p_s.replace(data=p_s0 * 1.01))
+        driver._last_sfc_response = None
+        driver._step_co2_tracer(3600.0)
+        self.assertEqual(float(driver._co2_mass), m0)
+        ratio = (float(driver._co2_air_mass(p_s0))
+                 / float(driver._co2_air_mass(p_s0 * 1.01)))
+        self.assertLess(ratio, 1.0 - 1e-3)  # the air mass really changed
+        np.testing.assert_allclose(float(driver._co2_box_vmr()), v0 * ratio,
+                                   rtol=1e-12)
+        driver._atm.state = state0
+
     def test_radiation_and_land_see_box_value(self):
-        """#1817: radiation, land forcing and the log all read the box scalar."""
+        """#1817: radiation, land forcing and the log all read the box."""
+        from legoesm import constants
         driver = _make_driver("slab_carbon", days=1)
         driver.run()  # populates the held radiation the forcing build needs
-        driver._co2_vmr = jnp.asarray(5.0e-4, driver._co2_vmr.dtype)
+        air = driver._co2_air_mass(driver._atm.state.p_s.data)
+        driver._co2_mass = jnp.asarray(
+            5.0e-4 * (constants.M_CO2 / constants.M_air) * air, jnp.float64)
         driver._update_co2_radiation()
         self.assertAlmostEqual(driver._atm._co2_vmr_override, 5.0e-4,
                                delta=1e-12)
@@ -468,59 +525,86 @@ class TestCarbonRadiationCoupling(unittest.TestCase):
                                500.0, delta=1e-3)
 
     def test_co2_box_grad_finite(self):
-        """#1817: d(box increment)/d(flux) = A dt / M_air_total / (M_CO2/M_air)."""
+        """#1817: d(vmr)/d(mass) and d(vmr)/d(p_s) finite; flux grad = A dt."""
         import numpy as np
+        from types import SimpleNamespace
         from legoesm import constants
         driver = _make_driver("slab_carbon", days=1)
         p_s = driver._atm.state.p_s.data
         flux = self._box_flux(driver)
         dt = 3600.0
-        g = np.asarray(jax.grad(
-            lambda f: driver._co2_box_increment(f, p_s, dt))(flux))
+        ratio = constants.M_CO2 / constants.M_air
+        m0 = driver._co2_mass
+        air = float(driver._co2_air_mass(p_s))
+        gm = float(jax.grad(lambda m: driver._co2_vmr_from_mass(m, p_s))(m0))
+        np.testing.assert_allclose(gm, 1.0 / air / ratio, rtol=1e-9)
         gp = np.asarray(jax.grad(
-            lambda ps: driver._co2_box_increment(flux, ps, dt))(p_s))
-        self.assertTrue(np.all(np.isfinite(g)) and np.all(np.isfinite(gp)))
-        self.assertTrue(np.any(gp != 0.0))
+            lambda ps: driver._co2_vmr_from_mass(m0, ps))(p_s))
+        self.assertTrue(np.all(np.isfinite(gp)) and np.any(gp != 0.0))
+
+        def mass_after(f):
+            driver._co2_mass = m0
+            driver._last_sfc_response = SimpleNamespace(co2_flux=f)
+            driver._step_co2_tracer(dt)
+            return driver._co2_mass
+
+        g = np.asarray(jax.grad(mass_after)(flux))
         area = np.asarray(driver._atm.grid.grid_area, np.float64)
-        dp = np.asarray(driver._atm.sigma.layer_thickness_dp(p_s), np.float64)
-        air = (dp.sum(-1) * area).sum() / constants.g
-        np.testing.assert_allclose(
-            g, area * dt / air / (constants.M_CO2 / constants.M_air), rtol=1e-6)
+        np.testing.assert_allclose(g, area * dt, rtol=1e-12)
         # MPAS-style halo: non-owned cells hold NaN; they must not reach the
         # value or the gradient.
-        from types import SimpleNamespace
         own = np.ones(p_s.shape, bool)
         own.reshape(-1)[::3] = False
         driver._atm._voronoi_layout = SimpleNamespace(
             owned_mask_cells=jnp.asarray(own))
         nan_flux = jnp.where(jnp.asarray(own), flux, jnp.nan)
         nan_ps = jnp.where(jnp.asarray(own), p_s, jnp.nan)
-        val = float(driver._co2_box_increment(nan_flux, nan_ps, dt))
-        air_own = (dp.sum(-1) * area * own).sum() / constants.g
-        exp_own = ((np.asarray(flux, np.float64) * area * own).sum() * dt
-                   / air_own / (constants.M_CO2 / constants.M_air))
-        np.testing.assert_allclose(val, exp_own, rtol=1e-6)
+        val = float(driver._co2_vmr_from_mass(m0, nan_ps))
+        np.testing.assert_allclose(
+            val, float(m0) / self._air_mass(driver, p_s, own) / ratio,
+            rtol=1e-6)
+        self.assertTrue(np.all(np.isfinite(np.asarray(
+            jax.grad(mass_after)(nan_flux)))))
         self.assertTrue(np.all(np.isfinite(np.asarray(jax.grad(
-            lambda f: driver._co2_box_increment(f, nan_ps, dt))(nan_flux)))))
+            lambda ps: driver._co2_vmr_from_mass(m0, ps))(nan_ps)))))
         driver._atm._voronoi_layout = None
+        driver._co2_mass = m0
 
-    def test_old_co2_field_checkpoint_refused(self):
-        """#1817: a checkpoint carrying the retired 3-D co2_field is refused."""
+    def test_co2_box_requires_x64(self):
+        """#1817 decision 3: the CO2 box refuses to set up without JAX x64."""
+        from unittest import mock
+        driver = _make_driver("slab_carbon", days=1)
+        jax.config.update("jax_enable_x64", False)
+        try:
+            with mock.patch.object(driver._atm, "setup") as atm_setup:
+                with self.assertRaisesRegex(RuntimeError, "x64"):
+                    driver.setup()
+                atm_setup.assert_not_called()  # refused before any component
+        finally:
+            jax.config.update("jax_enable_x64", True)
+
+    def test_co2_checkpoint_roundtrip_and_refusals(self):
+        """#1817 decisions 4: restore box mass; refuse co2_field / missing box."""
         import tempfile
         import numpy as np
         driver = _make_driver("slab_carbon", days=1)
         with tempfile.TemporaryDirectory() as d:
             arrays = driver.coupled_checkpoint_arrays()
-            self.assertIn("co2_vmr", arrays)
+            self.assertIn("co2_mass", arrays)
             np.savez(Path(d) / "coupled_day_0001.npz", **arrays)
-            driver._co2_vmr = jnp.asarray(0.0, driver._co2_vmr.dtype)
+            driver._co2_mass = jnp.asarray(0.0, jnp.float64)
             driver.load_coupled_checkpoint(1.0, checkpoint_dir=d)
-            self.assertAlmostEqual(float(driver._co2_vmr),
-                                   float(arrays["co2_vmr"]), delta=0.0)
-            arrays["co2_field"] = np.ones((2, 3, 4))
-            np.savez(Path(d) / "coupled_day_0002.npz", **arrays)
+            self.assertEqual(float(driver._co2_mass), float(arrays["co2_mass"]))
+            old = dict(arrays, co2_field=np.ones((2, 3, 4)))
+            np.savez(Path(d) / "coupled_day_0002.npz", **old)
             with self.assertRaisesRegex(ValueError, "co2_field"):
                 driver.load_coupled_checkpoint(2.0, checkpoint_dir=d)
+            missing = {k: v for k, v in arrays.items() if k != "co2_mass"}
+            np.savez(Path(d) / "coupled_day_0003.npz", **missing)
+            driver._co2_mass = jnp.asarray(1.0, jnp.float64)
+            with self.assertRaisesRegex(ValueError, "co2_mass"):
+                driver.load_coupled_checkpoint(3.0, checkpoint_dir=d)
+            self.assertEqual(float(driver._co2_mass), 1.0)  # nothing restored
 
 
 class TestSlabSimple(unittest.TestCase):

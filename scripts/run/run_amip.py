@@ -4021,7 +4021,9 @@ def main(argv: list[str] | None = None):
         driver.physics.turbulence_config = _louis_with_preserved_surface(
             _p.to_louis_config(),
             getattr(driver.physics, "turbulence_config", None))
-        driver.physics.gwd_config = _p.to_mcfarlane_config()
+        # effgw_oro is not an AIMIP-trained leaf: keep the run's value (#1712).
+        driver.physics.gwd_config = _p.to_mcfarlane_config()._replace(
+            effgw_oro=float(config.mcfarlane_effgw_oro))
         # Inject the trained Sundqvist microphysics leaves ONLY when the
         # resolved scheme is sundqvist (it was forced on above unless the user
         # passed a different prognostic microphysics, whose config we must not

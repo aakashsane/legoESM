@@ -117,10 +117,12 @@ def test_effgw_oro_default_is_cam6_namelist_value():
 
 
 def test_effgw_oro_is_read(fx):
-    """#1712: the field reaches the kernel.  The default reproduces an explicit
+    """#1712: the field reaches the kernel.  The default equals an explicit
     0.125 bit-for-bit, and doubling it changes the drag (with the limiters
     binding in some fixture columns the response is not exactly linear, so
-    only "changed" is asserted here)."""
+    only "changed" is asserted here).  Bit-identity with the pre-#1712
+    constant was measured across commits (PR body); this test cannot see
+    the old code."""
     base = _run(fx, McFarlaneConfig())
     same = _run(fx, McFarlaneConfig()._replace(effgw_oro=0.125))
     dbl = _run(fx, McFarlaneConfig()._replace(effgw_oro=0.25))

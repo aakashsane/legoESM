@@ -4460,7 +4460,7 @@ class ExperimentConfig(NamedTuple):
         for _f in ("mcfarlane_k_wave", "mcfarlane_directional_spread",
                    "hines_total_rms_wind", "hines_Fmax",
                    "e3sm_cam_taubgnd", "e3sm_cam_c0", "e3sm_cam_launch_p",
-                   "e3sm_cam_effgw", "mcfarlane_effgw_oro"):
+                   "e3sm_cam_effgw"):
             _v = getattr(self, _f)
             if not math.isfinite(_v) or _v <= 0.0:
                 errors.append(
@@ -4546,10 +4546,12 @@ class ExperimentConfig(NamedTuple):
                 f"e3sm_cam_effgw must be a finite efficiency <= 1.0, "
                 f"got {self.e3sm_cam_effgw!r}"
             )
-        if self.mcfarlane_effgw_oro > 1.0:
+        # Same [0, 1] as McFarlaneConfig.__param_spec__ (one range, #1712).
+        if not (math.isfinite(self.mcfarlane_effgw_oro)
+                and 0.0 <= self.mcfarlane_effgw_oro <= 1.0):
             errors.append(
-                f"mcfarlane_effgw_oro must be a finite efficiency <= 1.0, "
-                f"got {self.mcfarlane_effgw_oro!r}"
+                f"mcfarlane_effgw_oro must be a finite efficiency in "
+                f"[0, 1], got {self.mcfarlane_effgw_oro!r}"
             )
         if not math.isfinite(self.e3sm_cam_taubgnd) or \
                 self.e3sm_cam_taubgnd > 1.0e-2:

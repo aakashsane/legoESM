@@ -206,9 +206,6 @@ def test_physics_state_seed_honours_a_nested_override():
     ("hines_Fmax", -0.1),
     ("mcfarlane_k_wave", float("inf")),
     ("mcfarlane_directional_spread", -1.0),
-    ("mcfarlane_effgw_oro", -0.1),
-    ("mcfarlane_effgw_oro", float("nan")),
-    ("mcfarlane_effgw_oro", 1.5),
 ])
 def test_validate_strict_rejects_nonpositive_or_nonfinite(field, bad):
     """A negative Fmax makes clip(drag, 0, Fmax) return the NEGATIVE cap at
@@ -257,3 +254,29 @@ def test_effgw_oro_params_route_reaches_the_leaf():
     assert amap["atm.gwd.McFarlaneConfig.effgw_oro"] == "mcfarlane_effgw_oro"
     assert (ExperimentConfig._field_defaults["mcfarlane_effgw_oro"]
             == GravityWaveDragConfig().mcfarlane.effgw_oro == 0.125)
+
+
+@pytest.mark.parametrize("bad", [-0.1, float("nan"), float("inf"), 1.5])
+def test_validate_strict_effgw_oro_range_matches_spec(bad):
+    """mcfarlane_effgw_oro: one legal range, the __param_spec__ [0, 1]."""
+    from legoesm.atmosphere.physics.gravity_wave_drag.config import (
+        __param_spec__ as spec,
+    )
+    assert spec["McFarlaneConfig"]["params"]["effgw_oro"]["bounds"] == (0.0, 1.0)
+    with pytest.raises(ValueError, match="mcfarlane_effgw_oro"):
+        _cfg(gravity_wave_drag="mcfarlane",
+             mcfarlane_effgw_oro=bad).validate_strict()
+    for ok in (0.0, 1.0):
+        _cfg(gravity_wave_drag="mcfarlane",
+             mcfarlane_effgw_oro=ok).validate_strict()
+
+
+def test_aimip_checkpoint_injection_keeps_run_effgw_oro():
+    """run_amip.main swaps in an AIMIP-checkpoint McFarlaneConfig after setup;
+    effgw_oro is not a trained leaf there, so the run's value must survive
+    (codex review r1, #1712).  Source check on the function that runs."""
+    from scripts.run import run_amip
+
+    src = inspect.getsource(run_amip.main)
+    assert ("_p.to_mcfarlane_config()._replace(\n"
+            "            effgw_oro=float(config.mcfarlane_effgw_oro))") in src

@@ -1353,7 +1353,11 @@ def test_wall_default_surface_is_frozen():
 # Probed on the stock duo deck: every added/moved field is refused at a
 # non-default value; the three AUTO fields pass only at their resolved
 # value (False / 'constant' / False) and refuse the other.  None is
-# allow-listed; the allow-list is unchanged.
+# allow-listed; the allow-list is unchanged (the three AUTO entries came
+# with 4ec338acf, which is where that admission was reviewed).  The new
+# DEFAULTS are inert here by read: the duo run loop reads only dycore /
+# output / span / Held-Suarez / microphysics, and its Kessler leaf gets no
+# morrison scalar while morrison_ice_snow_d_auto is None.
 _WALL_SURFACE_SHA256 = "c4057f6e83bc88dc75965ef2a5e68e257f4f9ef6116740d3757b93659110cff6"
 
 

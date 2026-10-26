@@ -2570,6 +2570,24 @@ class ModelDriver:
         # Resolved values must pass the same checks as explicit ones.
         self.config.validate_strict()
 
+    def _resolve_ocean_flux_surface(self) -> None:
+        """Resolve ``ocean_flux_on_ocean_surface`` AUTO (None) to a boolean
+        in the config and the input-config snapshot, as ``_resolve_ice_skin``
+        does, so the manifest, saved config and a replay record it (#1320)."""
+        from legoesm.driver.config import (
+            ocean_flux_surface_eligibility, resolve_ocean_flux_on_ocean_surface)
+        auto = self.config.ocean_flux_on_ocean_surface is None
+        upd = {"ocean_flux_on_ocean_surface":
+               resolve_ocean_flux_on_ocean_surface(self.config)}
+        self.config = self.config._replace(**upd)
+        self._input_config = self._input_config._replace(**upd)
+        if auto:
+            logger.info("  ocean_flux_on_ocean_surface: auto -> %s%s",
+                        upd["ocean_flux_on_ocean_surface"],
+                        "" if upd["ocean_flux_on_ocean_surface"] else
+                        f" ({ocean_flux_surface_eligibility(self.config)[1]})")
+        self.config.validate_strict()
+
     def setup(self) -> None:
         """Initialize grid, dycore, physics, forcing, and state."""
         # SW is not a runnable ModelDriver equation set — reject before any
@@ -2583,6 +2601,7 @@ class ModelDriver:
         # any JAX array creation.
         self._bootstrap_runtime()
         self._resolve_ice_skin()
+        self._resolve_ocean_flux_surface()
         # Collective, so it runs before the first step where ranks diverge.
         self._check_resume_version_drift()
 
@@ -13791,7 +13810,8 @@ class ModelDriver:
         _ls_reused_win = None          # device: reused land column-steps, window
         _land_z0m_cells = None         # (nCells,) static land roughness [m]
         _land_d_cells = None           # (nCells,) static displacement [m]
-        from legoesm.driver.config import resolve_land_stress_from_land
+        from legoesm.driver.config import (
+            resolve_land_stress_from_land, resolve_ocean_flux_on_ocean_surface)
         from legoesm.land.multilayer_land import solved_stress_magnitude
         from legoesm.atmosphere.physics.turbulence.surface_layer import (
             hold_last_valid_land_stress,
@@ -13799,7 +13819,7 @@ class ModelDriver:
         _land_stress_on = resolve_land_stress_from_land(cfg)
         # Validated (validate_strict) to imply the land-flux handoff, so the
         # turbulence always receives T_sfc_ocean together with shflx_land.
-        _ocean_sfc_on = bool(cfg.ocean_flux_on_ocean_surface)
+        _ocean_sfc_on = resolve_ocean_flux_on_ocean_surface(cfg)
         print(f"  Non-land surface fluxes evaluated on: "
               f"{'OCEAN/ICE surface' if _ocean_sfc_on else 'land-blended surface'}"
               f" (ocean_flux_on_ocean_surface={_ocean_sfc_on})")

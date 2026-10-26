@@ -1736,7 +1736,11 @@ class ExperimentConfig(NamedTuple):
     # surface -- the SST/SIC blend, without the land skin and without the land
     # lapse correction -- instead of on the land-blended surface temperature
     # and humidity.  The land fraction keeps the land model's own fluxes.
-    ocean_flux_on_ocean_surface: bool = False
+    # Tri-state (user decision 2026-10-26): None = AUTO, on exactly where an
+    # explicit True is accepted (see ``ocean_flux_surface_eligibility``),
+    # resolved at ModelDriver setup so the manifest / saved config / replay
+    # record the boolean; True = required (refused where inert); False = off.
+    ocean_flux_on_ocean_surface: bool | None = None
     # MPAS lane, interactive multilayer land: rebuild the two-leaf canopy's
     # surface parameters (LAI, canopy height, soil-colour albedo from the top
     # soil layer's wetness) from the surfdata climatology at every land step,
@@ -4727,25 +4731,13 @@ class ExperimentConfig(NamedTuple):
                     "See docs/user-guide/climateeval_evaluation.md."
                 )
 
-        if self.ocean_flux_on_ocean_surface:
-            _ok, _why = land_flux_handoff_eligibility(self)
-            if _ok and self.radiation == "none":
-                _ok, _why = False, ("radiation='none' builds no SST anchor "
-                                    "(the ocean surface it needs)")
+        if self.ocean_flux_on_ocean_surface is True:
+            _ok, _why = ocean_flux_surface_eligibility(self)
             if not _ok:
                 errors.append(
                     "ocean_flux_on_ocean_surface=True separates the "
                     "non-land fraction's surface fluxes from the land's, but "
-                    f"{_why}; it would be silently inert.")
-            elif not resolve_land_stress_from_land(self):
-                # The bulk stress covers the whole cell unless the land's own
-                # stress replaces it over land; evaluated on the OCEAN surface
-                # it would then misstate the land share's stability.
-                errors.append(
-                    "ocean_flux_on_ocean_surface=True needs the land "
-                    "model's stress over the land fraction "
-                    "(land_stress_from_land unset or true, eligible); "
-                    "otherwise the ocean-surface stress covers the land too.")
+                    f"{_why}. Leave it unset (auto) or false.")
 
         if self.land_stress_from_land is True:
             _ok, _why = land_stress_eligibility(self)
@@ -5516,6 +5508,35 @@ def checkpoint_radiation_cadence_error(cfg) -> str | None:
             f"rad_update_steps={rus}: the held radiation fluxes "
             "are not checkpointed, so every checkpoint must sit on a "
             "radiation boundary")
+
+
+def ocean_flux_surface_eligibility(cfg) -> tuple[bool, str]:
+    """Is ``ocean_flux_on_ocean_surface=True`` live in ``cfg``?
+    ``(eligible, reason_if_not)``: the land-flux handoff, an SST anchor
+    (radiation != 'none') and the land model's stress over land."""
+    _ok, _why = land_flux_handoff_eligibility(cfg)
+    if not _ok:
+        return False, f"{_why}; it would be silently inert"
+    if cfg.radiation == "none":
+        return False, ("radiation='none' builds no SST anchor (the ocean "
+                       "surface it needs); it would be silently inert")
+    if not resolve_land_stress_from_land(cfg):
+        # The bulk stress covers the whole cell unless the land's own stress
+        # replaces it over land; evaluated on the OCEAN surface it would then
+        # misstate the land share's stability.
+        return False, ("it needs the land model's stress over the land "
+                       "fraction (land_stress_from_land unset or true, "
+                       "eligible); otherwise the ocean-surface stress covers "
+                       "the land too")
+    return True, ""
+
+
+def resolve_ocean_flux_on_ocean_surface(cfg) -> bool:
+    """The resolved tri-state ``ocean_flux_on_ocean_surface``:
+    None (auto) -> on exactly where eligible; True/False as given."""
+    if cfg.ocean_flux_on_ocean_surface is None:
+        return ocean_flux_surface_eligibility(cfg)[0]
+    return bool(cfg.ocean_flux_on_ocean_surface)
 
 
 def resolve_land_stress_from_land(cfg) -> bool:

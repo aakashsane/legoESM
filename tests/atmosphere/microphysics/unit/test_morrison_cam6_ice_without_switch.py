@@ -123,3 +123,12 @@ def test_non_cam_ice_choice_is_refused(override):
     """2b: no silent replacement; the run refuses to start."""
     with pytest.raises(ValueError, match="CAM6 MG2 mode"):
         _run(_cfg(**override), [250.0])
+
+
+def test_sam_ice_choice_on_the_deck_config_is_refused():
+    """The same sam-flavour choice on the deck's own config
+    (liquid_from_closure on) is refused too, by the sam satadj guard."""
+    cfg = _cfg(morrison_flavor="sam", ice_to_snow_scheme="m2005_autoconv")
+    assert cfg.liquid_from_closure
+    with pytest.raises(ValueError, match="satadj_liquid"):
+        _run(cfg, [250.0])

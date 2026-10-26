@@ -658,12 +658,15 @@ class TestFV3DuoDefaultDenyWall:
             _refuse_fv3_duo_non_default,
         )
         assert set(_FV3_DUO_AUTO_RESOLVED) == {
-            "ice_skin_prognostic", "sea_ice_albedo_scheme"}
+            "ice_skin_prognostic", "sea_ice_albedo_scheme",
+            "ocean_flux_on_ocean_surface"}
         resolved = _fv3_duo_config(ice_skin_prognostic=False,
-                                   sea_ice_albedo_scheme="constant")
+                                   sea_ice_albedo_scheme="constant",
+                                   ocean_flux_on_ocean_surface=False)
         _refuse_fv3_duo_non_default(resolved)  # must not raise
         for field, value in (("ice_skin_prognostic", True),
-                             ("sea_ice_albedo_scheme", "maykut_untersteiner")):
+                             ("sea_ice_albedo_scheme", "maykut_untersteiner"),
+                             ("ocean_flux_on_ocean_surface", True)):
             with pytest.raises(ValueError, match=field):
                 _refuse_fv3_duo_non_default(
                     resolved._replace(**{field: value}))

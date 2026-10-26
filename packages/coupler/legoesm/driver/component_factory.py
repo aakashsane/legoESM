@@ -464,6 +464,12 @@ def _auto_sea_ice_albedo(cfg):
         cfg._replace(sea_ice_albedo_scheme="auto"))
 
 
+def _auto_ocean_flux_surface(cfg):
+    from legoesm.driver.config import resolve_ocean_flux_on_ocean_surface
+    return resolve_ocean_flux_on_ocean_surface(
+        cfg._replace(ocean_flux_on_ocean_surface=None))
+
+
 # AUTO-default fields (user decision 2026-10-26): ModelDriver.setup
 # replaces the AUTO default by its resolved value before this wall runs,
 # so each is accepted at its default OR at exactly what AUTO resolves to
@@ -472,6 +478,7 @@ def _auto_sea_ice_albedo(cfg):
 _FV3_DUO_AUTO_RESOLVED = {
     "ice_skin_prognostic": _auto_ice_skin,
     "sea_ice_albedo_scheme": _auto_sea_ice_albedo,
+    "ocean_flux_on_ocean_surface": _auto_ocean_flux_surface,
 }
 
 

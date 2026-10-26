@@ -2279,9 +2279,11 @@ def ice_autoconversion_mg2(q_i, N_i, lami, dcs, T, cold_width_K):
     T_freeze at every width, where MG2 (``T <= T_freeze``) converts; on the
     MG2 ice-rest fixture the 15 points at exactly T_freeze are -100 % (prci
     and nprci 0), at the hard limit and at the production 2 K width alike;
-    all other points match (test_mg2_ice_rest_oracle.py, FERRIER_0C_GAP).
-    No width recovers the T_freeze point itself; ``melt_sharpness -> inf``
-    recovers MG2 everywhere below it."""
+    all other points outside the separately recorded row-30 band
+    (qsmall <= q_i <= 1e-14, where MG2 converts and the 1e-14 gate here does
+    not) match (test_mg2_ice_rest_oracle.py, FERRIER_0C_GAP).  No width
+    recovers the T_freeze point itself; ``melt_sharpness -> inf`` recovers
+    MG2 below it, outside that band."""
     qi = jnp.clip(q_i, 0.0)
     on = qi > 1.0e-14
     cold = smoothstep_quintic((constants.T_freeze - T) / cold_width_K)

@@ -227,9 +227,10 @@ def test_gradient_matches_fd_on_positive_field():
 
 
 def test_kink_floored_side_gradient_zero():
-    # At a GENUINE N=0 kink (∇N≠0) the oracle's outer max(F, ·) selects F (N/aa=0
-    # < F), so the value is F and the AD gradient is 0 — a valid subgradient (the
-    # one-sided slopes are 0 for s>0 and < 0 for s<0). A(s) = (a11=s, a13=v):
+    # Near the N=0 crossing the oracle's outer max(F, ·) selects F: at s=0 (N=0)
+    # the value is F and the AD gradient is 0 (the true local derivative — the
+    # actual kink, where C·N/aa = F, sits at s ≈ -8e-18). The secants over ±h
+    # straddle it: 0 for s>0, < 0 for s<0. A(s) = (a11=s, a13=v):
     # N = -s·(Δ1²s² + Δ3²v²), exactly 0 at s=0, dN/ds|_0 = -Δ3²v² ≠ 0.
     dx, dy, dz, c, v = 50.0, 50.0, 30.0, 0.3, 1.3
 
@@ -244,7 +245,7 @@ def test_kink_floored_side_gradient_zero():
     left = (float(nu_of_s(jnp.asarray(0.0))) - float(nu_of_s(jnp.asarray(-h)))) / h
     assert right == pytest.approx(0.0, abs=1e-6)            # s>0: N<0, floored
     assert left < -1.0                                      # s<0: N>0, real slope
-    assert ad == 0.0                                        # floored side
+    assert ad == 0.0                                        # floored side (smooth at s=0)
 
 
 def test_denominator_floor_functionally_pinned():

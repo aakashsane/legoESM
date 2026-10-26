@@ -590,3 +590,29 @@ def test_production_deck_dt_is_not_clamped_and_keeps_the_cam6_cadence():
     clamp = cfl_check_and_adjust(1e9, n_lat, model_type="primitive_eq", radius=grid.radius,
                                  grid_type="latlon", use_polar_filter=True, verbose=False)
     assert dt <= 0.82 * 604.9 + 1.0 and 1800.0 % dt == 0 and dt > clamp * 0.82 - 150.0
+
+
+def test_div4_reaches_the_adapter_step_with_the_step_dt(setup):
+    """With div-4 on, the adapter's step is the native step at the SAME dt
+    bitwise (the 0.01*area^2/dt coefficient sees the dynamics dt, not a
+    physics interval), and differs from the div-4-off step."""
+    g, s, nat = setup
+
+    def dyn(scale):
+        return CGridLatLonPrimitiveEquationModel(g, s, CGridLatLonPrimitiveEquationConfig(
+            use_polar_filter=True, polar_filter_cutoff_deg=35.9041,
+            nu_div4_scale=scale), dt=DT)
+    ref = dyn(1.0).step(nat, DT)
+    col = LatLonCGridColumnModel(dyn(1.0))
+    out = col.step(col.from_bundle(nat), DT).native
+    for k in ("u", "v", "T", "p_s"):
+        np.testing.assert_array_equal(np.asarray(getattr(out, k)),
+                                      np.asarray(getattr(ref, k)), err_msg=k)
+    off = LatLonCGridColumnModel(dyn(0.0))
+    out_off = off.step(off.from_bundle(nat), DT).native
+    assert np.abs(np.asarray(out.u) - np.asarray(out_off.u)).max() > 0.0
+    # a different dt changes the damped step (dt reaches the coefficient)
+    col2 = LatLonCGridColumnModel(dyn(1.0))
+    half = col2.step(col2.from_bundle(nat), 0.5 * DT).native
+    np.testing.assert_array_equal(np.asarray(half.u),
+                                  np.asarray(dyn(1.0).step(nat, 0.5 * DT).u))

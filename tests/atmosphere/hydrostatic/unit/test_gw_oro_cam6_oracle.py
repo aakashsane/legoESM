@@ -144,3 +144,26 @@ def test_return_stress_leaves_tendencies_bit_identical(fx, hard):
                               np.asarray(getattr(out, f))), f
     assert np.array_equal(np.asarray(base.dq_dt["q_v"]),
                           np.asarray(out.dq_dt["q_v"]))
+
+
+def test_effgw_oro_default_is_cam6_namelist_value():
+    """#1712: the knob's default is CAM6's effgw_oro, the constant it replaced."""
+    assert McFarlaneConfig().effgw_oro == 0.125
+
+
+def test_effgw_oro_is_read(fx):
+    """#1712: the field reaches the kernel.  The default equals an explicit
+    0.125 bit-for-bit, and doubling it changes the drag (with the limiters
+    binding in some fixture columns the response is not exactly linear, so
+    only "changed" is asserted here).  Bit-identity with the pre-#1712
+    constant was measured across commits (PR body); this test cannot see
+    the old code."""
+    base = _run(fx, McFarlaneConfig())
+    same = _run(fx, McFarlaneConfig()._replace(effgw_oro=0.125))
+    dbl = _run(fx, McFarlaneConfig()._replace(effgw_oro=0.25))
+    for f in ("du_dt", "dv_dt", "dT_dt"):
+        assert np.array_equal(np.asarray(getattr(base, f)),
+                              np.asarray(getattr(same, f))), f
+    assert np.abs(np.asarray(base.du_dt)).max() > 0.0
+    assert not np.allclose(np.asarray(dbl.du_dt), np.asarray(base.du_dt),
+                           rtol=1e-3, atol=0.0)

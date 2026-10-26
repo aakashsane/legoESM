@@ -4983,6 +4983,8 @@ def gwd_config_for(config):
         directional_spread=float(getattr(
             config, "mcfarlane_directional_spread",
             gc.mcfarlane.directional_spread)),
+        effgw_oro=float(getattr(config, "mcfarlane_effgw_oro",
+                                gc.mcfarlane.effgw_oro)),
     )
     # Hines (non-orographic) launch amplitude + saturation flux cap.
     hn = gc.hines._replace(

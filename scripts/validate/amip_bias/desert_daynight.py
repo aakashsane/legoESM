@@ -116,6 +116,10 @@ def main(argv=None):
         dm, tmean = model_day(run, "tas")
         mlat = np.asarray(dx.lat, float); mlon = np.asarray(dx.lon, float) % 360.0
         dates = dates_of(dx)
+        for o in (dn, dm):
+            if not (np.array_equal(np.asarray(o.lat), np.asarray(dx.lat))
+                    and np.array_equal(np.asarray(o.lon), np.asarray(dx.lon))):
+                raise SystemExit(f"FATAL: {run} tasmax / tasmin / tas day tables are on different grids")
         if dates_of(dn) != dates or dates_of(dm) != dates:
             raise SystemExit(f"FATAL: {run} tasmax / tasmin / tas day tables cover different dates")
         if len(set(dates)) != len(dates):

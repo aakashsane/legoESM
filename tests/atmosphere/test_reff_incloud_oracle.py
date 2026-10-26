@@ -105,14 +105,14 @@ def test_dead_number_reff_ignores_deep_convective_cover(z):
     the convective cover) must still be matched."""
     kw = _kwargs(z)
     dead = np.asarray(z["n_ccn"]) <= 1.0
-    mf = np.asarray(z["conv_mass_flux_up"]).copy()
     cols = np.unique(np.nonzero(dead)[0])
-    donor = int(np.argmax(np.abs(mf).sum(axis=1)))
-    assert donor not in cols
-    mf[cols] = mf[donor]
+    mf = np.asarray(z["conv_mass_flux_up"]).copy()
+    icw = np.asarray(z["conv_icwmr"]).copy()
+    # deep convection through the whole of those columns
+    mf[cols] = np.max(mf)
+    icw[cols] = np.max(icw)
     kw["conv_mass_flux_up"] = jnp.asarray(mf)
-    icw = np.asarray(z["conv_icwmr"])
-    kw["conv_icwmr"] = jnp.asarray(np.broadcast_to(icw[donor], icw.shape).copy())
+    kw["conv_icwmr"] = jnp.asarray(icw)
     props = compute_cloud_properties(**kw, n_cloud_in_cloud=True,
                                      clubb_config=CLUBBConfig())
     cover = np.asarray(props.cloud_fraction)

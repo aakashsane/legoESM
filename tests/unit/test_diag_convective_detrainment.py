@@ -42,10 +42,18 @@ def test_column_integral_zero_rate_is_zero():
                              np.full(3, 1 / 3), 9.8) == 0.0
 
 
-def test_convection_reads_the_restored_runs_physics_carry():
+def test_phys_state_from_checkpoint_carries_the_runs_pblh():
     """Follow-up row 23: ZM refuses a call without the PBL height, so the
-    diagnostic hands the convection the restored run's own physics carry
-    (its pblh), not None."""
-    import inspect
-    src = inspect.getsource(_load().main)
-    assert "fn(state, mesh, sc, driver._mpas_phys_state, None)" in src
+    diagnostic builds the convection's physics state from the checkpoint's
+    staged carry (its pblh), and refuses a checkpoint without one."""
+    from legoesm.atmosphere.physics.combined import PhysicsConfig
+    m = _load()
+    pblh = np.array([350.0, 1200.0, 0.0])
+    cf = np.full((3, 4), 0.25)
+    ps = m.phys_state_from_checkpoint(
+        {"physstate_pblh": pblh, "physstate_cloud_fraction": cf, "other": 1},
+        3, 4, PhysicsConfig())
+    np.testing.assert_array_equal(np.asarray(ps.pblh), pblh)
+    np.testing.assert_array_equal(np.asarray(ps.cloud_fraction), cf)
+    with pytest.raises(SystemExit, match="pblh"):
+        m.phys_state_from_checkpoint({}, 3, 4, PhysicsConfig())

@@ -115,10 +115,13 @@ def main():
     print(f"[{a.label}] convection scheme = {conv_cfg.scheme}   dt = {dt_phys:.1f} s")
 
     fn = make_convection_physics(conv_cfg, model_type="mpas", dt=dt_phys)
-    # load_checkpoint only stages the carry (the run loop adopts it).
-    from legoesm.atmosphere.physics.combined import PhysicsConfig
-    ps = phys_state_from_checkpoint(driver._carry_aux, ncol, nlev,
-                                    PhysicsConfig(convection=conv_cfg))
+    # ZM reads the run's PBL height; load_checkpoint only stages that carry
+    # (the run loop adopts it).  Other schemes take no physics state here.
+    ps = None
+    if conv_cfg.scheme == "zhang_mcfarlane":
+        from legoesm.atmosphere.physics.combined import PhysicsConfig
+        ps = phys_state_from_checkpoint(driver._carry_aux, ncol, nlev,
+                                        PhysicsConfig(convection=conv_cfg))
     out = fn(state, mesh, sc, ps, None)
     tends = out[0] if isinstance(out, tuple) else out
     tr = getattr(tends, "tracer_tendencies", None)

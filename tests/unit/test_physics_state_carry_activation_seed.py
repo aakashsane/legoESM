@@ -8,7 +8,7 @@ import numpy as np
 from tests.unit.test_physics_state_carry import _mpas_driver_cfg
 
 
-def test_mpas_checkpoint_without_activation_fields_seeds_them(tmp_path):
+def test_mpas_checkpoint_without_activation_fields_seeds_them(tmp_path, allow_version_drift):
     """User decision 2026-10-24, 3a: a checkpoint written before the CAM6
     droplet-activation carries (CLUBB w'^2 / Kh, CLDO) restarts with them
     seeded at zero instead of tripping the completeness gate."""

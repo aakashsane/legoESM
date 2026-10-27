@@ -1778,6 +1778,9 @@ class DiagnosticCollector:
             Snowfall flux [kg/m2/s]: the frozen part of *precip* as the
             physics publishes it (``precip_frozen``), an interval mean like
             ``pr``.  Absent (None) keeps the output byte-identical.
+            After a mid-window restart from a checkpoint written before
+            prsn was accumulated, that one window's prsn averages the
+            post-restart steps only (kept by user decision, PR #2204).
         rsds, rsus, rlds, rlus : array, shape ``(nCells,)``, optional
             Surface downwelling / upwelling SW and LW flux [W/m2, CMOR
             ``positive`` down for rsds/rlds, up for rsus/rlus], from the

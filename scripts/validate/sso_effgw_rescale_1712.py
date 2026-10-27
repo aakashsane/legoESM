@@ -12,10 +12,15 @@ switches ``return_stress`` on and records the call's inputs and ``tau``.
 
     effgw_oro_new = effgw_oro_old * S_old / S_new           (S_new == 0 raises)
 
-KNOWN LIMIT (GLM, PR #2192): S is linear in effgw_oro only where the tendency
-limiters (``umcfac``, ``tndmax``) do not bind; where they bind the redetermined
-bottom stress grows less than linearly, so the ratio UNDER-corrects there.  The
-probe reports S at effgw_oro_new against S_old to measure that gap.
+KNOWN LIMIT (GLM, PR #2192): the ratio assumes S is linear in effgw_oro; where
+the tendency limiters (``umcfac``, ``tndmax``) bind it under-corrects.  Measured
+on the 14 CAM6 oracle columns: the limiters reshape the stress PROFILE (max rel
+diff ~0.12) but leave the bottom-interface stress unchanged and exactly linear
+in effgw_oro (CAM's redetermination carries a limited divergence down a layer),
+so S departs from linearity only where a limiter binds in the BOTTOM layer.  The
+probe reports the columns where limited and unlimited bottom stress differ,
+S(2x)/S(1x) at production limiters, and S at effgw_oro_new against S_old.  A
+global scalar target preserves the global integral, not the stress pattern.
 
 Checks printed (numbers only, no verdict):
   * doubling: with the limiters disabled (umcfac, tndmax_per_day -> inf) a 2x

@@ -12,8 +12,9 @@ switches ``return_stress`` on and records the call's inputs and ``tau``.
 
     effgw_oro_new = effgw_oro_old * S_old / S_new           (S_new == 0 raises)
 
-KNOWN LIMIT (GLM, PR #2192): the ratio assumes S is linear in effgw_oro; where
-the tendency limiters (``umcfac``, ``tndmax``) bind it under-corrects.  Measured
+KNOWN LIMIT (GLM, PR #2192): the ratio assumes S is linear in effgw_oro; GLM
+cautioned it under-corrects where the tendency limiters (``umcfac``, ``tndmax``)
+bind.  Measured
 on the 14 CAM6 oracle columns: the limiters reshape the stress PROFILE (max rel
 diff ~0.12) but leave the bottom-interface stress unchanged and exactly linear
 in effgw_oro (CAM's redetermination carries a limited divergence down a layer),
@@ -25,8 +26,8 @@ global scalar target preserves the global integral, not the stress pattern.
 Checks printed (numbers only, no verdict):
   * doubling: with the limiters disabled (umcfac, tndmax_per_day -> inf) a 2x
     effgw_oro doubles the bottom stress in every column; with production
-    limiters, in every column where the limiters do not bind;
-  * 3-column hand check: the bottom stress of three limiter-free land columns
+    limiters, in every column whose bottom stress the limiters leave unchanged;
+  * 3-column hand check: the bottom stress of three such columns
     recomputed in NumPy from the scheme's documented launch formula.
 """
 from __future__ import annotations
@@ -203,21 +204,24 @@ def main():
     res["doubling_nolimit_max_rel_err"] = float(
         np.max(np.abs(f2[nz] / f1[nz] - 2.0))) if nz.any() else None
     res["n_cols_nonzero"] = int(nz.sum())
-    # Production limiters: columns where the limited stress equals the
-    # limiter-free one at BOTH 1x and 2x are "limiters off".
+    # Production limiters: columns whose limited BOTTOM stress equals the
+    # limiter-free one at both 1x and 2x (limiters may still bind aloft).
     t2 = run(effgw_oro=2 * e0)
     free = nz & np.isclose(t1, f1, rtol=1e-12, atol=0) & np.isclose(
         t2, f2, rtol=1e-12, atol=0)
-    res["n_cols_limiter_free"] = int(free.sum())
-    res["doubling_prod_limiterfree_max_rel_err"] = float(
+    res["n_cols_bottom_unlimited"] = int(free.sum())
+    res["doubling_prod_bottom_unlimited_max_rel_err"] = float(
         np.max(np.abs(t2[free] / t1[free] - 2.0))) if free.any() else None
     res["S_2x_over_S_1x"] = area_mean_abs(t2, area) / res["S_new"]
-    res["S_frac_in_limited_cols"] = area_mean_abs(np.where(nz & ~free, t1, 0.0),
+    res["S_frac_in_bottom_limited_cols"] = area_mean_abs(np.where(nz & ~free, t1, 0.0),
                                                   area) / res["S_new"]
 
-    # 3-column hand check on limiter-free land columns: largest, median and
-    # smallest nonzero stress among columns with land fraction < 1 if any.
+    print(json.dumps(res, indent=1), flush=True)
+    # 3-column hand check on bottom-unlimited columns: largest, median and
+    # smallest nonzero stress.
     idx = np.flatnonzero(free)
+    if idx.size == 0:
+        raise SystemExit("no bottom-unlimited column: hand check impossible")
     order = idx[np.argsort(t1[idx])]
     cols = np.array(sorted({int(order[-1]), int(order[len(order) // 2]),
                             int(order[0])}))

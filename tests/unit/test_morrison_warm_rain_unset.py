@@ -113,25 +113,52 @@ def test_aimip_classical_factory_pins_kk2000_for_morrison(monkeypatch):
     assert seen["law"] == "kk2000"
 
 
-def _morrison_decks():
-    out = []
+def _scan_configs():
+    """(deck laws, AIMIP-classical files selecting Morrison) over every
+    committed YAML; ``include:`` bases are merged as the run loaders do."""
+    from legoesm.driver.run_config_yaml import read_yaml_with_includes
+    decks, aimip = {}, {}
     for p in sorted((ROOT / "config").rglob("*.yaml")):
         d = yaml.safe_load(p.read_text())
         if not isinstance(d, dict):
             continue
+        if "include" in d:
+            d = read_yaml_with_includes(str(p))
+        rel = p.relative_to(ROOT).as_posix()
         cl = d.get("classical") if isinstance(d.get("classical"), dict) else {}
         if d.get("microphysics") == "morrison":
-            out.append((p, d.get("morrison_warm_rain_scheme")))
+            decks[rel] = (d.get("morrison_warm_rain_scheme"),
+                          bool(d.get("clubb_liquid_partition")))
         elif cl.get("microphysics") == "morrison":
             pin = ((cl.get("param_fixed") or {})
                    .get("atm.micro.MorrisonConfig") or {})
-            out.append((p, pin.get("warm_rain_scheme")))
-    return out
+            decks[rel] = (pin.get("warm_rain_scheme"),
+                          bool(cl.get("clubb_liquid_partition")))
+        if d.get("aimip_microphysics") == "morrison":
+            pin = ((d.get("param_fixed") or {})
+                   .get("atm.micro.MorrisonConfig") or {})
+            aimip[rel] = pin.get("warm_rain_scheme")
+    return decks, aimip
 
 
 def test_every_morrison_deck_names_its_warm_rain_law():
-    decks = {p.relative_to(ROOT).as_posix(): law
-             for p, law in _morrison_decks()}
-    assert len(decks) == 15, sorted(decks)
-    assert decks.pop("config/amip/amip_production.yaml") == "kk2000_cam6"
-    assert set(decks.values()) == {"kk2000"}, decks
+    decks, _ = _scan_configs()
+    assert "config/amip/amip_production.yaml" in decks
+    unnamed = sorted(k for k, (law, _) in decks.items() if law is None)
+    assert not unnamed, unnamed
+    # the CAM6 law only where make_physics can wire CLUBB's relvar
+    cam6 = {k for k, (law, part) in decks.items() if law == "kk2000_cam6"}
+    assert cam6 and all(decks[k][1] for k in cam6), sorted(cam6)
+    assert {law for law, _ in decks.values()} == {"kk2000", "kk2000_cam6"}
+
+
+def test_aimip_sweep_configs_rely_on_the_classical_factory_pin():
+    """These select Morrison through the AIMIP/WB classical factory, which
+    pins kk2000 (test above); none overrides it."""
+    _, aimip = _scan_configs()
+    assert aimip == {
+        "config/aimip/sweep/stage1/combo_micro_morrison/variant_classical.yaml": None,
+        "config/aimip/wbcompare/classical_sweep/sbm_ysu/suite.yaml": None,
+        "config/aimip/wbcompare/classical_sweep/sbm_ysu/variant_classical.yaml": None,
+        "config/wb/sweep/stage1/combo_micro_morrison/variant_classical.yaml": None,
+    }

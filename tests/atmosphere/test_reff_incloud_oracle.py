@@ -97,7 +97,8 @@ def _max_rel(ours, ref, mask):
 
 def _rel_roundoff_bound(z):
     """Round-off of CAM's post-MG2 number ``nc + nctend*dt`` (oracle_driver.F90),
-    ``nctend*dt = nc_adj - nc``: relative error <= eps (|R - 1| + 2) with
+    ``nctend*dt = nc_adj - nc`` (driver deltat = 1, so /dt and *dt are exact):
+    relative error <= eps (|R - 1| + 2) with
     ``R = nc / nc_adj``, carried 1:1 into r_eff (its true sensitivity to the
     number is ~1/3).  ``R`` comes from the inputs through MG2's hard re-adjust."""
     kw = _kwargs(z)

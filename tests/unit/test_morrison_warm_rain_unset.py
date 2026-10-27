@@ -69,9 +69,11 @@ class _Stop(Exception):
 def test_make_physics_wires_clubb_relvar_for_the_resolved_law(
         monkeypatch, flavor, wired):
     from legoesm.atmosphere.physics import combined
+    from legoesm.atmosphere.physics.clouds.config import CloudConfig
     from legoesm.atmosphere.physics.convection import ConvectionConfig
     from legoesm.atmosphere.physics.radiation import RadiationConfig
     from legoesm.atmosphere.physics.turbulence import TurbulenceConfig
+    from legoesm.atmosphere.physics.turbulence.clubb import CLUBBConfig
     seen = {}
 
     def spy(*a, relvar_from_clubb=False, **k):
@@ -79,9 +81,11 @@ def test_make_physics_wires_clubb_relvar_for_the_resolved_law(
         raise _Stop
     monkeypatch.setattr(combined, "make_microphysics_physics", spy)
     cfg = combined.PhysicsConfig(
-        radiation=RadiationConfig(scheme="none"),
+        radiation=RadiationConfig(scheme="none",
+                                  cloud_config=CloudConfig(scheme="cam6_clubb")),
         convection=ConvectionConfig(scheme="none"),
-        turbulence=TurbulenceConfig(scheme="clubb", liquid_partition=True),
+        turbulence=TurbulenceConfig(scheme="clubb", liquid_partition=True,
+                                    clubb=CLUBBConfig(prognostic=True)),
         microphysics=MicrophysicsConfig(
             scheme="morrison", morrison=MorrisonConfig(morrison_flavor=flavor)))
     with pytest.raises(_Stop):

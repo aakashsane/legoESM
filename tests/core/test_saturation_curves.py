@@ -232,3 +232,6 @@ def test_goff_gratch_returns_input_precision_computed_in_fp64(fn):
     assert out32.dtype == jnp.float32
     ref = f(*[a.astype(jnp.float64) for a in args32]).astype(jnp.float32)
     np.testing.assert_array_equal(np.asarray(out32), np.asarray(ref))
+    ints = [300] + ([100000] if "humidity" in fn else [])
+    assert jnp.issubdtype(f(*ints).dtype, jnp.floating)
+    assert float(f(*ints)) > 0.0

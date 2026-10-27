@@ -214,7 +214,7 @@ def _cam_r8(*xs):
     """CAM evaluates the Goff-Gratch curves in r8: compute at the widest
     float JAX allows (fp64 under x64, else fp32) and hand back the inputs'
     precision, so an fp32 caller under x64 stays fp32."""
-    out = jnp.result_type(*xs)
+    out = jnp.result_type(*xs, 1.0)  # a float even for integer inputs
     wide = jax.dtypes.canonicalize_dtype(jnp.float64)
     return out, [jnp.asarray(x, dtype=wide) for x in xs]
 

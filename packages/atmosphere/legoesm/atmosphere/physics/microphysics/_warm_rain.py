@@ -1034,7 +1034,13 @@ def mg2_var_coef(relvar, a, dtype):
                    - jax.scipy.special.gammaln(r)) / r ** a
 
 
-def mg2_droplet_psd(q_c_ic, N_c_ic, rho):
+def rule5_sharpness(width):
+    """LogSumExp sharpness of a RULE 5 width; 0 = the hard form."""
+    return math.inf if width == 0.0 else 1.0 / width
+
+
+def mg2_droplet_psd(q_c_ic, N_c_ic, rho, *, number_cap_log_width=0.0,
+                    slope_log_width=0.0):
     """MG2 ``size_dist_param_liq`` (micro_mg_utils.F90:376-422 ->
     size_dist_param_basic :481-516), per-VOLUME number here.
 
@@ -1054,12 +1060,23 @@ def mg2_droplet_psd(q_c_ic, N_c_ic, rho):
              * (pgam + 1.0) * (pgam + 2.0) * (pgam + 3.0))
     lam_lo = (pgam + 1.0) / _MG2_DROP_DIAM_MAX
     lam_hi = (pgam + 1.0) / _MG2_DROP_DIAM_MIN
-    nc_kg = jnp.minimum(N_c_ic / rho, q_safe / _MG2_MIN_MEAN_MASS_LIQ)
-    lam = safe_pow(shape * nc_kg / q_safe, 1.0 / 3.0)
-    nc_kg = jnp.where(lam < lam_lo, lam_lo ** 3 * q_safe / shape,
-                      jnp.where(lam > lam_hi, lam_hi ** 3 * q_safe / shape,
-                                nc_kg))
-    return active, pgam, jnp.clip(lam, lam_lo, lam_hi), nc_kg
+    if number_cap_log_width == 0.0 and slope_log_width == 0.0:
+        nc_kg = jnp.minimum(N_c_ic / rho, q_safe / _MG2_MIN_MEAN_MASS_LIQ)
+        lam = safe_pow(shape * nc_kg / q_safe, 1.0 / 3.0)
+        nc_kg = jnp.where(lam < lam_lo, lam_lo ** 3 * q_safe / shape,
+                          jnp.where(lam > lam_hi, lam_hi ** 3 * q_safe / shape,
+                                    nc_kg))
+        return active, pgam, jnp.clip(lam, lam_lo, lam_hi), nc_kg
+    # RULE 5: the number cap and the slope clamp in ln space, each a LogSumExp
+    # of its width (0 = MG2's hard form); the number follows the smooth slope.
+    tiny = jnp.finfo(jnp.result_type(N_c_ic, rho)).tiny
+    ln_nc = jnp.log(jnp.maximum(N_c_ic / rho, tiny))
+    ln_nc = smooth_min(ln_nc, jnp.log(q_safe / _MG2_MIN_MEAN_MASS_LIQ),
+                       rule5_sharpness(number_cap_log_width))
+    ln_lam = (jnp.log(shape / q_safe) + ln_nc) / 3.0
+    lam = jnp.exp(smooth_clamp(ln_lam, jnp.log(lam_lo), jnp.log(lam_hi),
+                               rule5_sharpness(slope_log_width)))
+    return active, pgam, lam, lam ** 3 * q_safe / shape
 
 
 def mg2_size_dist_liq(q_c_ic, N_c_ic, rho):
@@ -1075,12 +1092,12 @@ def mg2_size_dist_liq(q_c_ic, N_c_ic, rho):
             jnp.where(active, lam, 0.0))
 
 
-def mg2_size_bounded_nc(q_c_ic, N_c_ic, rho):
+def mg2_size_bounded_nc(q_c_ic, N_c_ic, rho, **widths):
     """MG2 ``size_dist_param_liq`` droplet-number reset
-    (:func:`mg2_droplet_psd`), per-VOLUME.  Elsewhere (``qcic <= qsmall``)
-    ``N_c_ic`` is returned unchanged.
+    (:func:`mg2_droplet_psd`, ``widths`` its RULE 5 widths), per-VOLUME.
+    Elsewhere (``qcic <= qsmall``) ``N_c_ic`` is returned unchanged.
     """
-    active, _, _, nc_kg = mg2_droplet_psd(q_c_ic, N_c_ic, rho)
+    active, _, _, nc_kg = mg2_droplet_psd(q_c_ic, N_c_ic, rho, **widths)
     return jnp.where(active, nc_kg * rho, N_c_ic)
 
 
@@ -1265,7 +1282,7 @@ def _div_tangent_safe_jvp(primals, tangents):
     return r, (dx - r * dy) / y
 
 
-def mg2_droplet_effective_radius(q_c_ic, N_c_ic, rho):
+def mg2_droplet_effective_radius(q_c_ic, N_c_ic, rho, **widths):
     """CAM6 radiation droplet effective radius REL [m] (micro_mg_cam.F90:
     2534-2554): ``(pgam+3)/lambda/2`` from :func:`mg2_droplet_psd` where the
     in-cloud water ``qcic >= qsmall``, else 10 um.
@@ -1273,7 +1290,7 @@ def mg2_droplet_effective_radius(q_c_ic, N_c_ic, rho):
     ``q_c_ic`` is CAM6's ``icwmrst = min(q/max(mincld, ast), 5e-3)``
     (micro_mg_cam.F90:2296), ``N_c_ic`` the in-cloud number [#/m^3].
     """
-    _, pgam, lam, _ = mg2_droplet_psd(q_c_ic, N_c_ic, rho)
+    _, pgam, lam, _ = mg2_droplet_psd(q_c_ic, N_c_ic, rho, **widths)
     return jnp.where(q_c_ic >= MG2_QSMALL, (pgam + 3.0) / lam / 2.0,
                      MG2_REL_NO_LIQUID_M)
 

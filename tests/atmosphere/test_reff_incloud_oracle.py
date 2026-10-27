@@ -18,11 +18,14 @@ Production CloudConfig (amip_production.yaml, resolved through run_amip + model_
 stored in the fixture.
 Generator: scripts/validate/oracle/reff_incloud/{build.sh,oracle_driver.F90,make_fixture.py}.
 
-Liquid: asserted on EVERY level against ``rel_cam`` (CAM6 REL: in-cloud water capped at
-5 g/kg, MG2 size_dist_param_liq, qsmall gate, 10 um fill).  ``effc_wrf`` (legoESM's former
-M2005 PSD on the same inputs) is kept for the PSD gap only.
-Ice: excluded where MG2's ice-slope bounds adjust the number (``ni_adj``) or its 5 g/kg cap
-binds (absent in legoESM; the RRTMGP table clip bounds the size downstream).
+Liquid: asserted on EVERY level against ``rel_cam`` (CAM6 REL from the post-MG2 number,
+i.e. after MG2's mean-size re-adjust: in-cloud water capped at 5 g/kg, MG2
+size_dist_param_liq at the dry density, qsmall gate, 10 um fill).  ``effc_wrf`` (legoESM's
+former M2005 PSD on the same inputs) is kept for the PSD gap only.
+Ice: asserted on every tracer-ice level against MG2 ``effi``, including where the ice-slope
+bounds adjust the number (``ni_adj``) and where the 5 g/kg in-cloud cap binds.
+The oracle match runs MG2's hard limits (RULE 5 widths 0); the production widths are
+pinned as measured gaps with gradient checks across each limit.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ import pytest
 
 from legoesm.atmosphere.physics.clouds.cloud_fraction import compute_cloud_properties
 from legoesm.atmosphere.physics.clouds.config import CloudConfig
+from legoesm.atmosphere.physics.microphysics.config import MG2_DCS_M, MorrisonConfig
 from legoesm.atmosphere.physics.turbulence.clubb import CLUBBConfig
 
 _FIX = Path(__file__).parent / "oracle_fixtures" / "reff_incloud.npz"
@@ -52,9 +56,24 @@ def z():
     return np.load(_FIX)
 
 
-def _kwargs(z):
+# Droplet numbers [#/m^3] at which the hard MG2 slope reaches 1/50 um and 1/2 um
+# (q = 1e-4 kg/kg, rho = 1), and the production-width gaps to the oracle on the
+# fixture, all measured 2026-10-27 (a change to a smooth form or width re-measures).
+_N_LAM_LO, _N_LAM_HI = 1175671.9776878892, 10742958658.70296
+_PROD_GAPS = (6.112631957471963e-10, 2.303176760420911e-09)
+
+# MG2's hard limits (RULE 5 widths 0) for the oracle match; dcs = the fixture's.
+_HARD = dict(mg2_drop_number_cap_log_width=0.0, mg2_drop_slope_log_width=0.0,
+             mg2_ice_cap_log_width=0.0)
+
+
+def _kwargs(z, hard=True):
     cfg = CloudConfig(**json.loads(str(z["meta"]))["cloud_config"])
+    if hard:
+        cfg = cfg._replace(**_HARD)
     return dict(
+        mg2_ice_dcs_m=MG2_DCS_M,
+        mg2_ice_slope_log_width=0.0 if hard else MorrisonConfig().mg2_ice_slope_log_width,
         T=jnp.asarray(z["T"]), p_full=jnp.asarray(z["p_full"]), q_v=jnp.asarray(z["q_v"]),
         dp=jnp.asarray(np.diff(z["p_half"], axis=1)), config=cfg,
         q_cloud=jnp.asarray(z["q_c"]), q_ice=jnp.asarray(z["q_i"]),
@@ -125,7 +144,9 @@ def test_ice_reff_matches_mg2_effi(z):
     props = compute_cloud_properties(**_kwargs(z), n_cloud_in_cloud=True,
                                      clubb_config=CLUBBConfig())
     ours = np.asarray(props.r_eff_ice) * 1e6
-    m = (z["q_i"] > 1.0e-14) & (z["ni_adj"] == 0.0) & (z["q_i"] / z["lcldm"] <= _MG2_QC_CAP)
+    m = z["q_i"] > 1.0e-14
+    # rows 48/52: the slope bounds re-adjust the number and the 5 g/kg cap binds somewhere
+    assert np.any(m & (z["ni_adj"] != 0.0)) and np.any(m & (z["q_i"] / z["lcldm"] > _MG2_QC_CAP))
     rel = _max_rel(ours, z["effi_mg2"], m)
     assert rel <= _TOL, f"r_eff_ice max rel {rel:.3e} > {_TOL}"
 
@@ -147,3 +168,58 @@ def test_reff_gradient_finite(z, dtype):
     for g in grads:
         assert np.all(np.isfinite(np.asarray(g)))
     assert np.any(np.asarray(grads[2]) != 0.0)  # r_eff depends on the cloud fraction
+
+
+def test_production_widths_measured_gaps(z):
+    """KNOWN DIFFERENCE (RULE 5) at the production widths (CloudConfig 0.01, the
+    microphysics ice-slope width): max relative gap to the hard-limit oracle."""
+    props = compute_cloud_properties(**_kwargs(z, hard=False), n_cloud_in_cloud=True,
+                                     clubb_config=CLUBBConfig())
+    liq = _max_rel(np.asarray(props.r_eff_liq) * 1e6, z["rel_cam"], np.ones(z["q_c"].shape, bool))
+    ice = _max_rel(np.asarray(props.r_eff_ice) * 1e6, z["effi_mg2"], z["q_i"] > 1.0e-14)
+    print("production-width gaps: liquid", repr(liq), "ice", repr(ice))
+    np.testing.assert_allclose([liq, ice], _PROD_GAPS, rtol=1e-6, atol=1e-14)
+
+
+def test_droplet_limits_gradient_across_each_bound():
+    """Each smooth droplet limit at 0.01: second-order gradient check and a finite,
+    nonzero slope through the bound (N <= q/1e-20, and lambda at 1/[50, 2] um)."""
+    from jax.test_util import check_grads
+
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+
+    w = dict(number_cap_log_width=0.01, slope_log_width=0.01)
+
+    def r_eff(lq, ln):
+        return jnp.sum(W.mg2_droplet_effective_radius(
+            jnp.exp(lq), W.mg2_size_bounded_nc(jnp.exp(lq), jnp.exp(ln), 1.0, **w), 1.0, **w))
+
+    q = 1.0e-4
+    for n in (_N_LAM_LO, _N_LAM_HI):   # slope bounds (50 um, 2 um mean diameter)
+        a = (jnp.log(q), jnp.log(n))
+        check_grads(r_eff, a, order=2, modes=["rev"], eps=1e-4, atol=1e-5, rtol=1e-4)
+        g = jax.grad(r_eff, argnums=1)(*a)
+        assert np.isfinite(float(g)) and float(g) != 0.0, (n, float(g))
+    # The number cap N <= q/1e-20 kg sits ~1e6 above the 2 um slope bound, so the
+    # radius is already on that bound there: finite (and checked) gradient, but
+    # the cap's own transition is not visible in the radius.
+    a = (jnp.log(q), jnp.log(q / 1.0e-20))
+    check_grads(r_eff, a, order=2, modes=["rev"], eps=1e-4, atol=1e-5, rtol=1e-4)
+    assert np.isfinite(float(jax.grad(r_eff, argnums=1)(*a)))
+    assert q / 1.0e-20 > 1.0e5 * _N_LAM_HI
+
+
+def test_ice_cap_gradient_across_the_cap(z):
+    """The smooth 5 g/kg in-cloud ice cap at 0.01: r_eff_ice is differentiable in q_i
+    with a finite, nonzero slope on both sides of the cap."""
+    kw = _kwargs(z, hard=False)
+    lev = np.nonzero(np.asarray(z["q_i"]) > 1.0e-14)
+    i, k = lev[0][0], lev[1][0]
+    icldm = float(z["lcldm"][i, k])
+    for frac in (0.9, 1.0, 1.1):
+        def f(qik):
+            qi = kw["q_ice"].at[i, k].set(qik)
+            return compute_cloud_properties(**{**kw, "q_ice": qi}, n_cloud_in_cloud=True,
+                                            clubb_config=CLUBBConfig()).r_eff_ice[i, k]
+        g = jax.grad(f)(jnp.asarray(frac * _MG2_QC_CAP * icldm))
+        assert np.isfinite(float(g)) and float(g) != 0.0, (frac, float(g))

@@ -82,7 +82,8 @@ def test_pblh_matches_cam_oracle_at_hard_limit(fx):
 def test_surface_scales_match_cam_oracle(fx):
     """calc_ustar / calc_obklen as the clubb_intr block calls them."""
     T, q, *_ = _args(fx)
-    th, thv = HB._theta_thetav(T, q, jnp.asarray(fx["in_p_full"]))
+    th, thv = HB._theta_thetav_se(T, q, jnp.asarray(fx["in_p_full"]),
+                                  jnp.asarray(fx["in_p_half"])[:, -1])
     ustar, _, _, kbfs, obklen = HB._calc_ustar_obklen(
         T[:, -1], jnp.asarray(fx["in_p_full"])[:, -1],
         jnp.asarray(fx["in_taux"]), jnp.asarray(fx["in_tauy"]),

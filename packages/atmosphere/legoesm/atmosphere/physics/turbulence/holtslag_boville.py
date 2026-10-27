@@ -331,6 +331,14 @@ def _theta_thetav(T, q_v, p_full):
     return theta, virtual_temperature(theta, q_v)
 
 
+def _theta_thetav_se(T, q_v, p_full, p_sfc):
+    """CAM-SE ``th = t*exner``, ``exner = (ps/pmid)**cappa``
+    (dp_coupling.F90:834), and ``thv = virtem(th, q)``."""
+    exner = exner_function(jnp.asarray(p_sfc)[:, None]) / exner_function(p_full)
+    theta = T * exner
+    return theta, virtual_temperature(theta, q_v)
+
+
 def _calc_ustar_obklen(T_bot, p_bot, tau_x, tau_y, shflx, qflx, th_bot,
                        thv_bot, ustar_min):
     """Oracle ``pbl_utils`` ``calc_ustar`` + ``calc_obklen``.
@@ -386,8 +394,7 @@ def cam_pblintd_height(
     (dp_coupling.F90:834), not the p0-referenced one of the HB lane.
     Returns ``pblh`` [m], (ncol,).
     """
-    theta = T * (jnp.asarray(p_sfc)[:, None] / p_full) ** constants.kappa
-    theta_v = virtual_temperature(theta, q_v)
+    theta, theta_v = _theta_thetav_se(T, q_v, p_full, p_sfc)
     ustar, _, _, kbfs, obklen = _calc_ustar_obklen(
         T[:, -1], p_full[:, -1], tau_x, tau_y, shflx, qflx, theta[:, -1],
         theta_v[:, -1], config.ustar_min)

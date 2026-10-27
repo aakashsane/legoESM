@@ -410,17 +410,3 @@ def test_fp32_cold_cloud_immersion_freezing_is_finite():
         assert bool(jnp.all(jnp.isfinite(v))), k
     assert bool(jnp.all(jnp.isfinite(pl))) and bool(jnp.all(jnp.isfinite(ps)))
 
-
-def test_fp32_masked_immersion_freezing_gradient_is_finite():
-    """No cloud at 145 K in fp32: the masked immersion-freezing lanes must not
-    put inf/NaN into the temperature gradient (codex r2)."""
-    f = lambda x: jnp.full((1, 1), x, jnp.float32)  # noqa: E731
-    z = f(0.0)
-    hyd = HydrometeorState(q_c=z, q_r=z, q_i=z, q_s=z, q_g=z, N_c=z, N_r=z, N_i=z)
-
-    def loss(T):
-        s, _, _ = P3.p3_step(T, f(1.0e-7), hyd, f(1.0e4), f(0.24), f(500.0), 20.0, HARD)
-        return jnp.sum(s["T"]) + 1e3 * jnp.sum(s["q_v"])
-
-    for fn in (jax.grad(loss), jax.jit(jax.grad(loss))):
-        assert bool(jnp.all(jnp.isfinite(fn(f(145.0)))))

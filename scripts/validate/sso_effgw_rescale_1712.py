@@ -165,6 +165,12 @@ def hand_bottom_stress(rec, cols):
     return cfg.effgw_oro * lf * tau0
 
 
+def _emit(res, out):
+    print(json.dumps(res, indent=1), flush=True)
+    if out:
+        Path(out).write_text(json.dumps(res, indent=1))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", required=True)
@@ -182,6 +188,8 @@ def main():
     r_old, dt_phys = gwd_stress(d_old, {"effgw_oro": e0})
     res["dt_phys_s"] = dt_phys
     res["S_old"] = area_mean_abs(r_old["tau"][:, -1], area)
+    if res["S_old"] == 0.0:
+        raise SystemExit("S_old == 0: the current SSO file launches no stress")
     del d_old
 
     d_new = build_driver(a.config, a.sso_new, a.extra)
@@ -216,7 +224,7 @@ def main():
     res["S_frac_in_bottom_limited_cols"] = area_mean_abs(np.where(nz & ~free, t1, 0.0),
                                                   area) / res["S_new"]
 
-    print(json.dumps(res, indent=1), flush=True)
+    _emit(res, a.out)
     # 3-column hand check on bottom-unlimited columns: largest, median and
     # smallest nonzero stress.
     idx = np.flatnonzero(free)
@@ -231,9 +239,7 @@ def main():
     res["model_tau"] = t1[cols].tolist()
     res["hand_max_rel_err"] = float(np.max(np.abs(hand / t1[cols] - 1.0)))
 
-    print(json.dumps(res, indent=1))
-    if a.out:
-        Path(a.out).write_text(json.dumps(res, indent=1))
+    _emit(res, a.out)
 
 
 if __name__ == "__main__":

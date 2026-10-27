@@ -74,7 +74,11 @@ def _load_run_amip():
 
 def build_driver(deck, sso, extra):
     ra = _load_run_amip()
-    argv = ["--config", deck, *extra, "--subgrid-orography-file", sso]
+    import tempfile
+    # Each build writes its own manifest: a fresh output dir per build, so
+    # the second build (other SSO path) is not refused as a different run.
+    argv = ["--config", deck, *extra, "--subgrid-orography-file", sso,
+            "--output", tempfile.mkdtemp(prefix="sso1712_")]
     parser = ra.build_arg_parser()
     from legoesm.driver.run_config_yaml import load_yaml_config
     keys = load_yaml_config(deck, parser)

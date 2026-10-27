@@ -1039,6 +1039,16 @@ def rule5_sharpness(width):
     return math.inf if width == 0.0 else 1.0 / width
 
 
+def mg2_drop_ln_number_cap(nc_kg, q_c_ic, log_width):
+    """``ln min(nc_kg, q/1e-20 kg)`` (MG2 min_mean_mass_liq,
+    micro_mg_utils.F90:493-494) as a LogSumExp of ``log_width`` in ln space
+    (0 = the hard min).  ``nc_kg`` floored at the dtype's tiny for the log."""
+    tiny = jnp.finfo(jnp.result_type(nc_kg)).tiny
+    return smooth_min(jnp.log(jnp.maximum(nc_kg, tiny)),
+                      jnp.log(q_c_ic / _MG2_MIN_MEAN_MASS_LIQ),
+                      rule5_sharpness(log_width))
+
+
 def mg2_droplet_psd(q_c_ic, N_c_ic, rho, *, number_cap_log_width=0.0,
                     slope_log_width=0.0):
     """MG2 ``size_dist_param_liq`` (micro_mg_utils.F90:376-422 ->
@@ -1069,10 +1079,7 @@ def mg2_droplet_psd(q_c_ic, N_c_ic, rho, *, number_cap_log_width=0.0,
         return active, pgam, jnp.clip(lam, lam_lo, lam_hi), nc_kg
     # RULE 5: the number cap and the slope clamp in ln space, each a LogSumExp
     # of its width (0 = MG2's hard form); the number follows the smooth slope.
-    tiny = jnp.finfo(jnp.result_type(N_c_ic, rho)).tiny
-    ln_nc = jnp.log(jnp.maximum(N_c_ic / rho, tiny))
-    ln_nc = smooth_min(ln_nc, jnp.log(q_safe / _MG2_MIN_MEAN_MASS_LIQ),
-                       rule5_sharpness(number_cap_log_width))
+    ln_nc = mg2_drop_ln_number_cap(N_c_ic / rho, q_safe, number_cap_log_width)
     ln_lam = (jnp.log(shape / q_safe) + ln_nc) / 3.0
     lam = jnp.exp(smooth_clamp(ln_lam, jnp.log(lam_lo), jnp.log(lam_hi),
                                rule5_sharpness(slope_log_width)))

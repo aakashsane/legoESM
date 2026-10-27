@@ -223,3 +223,45 @@ def test_ice_cap_gradient_across_the_cap(z):
                                             clubb_config=CLUBBConfig()).r_eff_ice[i, k]
         g = jax.grad(f)(jnp.asarray(frac * _MG2_QC_CAP * icldm))
         assert np.isfinite(float(g)) and float(g) != 0.0, (frac, float(g))
+
+
+def test_droplet_number_cap_is_smooth_in_isolation():
+    """The number cap's own transition (the radius cannot show it: the slope
+    bound dominates): second-order gradient check at the cap, finite slope
+    strictly between 0 and 1 just past it at 0.01, 0 for the hard cap."""
+    from jax.test_util import check_grads
+
+    from legoesm.atmosphere.physics.microphysics import _warm_rain as W
+
+    q = jnp.asarray(1.0e-4)
+    ln_cap = jnp.log(q / 1.0e-20)
+
+    def f(ln_n, w):
+        return W.mg2_drop_ln_number_cap(jnp.exp(ln_n), q, w)
+
+    check_grads(lambda x: f(x, 0.01), (ln_cap,), order=2, modes=["rev"],
+                eps=1e-4, atol=1e-5, rtol=1e-4)
+    for dx, w, lo, hi in ((0.005, 0.01, 0.0, 1.0), (0.005, 0.0, -1e-12, 1e-12),
+                          (-1.0, 0.01, 1.0 - 1e-6, 1.0 + 1e-6)):
+        g = float(jax.grad(f)(ln_cap + dx, w))
+        assert np.isfinite(g) and lo < g < hi, (dx, w, g)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, np.float32])
+def test_ice_radius_gradients_finite_at_production_widths(z, dtype):
+    """Ice radius and ice path through the new MG2 limits: every input
+    gradient finite in fp32 and fp64, including levels with no ice."""
+    kw = {k: (jnp.asarray(v, dtype=dtype) if isinstance(v, jnp.ndarray) else v)
+          for k, v in _kwargs(z, hard=False).items()}
+
+    def loss(q_i, n_i, alst):
+        p = compute_cloud_properties(**{**kw, "q_ice": q_i, "n_ice": n_i,
+                                        "cloud_fraction_override": alst},
+                                     n_cloud_in_cloud=True, clubb_config=CLUBBConfig())
+        return jnp.sum(p.r_eff_ice) + jnp.sum(p.iwp / p.r_eff_ice)
+
+    grads = jax.grad(loss, argnums=(0, 1, 2))(kw["q_ice"], kw["n_ice"],
+                                               kw["cloud_fraction_override"])
+    for g in grads:
+        assert np.all(np.isfinite(np.asarray(g)))
+    assert np.any(np.asarray(grads[1]) != 0.0)  # r_eff_ice depends on the ice number

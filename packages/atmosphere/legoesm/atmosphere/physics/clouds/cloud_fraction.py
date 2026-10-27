@@ -1635,12 +1635,15 @@ def compute_cloud_properties(
         r_const = jnp.asarray(config.r_eff_ice, dtype=_scalar_dtype)
         # Extinction sum: both denominators are strictly positive by the
         # clips above (r_psd ≥ 1.5e-30 via the lami clip; r_const a config
-        # float), so the untaken ``where`` branch stays finite (AD-safe).
+        # float), so the untaken ``where`` branch stays finite.
         _ext = (m_psd / jnp.maximum(r_eff_ice_psd, 1.0e-30)
                 + m_flr / jnp.maximum(r_const, 1.0e-30))
+        # The untaken branch's denominator is 1: at _ext = 0 the 1e-30 floor
+        # squares to 0 in fp32 and its 0/0 slope would NaN the gradient
+        # (forward unchanged).
         r_eff_ice_blend = jnp.where(
             m_flr > 0.0,
-            (m_psd + m_flr) / jnp.maximum(_ext, 1.0e-30),
+            (m_psd + m_flr) / jnp.where(m_flr > 0.0, jnp.maximum(_ext, 1.0e-30), 1.0),
             r_eff_ice_psd,
         )
         has_ice = jnp.clip(q_i, 0.0) > 1.0e-14            # SAM QSMALL

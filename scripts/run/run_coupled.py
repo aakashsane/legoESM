@@ -1505,6 +1505,9 @@ def main(argv=None, *, build_only=False):
         cloud_diagnostic_condensate_scheme=args.cloud_diagnostic_condensate_scheme,
         cloud_adiabatic_lwc_rate=args.cloud_adiabatic_lwc_rate,
         microphysics=args.microphysics,
+        # Pinned kk2000: an unset law resolves to kk2000_cam6 under mg (needs CLUBB relvar).
+        morrison_warm_rain_scheme=(
+            "kk2000" if args.microphysics == "morrison" else None),
         days=args.days,
         experiment=args.experiment,
         start_year=args.start_year,

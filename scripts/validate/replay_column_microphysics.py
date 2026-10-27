@@ -71,7 +71,9 @@ def build_morrison_config(resolved: dict):
         raise SystemExit(
             f"run used microphysics={resolved.get('microphysics')!r}; this "
             "probe replays morrison only")
-    sub = MicrophysicsConfig(scheme="morrison").morrison
+    # Pinned kk2000: an unset law resolves to kk2000_cam6 under mg (needs CLUBB relvar).
+    sub = MicrophysicsConfig(scheme="morrison").morrison._replace(
+        warm_rain_scheme="kk2000")
     scalars = {
         leaf: resolved.get(f"morrison_{leaf}")
         for leaf in ("bergeron_rate", "rime_coeff", "dep_coeff", "agg_coeff",

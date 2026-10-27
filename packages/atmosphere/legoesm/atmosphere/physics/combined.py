@@ -51,7 +51,8 @@ from legoesm.core.state import (
 from legoesm.atmosphere.physics.radiation.config import RadiationConfig
 from legoesm.atmosphere.physics.convection.config import ConvectionConfig
 from legoesm.atmosphere.physics.turbulence.config import TurbulenceConfig
-from legoesm.atmosphere.physics.microphysics.config import MicrophysicsConfig
+from legoesm.atmosphere.physics.microphysics.config import (
+    MicrophysicsConfig, resolve_warm_rain_scheme)
 from legoesm.atmosphere.physics.gravity_wave_drag.config import GravityWaveDragConfig
 
 from legoesm.atmosphere.physics.radiation.integration import (
@@ -828,9 +829,9 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
                 clubb_config=_clubb_cfg,
                 relvar_from_clubb=(
                     _clubb_liquid_partition_on(config.turbulence)
-                    and getattr(getattr(config.microphysics,
-                                        config.microphysics.scheme, None),
-                                "warm_rain_scheme", None) == "kk2000_cam6")),
+                    and config.microphysics.scheme == "morrison"
+                    and resolve_warm_rain_scheme(
+                        config.microphysics.morrison) == "kk2000_cam6")),
             False, None))
     if config.gravity_wave_drag.scheme != "none":
         tagged_fns.append((make_gwd_physics(config.gravity_wave_drag, model_type, dt), True, "gwd_spectrum"))

@@ -200,7 +200,7 @@ def test_validate_strict_refuses_inert_or_foreign_use():
     m = MorrisonConfig()
     assert d["morrison_autocon_fact"] == m.autocon_fact == 1.0
     assert d["morrison_accre_enhan_fact"] == m.accre_enhan_fact == 1.0
-    assert d["morrison_warm_rain_scheme"] == m.warm_rain_scheme == "kk2000"
+    assert d["morrison_warm_rain_scheme"] is m.warm_rain_scheme is None
 
 
 def test_cli_round_trip_and_production_deck_selects_the_mg2_law():

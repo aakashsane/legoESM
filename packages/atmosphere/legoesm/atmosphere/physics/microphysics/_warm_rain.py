@@ -3086,13 +3086,15 @@ def m2005_liquid_step(T, q_v, q_c, q_r, N_r, p, rho, dz, dt, N_c_spec, params,
     umr, unr, umc, unc = (_m2005_fill_down(v) for v in (umr, unr, umc, unc))
     sed_r, sfc_r, req_r = sedimentation_tendency(
         dumr, rho, umr, dz, dt=dt, return_surface_flux=True,
-        n_substeps_max=n_substeps_max, cfl_speed=unr, return_substeps=True)
+        n_substeps_max=n_substeps_max, cfl_speed=unr, return_substeps=True,
+        dz_floor=False)
     sed_nr = sedimentation_tendency(
         dumfnr, rho, unr, dz, dt=dt, n_substeps_max=n_substeps_max,
-        cfl_speed=umr)
+        cfl_speed=umr, dz_floor=False)
     sed_c, sfc_c, req_c = sedimentation_tendency(
         dumc, rho, umc, dz, dt=dt, return_surface_flux=True,
-        n_substeps_max=n_substeps_max, cfl_speed=unc, return_substeps=True)
+        n_substeps_max=n_substeps_max, cfl_speed=unc, return_substeps=True,
+        dz_floor=False)
 
     # 6. update (:4512-4535) and post-step cleanup (:4664-4783)
     q_c = q_c + (qc_t + sed_c) * dt

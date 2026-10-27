@@ -4128,8 +4128,7 @@ class ExperimentConfig(NamedTuple):
                 "by the hom-nucleation branch and would be silently inert.")
         _wrs = ("kk2000", "kk2000_cam6", "seifert_beheng",
                 "seifert_beheng_sb2001")
-        if (self.morrison_warm_rain_scheme is not None
-                and self.morrison_warm_rain_scheme not in _wrs):
+        if self.morrison_warm_rain_scheme not in (None, *_wrs):
             raise ValueError(
                 f"morrison_warm_rain_scheme={self.morrison_warm_rain_scheme!r} "
                 f"unknown; choose one of {_wrs} or leave it unset (None).")

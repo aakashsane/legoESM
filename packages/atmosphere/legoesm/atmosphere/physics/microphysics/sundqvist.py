@@ -40,7 +40,8 @@ Two stages run in sequence:
      1e-13 kg m-2) [729-734].
 
    Mapping (legoESM -> oracle): ``q_c`` is ``cwm`` (the one condensate variable;
-   ``q_i`` is not read, as before the port); ``rho·dz`` is ``del/g``;
+   ``q_i`` is not read, as before the port); the layer mass ``del/g`` is
+   ``dp/g`` from ``p_half`` (``rho``/``dz`` are not read);
    ``rh_crit`` = ``u00k``; ``auto_rate`` = ``prautco``; ``qc_crit`` = ``1/cmr``
    (oracle hard-codes 3e-4); ``coalescence_enh_coeff`` = ``c1`` (300);
    ``bergeron_enh_coeff`` = ``c2`` (0.5); ``evap_coeff`` = ``evpco``;
@@ -372,8 +373,12 @@ def zhao_carr_precpd(
     )
 
 
-def _sundqvist_step(T, q_v, hydrometeors, p_full, rho, dz, dt, config):
-    """Condensation surrogate followed by the Zhao-Carr precipitation port."""
+def _sundqvist_step(T, q_v, hydrometeors, p_full, p_half, dt, config):
+    """Condensation surrogate followed by the Zhao-Carr precipitation port.
+
+    Returns ``(condensation, zc, layer_mass)``; ``zc`` is the state after BOTH
+    stages (precpd runs on the post-condensation state, the oracle's
+    gscond -> precpd order) and ``layer_mass`` the oracle's ``del/g``."""
     _check_no_gaussian_f2_override(config)
     sharpness = config.sigmoid_sharpness
 
@@ -393,11 +398,16 @@ def _sundqvist_step(T, q_v, hydrometeors, p_full, rho, dz, dt, config):
             config.hard_sat_max_heating_K,
         )
 
-    # 2. Precipitation: the condensate after condensation, on the pre-step
-    # T and q_v (the pre-port coupling of the two stages).
+    # 2. Precipitation on the post-condensation state (the oracle runs
+    # zhaocarr_gscond, then zhaocarr_precpd on its output; tier-2 decision
+    # R17), with the oracle's layer mass del/g = dp/g (R9/C12: the column
+    # water budget closes in the model's pressure coordinate).
+    T1 = T + constants.L_v * condensation * dt / constants.c_pd
+    q1 = q_v - condensation * dt
     cwm = hydrometeors.q_c + condensation * dt
-    zc = zhao_carr_precpd(T, q_v, cwm, p_full, rho * dz, dt, config)
-    return condensation, zc
+    layer_mass = (p_half[:, 1:] - p_half[:, :-1]) / constants.g
+    zc = zhao_carr_precpd(T1, q1, cwm, p_full, layer_mass, dt, config)
+    return condensation, zc, layer_mass
 
 
 def diagnose_sundqvist_process_rates(
@@ -413,9 +423,9 @@ def diagnose_sundqvist_process_rates(
 ) -> SundqvistProcessRates:
     """Diagnose the Sundqvist condensation, precipitation-production and
     precipitation-evaporation rates (see :class:`SundqvistProcessRates`)."""
-    del p_half  # Included for signature parity with ``sundqvist_microphysics``.
-    condensation, zc = _sundqvist_step(
-        T, q_v, hydrometeors, p_full, rho, dz, dt, config)
+    del rho, dz  # Signature parity with ``sundqvist_microphysics``.
+    condensation, zc, _ = _sundqvist_step(
+        T, q_v, hydrometeors, p_full, p_half, dt, config)
     return SundqvistProcessRates(
         condensation=condensation,
         autoconversion=zc.autoconversion,
@@ -446,7 +456,7 @@ __physics_contract__ = {
     "sign_convention": (
         "z up; level 0 = model top, surface at [:, -1]. Precipitation is "
         "positive downward and leaves the column: int (dq_v + dq_c + dq_r) "
-        "rho dz = -precipitation. Condensation heats with L_v; rain "
+        "dp/g = -precipitation. Condensation heats with L_v; rain "
         "evaporation cools with L_v, snow sublimation with L_v+L_f, melting "
         "with L_f (Zhao-Carr); conversion of condensate to precipitation "
         "carries no latent heat."
@@ -489,24 +499,25 @@ def sundqvist_microphysics(
     -------
     MicrophysicsOutput
     """
-    del p_half
+    del rho, dz  # the layer mass is the oracle's dp/g (from p_half)
     ncol, nlev = T.shape
-    condensation, zc = _sundqvist_step(
-        T, q_v, hydrometeors, p_full, rho, dz, dt, config)
+    _, zc, layer_mass = _sundqvist_step(
+        T, q_v, hydrometeors, p_full, p_half, dt, config)
 
-    # Tendencies = condensation + the Zhao-Carr state update over the step.
-    dT_dt = constants.L_v * condensation / constants.c_pd + (zc.T - T) / dt
-    dq_v_dt = -condensation + (zc.q_v - q_v) / dt
+    # Tendencies over the step: zc is the state after condensation AND
+    # precipitation, so it carries the condensation heating and drying.
+    dT_dt = (zc.T - T) / dt
+    dq_v_dt = (zc.q_v - q_v) / dt
     dq_c_dt = (zc.cwm - hydrometeors.q_c) / dt
 
     # Diagnostic-rain semantics (pre-port, not part of the oracle): any q_r
     # passed in is treated as already-falling rain and drained to the surface
-    # in one step, with the same rho*dz mass weighting as the tendencies so
-    #     int (dq_v + dq_c + dq_r) rho dz  =  -precipitation.
+    # in one step, with the same dp/g mass weighting as the tendencies so
+    #     int (dq_v + dq_c + dq_r) dp/g  =  -precipitation.
     dt_safe = jnp.maximum(dt, 1e-10)
     q_r_in = jnp.clip(hydrometeors.q_r, 0.0, None)
     dq_r_dt = -q_r_in / dt_safe
-    q_r_drain_flux = jnp.sum(q_r_in * rho * dz, axis=1) / dt_safe
+    q_r_drain_flux = jnp.sum(q_r_in * layer_mass, axis=1) / dt_safe
     precipitation = zc.rain_sfc + zc.snow_sfc + q_r_drain_flux
 
     # Pin dtype to the input precision for the unused-tendency placeholders.

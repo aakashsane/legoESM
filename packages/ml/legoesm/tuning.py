@@ -280,8 +280,8 @@ TUNING_PARAMETERS: dict[str, TuningParameter] = {
     ),
     "sundqvist_evap_coeff": TuningParameter(
         name="sundqvist_evap_coeff",
-        default=5e-4,
-        min_val=1e-4,
+        default=2e-5,
+        min_val=1e-5,
         max_val=2e-3,
         units="1",
         description="Sundqvist sub-cloud rain evaporation coefficient",

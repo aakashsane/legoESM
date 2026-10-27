@@ -273,9 +273,9 @@ def test_clubb_step_jit_and_grad():
 # Sundqvist microphysics with the Zhao-Carr oracle's hard-coded constants
 # (m_r 3e-4, c2 0.5; zhaocarr_precpd.f:244,248), the GFS v16/v17 namelist
 # psautco (8e-4) and the oracle's commented operational evpco (2e-5,
-# zhaocarr_precpd.f:215).  The shipped defaults (psautco 0, evap_coeff 5e-4)
-# are pending a user decision; with them this column's cold condensate never
-# reaches the ground and the coupling tests below would have no precip sink.
+# zhaocarr_precpd.f:215).  The shipped psautco default (0) is pending a user
+# decision; with it this column's cold condensate never reaches the ground and
+# the coupling tests below would have no precip sink.
 _SUNDQVIST_ZC = dict(qc_crit=3.0e-4, bergeron_enh_coeff=0.5, psautco=8.0e-4,
                      evap_coeff=2.0e-5)
 

@@ -1,7 +1,7 @@
 """#1712: one-shot McFarlane ``effgw_oro`` rescale for a new subgrid-orography file.
 
     sso_effgw_rescale_1712.py --config <deck> --sso-old <nc> --sso-new <nc>
-        [--effgw-oro 0.125] [--out result.json] [--extra <run_amip flags...>]
+        --effgw-oro <run value> [--out result.json] [--extra <run_amip flags...>]
 
 S = area-weighted GLOBAL mean of |tau| at the bottom interface, tau being the
 McFarlane stress output (``mcfarlane_gwd(..., return_stress=True)``; it carries
@@ -176,7 +176,7 @@ def main():
     ap.add_argument("--config", required=True)
     ap.add_argument("--sso-old", required=True)
     ap.add_argument("--sso-new", required=True)
-    ap.add_argument("--effgw-oro", type=float, default=0.125)
+    ap.add_argument("--effgw-oro", type=float, required=True)
     ap.add_argument("--out", default=None)
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[])
     a = ap.parse_args()
@@ -184,6 +184,11 @@ def main():
     res = {"effgw_oro_old": e0, "sso_old": a.sso_old, "sso_new": a.sso_new}
 
     d_old = build_driver(a.config, a.sso_old, a.extra)
+    from legoesm.driver.physics_pipeline import gwd_config_for
+    e_run = gwd_config_for(d_old.config).mcfarlane.effgw_oro
+    if e_run != e0:
+        raise SystemExit(f"--effgw-oro {e0} is not the run's resolved "
+                         f"effgw_oro {e_run}")
     area = np.asarray(d_old.model.mesh.areaCell).reshape(-1)
     r_old, dt_phys = gwd_stress(d_old, {"effgw_oro": e0})
     res["dt_phys_s"] = dt_phys

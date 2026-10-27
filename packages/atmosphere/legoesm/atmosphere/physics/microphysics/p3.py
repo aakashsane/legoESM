@@ -965,14 +965,15 @@ def p3_step(T, q_v, hydrometeors: HydrometeorState, p_full, rho, dz, dt,
     # WRF's product cdist1*exp(aimm*(T0-T))*gamma(7+mu_c)*dumh**2 is formed in
     # log space (tier-2 decision C8): the same value to round-off in fp64, no
     # fp32 overflow of the intermediate product for cloud at or below ~190 K.
-    # Masked lanes take 1.0 so the logs stay finite there.
+    # Masked lanes take 1.0 inside the logs and exponent 0, so neither the
+    # value nor the gradient there is inf/NaN (fp32 at very low T).
     log_c1 = jnp.log(jnp.where(het_c, cdist1, 1.0))
     log_lc = jnp.log(jnp.where(het_c, lamc_s, 1.0))       # log(dumh) = -3*log_lc
     log_h = log_c1 + _AIMM * (_T0 - t)
-    qcheti = jnp.where(het_c, _CONS6 * jnp.exp(
-        _gammaln(_HET_GAMMA_A + mu_c) + log_h - 6.0 * log_lc), 0.0)
-    ncheti = jnp.where(het_c, _CONS5 * jnp.exp(
-        _gammaln(mu_c + 4.0) + log_h - 3.0 * log_lc), 0.0)
+    ex_q = jnp.where(het_c, _gammaln(_HET_GAMMA_A + mu_c) + log_h - 6.0 * log_lc, 0.0)
+    ex_n = jnp.where(het_c, _gammaln(mu_c + 4.0) + log_h - 3.0 * log_lc, 0.0)
+    qcheti = jnp.where(het_c, _CONS6 * jnp.exp(ex_q), 0.0)
+    ncheti = jnp.where(het_c, _CONS5 * jnp.exp(ex_n), 0.0)
     het_r = rmask & (t <= _T_IMMERSION)
     cds = jnp.where(het_r, cdistr, 1.0)
     lrs = jnp.where(het_r, lamr, 1.0)

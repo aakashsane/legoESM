@@ -58,7 +58,8 @@ def _call(f, **over):
     return {"args": args, "kw": kw, "tau": np.asarray(tau)}
 
 
-_OFF = {"umcfac": np.inf, "tndmax_per_day": np.inf}
+_BIG = float(np.finfo(np.float64).max)
+_OFF = {"umcfac": _BIG, "tndmax_per_day": _BIG}
 
 
 def test_doubling_without_limiters_is_exact(fx):

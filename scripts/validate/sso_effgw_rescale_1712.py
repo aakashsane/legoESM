@@ -24,7 +24,7 @@ S(2x)/S(1x) at production limiters, and S at effgw_oro_new against S_old.  A
 global scalar target preserves the global integral, not the stress pattern.
 
 Checks printed (numbers only, no verdict):
-  * doubling: with the limiters disabled (umcfac, tndmax_per_day -> inf) a 2x
+  * doubling: with the limiters disabled (umcfac, tndmax_per_day -> max float) a 2x
     effgw_oro doubles the bottom stress in every column; with production
     limiters, in every column whose bottom stress the limiters leave unchanged;
   * 3-column hand check: the bottom stress of three such columns
@@ -217,10 +217,15 @@ def main():
     res["S_at_effgw_new"] = area_mean_abs(run(effgw_oro=e_new), area)
     res["S_at_effgw_new_over_S_old"] = res["S_at_effgw_new"] / res["S_old"]
 
-    # Doubling.  Limiter-free (umcfac, tndmax -> inf): every column doubles.
-    off = {"umcfac": np.inf, "tndmax_per_day": np.inf}
+    # Doubling.  Limiter-free (umcfac, tndmax -> max float): every column doubles.
+    # Largest finite float, not inf: umcfac*|ubm| with ubm == 0 (calm source
+    # column) would be inf*0 = NaN.
+    big = float(np.finfo(np.float64).max)
+    off = {"umcfac": big, "tndmax_per_day": big}
     f1 = run(effgw_oro=e0, **off)
     f2 = run(effgw_oro=2 * e0, **off)
+    if not (np.all(np.isfinite(f1)) and np.all(np.isfinite(f2))):
+        raise SystemExit("non-finite limiter-free bottom stress")
     nz = f1 != 0.0
     res["doubling_nolimit_max_rel_err"] = float(
         np.max(np.abs(f2[nz] / f1[nz] - 2.0))) if nz.any() else None

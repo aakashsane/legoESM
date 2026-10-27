@@ -86,7 +86,8 @@ def build_driver(deck, sso, extra):
     parser.set_defaults(_config_keys=frozenset(keys))
     args = parser.parse_args(argv)
     args = ra._postprocess_args(args, parser, argv)
-    if getattr(args, "distributed", False):
+    if getattr(args, "distributed", False) or getattr(
+            args, "multicontroller", False):
         raise SystemExit("single-process probe: S is a sum over the local "
                          "mesh; drop --distributed")
     if getattr(args, "params", None):

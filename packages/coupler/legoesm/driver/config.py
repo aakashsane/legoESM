@@ -1541,6 +1541,7 @@ class ExperimentConfig(NamedTuple):
     # truncated literal would silently perturb the default kernel.
     mcfarlane_k_wave: float = 2.0 * math.pi / 100e3  # McFarlaneConfig.k_wave [1/m]
     mcfarlane_directional_spread: float = 1.0   # McFarlaneConfig.directional_spread
+    mcfarlane_effgw_oro: float = 0.125          # McFarlaneConfig.effgw_oro [1] (#1712)
     # Morrison ice-microphysics tunables (active when microphysics='morrison'
     # — silently filtered out by hasattr when Sundqvist/Kessler is active).
     morrison_bergeron_rate: float = 1e-3        # MorrisonConfig.bergeron_rate [1/s]
@@ -1736,7 +1737,11 @@ class ExperimentConfig(NamedTuple):
     # surface -- the SST/SIC blend, without the land skin and without the land
     # lapse correction -- instead of on the land-blended surface temperature
     # and humidity.  The land fraction keeps the land model's own fluxes.
-    ocean_flux_on_ocean_surface: bool = False
+    # Tri-state (user decision 2026-10-26): None = AUTO, on exactly where an
+    # explicit True is accepted (see ``ocean_flux_surface_eligibility``),
+    # resolved at ModelDriver setup so the manifest / saved config / replay
+    # record the boolean; True = required (refused where inert); False = off.
+    ocean_flux_on_ocean_surface: bool | None = None
     # MPAS lane, interactive multilayer land: rebuild the two-leaf canopy's
     # surface parameters (LAI, canopy height, soil-colour albedo from the top
     # soil layer's wetness) from the surfdata climatology at every land step,
@@ -2077,6 +2082,12 @@ class ExperimentConfig(NamedTuple):
     # CanopyConfig.most_n_iters: fixed-point iterations of the above-canopy
     # Monin-Obukhov solve (same placement and None semantics as the widths).
     land_canopy_most_n_iters: int | None = None
+    # MorrisonConfig.prognostic_droplet_number: CAM6 MG2 prognostic droplet
+    # number with prescribed-aerosol activation (microp_aero_run); MPAS lane.
+    morrison_prognostic_droplet_number: bool = False
+    # Directory of the sha256-pinned CAM6 PPE member-000 aerosol climatology +
+    # MAM4 property files read by that activation; None = unset.
+    cam6_aerosol_dir: str | None = None
     # Sea-ice shortwave albedo (#2106).
     #   "auto" (default)      -> resolved per run by resolve_sea_ice_albedo_scheme:
     #     "maykut_untersteiner" when the lane carries the prognostic ice skin,
@@ -4270,7 +4281,8 @@ class ExperimentConfig(NamedTuple):
                 except ValueError as exc:
                     errors.append(f"land_canopy_*: {exc}")
         for _nm in ("morrison_sed_cfl_substeps", "morrison_sed_cfl_substeps_strict",
-                    "morrison_do_graupel", "morrison_warm_rain_incloud"):
+                    "morrison_do_graupel", "morrison_warm_rain_incloud",
+                    "morrison_prognostic_droplet_number"):
             _v = getattr(self, _nm)
             if not isinstance(_v, bool):
                 errors.append(f"{_nm} must be a bool, got {_v!r}")
@@ -4316,6 +4328,11 @@ class ExperimentConfig(NamedTuple):
                 "column lane: no other lane carries the snow number N_s; got "
                 f"grid_type={g.grid_type!r}, discretization={d.discretization!r}, "
                 f"column_lane={d.column_lane}")
+        if self.morrison_prognostic_droplet_number is True and not self.cam6_aerosol_dir:
+            # user decision 2026-10-24, 3
+            errors.append(
+                "morrison_prognostic_droplet_number=True needs cam6_aerosol_dir "
+                "(the CAM6 prescribed-aerosol climatology its activation reads).")
         if (self.morrison_sed_cfl_substeps_strict is True
                 and self.morrison_sed_cfl_substeps is False):
             errors.append(
@@ -4556,6 +4573,13 @@ class ExperimentConfig(NamedTuple):
                 f"e3sm_cam_effgw must be a finite efficiency <= 1.0, "
                 f"got {self.e3sm_cam_effgw!r}"
             )
+        # Same [0, 1] as McFarlaneConfig.__param_spec__ (one range, #1712).
+        if not (math.isfinite(self.mcfarlane_effgw_oro)
+                and 0.0 <= self.mcfarlane_effgw_oro <= 1.0):
+            errors.append(
+                f"mcfarlane_effgw_oro must be a finite efficiency in "
+                f"[0, 1], got {self.mcfarlane_effgw_oro!r}"
+            )
         if not math.isfinite(self.e3sm_cam_taubgnd) or \
                 self.e3sm_cam_taubgnd > 1.0e-2:
             errors.append(
@@ -4738,25 +4762,14 @@ class ExperimentConfig(NamedTuple):
                     "See docs/user-guide/climateeval_evaluation.md."
                 )
 
+        # Truthy, not ``is True``: a loader-kept string "true" is checked too.
         if self.ocean_flux_on_ocean_surface:
-            _ok, _why = land_flux_handoff_eligibility(self)
-            if _ok and self.radiation == "none":
-                _ok, _why = False, ("radiation='none' builds no SST anchor "
-                                    "(the ocean surface it needs)")
+            _ok, _why = ocean_flux_surface_eligibility(self)
             if not _ok:
                 errors.append(
                     "ocean_flux_on_ocean_surface=True separates the "
                     "non-land fraction's surface fluxes from the land's, but "
-                    f"{_why}; it would be silently inert.")
-            elif not resolve_land_stress_from_land(self):
-                # The bulk stress covers the whole cell unless the land's own
-                # stress replaces it over land; evaluated on the OCEAN surface
-                # it would then misstate the land share's stability.
-                errors.append(
-                    "ocean_flux_on_ocean_surface=True needs the land "
-                    "model's stress over the land fraction "
-                    "(land_stress_from_land unset or true, eligible); "
-                    "otherwise the ocean-surface stress covers the land too.")
+                    f"{_why}. Leave it unset (auto) or false.")
 
         if self.land_stress_from_land is True:
             _ok, _why = land_stress_eligibility(self)
@@ -5527,6 +5540,35 @@ def checkpoint_radiation_cadence_error(cfg) -> str | None:
             f"rad_update_steps={rus}: the held radiation fluxes "
             "are not checkpointed, so every checkpoint must sit on a "
             "radiation boundary")
+
+
+def ocean_flux_surface_eligibility(cfg) -> tuple[bool, str]:
+    """Is ``ocean_flux_on_ocean_surface=True`` live in ``cfg``?
+    ``(eligible, reason_if_not)``: the land-flux handoff, an SST anchor
+    (radiation != 'none') and the land model's stress over land."""
+    _ok, _why = land_flux_handoff_eligibility(cfg)
+    if not _ok:
+        return False, f"{_why}; it would be silently inert"
+    if cfg.radiation == "none":
+        return False, ("radiation='none' builds no SST anchor (the ocean "
+                       "surface it needs); it would be silently inert")
+    if not resolve_land_stress_from_land(cfg):
+        # The bulk stress covers the whole cell unless the land's own stress
+        # replaces it over land; evaluated on the OCEAN surface it would then
+        # misstate the land share's stability.
+        return False, ("it needs the land model's stress over the land "
+                       "fraction (land_stress_from_land unset or true, "
+                       "eligible); otherwise the ocean-surface stress covers "
+                       "the land too")
+    return True, ""
+
+
+def resolve_ocean_flux_on_ocean_surface(cfg) -> bool:
+    """The resolved tri-state ``ocean_flux_on_ocean_surface``:
+    None (auto) -> on exactly where eligible; True/False as given."""
+    if cfg.ocean_flux_on_ocean_surface is None:
+        return ocean_flux_surface_eligibility(cfg)[0]
+    return bool(cfg.ocean_flux_on_ocean_surface)
 
 
 def resolve_land_stress_from_land(cfg) -> bool:

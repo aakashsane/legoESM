@@ -1066,11 +1066,11 @@ def test_mpas_land_stress_from_land_flag_flows_to_config():
 
 
 def test_mpas_ocean_flux_on_ocean_surface_flag_flows_to_config():
-    """--mpas-ocean-flux-on-ocean-surface round-trip; default off."""
+    """--mpas-ocean-flux-on-ocean-surface round-trip; unset = auto (None)."""
     parser = build_arg_parser()
     cfg_default = build_config_from_args(_postprocess_args(
         parser.parse_args(["--dataset", "analytical"]), parser))
-    assert cfg_default.ocean_flux_on_ocean_surface is False
+    assert cfg_default.ocean_flux_on_ocean_surface is None
     for flag, want in (("--mpas-ocean-flux-on-ocean-surface", True),
                        ("--no-mpas-ocean-flux-on-ocean-surface", False)):
         cfg = build_config_from_args(_postprocess_args(parser.parse_args([
@@ -5638,3 +5638,23 @@ def test_latlon48_deck_resolves_div4_and_cam_polar_cutoff_into_the_dycore():
     assert dyn.config.use_polar_filter is True
     assert dyn.config.polar_filter_cutoff_deg == 35.9041
     assert dyn.dt == cfg.dycore.dt == 450.0
+def test_mcfarlane_effgw_oro_flag_flows_to_config():
+    """--mcfarlane-effgw-oro round-trips into ExperimentConfig (#1712); the
+    default is CAM6's 0.125 and the production deck pins that value."""
+    parser = build_arg_parser()
+    cfg_default = build_config_from_args(_postprocess_args(
+        parser.parse_args(["--dataset", "analytical"]), parser))
+    assert cfg_default.mcfarlane_effgw_oro == 0.125
+
+    cfg = build_config_from_args(_postprocess_args(parser.parse_args([
+        "--dataset", "analytical", "--mcfarlane-effgw-oro", "0.3",
+    ]), parser))
+    assert cfg.mcfarlane_effgw_oro == 0.3
+
+    from pathlib import Path
+    deck = str(Path(__file__).resolve().parents[2]
+               / "config/amip/amip_production.yaml")
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    parser = build_arg_parser()
+    # The deck sets the dest as a parser default, exactly as main() applies it.
+    assert load_yaml_config(deck, parser)["mcfarlane_effgw_oro"] == 0.125

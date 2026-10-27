@@ -134,10 +134,11 @@ def _scan_configs():
                    .get("atm.micro.MorrisonConfig") or {})
             decks[rel] = (pin.get("warm_rain_scheme"),
                           bool(cl.get("clubb_liquid_partition")))
-        if d.get("aimip_microphysics") == "morrison":
-            pin = ((d.get("param_fixed") or {})
-                   .get("atm.micro.MorrisonConfig") or {})
-            aimip[rel] = pin.get("warm_rain_scheme")
+        for a in (d, d.get("cfg_overrides") or {}):
+            if isinstance(a, dict) and a.get("aimip_microphysics") == "morrison":
+                pin = ((a.get("param_fixed") or {})
+                       .get("atm.micro.MorrisonConfig") or {})
+                aimip[rel] = pin.get("warm_rain_scheme")
     return decks, aimip
 
 

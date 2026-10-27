@@ -22,12 +22,19 @@ from legoesm import constants
 from legoesm.atmosphere.physics.turbulence.surface_layer import (
     C_E_BULK_DEFAULT, C_H_BULK_DEFAULT)
 from legoesm.land import snow_column as _snow_column
+from legoesm.ice import shortwave as _ice_sw
 
 # Snow emissivity: ONE default and ONE legal range, both owned by the snow
 # column's parameter spec.
 _SNOW_EMISSIVITY_DEFAULT = _snow_column.SnowColumnConfig._field_defaults["emissivity_snow"]
 _SNOW_EMISSIVITY_BOUNDS = (
     _snow_column.__param_spec__["SnowColumnConfig"]["params"]["emissivity_snow"]["bounds"])
+
+# Prescribed-ice melt-albedo width and skin melt-cap width: defaults and the
+# melt-width range owned by the ice shortwave parameter spec.
+_ICE_SFC_DEFAULTS = _ice_sw.PrescribedIceSurfaceConfig._field_defaults
+_ICE_MELT_WIDTH_BOUNDS = (_ice_sw.__param_spec__["PrescribedIceSurfaceConfig"]
+                          ["params"]["sea_ice_melt_ramp_width_K"]["bounds"])
 
 # Canonical AIMIP variant set.  Single source of truth — imported by
 # ``scripts/run/run_aimip.py`` and the ``validate_strict`` rule below.
@@ -635,6 +642,55 @@ CLUBB_SCALAR_FIELDS = {
 CLUBB_PROGNOSTIC_ONLY = frozenset({
     "clubb_c14", "clubb_c8", "clubb_c11", "clubb_c11b", "clubb_gamma_coefb",
     "clubb_c_k10"})
+
+
+def resolve_sea_ice_albedo_scheme(cfg) -> str:
+    """The sea-ice albedo scheme a run actually uses.
+
+    ``"auto"`` resolves to ``"maykut_untersteiner"`` when the run carries the
+    prognostic ice skin (an ice surface temperature exists) and to
+    ``"constant"`` otherwise; an explicit value is returned unchanged.
+    """
+    scheme = getattr(cfg, "sea_ice_albedo_scheme", "auto")
+    if scheme != "auto":
+        return scheme
+    return ("maykut_untersteiner" if getattr(cfg, "ice_skin_prognostic", False)
+            else "constant")
+
+
+def resolve_ice_skin_prognostic(cfg, *, latlon_mpi: bool = False,
+                                coupled: bool = False) -> tuple[bool, str]:
+    """``(on, reason)`` for the prognostic ice skin of this run.
+
+    ``ice_skin_prognostic=None`` ("auto") turns the skin on wherever the lane
+    carries it and off, with the reason, where it does not; an explicit
+    ``True``/``False`` is returned unchanged ("explicit").  An explicit
+    ``True`` on a coupled driver raises (the coupled sea-ice model owns the
+    ice surface); the static lanes refuse it in ``validate_strict`` and the
+    checkpoint writers at run start.
+    """
+    value = getattr(cfg, "ice_skin_prognostic", None)
+    if value is not None:
+        if value and coupled:
+            raise ValueError(
+                "ice_skin_prognostic=True on a coupled driver: the coupled "
+                "sea-ice model owns the ice surface temperature (#2106). "
+                "Leave it unset (auto) or false.")
+        return bool(value), "explicit"
+    d, out = cfg.dycore, cfg.output
+    if d.discretization == "spectral":
+        return False, "the spectral lane does not carry the skin yet"
+    if d.discretization == "fv3_duo" and not d.column_lane:
+        return False, "the closed fv3_duo lane has no radiation or surface fluxes"
+    if cfg.radiation == "none":
+        return False, "radiation='none' exports no surface fluxes"
+    if coupled:
+        return False, "coupled drivers: the sea-ice model owns the ice surface"
+    if out.checkpoint_days > 0 and out.checkpoint_format == "zarr":
+        return False, "zarr checkpoints cannot store the skin"
+    if out.checkpoint_days > 0 and latlon_mpi:
+        return False, "lat-lon MPI checkpoints cannot store the skin"
+    return True, "the lane carries the skin"
 
 
 class ExperimentConfig(NamedTuple):
@@ -1485,6 +1541,7 @@ class ExperimentConfig(NamedTuple):
     # truncated literal would silently perturb the default kernel.
     mcfarlane_k_wave: float = 2.0 * math.pi / 100e3  # McFarlaneConfig.k_wave [1/m]
     mcfarlane_directional_spread: float = 1.0   # McFarlaneConfig.directional_spread
+    mcfarlane_effgw_oro: float = 0.125          # McFarlaneConfig.effgw_oro [1] (#1712)
     # Morrison ice-microphysics tunables (active when microphysics='morrison'
     # — silently filtered out by hasattr when Sundqvist/Kessler is active).
     morrison_bergeron_rate: float = 1e-3        # MorrisonConfig.bergeron_rate [1/s]
@@ -1680,7 +1737,11 @@ class ExperimentConfig(NamedTuple):
     # surface -- the SST/SIC blend, without the land skin and without the land
     # lapse correction -- instead of on the land-blended surface temperature
     # and humidity.  The land fraction keeps the land model's own fluxes.
-    ocean_flux_on_ocean_surface: bool = False
+    # Tri-state (user decision 2026-10-26): None = AUTO, on exactly where an
+    # explicit True is accepted (see ``ocean_flux_surface_eligibility``),
+    # resolved at ModelDriver setup so the manifest / saved config / replay
+    # record the boolean; True = required (refused where inert); False = off.
+    ocean_flux_on_ocean_surface: bool | None = None
     # MPAS lane, interactive multilayer land: rebuild the two-leaf canopy's
     # surface parameters (LAI, canopy height, soil-colour albedo from the top
     # soil layer's wetness) from the surfdata climatology at every land step,
@@ -1856,11 +1917,10 @@ class ExperimentConfig(NamedTuple):
     # helper).  The prescribed-SST anchor otherwise pins ice-covered cells
     # at the CONSTANT T_ice (271.35 K) year-round — the +8.6 K polar tas
     # warm bias of the first ClimateEval scorecard (real central-Arctic
-    # winter skin ~245-250 K).  Default OFF = byte-identical.  Needs
-    # radiation != "none" (the skin integrates the exported surface
-    # fluxes); refused on non-MPAS lanes (their land/ice tiles own the
-    # surface temperature).
-    ice_skin_prognostic: bool = False
+    # winter skin ~245-250 K).  None = auto: on wherever the lane carries the
+    # skin, off (with the reason logged) elsewhere — see
+    # resolve_ice_skin_prognostic, applied at ModelDriver.setup.
+    ice_skin_prognostic: bool | None = None
     ice_thickness_m: float = 2.0      # climatological ice slab thickness [m]
     # Hines (1997) non-orographic GWD launch amplitude + saturation flux cap.
     # Reached through gwd_config_for on EVERY lane (like the mcfarlane_*
@@ -2024,14 +2084,29 @@ class ExperimentConfig(NamedTuple):
     # CanopyConfig.most_n_iters: fixed-point iterations of the above-canopy
     # Monin-Obukhov solve (same placement and None semantics as the widths).
     land_canopy_most_n_iters: int | None = None
-    # Sea-ice shortwave albedo on the MPAS column lane (#2106).
-    #   "constant"            -> albedo_ice everywhere, every season (default).
+    # MorrisonConfig.prognostic_droplet_number: CAM6 MG2 prognostic droplet
+    # number with prescribed-aerosol activation (microp_aero_run); MPAS lane.
+    morrison_prognostic_droplet_number: bool = False
+    # Directory of the sha256-pinned CAM6 PPE member-000 aerosol climatology +
+    # MAM4 property files read by that activation; None = unset.
+    cam6_aerosol_dir: str | None = None
+    # Sea-ice shortwave albedo (#2106).
+    #   "auto" (default)      -> resolved per run by resolve_sea_ice_albedo_scheme:
+    #     "maykut_untersteiner" when the lane carries the prognostic ice skin,
+    #     else "constant"; the RESOLVED value replaces "auto" in the driver's
+    #     config (log, experiment_config.json, run manifest).
+    #   "constant"            -> albedo_ice everywhere, every season.
     #   "maykut_untersteiner" -> ice.shortwave.maykut_untersteiner_albedo on the
     #     prognostic ice skin, recomputed every step: albedo_ice when the skin
     #     is <= T_freeze - width, the scheme's melting bare-ice value at
     #     T_freeze, linear between.  Needs ice_skin_prognostic=True.
-    sea_ice_albedo_scheme: str = "constant"
-    sea_ice_albedo_melt_width_K: float = 1.0   # melt-ramp width below T_freeze [K]
+    sea_ice_albedo_scheme: str = "auto"
+    sea_ice_melt_ramp_width_K: float = _ICE_SFC_DEFAULTS[
+        "sea_ice_melt_ramp_width_K"]   # melt-ramp width below T_freeze [K]
+    # Smooth 0 C cap on the prognostic ice skin (RULE 5): smooth_min(T, T_freeze,
+    # sharpness=1/width).  0 = the hard clip (pre-#2106 behaviour).
+    ice_skin_melt_cap_width_K: float = _ICE_SFC_DEFAULTS[
+        "ice_skin_melt_cap_width_K"]
 
     def _liquid_partition_resolved(self) -> bool:
         """Is CLUBB's cloud-liquid exchange selected, by ANY route?
@@ -3537,17 +3612,16 @@ class ExperimentConfig(NamedTuple):
                     "in its step factories (qv_smooth_coeff) and would "
                     "silently ignore it."
                 )
-            if self.ice_skin_prognostic:
+            # The prognostic ice skin is carried by the column loop, the
+            # compiled / per-step / operator-split (tiled, lat-band SPMD)
+            # lanes (#2106).  The spectral lane and the closed fv3_duo lane
+            # (its own HS/Kessler loop) do not carry it.
+            if self.ice_skin_prognostic is True and d.discretization in (
+                    "spectral", "fv3_duo"):
                 errors.append(
-                    "ice_skin_prognostic is an MPAS-lane knob; "
-                    f"discretization={d.discretization!r} has its own "
-                    "surface/ice tiles and would silently ignore it."
-                )
-            if self.sea_ice_albedo_scheme != "constant":
-                errors.append(
-                    "sea_ice_albedo_scheme is an MPAS-lane knob; "
-                    f"discretization={d.discretization!r} would silently "
-                    "ignore it."
+                    "ice_skin_prognostic is not wired on the "
+                    f"discretization={d.discretization!r} lane; it would "
+                    "silently keep the constant T_ice anchor."
                 )
         # What the compiled PhysicsPipeline lanes (lat-lon, cube; neither the
         # column loop nor spectral) and the spectral lane would silently drop
@@ -3662,41 +3736,52 @@ class ExperimentConfig(NamedTuple):
                 "cloud_cap_floor_on requires an active cloud scheme and rrtmgp/rrtmg "
                 f"radiation (cloud_scheme={self.cloud_scheme!r}, radiation={self.radiation!r}); "
                 "otherwise the polar-cap radiative floor would be a silent no-op.")
-        if self.ice_skin_prognostic and self.radiation == "none":
+        if self.ice_skin_prognostic is True and self.radiation == "none":
             errors.append(
                 "ice_skin_prognostic integrates the surface energy "
                 "fluxes exported by the physics; radiation='none' computes "
                 "none — the skin would stay at its seed forever."
             )
         if (self.ice_thickness_m != 2.0
-                and not self.ice_skin_prognostic):
+                and self.ice_skin_prognostic is False):
             errors.append(
                 f"ice_thickness_m={self.ice_thickness_m!r} requires "
                 "ice_skin_prognostic=True (the override would be "
                 "silently inert)."
             )
-        _sia = ("constant", "maykut_untersteiner")
+        _sia = ("auto", "constant", "maykut_untersteiner")
         if self.sea_ice_albedo_scheme not in _sia:
             errors.append(
                 f"sea_ice_albedo_scheme={self.sea_ice_albedo_scheme!r} "
                 f"unknown; choose one of {_sia}.")
         if (self.sea_ice_albedo_scheme == "maykut_untersteiner"
-                and not self.ice_skin_prognostic):
+                and self.ice_skin_prognostic is False):
             errors.append(
                 "sea_ice_albedo_scheme='maykut_untersteiner' reads the "
                 "prognostic ice skin; it requires ice_skin_prognostic=True.")
-        if (self.sea_ice_albedo_melt_width_K != 1.0
-                and self.sea_ice_albedo_scheme != "maykut_untersteiner"):
+        if not (math.isfinite(self.ice_skin_melt_cap_width_K)
+                and self.ice_skin_melt_cap_width_K >= 0.0):
             errors.append(
-                f"sea_ice_albedo_melt_width_K="
-                f"{self.sea_ice_albedo_melt_width_K!r} requires "
+                "ice_skin_melt_cap_width_K must be finite and >= 0 (0 = hard "
+                f"cap); got {self.ice_skin_melt_cap_width_K!r}.")
+        if (self.sea_ice_melt_ramp_width_K
+                != ExperimentConfig._field_defaults[
+                    "sea_ice_melt_ramp_width_K"]
+                and self.ice_skin_prognostic is not None
+                and resolve_sea_ice_albedo_scheme(self)
+                != "maykut_untersteiner"):
+            errors.append(
+                f"sea_ice_melt_ramp_width_K="
+                f"{self.sea_ice_melt_ramp_width_K!r} requires "
                 "sea_ice_albedo_scheme='maykut_untersteiner' (the override "
                 "would be silently inert).")
-        if not (math.isfinite(self.sea_ice_albedo_melt_width_K)
-                and self.sea_ice_albedo_melt_width_K > 0.0):
+        _lo, _hi = _ICE_MELT_WIDTH_BOUNDS
+        if not (math.isfinite(self.sea_ice_melt_ramp_width_K)
+                and _lo <= self.sea_ice_melt_ramp_width_K <= _hi):
             errors.append(
-                "sea_ice_albedo_melt_width_K must be finite and > 0; got "
-                f"{self.sea_ice_albedo_melt_width_K!r}.")
+                f"sea_ice_melt_ramp_width_K must be in [{_lo}, {_hi}] K "
+                f"(its parameter spec); got "
+                f"{self.sea_ice_melt_ramp_width_K!r}.")
         if not (math.isfinite(self.ice_thickness_m)
                 and 0.1 <= self.ice_thickness_m <= 10.0):
             errors.append(
@@ -3853,13 +3938,24 @@ class ExperimentConfig(NamedTuple):
                 f"a_h_scale={d.a_h_scale!r} turns the del2 viscosity off; use a_h_scale > 0 "
                 "or set mpas_sponge_del2_top_layers=0")
         _dd4s = getattr(d, "mpas_div_damp4_scale", 0.0)
+        # Consumers: the hydrostatic MPAS dycore and the lat-lon C-grid PE
+        # (which builds its own per-row CAM coefficient from the scale).  The
+        # lat-lon lane is keyed on the factory's own dispatch matrix, so every
+        # (model_type, discretization) alias that reaches that solver counts.
+        from legoesm.driver.component_factory import supported_matrix
+        _latlon_pe = any(
+            r["solver"] == "latlon_cgrid_primitive_equations"
+            and (r["model_type"], r["discretization"], r["grid_type"])
+            == (d.model_type, d.discretization, normalize_grid_type(g.grid_type))
+            for r in supported_matrix())
         if (isinstance(_dd4s, (int, float)) and not isinstance(_dd4s, bool)
-                and _dd4s > 0
+                and _dd4s > 0 and not _latlon_pe
                 and (d.discretization != "mpas" or d.model_type != "hydrostatic")):
             errors.append(
                 "dycore.mpas_div_damp4_scale is wired into the hydrostatic MPAS dycore "
-                f"only; on discretization={d.discretization!r}/model_type={d.model_type!r} "
-                "it would be silently inert")
+                "and the lat-lon C-grid PE only; on "
+                f"discretization={d.discretization!r}/model_type={d.model_type!r}/"
+                f"grid_type={g.grid_type!r} it would be silently inert")
         # Names must be known per-mass water/number tracers (typo guard; the
         # dycore skips a valid name its state does not carry).  No inertness
         # error: the default is non-empty and, like mpas_nu_vert4_T, simply
@@ -4191,7 +4287,8 @@ class ExperimentConfig(NamedTuple):
                 except ValueError as exc:
                     errors.append(f"land_canopy_*: {exc}")
         for _nm in ("morrison_sed_cfl_substeps", "morrison_sed_cfl_substeps_strict",
-                    "morrison_do_graupel", "morrison_warm_rain_incloud"):
+                    "morrison_do_graupel", "morrison_warm_rain_incloud",
+                    "morrison_prognostic_droplet_number"):
             _v = getattr(self, _nm)
             if not isinstance(_v, bool):
                 errors.append(f"{_nm} must be a bool, got {_v!r}")
@@ -4237,6 +4334,11 @@ class ExperimentConfig(NamedTuple):
                 "column lane: no other lane carries the snow number N_s; got "
                 f"grid_type={g.grid_type!r}, discretization={d.discretization!r}, "
                 f"column_lane={d.column_lane}")
+        if self.morrison_prognostic_droplet_number is True and not self.cam6_aerosol_dir:
+            # user decision 2026-10-24, 3
+            errors.append(
+                "morrison_prognostic_droplet_number=True needs cam6_aerosol_dir "
+                "(the CAM6 prescribed-aerosol climatology its activation reads).")
         if (self.morrison_sed_cfl_substeps_strict is True
                 and self.morrison_sed_cfl_substeps is False):
             errors.append(
@@ -4477,6 +4579,13 @@ class ExperimentConfig(NamedTuple):
                 f"e3sm_cam_effgw must be a finite efficiency <= 1.0, "
                 f"got {self.e3sm_cam_effgw!r}"
             )
+        # Same [0, 1] as McFarlaneConfig.__param_spec__ (one range, #1712).
+        if not (math.isfinite(self.mcfarlane_effgw_oro)
+                and 0.0 <= self.mcfarlane_effgw_oro <= 1.0):
+            errors.append(
+                f"mcfarlane_effgw_oro must be a finite efficiency in "
+                f"[0, 1], got {self.mcfarlane_effgw_oro!r}"
+            )
         if not math.isfinite(self.e3sm_cam_taubgnd) or \
                 self.e3sm_cam_taubgnd > 1.0e-2:
             errors.append(
@@ -4659,25 +4768,14 @@ class ExperimentConfig(NamedTuple):
                     "See docs/user-guide/climateeval_evaluation.md."
                 )
 
+        # Truthy, not ``is True``: a loader-kept string "true" is checked too.
         if self.ocean_flux_on_ocean_surface:
-            _ok, _why = land_flux_handoff_eligibility(self)
-            if _ok and self.radiation == "none":
-                _ok, _why = False, ("radiation='none' builds no SST anchor "
-                                    "(the ocean surface it needs)")
+            _ok, _why = ocean_flux_surface_eligibility(self)
             if not _ok:
                 errors.append(
                     "ocean_flux_on_ocean_surface=True separates the "
                     "non-land fraction's surface fluxes from the land's, but "
-                    f"{_why}; it would be silently inert.")
-            elif not resolve_land_stress_from_land(self):
-                # The bulk stress covers the whole cell unless the land's own
-                # stress replaces it over land; evaluated on the OCEAN surface
-                # it would then misstate the land share's stability.
-                errors.append(
-                    "ocean_flux_on_ocean_surface=True needs the land "
-                    "model's stress over the land fraction "
-                    "(land_stress_from_land unset or true, eligible); "
-                    "otherwise the ocean-surface stress covers the land too.")
+                    f"{_why}. Leave it unset (auto) or false.")
 
         if self.land_stress_from_land is True:
             _ok, _why = land_stress_eligibility(self)
@@ -5448,6 +5546,35 @@ def checkpoint_radiation_cadence_error(cfg) -> str | None:
             f"rad_update_steps={rus}: the held radiation fluxes "
             "are not checkpointed, so every checkpoint must sit on a "
             "radiation boundary")
+
+
+def ocean_flux_surface_eligibility(cfg) -> tuple[bool, str]:
+    """Is ``ocean_flux_on_ocean_surface=True`` live in ``cfg``?
+    ``(eligible, reason_if_not)``: the land-flux handoff, an SST anchor
+    (radiation != 'none') and the land model's stress over land."""
+    _ok, _why = land_flux_handoff_eligibility(cfg)
+    if not _ok:
+        return False, f"{_why}; it would be silently inert"
+    if cfg.radiation == "none":
+        return False, ("radiation='none' builds no SST anchor (the ocean "
+                       "surface it needs); it would be silently inert")
+    if not resolve_land_stress_from_land(cfg):
+        # The bulk stress covers the whole cell unless the land's own stress
+        # replaces it over land; evaluated on the OCEAN surface it would then
+        # misstate the land share's stability.
+        return False, ("it needs the land model's stress over the land "
+                       "fraction (land_stress_from_land unset or true, "
+                       "eligible); otherwise the ocean-surface stress covers "
+                       "the land too")
+    return True, ""
+
+
+def resolve_ocean_flux_on_ocean_surface(cfg) -> bool:
+    """The resolved tri-state ``ocean_flux_on_ocean_surface``:
+    None (auto) -> on exactly where eligible; True/False as given."""
+    if cfg.ocean_flux_on_ocean_surface is None:
+        return ocean_flux_surface_eligibility(cfg)[0]
+    return bool(cfg.ocean_flux_on_ocean_surface)
 
 
 def resolve_land_stress_from_land(cfg) -> bool:

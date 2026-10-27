@@ -162,6 +162,18 @@ def half_to_full(x_half):
     return jnp.concatenate([x_half[:, :1], mid, x_half[:, -1:]], axis=1)
 
 
+def half_to_iface_zero_ends(x_half):
+    """Interior-interface field ``(ncol, nlev-1)`` to ALL interfaces ``(ncol, nlev+1)``.
+
+    Top-first, like the input.  The model-top and surface interfaces are set to
+    zero: CAM6's non-CLUBB ``kvh`` is zero there (``pbl_utils.F90:393`` zeroes
+    the whole column before filling the interior; ``eddy_diff.F90:1018``), and
+    the interior values are passed through unchanged.
+    """
+    zero = jnp.zeros_like(x_half[:, :1])
+    return jnp.concatenate([zero, x_half, zero], axis=1)
+
+
 def brunt_vaisala_n_full(T, p_full, z_full):
     """Brunt-Väisälä frequency ``N`` on full levels for column GWD schemes.
 
@@ -609,7 +621,7 @@ def mixing_length(z, l_mix_max, z_floor=1.0):
     array
         Mixing length [m], same shape as ``z``.
     """
-    kappa = constants.kappa_vk
+    kappa = constants.kappa_von_karman
     z_abs = jnp.clip(jnp.abs(z), z_floor, None)
     return kappa * z_abs / (1.0 + kappa * z_abs / l_mix_max)
 

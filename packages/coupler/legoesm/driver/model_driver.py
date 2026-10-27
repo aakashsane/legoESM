@@ -298,6 +298,97 @@ def gather_land_step(run, ncol, padded, proc, allgather):
             + (jnp.max(g_cnt[:, -1]).astype(jnp.asarray(out[-1]).dtype),))
 
 
+def shard_land_columns(cols, n_dev):
+    """This process's land columns ``cols`` laid out for ``n_dev`` local
+    devices: the same near-equal contiguous shares as the process split
+    (``split_land_columns``), each padded to one length so every device holds
+    one equal shard.  Returns ``(slots, keep)``: the column of every slot
+    (device-major) and the positions of the real slots, in ``cols`` order; a
+    padding slot repeats its share's last column and its result is dropped."""
+    _, padded = split_land_columns(cols, n_dev, 0)
+    width = padded.shape[1]
+    sizes = [s.size for s in np.array_split(np.asarray(cols), n_dev)]
+    keep = np.concatenate([d * width + np.arange(n)
+                           for d, n in enumerate(sizes)])
+    slots = padded.reshape(-1)
+    if not np.array_equal(slots[keep], np.asarray(cols)):
+        raise AssertionError("land device shares do not reproduce the "
+                             "process's columns (split rule changed?)")
+    return slots, keep
+
+
+def solve_land_on_devices(step, args, is_col, mesh, keep):
+    """``step(*args)`` (the land step on packed slots, leading axis = slot)
+    run one equal shard per device of the 1-D ``mesh`` under a shard_map,
+    then cut to the real slots ``keep``.  ``is_col`` is ``args``' tree of
+    booleans marking the per-column array leaves (split over the devices);
+    every other leaf is shared.  Every OUTPUT leaf must be per column (its
+    leading axis follows the column count, traced at two counts), else
+    ValueError.
+    The step's whole-run
+    counters would be per shard there, so they are recounted from their
+    masks over the real slots.  Returns ``(state, response, carbon,
+    surface)`` like the step."""
+    from jax.sharding import PartitionSpec as P
+    from legoesm.parallel.shard_map_compat import shard_map
+
+    n_dev = int(np.prod(mesh.devices.shape))
+    axis = mesh.axis_names[0]
+    leaves, tdef = jax.tree_util.tree_flatten(args)
+    cols = jax.tree_util.tree_leaves(is_col)
+    if len(cols) != len(leaves):
+        raise ValueError("is_col does not match the land step arguments")
+    is_arr = [hasattr(x, "shape") and hasattr(x, "dtype") for x in leaves]
+    arrs = [x for x, a in zip(leaves, is_arr) if a]
+    arr_col = [c for c, a in zip(cols, is_arr) if a]
+    n_slot = {x.shape[0] for x, c in zip(arrs, arr_col) if c}
+    if len(n_slot) != 1 or next(iter(n_slot)) % n_dev:
+        raise ValueError(f"per-column land leaves have leading sizes {n_slot}"
+                         f"; need one size divisible by {n_dev} devices")
+    n_slot = n_slot.pop()
+
+    def body(*a):
+        it = iter(a)
+        o = step(*tdef.unflatten([next(it) if t else x
+                                  for x, t in zip(leaves, is_arr)]))
+        return o[:3] + (o[3]._replace(n_held=None, n_fallback=None,
+                                      n_fallback_rejected=None),)
+
+    def shapes(n):
+        return [jax.ShapeDtypeStruct(((n,) + tuple(x.shape[1:])) if c
+                                     else x.shape, x.dtype)
+                for x, c in zip(arrs, arr_col)]
+    # an output is per column when its LEADING axis follows the column count
+    a_out = jax.eval_shape(body, *shapes(n_slot))
+    b_out = jax.eval_shape(body, *shapes(n_slot + 1))
+    shared = [jax.tree_util.keystr(k) for (k, a), b in zip(
+        jax.tree_util.tree_flatten_with_path(a_out)[0],
+        jax.tree_util.tree_leaves(b_out))
+        if not a.shape or b.shape != (a.shape[0] + 1,) + a.shape[1:]]
+    if shared:
+        raise ValueError(
+            f"land step outputs {shared} are not per column; the device "
+            "split can only return per-column outputs (and the three "
+            "fallback/held counters, recounted here)")
+    # check_vma off: the canopy scan carries start replicated.  Safe only
+    # because every output is per column (checked above).
+    out = shard_map(
+        body, mesh=mesh,
+        in_specs=tuple(P(axis) if c else P() for c in arr_col),
+        out_specs=jax.tree_util.tree_map(lambda _: P(axis), a_out),
+        check_vma=False)(*arrs)
+    keep = jnp.asarray(keep)
+    out = jax.tree_util.tree_map(lambda o: o[keep], out)
+    state, resp, carbon, sfc = out
+
+    def count(m):
+        return None if m is None else jnp.sum(
+            jnp.asarray(m).astype(jnp.int32))
+    return state, resp, carbon, sfc._replace(
+        n_held=count(sfc.held), n_fallback=count(sfc.fallback),
+        n_fallback_rejected=count(sfc.fallback_rejected))
+
+
 def _map_flat_column_leaves(tree, n_tile, global_ncol, fn):
     """Apply ``fn(leaf, n_tile)`` to every array leaf of ``tree`` whose leading
     axis equals ``global_ncol`` (a per-column field); leave all other leaves
@@ -1027,7 +1118,15 @@ class _MPASSfcFluxAccum:
     # 8/9 = sw_down_sfc / lw_down_sfc: CMOR rsds/rlds, and with slots 0/1
     # the upwelling pair rsus/rlus (down - net).  Strongly diurnal, so a
     # fixed-clock snapshot would carry the #1353 defect under a mean label.
-    SLOTS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13)
+    # 14 = precip_frozen (the frozen part of slot 2): CMOR prsn, a flux
+    # averaged like pr.  KNOWN BEHAVIOUR (user decision, PR #2204): a run
+    # resumed MID-WINDOW from a checkpoint written before slot 14 existed
+    # publishes prsn for that one window as the mean of the post-restart
+    # steps only (the CMOR feed gates on the window's step count,
+    # ``is_complete``, not on per-slot counts), while pr covers the whole
+    # window -- the same behaviour slots 8/9/13 shipped with.  Later
+    # windows are complete.
+    SLOTS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14)
     #: The slots the column energy budget reads (sw/lw net sfc, lw_up, sw_up,
     #: sw_dn, hfss, hfls).  After the first radiation call every one of them
     #: is non-None on EVERY step (the MPAS model holds the last radiation
@@ -2448,6 +2547,55 @@ class ModelDriver:
                 "`scripts/matrix/run_atmosphere_test_matrix.py --only sw` "
                 "(both construct the SW model + initial state directly).")
 
+    def _resolve_ice_skin(self) -> None:
+        """Resolve the ice skin and the sea-ice albedo "auto" settings (#2106).
+
+        Runs after the runtime bootstrap (the lat-lon MPI layout and the
+        coupled-driver marker are known) and before physics, the manifest and
+        the saved config, so all of them record the resolved values; the
+        input-config snapshot gets the same values so a replay resolves
+        identically.
+        """
+        from legoesm.driver.config import (
+            resolve_ice_skin_prognostic, resolve_sea_ice_albedo_scheme)
+        latlon_mpi = False
+        if (self._device_config is not None
+                and self._device_config.is_distributed
+                and self.config.grid.grid_type == "latlon"):
+            from legoesm.grids.halo import get_mpi_topology
+            from legoesm.parallel.latlon_mpi import LatLonBandLayout
+            latlon_mpi = isinstance(get_mpi_topology(), LatLonBandLayout)
+        skin, why = resolve_ice_skin_prognostic(
+            self.config, latlon_mpi=latlon_mpi,
+            coupled=bool(getattr(self, "_requires_surface_flux_export", False)))
+        upd = {"ice_skin_prognostic": skin}
+        cfg = self.config._replace(**upd)
+        upd["sea_ice_albedo_scheme"] = resolve_sea_ice_albedo_scheme(cfg)
+        self.config = self.config._replace(**upd)
+        self._input_config = self._input_config._replace(**upd)
+        logger.info("  Sea-ice albedo scheme: %s (ice skin %s: %s)",
+                    upd["sea_ice_albedo_scheme"], "ON" if skin else "OFF", why)
+        # Resolved values must pass the same checks as explicit ones.
+        self.config.validate_strict()
+
+    def _resolve_ocean_flux_surface(self) -> None:
+        """Resolve ``ocean_flux_on_ocean_surface`` AUTO (None) to a boolean
+        in the config and the input-config snapshot, as ``_resolve_ice_skin``
+        does, so the manifest, saved config and a replay record it (#1320)."""
+        from legoesm.driver.config import (
+            ocean_flux_surface_eligibility, resolve_ocean_flux_on_ocean_surface)
+        auto = self.config.ocean_flux_on_ocean_surface is None
+        upd = {"ocean_flux_on_ocean_surface":
+               resolve_ocean_flux_on_ocean_surface(self.config)}
+        self.config = self.config._replace(**upd)
+        self._input_config = self._input_config._replace(**upd)
+        if auto:
+            logger.info("  ocean_flux_on_ocean_surface: auto -> %s%s",
+                        upd["ocean_flux_on_ocean_surface"],
+                        "" if upd["ocean_flux_on_ocean_surface"] else
+                        f" ({ocean_flux_surface_eligibility(self.config)[1]})")
+        self.config.validate_strict()
+
     def setup(self) -> None:
         """Initialize grid, dycore, physics, forcing, and state."""
         # SW is not a runnable ModelDriver equation set — reject before any
@@ -2460,6 +2608,8 @@ class ModelDriver:
         # This is the canonical single entry point — handles everything before
         # any JAX array creation.
         self._bootstrap_runtime()
+        self._resolve_ice_skin()
+        self._resolve_ocean_flux_surface()
         # Collective, so it runs before the first step where ranks diverge.
         self._check_resume_version_drift()
 
@@ -5093,6 +5243,53 @@ class ModelDriver:
         if self._owned_face_ids is not None:
             return temp[self._owned_face_ids]
         return self._gather_spmd_tree_to_host(temp)
+
+    def _cam6_activation_setup(self, phys_cfg, dt_micro):
+        """Start-up constants of CAM6 prescribed-aerosol droplet activation
+        (Morrison ``prognostic_droplet_number``, MPAS lane) plus the host
+        horizontal weights of the aerosol climatology for the physics columns.
+        ``n_max`` is evaluated on this start-up state (user decision B10)."""
+        from legoesm.atmosphere.physics.microphysics.cam6_aerosol_climatology import (
+            PPE_RAW_FILE, PPE_SHA256, Cam6AerosolActivation, horizontal_weights,
+            read_hybrid_coefficients, trop_cloud_top_lev)
+        from legoesm.atmosphere.physics.microphysics.cam6_dropmixnuc import (
+            nsubmix_upper_bound)
+        from legoesm.atmosphere.physics.microphysics.cam6_modal_aerosol import (
+            load_cam6_mode_props, read_pinned_netcdf)
+        from legoesm.atmosphere.physics.microphysics.integration import (
+            cam6_activation_columns)
+        from legoesm.atmosphere.physics.turbulence.integration import (
+            resolved_clubb_config)
+        from pathlib import Path
+        data_dir = self.config.cam6_aerosol_dir
+        hyam, hybm, p0 = read_hybrid_coefficients(data_dir)
+        # CAM ref_pres: pref_mid = hyam*ps0 + hybm*psr, ps0 = psr = 1e5 Pa (hycoef.F90:122)
+        pref_mid = np.asarray(self.sigma.pressure_at_full(jnp.asarray(constants.p_ref)))
+        top_lev = trop_cloud_top_lev(
+            pref_mid, resolved_clubb_config(phys_cfg.turbulence).trop_cloud_top_press)
+        p_s, lat = self._owned_p_s_and_lat()
+        T = jnp.asarray(self._owned_temp())
+        q_v = self.state.tracers["q_v"].data
+        q_v = (q_v[self._owned_face_ids] if self._owned_face_ids is not None
+               else self._gather_spmd_tree_to_host(q_v))
+        nlev = self.sigma.sigma_full.shape[0]
+        ncol = int(np.prod(np.shape(p_s)))
+        p_s = jnp.asarray(p_s).reshape(ncol)
+        T_col = T.reshape(ncol, nlev)
+        q_v_col = jnp.asarray(q_v).reshape(ncol, nlev)
+        p_full = self.sigma.pressure_at_full(p_s).reshape(ncol, nlev)
+        p_half = self.sigma.pressure_at_half(p_s).reshape(ncol, nlev + 1)
+        pmid, pint, rpdel, zm = cam6_activation_columns(T_col, q_v_col, p_full, p_half)
+        n_max = nsubmix_upper_bound(T_col, pmid, pint, rpdel, zm, dt_micro, top_lev)
+        with read_pinned_netcdf(Path(data_dir) / PPE_RAW_FILE, PPE_SHA256) as d:
+            file_lat = np.asarray(d["lat"][:], dtype=np.float64)
+            file_lon = np.asarray(d["lon"][:], dtype=np.float64)
+        lon_w, lat_w = horizontal_weights(
+            file_lat, file_lon, np.asarray(lat).reshape(ncol),
+            np.asarray(self._owned_lon()).reshape(ncol))
+        setup = Cam6AerosolActivation(load_cam6_mode_props(data_dir), hyam, hybm, p0,
+                                      top_lev, n_max)
+        return setup, (lon_w, lat_w)
 
     def _precompute_external_forcing(self, day, p_s, lat, temp=None, lon=None):
         """Pre-compute ozone/aerosol/GHG fields outside JIT boundary.
@@ -7979,6 +8176,10 @@ class ModelDriver:
             if _llc is not None:
                 _nat = _llc.to_bundle(s)
                 _save["latloncol_schema"] = np.asarray("latloncol_ckpt_v1")
+                # the div-4 scale the run stepped with (a resume refuses a
+                # different one; user decision 2026-10-26)
+                _save["latloncol_div4_scale"] = np.asarray(
+                    float(_llc.dyn.config.nu_div4_scale))
                 for _k in ("u", "v", "T", "p_s", "phis"):
                     _save[f"latloncol_{_k}"] = np.asarray(getattr(_nat, _k))
                 _names = sorted(_nat.tracers)
@@ -8100,6 +8301,14 @@ class ModelDriver:
             # expected by ``--restart-from`` in run_amip.py and the
             # checkpoint-glob in ``run_amip_1deg_latlon_mpi.sbatch``.
             if self._is_latlon_mpi():
+                # Same limitation for the banded prognostic ice skin (#2106).
+                if getattr(self.config, "ice_skin_prognostic", False):
+                    raise ValueError(
+                        "Lat-lon MPI checkpointing does not gather the banded "
+                        "prognostic ice skin (ice_T_skin) into the global "
+                        "checkpoint — a restart would corrupt it. Run "
+                        "single-process, or set checkpoint_days=0, with "
+                        "ice_skin_prognostic.")
                 # The lat-lon MPI gather path writes a single global-shape
                 # checkpoint from rank 0's carry_aux, which holds the
                 # prognostic slab-land T_land as a rank-LOCAL latitude
@@ -8270,6 +8479,14 @@ class ModelDriver:
                 "slab-land runs (or add carry_aux support to the zarr "
                 "backend)."
             )
+        if backend == "zarr" and getattr(self.config, "ice_skin_prognostic",
+                                         False):
+            raise ValueError(
+                "checkpoint_format='zarr' cannot persist the prognostic ice "
+                "skin (ice_T_skin, carried in carry_aux) — a restart would "
+                f"re-seed it at {constants.T_freeze_ocean} K (#2106). Use "
+                "checkpoint_format='npz' "
+                "with ice_skin_prognostic.")
         # Same zarr carry_aux limitation for the evolved double-moment tracers:
         # they ride carry_aux (dmtr_*), which zarr does not round-trip, so a
         # zarr restart would silently reset q_i/q_s/q_g/N_c/N_r/N_i to zeros.
@@ -8739,6 +8956,19 @@ class ModelDriver:
                         "view cannot rebuild the face winds, so only a "
                         "checkpoint written by the lat-lon column lane can "
                         "restart it.")
+                # div-4 stamp (user decision 2026-10-26): a checkpoint
+                # without it predates the damping, i.e. scale 0
+                _ck_dd4 = (float(d["latloncol_div4_scale"])
+                           if "latloncol_div4_scale" in d.files else 0.0)
+                _run_dd4 = float(_llc.dyn.config.nu_div4_scale)
+                if _ck_dd4 != _run_dd4:
+                    raise ValueError(
+                        f"MPAS checkpoint {path.name} was written with div-4 "
+                        f"damping scale {_ck_dd4} (0 when the file carries no "
+                        f"latloncol_div4_scale) but this run steps with "
+                        f"{_run_dd4}: the trajectory would change at the "
+                        "restart.  Resume with the checkpoint's scale, or "
+                        "start a new run.")
                 from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
                     CGridLatLonHydrostaticState,
                 )
@@ -8824,6 +9054,19 @@ class ModelDriver:
                     phis=Field(data=_phis, name="phis",
                                dims=("nCells",), units="m2/s2"),
                 )
+            # A checkpoint written before the run's N_s tracer (CAM6 MG2
+            # two-moment snow), or with no tracers at all, is REFUSED (oracle
+            # row 22, user pick 'hard error'; replaces the zero-number seed of
+            # 2026-10-20).  Column lanes check their own slot list above.
+            if (self._column_model() is None
+                    and "N_s" in self.tracer_registry.names
+                    and ("tracer_names" not in d
+                         or "N_s" not in [str(n) for n in d["tracer_names"]])):
+                raise ValueError(
+                    f"MPAS checkpoint {path.name} has no snow number N_s, "
+                    f"which this run carries (CAM6 MG2 two-moment snow, "
+                    f"morrison_warm_rain_incloud); restart from a "
+                    f"checkpoint written with N_s or start cold.")
             # Restore moisture tracers (moist MPAS runs); absent ⇒ dry restart.
             # (column lane: the tracers are the bundle's own q slots, already
             # in the view built above)
@@ -8840,26 +9083,6 @@ class ModelDriver:
                                else "kg/kg"))
                     for _k in _names
                 })
-                # Schema-growth migration (grow-only allowlist, as for the
-                # PhysicsState fields): tracers ADDED after a checkpoint
-                # format was in production.  N_s (CAM6 MG2 two-moment snow,
-                # user decision 2026-10-20): zero, so MG2's snow size limit
-                # treats the carried snow as the largest allowed flakes until
-                # new snow adds number.  Without the seed the restart silently
-                # ran single-moment snow.
-                _NEW_OPTIONAL_TRACERS = frozenset({"N_s"})
-                _seed = [n for n in self.tracer_registry.names
-                         if n not in _names and n in _NEW_OPTIONAL_TRACERS]
-                if _seed:
-                    logger.info(
-                        "  MPAS restart checkpoint predates tracer(s) %s — "
-                        "seeding them with zeros.", _seed)
-                    _ref = self.state.tracers[_names[0]].data
-                    self.state = self.state._replace(tracers={
-                        **self.state.tracers,
-                        **{_k: Field(data=jnp.zeros_like(_ref), name=_k,
-                                     dims=("nCells", "nlev"), units="1/kg")
-                           for _k in _seed}})
             # Multilayer (Richards) land columns (MPAS port): stage the
             # ``land_ml_<field>`` arrays into carry_aux and reuse the shared
             # fail-loud restore (#730 exact-field-set contract).  Under MPI the
@@ -10491,6 +10714,10 @@ class ModelDriver:
         hfss = _sfc_slot(6)
         hfls = _sfc_slot(7)
         evspsbl = _sfc_slot(_evap_sfc_slot())   # the column's water flux, window mean
+        # Snowfall: the physics' own frozen surface flux (microphysics
+        # ice+snow+graupel + convective snow, the slot the land's snowfall
+        # reads), published raw like pr; None when not exported.
+        prsn = _sfc_slot(_sfc_diag_slot("precip_frozen"))
         # Clear-sky TOA pair (#843): slots populated only when
         # --clear-sky-diag is on, so these are None (fields absent from the
         # CMOR output, byte-identical) in the default configuration.
@@ -10569,6 +10796,7 @@ class ModelDriver:
             u_east=u_east,
             v_north=v_north,
             precip=precip,
+            prsn=prsn,
             phis=state.phis.data,
             tas=tas,
             ts=ts,
@@ -10681,6 +10909,15 @@ class ModelDriver:
         owned_ids = None
         n_owned = 0
         try:
+            # Drain queued device work FIRST.  The compiled step's mpi4jax
+            # collectives run on COMM_WORLD on an XLA thread after Python has
+            # returned; a host collective issued below on the same
+            # communicator can then cross-match it ("collective tags 2 and 14
+            # do not match", or a hang) — seen 3/3 at 4 nodes, gone 2/2 with
+            # this wait.  effects_barrier covers mpi4jax's ordered effects,
+            # live_arrays any computation whose outputs nobody holds here.
+            jax.effects_barrier()
+            jax.block_until_ready(jax.live_arrays())
             # The gather helper uses COMM_WORLD; a partition built on a
             # different communicator would silently mis-assemble (or hang).
             # Checked HERE, inside the preflight, so a mismatch on one rank
@@ -13003,11 +13240,21 @@ class ModelDriver:
                 f"{cfg.cld_macmic_num_steps} x at "
                 f"{DT_PHYS / cfg.cld_macmic_num_steps:.1f} s inside each "
                 "physics step, after the convective increment")
+        _cam6_act, _cam6_hw = None, None
+        if cfg.morrison_prognostic_droplet_number:
+            _cam6_act, _cam6_hw = self._cam6_activation_setup(
+                phys_cfg, DT_PHYS / cfg.cld_macmic_num_steps)
+            logger.info(
+                f"  CAM6 droplet activation: prescribed aerosol from "
+                f"{cfg.cam6_aerosol_dir}, top_lev={_cam6_act.top_lev}, "
+                f"mixing substeps <= {_cam6_act.n_max}")
+
         def _build_physics(_cfg, need_rad=True):
             """The lane's make_physics call (one copy for the full and the
             held-radiation variants; exported to mpas_diff_step so a caller
             can rebuild the SAME physics from a config with traced params)."""
             return make_physics(_cfg, model_type="mpas", dt=DT_PHYS,
+                                cam6_activation=_cam6_act,
                                 budget_ledger_level_weight=_ledger_weight,
                                 column_mesh=_column_mesh, need_rad=need_rad,
                                 f_land=(_f_land_cells
@@ -13334,9 +13581,7 @@ class ModelDriver:
             # -25 W/m^2) — declare the spin-up in experiment metadata; the
             # scorecard's month-3-onward window clears it.
             if _ice_skin_on:
-                from legoesm.forcing.surface_utils import (
-                    prognostic_ice_skin_temperature,
-                )
+                from legoesm.forcing.surface_utils import advance_ice_skin
                 _h_ice = float(cfg.ice_thickness_m)
                 _staged_skin = None
                 if isinstance(self._carry_aux, dict):
@@ -13514,11 +13759,13 @@ class ModelDriver:
             _alb_lat = jnp.asarray(_alb_lat_np).reshape(-1)
         _albedo_ocean = float(cfg.albedo_ocean)
         _albedo_ice = float(cfg.albedo_ice)
-        _sia_scheme = getattr(cfg, "sea_ice_albedo_scheme", "constant")
+        from legoesm.driver.config import resolve_sea_ice_albedo_scheme
+        from legoesm.ice.shortwave import sea_ice_albedo
+        _sia_scheme = resolve_sea_ice_albedo_scheme(cfg)
         if _sia_scheme not in ("constant", "maykut_untersteiner"):
             raise ValueError(
                 f"sea_ice_albedo_scheme={_sia_scheme!r} unknown; choose "
-                "'constant' or 'maykut_untersteiner'.")
+                "'auto', 'constant' or 'maykut_untersteiner'.")
         _ice_alb_melt = _sia_scheme == "maykut_untersteiner"
         if _ice_alb_melt and not bool(getattr(cfg, "ice_skin_prognostic",
                                                False)):
@@ -13527,17 +13774,13 @@ class ModelDriver:
                 "ice_skin_prognostic=True (it reads the ice skin).")
 
         def _ice_albedo_now():
-            # Sea-ice albedo seen by radiation: the scalar albedo_ice, or the
-            # Maykut-Untersteiner melt ramp on the CURRENT prognostic skin
-            # (albedo_ice as the cold end; refreshed every step with the skin,
-            # matching the T_sfc re-anchor cadence).
-            if not _ice_alb_melt:
-                return _albedo_ice
-            from legoesm.ice.shortwave import maykut_untersteiner_albedo
-            return maykut_untersteiner_albedo(
-                self._ice_T_skin, float(cfg.ice_thickness_m),
-                albedo_cold_bare=_albedo_ice,
-                T_width=float(cfg.sea_ice_albedo_melt_width_K))
+            # Sea-ice albedo seen by radiation, refreshed every step with the
+            # skin (same cadence as the T_sfc re-anchor).
+            return sea_ice_albedo(
+                _sia_scheme, _albedo_ice,
+                T_skin=getattr(self, "_ice_T_skin", None),
+                h_ice_m=float(cfg.ice_thickness_m),
+                melt_width_K=float(cfg.sea_ice_melt_ramp_width_K))
 
         _alb_ocean_cur = None    # open-ocean albedo of the current forcing day
         _albedo_land_static = None
@@ -13654,7 +13897,8 @@ class ModelDriver:
         _ls_reused_win = None          # device: reused land column-steps, window
         _land_z0m_cells = None         # (nCells,) static land roughness [m]
         _land_d_cells = None           # (nCells,) static displacement [m]
-        from legoesm.driver.config import resolve_land_stress_from_land
+        from legoesm.driver.config import (
+            resolve_land_stress_from_land, resolve_ocean_flux_on_ocean_surface)
         from legoesm.land.multilayer_land import solved_stress_magnitude
         from legoesm.atmosphere.physics.turbulence.surface_layer import (
             hold_last_valid_land_stress,
@@ -13662,7 +13906,7 @@ class ModelDriver:
         _land_stress_on = resolve_land_stress_from_land(cfg)
         # Validated (validate_strict) to imply the land-flux handoff, so the
         # turbulence always receives T_sfc_ocean together with shflx_land.
-        _ocean_sfc_on = bool(cfg.ocean_flux_on_ocean_surface)
+        _ocean_sfc_on = resolve_ocean_flux_on_ocean_surface(cfg)
         print(f"  Non-land surface fluxes evaluated on: "
               f"{'OCEAN/ICE surface' if _ocean_sfc_on else 'land-blended surface'}"
               f" (ocean_flux_on_ocean_surface={_ocean_sfc_on})")
@@ -13778,9 +14022,40 @@ class ModelDriver:
                 _land_pack_idx_np, _land_split = split_land_columns(
                     _land_pack_idx_np, jax.process_count(),
                     jax.process_index())
+            # One process driving several devices (the duo's face-shard or
+            # window layouts on one host): this process's land columns are
+            # split over its devices the same way and solved under a
+            # shard_map, one equal shard per device.
+            _land_keep = _land_mesh = None
+            _step_mesh = getattr(self.model, "step_spmd_mesh", None)
+            _land_devs = ([d for d in _step_mesh.devices.flat
+                           if d.process_index == jax.process_index()]
+                          if _step_mesh is not None else [])
+            _land_clm = str(getattr(cfg, "land_surface_scheme", "")) == "clm_ml"
+            if (len(_land_devs) > 1 and not _land_clm
+                    and (_land_split is not None
+                         or not self._is_spmd_multiprocess())
+                    and _land_pack_idx_np.size >= len(_land_devs)):
+                from jax.sharding import Mesh
+                _land_pack_idx_np, _land_keep = shard_land_columns(
+                    _land_pack_idx_np, len(_land_devs))
+                _land_mesh = Mesh(np.array(_land_devs), ("land",))
+            # the device fallback is per process (shares differ by one
+            # column), the process fallback is the same on every process
+            if _land_mesh is None and (
+                    len(_land_devs) > 1
+                    or (jax.process_index() == 0
+                        and self._is_spmd_multiprocess()
+                        and _land_split is None)):
+                logger.warning(
+                    "land: every device solves ALL its land columns "
+                    "(replicated, no speed-up from extra devices): %s",
+                    "clm_ml land is not split" if _land_clm else
+                    "too few land columns to give every device a share")
             _land_pack_on = (
-                str(getattr(cfg, "land_surface_scheme", "")) != "clm_ml"
-                and 0 < _land_pack_idx_np.size < _f_land_cols.shape[0])
+                not _land_clm
+                and (_land_keep is not None
+                     or 0 < _land_pack_idx_np.size < _f_land_cols.shape[0]))
             # An all-ocean MPI rank: nothing to solve.  Its outputs are the
             # packed path's ocean-column fills (zeros, state unchanged), so it
             # costs nothing instead of solving every ocean column.
@@ -13799,6 +14074,10 @@ class ModelDriver:
                 int(_vl_land.partition.n_owned_cells) if _vl_land is not None
                 else _land_ncol_full)
             _land_pack_idx = jnp.asarray(_land_pack_idx_np)
+            # Split over devices: the scatter-back writes the REAL slots only
+            # (a padding slot repeats a real column; its result is dropped).
+            _land_out_idx = (_land_pack_idx if _land_keep is None
+                             else jnp.asarray(_land_pack_idx_np[_land_keep]))
 
             from legoesm.land.multilayer_land import (
                 gather_land_columns, scatter_land_columns, scatter_cells)
@@ -13817,8 +14096,8 @@ class ModelDriver:
                 _lml_lat_p = _land_pack(_lml_lat)
                 _lml_carbon_p = (_land_pack(_lml_carbon)
                                  if _lml_carbon is not None else None)
-                _f_land_cols_p = _f_land_cols[_land_pack_idx]
-                _owned_cols_p = _owned_cols[_land_pack_idx]
+                _f_land_cols_p = _f_land_cols[_land_out_idx]
+                _owned_cols_p = _owned_cols[_land_out_idx]
             else:
                 _lml_cfg_p = _lml_cfg
                 _lml_params_p, _lml_lat_p = _lml_params, _lml_lat
@@ -13857,11 +14136,31 @@ class ModelDriver:
                     _params_in = _land_pack(_p) if _land_pack_on else _p
                 else:
                     _params_in = _lml_params_p
-                new_state, resp, _carbon, _sfc = (
-                    step_multilayer_land_with_diagnostics(
-                        _state_in, _a2s_in, _lml_cfg_p, _lml_umin, _dt_land,
-                        lat=_lml_lat_p, doy=doy, land_params=_params_in,
-                        carbon_state=_lml_carbon_p))
+                if _land_mesh is None:
+                    new_state, resp, _carbon, _sfc = (
+                        step_multilayer_land_with_diagnostics(
+                            _state_in, _a2s_in, _lml_cfg_p, _lml_umin,
+                            _dt_land, lat=_lml_lat_p, doy=doy,
+                            land_params=_params_in,
+                            carbon_state=_lml_carbon_p))
+                else:
+                    # per-column = the leaves the packing gathered (leading
+                    # axis = the full column count before packing)
+                    _full = (land_state, a2s, _lml_cfg,
+                             _p if _lml_update is not None else _lml_params,
+                             _lml_lat, _lml_carbon, doy)
+                    new_state, resp, _carbon, _sfc = solve_land_on_devices(
+                        lambda st, a2s, c, p, la, cb, d: (
+                            step_multilayer_land_with_diagnostics(
+                                st, a2s, c, _lml_umin, _dt_land, lat=la,
+                                doy=d, land_params=p, carbon_state=cb)),
+                        (_state_in, _a2s_in, _lml_cfg_p, _params_in,
+                         _lml_lat_p, _lml_carbon_p, doy),
+                        jax.tree_util.tree_map(
+                            lambda x: (hasattr(x, "shape") and len(x.shape) >= 1
+                                       and x.shape[0] == _land_ncol_full),
+                            _full),
+                        _land_mesh, _land_keep)
                 # resp.albedo is the END-OF-STEP land albedo, already
                 # snow-brightened by the tile (band_albedo / snow_albedo) and
                 # dry-soil-brightened.  It used to be discarded here, so the
@@ -13956,10 +14255,10 @@ class ModelDriver:
                     # response fields into zero-filled cell arrays.
                     new_state = scatter_land_columns(
                         land_state, new_state,
-                        _land_pack_idx, _land_ncol_full)
+                        _land_out_idx, _land_ncol_full)
                     return ((new_state,)
                             + tuple(scatter_cells(
-                                o, _land_pack_idx, _land_ncol_full)
+                                o, _land_out_idx, _land_ncol_full)
                                 for o in (
                                     resp.T_sfc, resp.albedo, resp.q_surface,
                                     resp.shflx, resp.lhflx, resp.surface_mass_flux,
@@ -14273,6 +14572,7 @@ class ModelDriver:
             False)) or bool(getattr(self.config, "bechtold_use_ifs_capdcycl",
                                     False))
         _last_force_day = None
+        _cam6_held = None
         # External CMIP6 forcing (ozone file / aerosol / transient GHG) on
         # the MPAS path: threaded through the same per-step TRACED
         # ``forcing`` dict as T_sfc, refreshed at daily cadence.  The
@@ -14462,6 +14762,13 @@ class ModelDriver:
                 # seeds at its fresh init (CAM pbuf value 2) and is rewritten
                 # by CLUBB before the microphysics reads it in every sub-step.
                 "relvar",
+                # clubb_wp2_iface / clubb_kh_iface / cloud_fraction_old
+                # (2026-10-24, user decision 3a): CAM6 droplet-activation
+                # inputs; the CLUBB pair is rewritten before every read and a
+                # zero CLDO is CAM's cold start (micro_mg_cam.F90:1047).
+                "clubb_wp2_iface",
+                "clubb_kh_iface",
+                "cloud_fraction_old",
             })
             if _any_physstate:
                 from legoesm.atmosphere.physics.physics_state import (
@@ -14929,7 +15236,8 @@ class ModelDriver:
             # radiation=none (where _sst_forcing is False) — else coupling would
             # silently freeze. SST re-sampling below stays gated on _sst_forcing.
             if (_sst_forcing or _ext_forcing or _solar_ext
-                    or self._segment_callback is not None):
+                    or self._segment_callback is not None
+                    or _cam6_act is not None):
                 # Anchored on the ABSOLUTE step from the run's day-0 origin:
                 # ``START_DAY + step*DT`` rounds differently from the unbroken
                 # run's ``0 + (start_step+step)*DT`` (1 ulp at step 219 of a
@@ -15129,6 +15437,16 @@ class ModelDriver:
                 _forcing = dict(_forcing_daily)
                 _forcing["day_of_year"] = jnp.asarray(_doy)
                 _forcing["seconds_of_day"] = jnp.asarray(_sod)
+                if _cam6_act is not None:
+                    # CAM prescribed_aero_adv: the two monthly records held on
+                    # device, reloaded when the bracket moves, linearly
+                    # interpolated to this step's start time (noleap days since
+                    # Jan 1; user decision 2026-10-24, 1 and 2a).
+                    from legoesm.atmosphere.physics.microphysics.cam6_aerosol_climatology import (  # noqa: E501
+                        NOLEAP_ONE_YR, cam6_aerosol_forcing)
+                    _cam6_held, _forcing["cam6_aerosol"] = cam6_aerosol_forcing(
+                        cfg.cam6_aerosol_dir, _force_day % NOLEAP_ONE_YR,
+                        *_cam6_hw, held=_cam6_held)
                 # Surface heat fluxes for the convective diurnal-cycle CAPE
                 # subtraction, which is what delays land storms from noon to
                 # late afternoon.  They are the PREVIOUS step's: turbulence
@@ -15308,17 +15626,15 @@ class ModelDriver:
                 _lwn = (_sd[1].data if (_sd is not None and len(_sd) > 1
                                         and _sd[1] is not None) else None)
                 if _swn is not None and _lwn is not None:
-                    _f_net = (jnp.asarray(_swn).reshape(-1)
-                              + jnp.asarray(_lwn).reshape(-1))
-                    if len(_sd) > 6 and _sd[6] is not None:
-                        _f_net = _f_net - jnp.asarray(
-                            _sd[6].data).reshape(-1)
-                    if len(_sd) > 7 and _sd[7] is not None:
-                        _f_net = _f_net - jnp.asarray(
-                            _sd[7].data).reshape(-1)
-                    self._ice_T_skin = prognostic_ice_skin_temperature(
-                        self._ice_T_skin, _f_net, _ice_sic_cur,
-                        dt_s=DT, h_ice_m=_h_ice)
+                    self._ice_T_skin = advance_ice_skin(
+                        self._ice_T_skin, _swn, _lwn,
+                        (_sd[6].data if len(_sd) > 6 and _sd[6] is not None
+                         else None),
+                        (_sd[7].data if len(_sd) > 7 and _sd[7] is not None
+                         else None),
+                        _ice_sic_cur, dt_s=DT, h_ice_m=_h_ice,
+                        melt_cap_width_K=float(
+                            cfg.ice_skin_melt_cap_width_K))
                 # Re-anchor the NEXT step's T_sfc from the cached daily
                 # SST/SIC against the (advanced) skin, so the physics
                 # consumes the CURRENT skin every step (per-step feedback,
@@ -17555,7 +17871,7 @@ class ModelDriver:
             target_moisture=_target_moisture, target_mass=_target_mass,
             precip_accum=jnp.zeros(shape_2d, dtype=_sd),
             T_land=ctx["T_land"], w_land=ctx["w_land"],
-            snow=ctx.get("snow"),
+            snow=ctx.get("snow"), ice_T_skin=ctx["ice_T_skin"],
             tke=ctx["tke"], qke=ctx["qke"],
             gwd_spectrum=ctx["gwd_spectrum"],
             **_dm,
@@ -17641,6 +17957,8 @@ class ModelDriver:
             # Gather: tile layout -> serial layout -> cc state for the
             # callback + blowup guard (the threaded carry never gathers).
             carry_serial = unpack_carry_tiled(carry, n, carry_template)
+            if carry_serial.ice_T_skin is not None:
+                self._carry_aux["ice_T_skin"] = carry_serial.ice_T_skin
             state, self.q_v, self.q_c, self.q_r = unpack_carry(
                 carry_serial, self.state)[:4]
             self.state = state
@@ -18209,6 +18527,7 @@ class ModelDriver:
                 if getattr(self, "_requires_surface_flux_export", False)
                 else None),
             T_land=ctx["T_land"], w_land=ctx["w_land"], snow=ctx.get("snow"),
+            ice_T_skin=ctx["ice_T_skin"],
             tke=ctx["tke"], qke=ctx["qke"], gwd_spectrum=ctx["gwd_spectrum"],
             **_dm,
         )
@@ -18333,6 +18652,8 @@ class ModelDriver:
             # ``jnp.zeros_like(p_s)`` in _build_atm_forcing.
             self._carry_aux["held_sw_net_sfc"] = carry_full.held_sw_net_sfc
             self._carry_aux["held_lw_net_sfc"] = carry_full.held_lw_net_sfc
+            if carry_full.ice_T_skin is not None:
+                self._carry_aux["ice_T_skin"] = carry_full.ice_T_skin
             self._carry_aux["seg_precip"] = segment_accum_to_rate(
                 carry_full.precip_accum, seg_steps, DT)
             if carry_full.precip_frozen_accum is not None:
@@ -18629,6 +18950,44 @@ class ModelDriver:
         else:
             T_land = None
 
+        # Prognostic sea-ice skin [K] (#2106) — restored from the checkpoint
+        # when it carries one, else seeded at the seawater freezing point (the
+        # MPAS column lane's seed).  ``None`` (byte-identical carry) when off.
+        ice_T_skin = None
+        if getattr(self.config, "ice_skin_prognostic", False):
+            # Fail at run start, not at the first checkpoint: these writers
+            # cannot store the skin (the checkpoint-time raises stay as the
+            # backstop).
+            _out = self.config.output
+            if _out.checkpoint_days > 0 and (
+                    _out.checkpoint_format == "zarr" or self._is_latlon_mpi()):
+                raise ValueError(
+                    "ice_skin_prognostic: this checkpoint writer cannot store "
+                    "the ice skin (zarr drops carry_aux; the lat-lon MPI "
+                    "global gather does not gather it). Use "
+                    "checkpoint_format='npz' (single-process or cube MPI), "
+                    "or checkpoint_days=0.")
+            _skin_shape = self.state.T.data[..., -1].shape
+            if "ice_T_skin" in _aux:
+                _skin = jnp.asarray(_aux["ice_T_skin"])
+                if _skin.size != int(np.prod(_skin_shape)):
+                    raise ValueError(
+                        f"checkpoint ice_T_skin has {_skin.size} values, the "
+                        f"grid has {int(np.prod(_skin_shape))} columns — mesh "
+                        "or resolution mismatch.")
+                if not bool(jnp.all(jnp.isfinite(_skin))):
+                    raise ValueError(
+                        "checkpoint ice_T_skin has non-finite values — "
+                        "refusing to resume from a corrupt skin.")
+                ice_T_skin = _skin.reshape(_skin_shape).astype(_sd)
+                logger.info("  Ice skin: resumed from checkpoint (min %.1f K)",
+                            float(jnp.min(ice_T_skin)))
+            else:
+                ice_T_skin = jnp.full(_skin_shape, constants.T_freeze_ocean,
+                                      dtype=_sd)
+                logger.info("  Ice skin ON (h=%.2f m): seeded at "
+                            "T_freeze_ocean", float(self.config.ice_thickness_m))
+
         # Prognostic soil-water bucket [kg/m^2] — restored from the
         # checkpoint when available, otherwise seeded at a fraction of the
         # bucket capacity.  ``None`` (no carry, byte-identical legacy path)
@@ -18793,6 +19152,7 @@ class ModelDriver:
             "held_lw_up_toa_clr": held_lw_up_toa_clr,
             "conv_prog": conv_prog,
             "T_land": T_land,
+            "ice_T_skin": ice_T_skin,
             "w_land": w_land,
             "snow": snow,
             "tke": tke,
@@ -19011,6 +19371,7 @@ class ModelDriver:
             target_moisture=target_moisture, target_mass=target_mass,
             precip_accum=jnp.zeros(ctx["shape_2d"], dtype=_sd),
             T_land=ctx["T_land"], w_land=ctx["w_land"],
+            ice_T_skin=ctx["ice_T_skin"],
             land_ml=self._land_ml_state,
             tke=ctx["tke"], qke=ctx["qke"], gwd_spectrum=ctx["gwd_spectrum"],
             **(
@@ -19102,6 +19463,7 @@ class ModelDriver:
             "held_lw_up_toa_clr", jnp.zeros_like(held_lw_up_toa))
         conv_prog = ctx["conv_prog"]
         T_land = ctx["T_land"]
+        ice_T_skin = ctx["ice_T_skin"]
         w_land = ctx["w_land"]
         snow = ctx.get("snow")
         phys_tke = ctx["tke"]
@@ -19474,6 +19836,7 @@ class ModelDriver:
                     if getattr(self, "_requires_surface_flux_export", False)
                     else None),
                 T_land=T_land,
+                ice_T_skin=ice_T_skin,
                 # Prognostic multilayer land state (None ⇒ slab path, byte-identical
                 # carry).  Seeded in _setup_multilayer_land; the segment advances it
                 # and the readback below persists it across segment boundaries.
@@ -19699,6 +20062,9 @@ class ModelDriver:
             if carry.T_land is not None:
                 T_land = carry.T_land
                 self._carry_aux["T_land"] = T_land
+            if carry.ice_T_skin is not None:
+                ice_T_skin = carry.ice_T_skin
+                self._carry_aux["ice_T_skin"] = ice_T_skin
             # Soil-water bucket: carry to the next segment + checkpoint.
             if carry.w_land is not None:
                 w_land = carry.w_land
@@ -19869,7 +20235,7 @@ class ModelDriver:
                     sw_net_sfc=seg_sw_net_sfc,
                     lw_net_sfc=seg_lw_net_sfc,
                     sw_down_toa=seg_sw_down_toa,
-                    T_ice=cfg.T_ice,
+                    T_ice=(cfg.T_ice if ice_T_skin is None else ice_T_skin),
                     lat_deg_grid=lat_deg_grid,
                     shflx=seg_shflx_rate,
                     lhflx=seg_lhflx_rate,
@@ -20087,6 +20453,7 @@ class ModelDriver:
         # T_sfc consistently with the compiled-segment path.  ``None``
         # when the land tile is inactive.
         T_land = ctx["T_land"]
+        ice_T_skin = ctx["ice_T_skin"]
         # Soil-water bucket (None unless active): threaded like T_land.
         w_land = ctx["w_land"]
         snow = ctx.get("snow")
@@ -20226,7 +20593,7 @@ class ModelDriver:
         # arity mismatch.
         phys_out, (held_dT_rad, held_sw_net_sfc, held_lw_net_sfc,
                     held_sw_up_toa, held_lw_up_toa, held_sw_down_toa), \
-            T_land, land_ml = \
+            T_land, land_ml, *_skin_ret = \
             _warmup_step_fn(
                 jnp.bool_(warmup_need_rad),
                 self.state.T.data, self.state.p_s.data,
@@ -20246,7 +20613,10 @@ class ModelDriver:
                          if self._ensemble_size == 1 else None),
                 T_land=T_land, w_land=w_land, snow=snow, **_dm_step_in,
                 **_phys_carry_step_inputs(),
+                **({} if ice_T_skin is None else {"ice_T_skin": ice_T_skin}),
             )
+        if _skin_ret:
+            ice_T_skin = _skin_ret[0]
         conv_prog = phys_out.conv_prog
         if phys_out.w_land is not None:
             w_land = phys_out.w_land
@@ -20268,6 +20638,8 @@ class ModelDriver:
         })
         if T_land is not None:
             self._carry_aux["T_land"] = T_land
+        if ice_T_skin is not None:
+            self._carry_aux["ice_T_skin"] = ice_T_skin
         if w_land is not None:
             self._carry_aux["w_land"] = w_land
         if snow is not None:
@@ -20366,7 +20738,7 @@ class ModelDriver:
             # state like the compiled-segment path (single-member only).
             phys_out, (held_dT_rad, held_sw_net_sfc, held_lw_net_sfc,
                         held_sw_up_toa, held_lw_up_toa, held_sw_down_toa), \
-                T_land, land_ml = \
+                T_land, land_ml, *_skin_ret = \
                 _step_fn(
                     need_rad_jax,
                     self.state.T.data, self.state.p_s.data,
@@ -20386,7 +20758,11 @@ class ModelDriver:
                              if self._ensemble_size == 1 else None),
                     T_land=T_land, w_land=w_land, snow=snow, **_dm_step_in,
                     **_phys_carry_step_inputs(),
+                    **({} if ice_T_skin is None
+                       else {"ice_T_skin": ice_T_skin}),
                 )
+            if _skin_ret:
+                ice_T_skin = _skin_ret[0]
             conv_prog = phys_out.conv_prog
             # Sedimentation sub-steps: same window-maximum + cadence report as
             # the MPAS loop, from the count this lane returns directly
@@ -20425,6 +20801,8 @@ class ModelDriver:
             })
             if T_land is not None:
                 self._carry_aux["T_land"] = T_land
+            if ice_T_skin is not None:
+                self._carry_aux["ice_T_skin"] = ice_T_skin
             if w_land is not None:
                 self._carry_aux["w_land"] = w_land
             if snow is not None:
@@ -20500,7 +20878,7 @@ class ModelDriver:
                     sw_net_sfc=phys_out.sw_net_sfc,
                     lw_net_sfc=phys_out.lw_net_sfc,
                     sw_down_toa=phys_out.sw_down_toa,
-                    T_ice=cfg.T_ice,
+                    T_ice=(cfg.T_ice if ice_T_skin is None else ice_T_skin),
                     lat_deg_grid=lat_deg_grid,
                     q_s=self.tracers.get("q_s") if isinstance(self.tracers, dict) else None,
                     q_g=self.tracers.get("q_g") if isinstance(self.tracers, dict) else None,

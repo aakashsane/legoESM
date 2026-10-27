@@ -172,6 +172,7 @@ def make_physics(
     physics_cadence_steps: int = 1,
     cld_macmic_num_steps: int = 1,
     surface_bulk_coeffs="default",
+    cam6_activation=None,
 ) -> Callable:
     """Create a combined physics function for a dynamical core.
 
@@ -343,7 +344,8 @@ def make_physics(
             cld_macmic_num_steps=cld_macmic_num_steps,
             budget_ledger=budget_ledger,
             budget_ledger_level_weight=budget_ledger_level_weight,
-            surface_bulk_coeffs=surface_bulk_coeffs)
+            surface_bulk_coeffs=surface_bulk_coeffs,
+            cam6_activation=cam6_activation)
     else:
         raise ValueError(
             f"Unknown model_type: {model_type!r}. "
@@ -668,7 +670,8 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
                                physics_cadence: str = "off",
                                physics_cadence_steps: int = 1,
                                cld_macmic_num_steps: int = 1,
-                               surface_bulk_coeffs=None) -> Callable:
+                               surface_bulk_coeffs=None,
+                               cam6_activation=None) -> Callable:
     """Combined physics for any hydrostatic model (cubed-sphere, lat-lon, MPAS).
 
     ``surface_bulk_coeffs`` ``(C_H, C_E, latent)``: the constant-coefficient surface
@@ -822,17 +825,20 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
     if config.microphysics.scheme != "none":
         # The run's BUILT cloud config (MPAS lane: _standalone_cloud_config),
         # never a default one: the aist rh ramps are run parameters.
-        tagged_fns.append((
-            make_microphysics_physics(
-                config.microphysics, model_type, _dt_sub,
-                cloud_config=config.radiation.cloud_config,
-                clubb_config=_clubb_cfg,
-                relvar_from_clubb=(
-                    _clubb_liquid_partition_on(config.turbulence)
-                    and config.microphysics.scheme == "morrison"
-                    and resolve_warm_rain_scheme(
-                        config.microphysics.morrison) == "kk2000_cam6")),
-            False, None))
+        _micro_fn = make_microphysics_physics(
+            config.microphysics, model_type, _dt_sub,
+            cloud_config=config.radiation.cloud_config,
+            clubb_config=_clubb_cfg,
+            relvar_from_clubb=(
+                _clubb_liquid_partition_on(config.turbulence)
+                and config.microphysics.scheme == "morrison"
+                and resolve_warm_rain_scheme(
+                    config.microphysics.morrison) == "kk2000_cam6"),
+            cam6_activation=cam6_activation)
+        # CAM6 droplet activation writes the CLDO carry (cloud_fraction_old).
+        _micro_carry = getattr(_micro_fn, "_writes_phys_state", False)
+        tagged_fns.append((_micro_fn, _micro_carry,
+                           "cloud_fraction_old" if _micro_carry else None))
     if config.gravity_wave_drag.scheme != "none":
         tagged_fns.append((make_gwd_physics(config.gravity_wave_drag, model_type, dt), True, "gwd_spectrum"))
     # Macmic group of each module, PARALLEL to ``tagged_fns`` (same append

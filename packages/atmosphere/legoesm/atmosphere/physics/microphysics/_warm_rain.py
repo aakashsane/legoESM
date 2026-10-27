@@ -2994,10 +2994,9 @@ def m2005_liquid_step(T, q_v, q_c, q_r, N_r, p, rho, dz, dt, N_c_spec, params,
     NRAGG constants): a ``MorrisonConfig`` at the sam flavour.  The
     data-dependent ``NSTEP`` runs in a fixed ``n_substeps_max`` loop (passes
     past a column's own count are masked); the per-column REQUIRED count is
-    returned so the caller can refuse a column that needs more.  The reused
-    sedimentation routine floors the layer thickness at 1 m
-    (``sedimentation_tendency``); gSAM uses the actual ``dz``, so the port is
-    NOT faithful for layers thinner than 1 m.
+    returned so the caller can refuse a column that needs more.  Sedimentation
+    uses the actual ``dz`` as gSAM does (``dz_floor=False``; the shared
+    routine's 1 m floor stays for the MG2-family schemes).
 
     Returns ``(T, q_v, q_c, q_r, N_r, precipitation [kg/m^2/s], required
     sub-steps (ncol,))``.  Piecewise differentiable (gates are ``jnp.where``

@@ -1461,7 +1461,10 @@ def _mg2_size_dist_basic(q, N, shape, lam_min, lam_max, min_mean_mass=None,
         arg = shape * N / q_safe
         tiny = jnp.finfo(jnp.result_type(arg)).tiny
         ln_raw = jnp.log(jnp.where(arg > tiny, arg, tiny)) / 3.0
-        lam = jnp.exp(smooth_clamp(ln_raw, math.log(lam_min), math.log(lam_max),
+        # jnp.log only for a traced bound (a trained dcs); a static one keeps
+        # the Python log, bitwise as before.
+        _ln = (lambda b: math.log(b)) if isinstance(lam_min, float) else jnp.log
+        lam = jnp.exp(smooth_clamp(ln_raw, _ln(lam_min), math.log(lam_max),
                                    1.0 / log_width))
         n_adj = lam ** 3 * q_safe / shape
     else:

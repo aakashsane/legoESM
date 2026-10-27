@@ -265,3 +265,18 @@ def test_ice_radius_gradients_finite_at_production_widths(z, dtype):
     for g in grads:
         assert np.all(np.isfinite(np.asarray(g)))
     assert np.any(np.asarray(grads[1]) != 0.0)  # r_eff_ice depends on the ice number
+
+
+def test_ice_radius_differentiable_in_dcs(z):
+    """dcs is a tunable microphysics parameter; the CAM6 ice radius reads it and
+    must stay differentiable in it (finite, nonzero where the lower slope bound
+    binds)."""
+    kw = _kwargs(z, hard=False)
+
+    def f(dcs):
+        return jnp.sum(compute_cloud_properties(**{**kw, "mg2_ice_dcs_m": dcs},
+                                                n_cloud_in_cloud=True,
+                                                clubb_config=CLUBBConfig()).r_eff_ice)
+
+    g = float(jax.grad(f)(jnp.asarray(MG2_DCS_M)))
+    assert np.isfinite(g) and g != 0.0, g

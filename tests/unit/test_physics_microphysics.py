@@ -45,9 +45,12 @@ def test_sundqvist_water_closes_on_dp_over_g_not_rho_dz():
     assert imbalance < 1e-12 * max(float(jnp.max(out.precipitation)), 1.0), imbalance
 
 
-def test_sundqvist_precpd_runs_on_post_condensation_state():
-    """Tier-2 decision R17: the oracle runs gscond, then precpd on its output,
-    so the precipitation port sees T + L_v c dt/c_pd and q_v - c dt."""
+def test_sundqvist_precpd_runs_on_pre_condensation_state():
+    """R17 (precpd on the post-condensation state, the oracle's gscond ->
+    precpd order) is deferred to the gscond port (user 2026-10-27): with the
+    condensation surrogate's overshoot the post-condensation column is below
+    rh_crit and precpd re-evaporates its own production.  Until then precpd
+    sees the pre-step T and q_v, and condensation adds on top."""
     from legoesm.atmosphere.physics.microphysics.sundqvist import (
         diagnose_sundqvist_process_rates, zhao_carr_precpd)
     T, q_v, hydro, p_full, p_half, rho, dz = _make_column(
@@ -58,13 +61,15 @@ def test_sundqvist_precpd_runs_on_post_condensation_state():
         T, q_v, hydro, p_full, p_half, rho, dz, dt, cfg).condensation
     assert float(jnp.max(cond)) > 0.0
     zc = zhao_carr_precpd(
-        T + constants.L_v * cond * dt / constants.c_pd, q_v - cond * dt,
-        hydro.q_c + cond * dt, p_full, (p_half[:, 1:] - p_half[:, :-1]) / constants.g,
-        dt, cfg)
+        T, q_v, hydro.q_c + cond * dt, p_full,
+        (p_half[:, 1:] - p_half[:, :-1]) / constants.g, dt, cfg)
     out = sundqvist_microphysics(T, q_v, hydro, p_full, p_half, rho, dz, dt, cfg)
-    np.testing.assert_allclose(np.asarray(T + out.dT_dt * dt), np.asarray(zc.T),
-                               rtol=1e-13, atol=0.0)
-    np.testing.assert_allclose(np.asarray(q_v + out.dq_v_dt * dt), np.asarray(zc.q_v),
+    np.testing.assert_allclose(
+        np.asarray(T + out.dT_dt * dt),
+        np.asarray(zc.T + constants.L_v * cond * dt / constants.c_pd),
+        rtol=1e-13, atol=0.0)
+    np.testing.assert_allclose(np.asarray(q_v + out.dq_v_dt * dt),
+                               np.asarray(zc.q_v - cond * dt),
                                rtol=1e-12, atol=1e-18)
 
 

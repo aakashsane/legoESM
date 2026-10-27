@@ -321,14 +321,15 @@ def test_sundqvist_training_pipeline_evaluates_microphysics_targets():
 
 
 def test_sundqvist_rain_survival_rebuild_matches_physical_scheme():
-    T = jnp.array([[282.0, 276.0]])
-    q_v = jnp.array([[8.5e-3, 5.5e-3]])
-    q_c = jnp.array([[2.0e-4, 1.0e-4]])
+    # top-down (level 0 = model top), the scheme's convention
+    T = jnp.array([[276.0, 282.0]])
+    q_v = jnp.array([[5.5e-3, 8.5e-3]])
+    q_c = jnp.array([[1.0e-4, 2.0e-4]])
     q_r = jnp.zeros_like(q_c)
-    p_full = jnp.array([[8.5e4, 6.5e4]])
-    p_half = jnp.array([[9.5e4, 7.5e4, 5.5e4]])
-    rho = jnp.array([[1.05, 0.82]])
-    dz = jnp.array([[1200.0, 1500.0]])
+    p_full = jnp.array([[6.5e4, 8.5e4]])
+    p_half = jnp.array([[5.5e4, 7.5e4, 9.5e4]])
+    rho = jnp.array([[0.82, 1.05]])
+    dz = jnp.array([[1500.0, 1200.0]])
     hydrometeors = HydrometeorState(
         q_c=q_c,
         q_r=q_r,
@@ -362,7 +363,8 @@ def test_sundqvist_rain_survival_rebuild_matches_physical_scheme():
         dt=150.0,
         config=config,
     )
-    generated_flux = jnp.sum(rates.autoconversion * rho * dz, axis=1)
+    generated_flux = jnp.sum(
+        rates.autoconversion * (p_half[:, 1:] - p_half[:, :-1]) / constants.g, axis=1)
     rain_survival_fraction = jnp.where(
         generated_flux > 1.0e-12,
         rates.precipitation / generated_flux,
@@ -405,13 +407,14 @@ def test_sundqvist_rain_survival_rebuild_matches_physical_scheme():
 def test_sundqvist_rain_survival_rebuild_gradient_finite_in_rain_free_column():
     """A cloud-free column has zero base evaporation; the rescale's discarded
     0/0 branch must not turn the reverse pass into NaN (review F2)."""
-    T = jnp.array([[282.0, 276.0], [290.0, 280.0]])
-    q_v = jnp.array([[8.5e-3, 5.5e-3], [2.0e-3, 1.0e-3]])    # col 2 dry
-    q_c = jnp.array([[2.0e-4, 1.0e-4], [0.0, 0.0]])          # col 2 cloud-free
-    p_full = jnp.array([[8.5e4, 6.5e4], [8.5e4, 6.5e4]])
-    p_half = jnp.array([[9.5e4, 7.5e4, 5.5e4], [9.5e4, 7.5e4, 5.5e4]])
-    rho = jnp.array([[1.05, 0.82], [1.05, 0.82]])
-    dz = jnp.array([[1200.0, 1500.0], [1200.0, 1500.0]])
+    # top-down (level 0 = model top), the scheme's convention
+    T = jnp.array([[276.0, 282.0], [280.0, 290.0]])
+    q_v = jnp.array([[5.5e-3, 8.5e-3], [1.0e-3, 2.0e-3]])    # col 2 dry
+    q_c = jnp.array([[1.0e-4, 2.0e-4], [0.0, 0.0]])          # col 2 cloud-free
+    p_full = jnp.array([[6.5e4, 8.5e4], [6.5e4, 8.5e4]])
+    p_half = jnp.array([[5.5e4, 7.5e4, 9.5e4], [5.5e4, 7.5e4, 9.5e4]])
+    rho = jnp.array([[0.82, 1.05], [0.82, 1.05]])
+    dz = jnp.array([[1500.0, 1200.0], [1500.0, 1200.0]])
     z = jnp.zeros_like(q_c)
     hm = HydrometeorState(q_c=q_c, q_r=z, q_i=z, q_s=z, q_g=z, N_c=z, N_r=z, N_i=z)
 

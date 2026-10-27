@@ -792,7 +792,9 @@ def test_prognostic_clubb_couples_to_microphysics_total_water_budget():
         T_f, q_f, hyd, kw["p_full"], kw["p_half"], rho, dz, dt,
         SundqvistConfig(**_SUNDQVIST_ZC))
 
-    mass = np.asarray(rho) * np.asarray(dz)              # kg/m^2
+    mass = np.asarray(rho) * np.asarray(dz)              # kg/m^2, CLUBB's weight
+    # sundqvist closes its budget in the Zhao-Carr layer mass dp/g (R9/C12)
+    mass_mu = np.asarray(kw["p_half"][:, 1:] - kw["p_half"][:, :-1]) / constants.g
     dqc = np.asarray(mp.dq_c_dt)
     dqv_m = np.asarray(mp.dq_v_dt)
     dqr = np.asarray(mp.dq_r_dt)
@@ -811,12 +813,12 @@ def test_prognostic_clubb_couples_to_microphysics_total_water_budget():
     rates = diagnose_sundqvist_process_rates(
         T_f, q_f, hyd, kw["p_full"], kw["p_half"], rho, dz, dt,
         SundqvistConfig(**_SUNDQVIST_ZC))
-    fusion_cap = constants.L_f * np.sum(mass * np.asarray(rates.autoconversion), axis=1)
-    assert np.all(-np.sum(mass * resid_h, axis=1) <= fusion_cap * (1.0 + 1e-12))
+    fusion_cap = constants.L_f * np.sum(mass_mu * np.asarray(rates.autoconversion), axis=1)
+    assert np.all(-np.sum(mass_mu * resid_h, axis=1) <= fusion_cap * (1.0 + 1e-12))
     # (c) Headline: summed turbulence+microphysics tendencies close the column
     # water budget to the surface precip sink (CLUBB conserves; sundqvist closes).
     clubb_col_dqv = np.sum(mass * np.asarray(out.dq_v_dt), axis=1)
-    micro_col = np.sum(mass * (dqv_m + dqc + dqr), axis=1)
+    micro_col = np.sum(mass_mu * (dqv_m + dqc + dqr), axis=1)
     col_water = np.sum(mass * np.asarray(q_f), axis=1)
     combined_resid = clubb_col_dqv + micro_col + precip  # kg/m^2/s, want ~0
     # precip is genuinely nonzero (autoconversion fires), so this is not a

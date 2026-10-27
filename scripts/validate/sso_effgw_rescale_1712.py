@@ -86,6 +86,9 @@ def build_driver(deck, sso, extra):
     parser.set_defaults(_config_keys=frozenset(keys))
     args = parser.parse_args(argv)
     args = ra._postprocess_args(args, parser, argv)
+    if getattr(args, "distributed", False):
+        raise SystemExit("single-process probe: S is a sum over the local "
+                         "mesh; drop --distributed")
     if getattr(args, "params", None):
         raise SystemExit("--params is not applied by this probe (run_amip "
                          "applies it around setup); refusing a stress that "

@@ -367,7 +367,7 @@ def _unstable_indicator(kbfs, config):
 
 def cam_pblintd_height(
     T, q_v, u, v, p_full, z_full, z_half, tau_x, tau_y, shflx, qflx,
-    pref_mid, config: HoltslagBovilleConfig,
+    pref_mid, config: HoltslagBovilleConfig, *, p_sfc,
 ):
     """PBL height CAM6 diagnoses after CLUBB (``clubb_intr.F90:2594-2617``).
 
@@ -381,9 +381,13 @@ def cam_pblintd_height(
     of a zero.  Inputs top-first ``(ncol, nlev)`` (``z_half`` ``nlev+1``,
     surface last), the per-column surface stress ``tau_x, tau_y`` [Pa],
     ``shflx`` [W/m2] and ``qflx`` [kg/m2/s] (CAM ``cam_in%wsx, wsy, shf,
-    cflx(:,1)``), ``pref_mid`` (nlev,) [Pa].  Returns ``pblh`` [m], (ncol,).
+    cflx(:,1)``), ``pref_mid`` (nlev,) [Pa], ``p_sfc`` (ncol,) surface
+    pressure [Pa].  ``exner`` is CAM-SE's ``(ps/pmid)**cappa``
+    (dp_coupling.F90:834), not the p0-referenced one of the HB lane.
+    Returns ``pblh`` [m], (ncol,).
     """
-    theta, theta_v = _theta_thetav(T, q_v, p_full)
+    theta = T * (jnp.asarray(p_sfc)[:, None] / p_full) ** constants.kappa
+    theta_v = virtual_temperature(theta, q_v)
     ustar, _, _, kbfs, obklen = _calc_ustar_obklen(
         T[:, -1], p_full[:, -1], tau_x, tau_y, shflx, qflx, theta[:, -1],
         theta_v[:, -1], config.ustar_min)

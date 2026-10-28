@@ -2190,12 +2190,34 @@ class DiagnosticCollector:
                     if r is not None:
                         fields_2d[_name] = r
 
+            # hur [%] (CMIP6 Amon): "relative humidity with respect to
+            # liquid water for T > 0 C, and with respect to ice for T < 0 C".
+            # q_v / q_sat on MODEL levels, q_sat the legoesm.thermo SPECIFIC
+            # saturation humidity (q_v, published as hus, is specific), then
+            # the same plev19 interpolation + regrid as ta/hus below.  The
+            # two curves meet at T_freeze (both 611.2 Pa), so the branch at
+            # exactly 0 C does not matter.  Owner decision 2026-10-28.
+            hur_np = None
+            if include_state and q_v_np is not None:
+                from legoesm.thermo import (
+                    saturation_specific_humidity,
+                    saturation_specific_humidity_ice,
+                )
+                _p_hur = jnp.asarray(self._p_full(p_s_np))
+                _T_hur = jnp.asarray(T_np)
+                _qs_hur = np.where(
+                    T_np >= _c.T_freeze,
+                    np.asarray(saturation_specific_humidity(_T_hur, _p_hur)),
+                    np.asarray(saturation_specific_humidity_ice(_T_hur, _p_hur)))
+                hur_np = 100.0 * q_v_np / _qs_hur
+
             # 3-D fields: model levels → plev19, then regrid.  The plev
             # interpolation is column-wise and works unchanged on native
             # (nCells, nlev) with p_s (nCells,).
             for _name, _src in (
                 ('ta', T_np),
                 ('hus', q_v_np),
+                ('hur', hur_np),
                 ('ua', u_east_np),
                 ('va', v_north_np),
                 # Pressure vertical velocity: same plev19 + regrid path as the

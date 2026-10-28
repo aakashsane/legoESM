@@ -2215,3 +2215,50 @@ class TestCmipWriterIdentity:
         assert (w.drs_tree, w.institution_id, w.model_id, w.variant_label) == (
             False, "CU", "legoESM-1-0", "r1i1p1f1")
         assert w._output_path("tas", "Amon").parent == tmp_path / "cmor" / "Amon"
+
+
+class TestHur:
+    """hur (Amon plev19): q_v / q_sat on model levels, water above 0 C and
+    ice below (the CMIP6 table comment), then plev19 + regrid like ta."""
+
+    def _qsat_switch(self, dc, T, p_s):
+        from legoesm.thermo import (
+            saturation_specific_humidity, saturation_specific_humidity_ice)
+        p = np.asarray(dc._p_full(p_s))
+        liq = np.asarray(saturation_specific_humidity(T, p))
+        ice = np.asarray(saturation_specific_humidity_ice(T, p))
+        return np.where(T >= constants.T_freeze, liq, ice), liq
+
+    def test_half_saturated_column_reads_50_percent_across_freezing(self, mesh):
+        dc, sigma_full = _make_collector(mesh)
+        f = _base_fields(mesh, sigma_full)
+        # Column spanning the freezing level: 240 K aloft to 290 K below.
+        T = np.broadcast_to(240.0 + 50.0 * sigma_full, f["T"].shape).copy()
+        assert T.min() < constants.T_freeze < T.max()
+        f["T"] = T
+        qs, liq = self._qsat_switch(dc, T, f["p_s"])
+        assert np.max(np.abs(qs / liq - 1.0)) > 0.05   # ice branch matters
+        dc.feed_cmip_accumulators_native(15.0, **f, q_v=0.5 * qs)
+        out = dc._spatial_monthly.finalize(min_sample_fraction=0)
+        np.testing.assert_allclose(out["field_3d_hur"], 50.0, rtol=1e-9)
+
+    def test_hur_absent_without_q_v(self, mesh):
+        dc, sigma_full = _make_collector(mesh)
+        dc.feed_cmip_accumulators_native(15.0, **_base_fields(mesh, sigma_full))
+        out = dc._spatial_monthly.finalize(min_sample_fraction=0)
+        assert "field_3d_hur" not in out
+
+    def test_hur_file_is_amon_plev19_percent(self, mesh, tmp_path):
+        xr = pytest.importorskip("xarray")
+        from legoesm.io.cmor_output import CFWriter
+        dc, sigma_full = _make_collector(mesh)
+        dc.cf_writer = CFWriter(output_dir=tmp_path, experiment_id="amip",
+                                model_id="legoESM", ref_date="1979-01-01")
+        f = _base_fields(mesh, sigma_full)
+        qs, _ = self._qsat_switch(dc, f["T"], f["p_s"])
+        dc.feed_cmip_accumulators_native(15.0, **f, q_v=0.5 * qs)
+        dc._write_cmip_data(dc._spatial_monthly.finalize(min_sample_fraction=0))
+        [path] = sorted(tmp_path.rglob("hur_Amon_*.nc"))
+        with xr.open_dataset(path) as ds:
+            assert ds["hur"].attrs["units"] == "%"
+            assert ds["hur"].sizes["plev"] == 19

@@ -22,8 +22,10 @@ inputs (thvm from the carried rcm), as the Fortran computes it inside the step.
 
 Metric: per field, max |ours - oracle| / max |oracle| over the column and the
 step (field-normalised, the tier-1 audit metric); bound 1e-10 in fp64 (user
-decision 2026-10-19).  The core has no AD smoothing fields, so this is also
-the production configuration.
+decision 2026-10-19).  The smooth up2/vp2 cap does not bind on these
+columns (measured: identical errors at cap width 10 and 0), so this is also the production configuration.  The l_implemented
+fixture below checks the cap at its hard limit (width 0) and pins the
+default width's per-case gap.
 
 ``oracle_fixtures/clubb_core_cam_implemented.npz`` (``run.sh implemented``):
 the same generator with every recorded step run as CAM runs it,

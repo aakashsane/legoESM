@@ -38,7 +38,12 @@ Algorithm (k = 0 model top; interface k sits above midpoint k)
    land-fraction scaling (the scheme has no land-fraction input).
 5. Heating: the E3SM discrete closure
    ``dT = -(du*(u + 0.5*dt*du) + dv*(v + 0.5*dt*dv))/c_pd``, which returns
-   exactly the resolved kinetic energy lost over the step.
+   exactly the resolved kinetic energy lost over the step.  ``eps_gwd`` keeps
+   the GWDOutput definition (the instantaneous rate ``-int rho*(u*du+v*dv) dz``),
+   so the column heat ``c_pd*int rho*dT dz`` equals ``eps_gwd`` minus the
+   finite-step term ``0.5*dt*int rho*(du^2+dv^2) dz``, as in ``e3sm_cam.py``
+   (by design, not a leak; up to 18 % of ``eps_gwd`` per oracle column at
+   dt = 1800 s, measured 2026-10-28).
 
 Smoothing (differentiability).  The existing fields reduce to the E3SM hard
 switches at their limit: ``Fr_sharpness`` (``min(taudmp, tausat)``) and
@@ -194,7 +199,8 @@ def lindzen_gwd(
     # orographic ngwv = 0 call).
     dT_dt = -(du_dt * (u + 0.5 * dt * du_dt) + dv_dt * (v + 0.5 * dt * dv_dt)) / c_pd
 
-    # Column KE dissipation diagnostic (unchanged definition, GWDOutput).
+    # Column KE dissipation diagnostic (unchanged definition, GWDOutput): the
+    # instantaneous rate, NOT the discrete heat above (see module docstring).
     dz = jnp.clip(jnp.abs(z_half[:, :-1] - z_half[:, 1:]), 1.0, None)
     eps_gwd = -jnp.sum(rho * (u * du_dt + v * dv_dt) * dz, axis=1)
 

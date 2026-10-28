@@ -81,15 +81,42 @@ def test_matches_e3sm_oracle_at_hard_limit(fx):
     assert _rel_err(nolim.du_dt, fx["oracle_utgw"]) > 1e-2
 
 
-def test_default_smoothing_gap_reported(fx):
-    """Production smoothing departs from the hard limit (reported, not asserted)."""
+# Per-column gap of the production smoothing (LindzenConfig() defaults:
+# Fr_sharpness=20, crit_level_sharpness=10, crit_level_floor=0.5) vs the E3SM
+# oracle, metric = per-column max|ours - oracle| / max|oracle| (absolute where
+# the oracle column is zero).  Measured 2026-10-28 on head f4969977d6; a change
+# to the smooth form or its default widths re-measures these (CLAUDE.md RULE 5).
+_DEFAULT_GAP = {
+    "du_dt": [3.0659165041732667e-05, 1.2070343366624745e-15, 1.4293265782121547e-06,
+              7.784712682564557e-16, 0.0007024996916114065, 0.0, 0.0, 0.0,
+              0.0008229483362744398, 2.681305787889771e-15, 2.289236736313983e-15,
+              3.32658908564308e-16, 0.0, 1.2084562729151554e-15, 0.0,
+              4.228388472693467e-16, 0.0],
+    "dv_dt": [3.065916504172932e-05, 1.2858154805915862e-15, 1.4293265782121543e-06,
+              4.59687010626362e-16, 0.0007024996916115593, 0.0, 0.0, 0.0,
+              0.0008229483362744523, 0.0, 2.5842521605471702e-15,
+              3.208143539612264e-16, 0.0, 1.1374254150811316e-15, 0.0, 0.0, 0.0],
+    "dT_dt": [1.6698781552838104e-05, 1.0919564121735955e-15, 5.152346447776124e-07,
+              7.137461387092336e-16, 0.000675219987912139, 0.0, 0.0, 0.0,
+              0.0008627376098094827, 2.8898984562349595e-15, 1.978280332743015e-15,
+              3.018778614035623e-16, 0.0, 1.2686059996896405e-15, 0.0,
+              3.54575275532231e-16, 0.0],
+}
+
+
+def _per_column_err(ours, oracle):
+    diff = np.abs(np.asarray(ours) - oracle).max(axis=-1)
+    scale = np.abs(oracle).max(axis=-1)
+    return np.where(scale > 0, diff / np.where(scale > 0, scale, 1.0), diff)
+
+
+def test_default_smoothing_gap_per_column(fx):
+    """Production smoothing departs from the hard limit by the recorded per-column gap."""
     out = _run(fx, LindzenConfig())
-    gap = {k: _rel_err(getattr(out, k), fx[o]) for k, o in
-           (("du_dt", "oracle_utgw"), ("dv_dt", "oracle_vtgw"), ("dT_dt", "oracle_ttgw"))}
-    glob = {k: float(np.abs(np.asarray(getattr(out, k)) - fx[o]).max() / np.abs(fx[o]).max())
-            for k, o in (("du_dt", "oracle_utgw"), ("dT_dt", "oracle_ttgw"))}
-    print("default smoothing vs oracle: per-column", gap, "global", glob)
-    assert all(np.isfinite(v) for v in gap.values())
+    for k, o in (("du_dt", "oracle_utgw"), ("dv_dt", "oracle_vtgw"), ("dT_dt", "oracle_ttgw")):
+        got = _per_column_err(getattr(out, k), fx[o])
+        want = np.asarray(_DEFAULT_GAP[k])
+        np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-12, err_msg=k)
 
 
 def test_jit_matches_eager(fx):

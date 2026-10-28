@@ -1262,7 +1262,9 @@ def test_monthly_writer_restart_refusals(tmp_path):
     (tmp_path / "m.nc").unlink()
     with pytest.raises(ValueError, match="missing"):
         make().resume(40.0, w.restart_payload())
-    make().resume(20.0, w.restart_payload())     # still in month 1
+    sparse = make()                              # first sample in February
+    sparse.add(st(7.0), 40.0)                    # (diag cadence > 31 days)
+    sparse.resume(60.0, sparse.restart_payload())   # nothing flushed: fine
 
 
 def test_restart_npz_carries_the_monthly_payload():

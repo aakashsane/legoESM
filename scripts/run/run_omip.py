@@ -4375,6 +4375,8 @@ class MonthlyMldSstWriter:
         return {
             "monthly_key": np.asarray(key, dtype=np.int64),
             "monthly_n": np.int64(self.n),
+            # Months flushed so far: a resume with the file gone loses them.
+            "monthly_n_done": np.int64(len(self.done)),
             "monthly_sum_sst": (empty if self.sum_sst is None
                                 else self.sum_sst.copy()),
             "monthly_sum_mld": (empty if self.sum_mld is None
@@ -4395,8 +4397,8 @@ class MonthlyMldSstWriter:
         (written before they existed, or by a run without --monthly-mld-sst)
         is refused.  File months from the in-flight month on, or ending after
         the restart day (a later leg that was killed), are dropped and
-        recomputed.  With the file absent past the first month the months
-        before the restart cannot be recovered: refused.
+        recomputed.  With the file absent although the restarted run had
+        already written months, those months cannot be recovered: refused.
         """
         import xarray as xr
         restart_day = float(restart_day)
@@ -4415,7 +4417,7 @@ class MonthlyMldSstWriter:
             self.sum_sst = np.array(payload["monthly_sum_sst"])
             self.sum_mld = np.array(payload["monthly_sum_mld"])
         if not self.path.exists():
-            if restart_day > float(_NOLEAP_MONTH_END_DAYS[0]):
+            if int(payload["monthly_n_done"]) > 0:
                 raise ValueError(
                     f"--monthly-mld-sst: resuming at day {restart_day:g} but "
                     f"{self.path} is missing, so the months before the "

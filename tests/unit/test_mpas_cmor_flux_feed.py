@@ -2102,3 +2102,87 @@ class TestDailySurfacePressure:
         assert files and not list(tmp_path.rglob("ps_day_*.nc"))
         with xr.open_dataset(files[0]) as ds:
             np.testing.assert_allclose(ds["ps"].values, 1.0e5, rtol=1e-6)
+
+
+class TestRtmtAndDailyExports:
+    """rtmt (Amon) from the fed TOA trio, and daily copies of the fed 2-D
+    fields: rsut/rsdt (CFday), hfls hfss rlds rlus rsds rsus prsn clt snw
+    (day)."""
+
+    SFC = dict(rsds=180.0, rsus=25.0, rlds=330.0, rlus=390.0, prsn=4.0e-6)
+    DAILY_FLUX = ("rsut", "rsdt", "hfls", "hfss", "rlds", "rlus", "rsds",
+                  "rsus", "prsn")
+
+    def _feed(self, dc, mesh, sigma_full, day, **extra):
+        f = _base_fields(mesh, sigma_full)
+        n = f["p_s"].shape[0]
+        vals = {**FLUXES, **self.SFC}
+        dc.feed_cmip_accumulators_native(
+            day, **f, flux_interval_days=1.0,
+            snw=np.full(n, 50.0), land_fraction=np.full(n, 0.5),
+            **{k: np.full(n, v) for k, v in vals.items()}, **extra)
+
+    def test_rtmt_is_rsdt_minus_rsut_minus_rlut(self, mesh):
+        dc, sigma_full = _make_collector(mesh)
+        self._feed(dc, mesh, sigma_full, 15.0)
+        out = dc._spatial_monthly.finalize(min_sample_fraction=0)
+        want = FLUXES["rsdt"] - FLUXES["rsut"] - FLUXES["rlut"]
+        np.testing.assert_allclose(out["field_2d_rtmt"], want, rtol=1e-12)
+
+    def test_rtmt_absent_without_the_full_trio(self, mesh):
+        dc, sigma_full = _make_collector(mesh)
+        f = _base_fields(mesh, sigma_full)
+        n = f["p_s"].shape[0]
+        dc.feed_cmip_accumulators_native(
+            15.0, **f, rsdt=np.full(n, 340.0), rsut=np.full(n, 99.0))
+        out = dc._spatial_monthly.finalize(min_sample_fraction=0)
+        assert "field_2d_rtmt" not in out
+
+    def test_daily_fluxes_bin_to_covered_day_state_to_endpoint(self, mesh):
+        dc, sigma_full = _make_collector(mesh)
+        self._feed(dc, mesh, sigma_full, 15.0)
+        daily = dc._spatial_daily._data
+        for name in self.DAILY_FLUX:
+            assert name in daily.get((0, 15), {}), name
+            assert name not in daily.get((0, 16), {}), name
+        assert "snw" in daily.get((0, 16), {})
+        assert "rtmt" not in daily.get((0, 15), {})   # no daily CMIP6 rtmt
+
+    def test_daily_clt_is_fed_and_carries_the_cloud_note(self, mesh):
+        from legoesm.atmosphere.physics.clouds.config import build_cloud_config
+        dc, sigma_full = _make_collector(
+            mesh, cloud_config=build_cloud_config("xu_randall"))
+        f = _base_fields(mesh, sigma_full)
+        n = f["p_s"].shape[0]
+        q_v = 1.0e-3 * (1.0 - sigma_full)[None, :] * np.ones((n, 1))
+        vert = np.exp(-((sigma_full - 0.55) ** 2) / 0.02)
+        q_c = 3.0e-4 * vert[None, :] * np.ones((n, 1))
+        dc.feed_cmip_accumulators_native(15.0, **f, q_v=q_v, q_c=q_c)
+        assert "clt" in dc._spatial_daily._data[(0, 16)]   # state: endpoint day
+        attrs = dc._daily_extreme_attrs()
+        assert attrs["clt"]["comment"].startswith("Stratiform layer cloud")
+
+    def test_files_land_in_the_cmip6_tables(self, mesh, tmp_path):
+        xr = pytest.importorskip("xarray")
+        from legoesm.io.cmor_output import CFWriter
+        dc, sigma_full = _make_collector(mesh)
+        dc.cf_writer = CFWriter(output_dir=tmp_path, experiment_id="amip",
+                                model_id="legoESM", ref_date="1979-01-01")
+        for d in (15.0, 16.0):
+            self._feed(dc, mesh, sigma_full, d)
+        dc.finalize_cmip_daily(current_day=17.0)
+        for name in ("rsut", "rsdt"):
+            assert sorted(tmp_path.rglob(f"{name}_CFday_*.nc")), name
+            assert not list(tmp_path.rglob(f"{name}_day_*.nc")), name
+        for name in ("hfls", "hfss", "rlds", "rlus", "rsds", "rsus", "prsn",
+                     "snw"):
+            assert sorted(tmp_path.rglob(f"{name}_day_*.nc")), name
+        with xr.open_dataset(sorted(tmp_path.rglob("snw_day_*.nc"))[0]) as ds:
+            assert ds["snw"].attrs["cell_methods"] == (
+                "area: mean where land time: mean")
+        dc._write_cmip_data(dc._spatial_monthly.finalize(min_sample_fraction=0))
+        files = sorted(tmp_path.rglob("rtmt_Amon_*.nc"))
+        assert files
+        with xr.open_dataset(files[0]) as ds:
+            assert ds["rtmt"].attrs["positive"] == "down"
+            np.testing.assert_allclose(ds["rtmt"].values, 3.0, rtol=1e-5)

@@ -87,6 +87,14 @@ def _bracket(src: np.ndarray, tgt: np.ndarray, period: float | None):
     return order[lo], order[hi], w
 
 
+# File comment for the MPAS-lane ``clt`` (monthly and daily), stamped when
+# the native feed derived the cloud from the collector's cloud diagnosis
+# (``_cloud_paths_radiative``); see ``_write_cmip_data``.
+_CLT_NOTE = ("Stratiform layer cloud fraction (model's own "
+             "diagnostic scheme, convective add-on excluded) "
+             "reduced by maximum-random vertical overlap.")
+
+
 def _build_structured_regrid_weights(
     src_lat_rad: np.ndarray,
     src_lon_rad: np.ndarray,
@@ -1877,8 +1885,15 @@ class DiagnosticCollector:
         # Flux-field name sets (Amon spatial / daily / zonal) used to split
         # the PHASE-2 commits between the two calendar bins.
         _FLUX_2D = ("pr", "prsn", "rlut", "rsut", "rsdt", "hfss", "hfls",
-                    "evspsbl", "rsutcs", "rlutcs", "rsds", "rsus", "rlds", "rlus")
-        _FLUX_DAILY = ("pr", "rlut")
+                    "evspsbl", "rsutcs", "rlutcs", "rsds", "rsus", "rlds", "rlus",
+                    "rtmt")
+        # Daily copies of fed 2-D fields (CMIP6 ``day``/``CFday``/``Oday``,
+        # placed by ``_DAILY_VARIABLE_REMAP``); the flux ones are the
+        # ``_FLUX_2D`` members, binned at the interval midpoint like monthly.
+        _DAILY_2D = ("tas", "pr", "psl", "ps", "rlut", "tos", "rsut", "rsdt",
+                     "hfls", "hfss", "rlds", "rlus", "rsds", "rsus", "prsn",
+                     "clt", "snw")
+        _FLUX_DAILY = tuple(n for n in _DAILY_2D if n in _FLUX_2D)
         _FLUX_ZONAL = ("precip",)
 
         # Coerce to a numeric float array (``dtype=float64``): a non-numeric
@@ -2035,6 +2050,12 @@ class DiagnosticCollector:
                 r = self._regrid_to_latlon_2d(_src)
                 if r is not None:
                     fields_2d[_name] = r
+            # rtmt (CMIP6 Amon, positive down) = rsdt - rsut - rlut from the
+            # three fed TOA fields; the regrid and the mean are linear, so
+            # this equals the difference of their published means.
+            if all(_n in fields_2d for _n in ("rsdt", "rsut", "rlut")):
+                fields_2d['rtmt'] = (fields_2d['rsdt'] - fields_2d['rsut']
+                                     - fields_2d['rlut'])
             if include_state and snw_np is not None:
                 # ``area: mean where land``: land-weighted regrid, missing
                 # (NaN -> the writer's 1e20) where the target cell has no land.
@@ -2160,7 +2181,7 @@ class DiagnosticCollector:
             # Daily: reuse the regridded 2-D fields + 850 hPa winds sliced from
             # the 3-D arrays (same index convention as collect()).
             if self._spatial_daily is not None:
-                for _name in ("tas", "pr", "psl", "ps", "rlut", "tos"):
+                for _name in _DAILY_2D:
                     if _name in fields_2d:
                         daily_2d[_name] = fields_2d[_name]
                 _plev_sorted = np.sort(CMIP6_PLEV19)
@@ -2613,7 +2634,8 @@ class DiagnosticCollector:
         return lat, lon
 
     def _daily_extreme_attrs(self) -> dict | None:
-        """Describe daily extrema sampled by the independent hourly hook."""
+        """Per-variable daily file attributes: hourly-sampled tasmin/tasmax
+        and the MPAS-lane clt cloud disclosure."""
         hourly = {}
         if (self._spatial_daily is not None
                 and self._spatial_daily._extreme_max_count_ever > 0):
@@ -2623,6 +2645,9 @@ class DiagnosticCollector:
                                   "(first model step at or after each hour)."}
                 for name, method in (("tasmin", "minimum"), ("tasmax", "maximum"))
             }
+        # Daily clt carries the same disclosure as the monthly file.
+        if getattr(self, "_cloud_paths_radiative", False):
+            hourly["clt"] = {"comment": _CLT_NOTE}
         return hourly or None
 
     def _write_cmip_daily_files(self) -> None:
@@ -2771,9 +2796,7 @@ class DiagnosticCollector:
                 "clivi": ("DIAGNOSTIC ice water path: the cloud-ice share of "
                           "the clwvi column integral above, with the same "
                           "inclusions and exclusions."),
-                "clt": ("Stratiform layer cloud fraction (model's own "
-                        "diagnostic scheme, convective add-on excluded) "
-                        "reduced by maximum-random vertical overlap."),
+                "clt": _CLT_NOTE,
             }
             _notes_on = getattr(self, "_cloud_paths_radiative", False)
 

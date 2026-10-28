@@ -7,7 +7,9 @@ machine paths of ``config/amip/amip_production{,.ginsburg}.sh``.  This script
 (formerly ``run_amip_cmip6_deck.py``; renamed by review 2026-10-10 F34) runs a
 historical C16/L30 smoke stack -- RRTMG + Sundqvist clouds + Morrison + SBM +
 Louis + McFarlane -- with FLAT topography (no land anywhere), no sub-grid
-orography file and, by default, the SYNTHETIC ``data/forcing_amip`` deck.  It
+orography file and, by default, the SYNTHETIC ``data/forcing_amip`` deck for
+every channel but aerosol, which defaults to the production aerosol file
+(``--aerosol-file``; Levante only, #2212).  It
 exercises the forcing plumbing end to end; its climate means nothing.
 
 It wraps :mod:`scripts.run_amip` and orchestrates the forcing suite (SST/SIC +
@@ -95,8 +97,8 @@ def _check_forcing_files(
     Parameters
     ----------
     aerosol_file : str or Path
-        The aerosol file (``--aerosol-file``); it is checked at this path,
-        not in ``forcing_dir``.
+        Required keyword: the aerosol file (``--aerosol-file``); it is
+        checked at this path, not in ``forcing_dir``.
     require_aerosol, require_volcanic : bool
         When False, the corresponding file is omitted from the
         missing-file check.  This lets users intentionally disable a
@@ -167,7 +169,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start-year", type=int, default=1979)
     parser.add_argument("--end-year", type=int, default=2014)
     parser.add_argument("--auto-generate", action="store_true", default=False,
-                        help="Generate forcing files if any are missing")
+                        help="Generate forcing files if any are missing "
+                             "(the aerosol is read from --aerosol-file, not "
+                             "the generated synthetic file)")
 
     # Run-time configuration
     parser.add_argument("--resolution", type=int, default=16,
@@ -378,13 +382,15 @@ def main(argv: list[str] | None = None) -> int:
             if "_missing" in files:
                 raise RuntimeError(
                     f"Auto-generation completed but files still missing: "
-                    f"{files['_missing']}"
+                    f"{files['_missing']} (the aerosol is read from "
+                    f"--aerosol-file {files['aerosol']})"
                 )
         else:
             print(f"[deck] ERROR — forcing dir {forcing_dir} is missing files: "
                   f"{files['_missing']}")
             print(f"[deck]   re-run with --auto-generate to create them, or "
-                  "run scripts/data/generate_amip_forcing.py manually first.")
+                  "run scripts/data/generate_amip_forcing.py manually first; "
+                  f"the aerosol is read from --aerosol-file {files['aerosol']}.")
             return 2
 
     # Resolve the SST source + its var-name/unit convention.  A real

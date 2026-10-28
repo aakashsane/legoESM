@@ -135,8 +135,11 @@ def _check_forcing_files(
         # A real --sst-file is supplied separately; don't require the
         # synthetic sst_sic deck file.
         skip.add("sst")
+    # the aerosol path is user-supplied: it must be a file (Path("") is the
+    # current directory and exists; codex + GLM 2026-10-28)
     missing = [name for name, p in files.items()
-               if name not in skip and not p.exists()]
+               if name not in skip
+               and not (p.is_file() if name == "aerosol" else p.exists())]
     if missing:
         return {"_missing": ",".join(missing), **files}
     return files

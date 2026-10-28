@@ -485,6 +485,20 @@ class TestDeckAerosolFile:
                           "--dry-run"]) == 2
         assert "aerosol" in capsys.readouterr().out
 
+    def test_aerosol_path_must_be_a_file(self, tmp_path):
+        """An empty --aerosol-file (Path("") is the existing current
+        directory) or a directory is reported missing."""
+        from scripts.run.run_amip_smoke_deck import _check_forcing_files
+        TestDeckChecker._make_deck(None, tmp_path, with_interannual_o3=False,
+                                   with_clim_o3=True)
+        assert "_missing" not in _check_forcing_files(
+            tmp_path, 1979, 1980,
+            aerosol_file=tmp_path / "aerosol_amip_clim.nc")
+        for bad in ("", tmp_path):
+            files = _check_forcing_files(tmp_path, 1979, 1980,
+                                         aerosol_file=bad)
+            assert files.get("_missing") == "aerosol", bad
+
 
 class TestOzoneUnitDetection:
     """Regression tests for the ozone unit-conversion path.

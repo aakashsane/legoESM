@@ -95,11 +95,30 @@ def _argv_distributed_mode(argv: list[str]) -> str:
     return mode
 
 
+def _argv_distributed_flag(argv: list[str]) -> bool:
+    """True iff the exact ``--distributed`` flag is on the command line.
+
+    argparse semantics mirrored (pinned against the real parser by the CLI
+    test): no abbreviation can select it (every prefix is shared with
+    ``--distributed-mode``, which argparse refuses as ambiguous), and nothing
+    after a bare ``--`` is an option.  The MPI-environment auto-enable in
+    ``_postprocess_args`` is deliberately NOT read: federation needs the flag
+    (user decision 2026-10-28).
+    """
+    opts = argv[:argv.index("--")] if "--" in argv else argv
+    return "--distributed" in opts
+
+
+def _argv_federates(argv: list[str]) -> bool:
+    """The SPMD lane federates only when SPMD mode AND ``--distributed`` are
+    both set, on one host or many (user decision 2026-10-28); the mpi4jax
+    lane never does (the mixed stack deadlocks)."""
+    return (_argv_distributed_mode(argv) == "spmd"
+            and _argv_distributed_flag(argv))
+
+
 if "--multicontroller" not in sys.argv:
-    # Only the multi-controller SPMD lane federates jax.distributed across
-    # hosts; the mpi4jax lane must not (the mixed stack deadlocks).
-    maybe_init_jax_distributed(
-        federate=_argv_distributed_mode(sys.argv) == "spmd")
+    maybe_init_jax_distributed(federate=_argv_federates(sys.argv))
 
 from legoesm.driver.config import (
     CLUBB_SCALAR_FIELDS,

@@ -1288,6 +1288,19 @@ def test_restart_npz_carries_the_monthly_payload():
     src = inspect.getsource(run_omip.run_omip_single)
     assert "_RESTART_EXTRA_PAYLOAD[0] = _monthly.restart_payload" in src
     assert "_monthly.resume(" in src
+    assert "_monthly.start_fresh()" in src
+
+
+def test_monthly_writer_fresh_run_refuses_existing_file(tmp_path):
+    """#2182: a fresh run into a folder that already holds the monthly file
+    refuses to start instead of overwriting it; an empty folder is fine."""
+    import pytest
+
+    make, _ = _monthly_writer_and_state(tmp_path / "m.nc")
+    make().start_fresh()                         # no file yet: fine
+    (tmp_path / "m.nc").write_bytes(b"x")
+    with pytest.raises(ValueError, match="already exists"):
+        make().start_fresh()
 
 
 def test_checkpoint_npz_round_trips_the_monthly_payload(tmp_path):

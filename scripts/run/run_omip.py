@@ -4367,6 +4367,17 @@ class MonthlyMldSstWriter:
     def close(self) -> None:
         self._flush()
 
+    def start_fresh(self) -> None:
+        """A fresh run (no --restart) refuses a folder that already holds the
+        monthly file: its first flush would overwrite every earlier month
+        (#2182, user decision)."""
+        if self.path.exists():
+            raise ValueError(
+                f"--monthly-mld-sst: {self.path} already exists and a fresh "
+                "run (no --restart) would overwrite it. Pass --restart with "
+                "the run's last checkpoint to continue it, or move the file "
+                "(or choose another --output) to start over.")
+
     def restart_payload(self) -> dict:
         """The in-flight month (key, sample count, running sums) for the
         restart npz, so a resumed run continues the month exactly (#2182)."""
@@ -7267,6 +7278,8 @@ def run_omip_single(grid_type: str, args) -> dict:
             with np.load(args.restart) as _rz:
                 # The NpzFile itself: only the monthly_* keys are read.
                 _monthly.resume(float(_rz["time_days"]), _rz)
+        else:
+            _monthly.start_fresh()
         _RESTART_EXTRA_PAYLOAD[0] = _monthly.restart_payload
         _monthly_fn = _monthly.add
     # Disarm the process-global SPMD backend on EVERY exit of the loop (a

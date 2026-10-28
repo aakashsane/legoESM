@@ -3020,7 +3020,8 @@ class ModelDriver:
                 _nat = getattr(self, "_latlon_native_grid", None)
                 self._f_land = era5_land_fraction(
                     self.grid if _nat is None else _nat, TrainingERA5Config(
-                        zarr_store=self.config.land_fraction_era5_zarr)
+                        zarr_store=self.config.land_fraction_era5_zarr,
+                        flux_zarr="")   # "" = the named store, no other
                 ).reshape(shape_2d).astype(_sd)
             elif _lf_src == "zero":
                 self._f_land = jnp.zeros(shape_2d, dtype=_sd)

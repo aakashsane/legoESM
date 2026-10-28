@@ -54,6 +54,7 @@ def test_driver_takes_the_era5_land_fraction(monkeypatch, tmp_path, column_lane)
 
     def fake(grid, era5_config=None):    # (lat, lon) like the real regrid
         seen["store"] = era5_config.zarr_store
+        seen["flux"] = era5_config.flux_zarr
         return jnp.full((len(grid.lat), len(grid.lon)), 0.25)
 
     monkeypatch.setattr(sp, "era5_land_fraction", fake)
@@ -61,13 +62,20 @@ def test_driver_takes_the_era5_land_fraction(monkeypatch, tmp_path, column_lane)
                          land_fraction_era5_zarr="my.zarr"),
                     output_dir=str(tmp_path / "run"))
     f = np.asarray(d.static_land_fraction())
-    assert seen["store"] == "my.zarr"
+    assert (seen["store"], seen["flux"]) == ("my.zarr", "")
     assert f.shape == tuple(d.grid.grid_shape_2d)
     assert np.all(f == 0.25)          # flat topography alone would give 0
 
 
-def test_driver_zero_source_is_explicit_zeros(tmp_path):
-    d = ModelDriver(_cfg(land_fraction_source="zero"),
+def test_driver_zero_source_is_explicit_zeros(monkeypatch, tmp_path):
+    import legoesm.grids.topography as topo
+
+    def land_everywhere(grid, config=None):   # terrain that says "all land"
+        return (jnp.zeros(grid.grid_shape_2d), jnp.ones(grid.grid_shape_2d))
+
+    monkeypatch.setattr(topo, "load_real_topography", land_everywhere)
+    d = ModelDriver(_cfg(land_fraction_source="zero")._replace(
+                        topography="terrain.nc"),
                     output_dir=str(tmp_path / "run"))
     f = d.static_land_fraction()
     assert f is not None and not bool(jnp.any(f))

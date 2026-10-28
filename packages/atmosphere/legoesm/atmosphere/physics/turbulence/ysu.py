@@ -365,8 +365,8 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     hard switches; at the ``YSUConfig`` defaults (``pbl_smooth_sharpness`` 20,
     ``blend_pbl_sharpness`` 10, ``blend_ri_sharpness`` 100) the port differs
     from it per column by up to 48 % in PBL height (median 5 %), up to 95 % in
-    the diffusivities (medians 6-9 %), and up to 89 % / 44 % in the wind /
-    temperature tendencies (medians 6 % / 4 %); one column's moisture
+    the diffusivities (medians 6-9 %), and up to 89 % / 35 % / 44 % in the
+    u / v / temperature tendencies (medians 6 % / 12 % / 4 %); one column's moisture
     tendency changes sign (200 %), and one column's ``kpbl`` differs.  Setting
     all three fields to 1e300 recovers the oracle to 1e-10.  The column water
     and heat budgets still close (residual < 1e-13 of the surface flux).  At an

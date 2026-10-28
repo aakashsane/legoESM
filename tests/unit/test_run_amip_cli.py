@@ -5195,7 +5195,12 @@ def test_deck_distributed_key_counts_as_the_flag(tmp_path):
     off.write_text("distributed_mode: spmd\ndistributed: false\n")
     mode_only = tmp_path / "mode.yaml"
     mode_only.write_text("distributed_mode: spmd\n")
-    for deck, want in ((on, True), (off, False), (mode_only, False)):
+    inc_base = tmp_path / "inc_base.yaml"
+    inc_base.write_text("distributed: true\n")
+    inc = tmp_path / "inc.yaml"   # the key arrives through an include
+    inc.write_text(f"include: {inc_base.name}\ndistributed_mode: spmd\n")
+    for deck, want in ((on, True), (off, False), (mode_only, False),
+                       (inc, True)):
         p = build_arg_parser()
         p.set_defaults(**load_yaml_config(str(deck), p))
         argv = ["--config", str(deck)]

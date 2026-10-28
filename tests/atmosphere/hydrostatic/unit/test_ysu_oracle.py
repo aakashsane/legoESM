@@ -350,6 +350,8 @@ def test_check_grads_at_default(fx):
     args = (jnp.asarray(sub["in_T"]), jnp.asarray(sub["in_q"]) / q_scale, jnp.asarray(sub["in_u"]))
     # reverse mode only: the implicit solve (thomas_solve_batched) is a custom_vjp
     check_grads(f, args, order=2, modes=("rev",))
+    gq = jax.grad(f, argnums=1)(*args)  # the moisture path is exercised
+    assert bool(jnp.all(jnp.isfinite(gq))) and float(jnp.max(jnp.abs(gq))) > 0.0
     # finite, non-zero derivative through the PBL-top selection
     g = jax.grad(lambda T: jnp.sum(_kernel(sub, sharp=sharp, T=T).hpbl))(args[0])
     assert bool(jnp.all(jnp.isfinite(g))) and float(jnp.max(jnp.abs(g))) > 0.0

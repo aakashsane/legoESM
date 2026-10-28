@@ -2186,3 +2186,32 @@ class TestRtmtAndDailyExports:
         with xr.open_dataset(files[0]) as ds:
             assert ds["rtmt"].attrs["positive"] == "down"
             np.testing.assert_allclose(ds["rtmt"].values, 3.0, rtol=1e-5)
+
+
+class TestCmipWriterIdentity:
+    def test_collector_passes_identity_and_drs_tree_to_writer(self, tmp_path):
+        sigma_full = np.linspace(0.05, 0.98, NLEV)
+        dc = DiagnosticCollector(
+            nlev=NLEV, sigma_full=sigma_full, dsigma=np.full(NLEV, 1.0 / NLEV),
+            experiment_id="amip", cmip_output=True, n_days=30,
+            output_dir=str(tmp_path), cmip_resolution_deg=10.0,
+            cmip_drs_tree=True, cmip_institution_id="INST-X",
+            cmip_source_id="SRC-1-0", cmip_variant_label="r2i1p1f1")
+        w = dc.cf_writer
+        assert (w.drs_tree, w.institution_id, w.model_id, w.variant_label) == (
+            True, "INST-X", "SRC-1-0", "r2i1p1f1")
+        rel = w._output_path("tas", "Amon").relative_to(tmp_path / "cmor")
+        assert rel.parts[:7] == ("CMIP6", "CMIP", "INST-X", "SRC-1-0", "amip",
+                                 "r2i1p1f1", "Amon")
+        assert rel.name == "tas_Amon_SRC-1-0_amip_r2i1p1f1_gn.nc"
+
+    def test_defaults_keep_the_flat_layout(self, tmp_path):
+        sigma_full = np.linspace(0.05, 0.98, NLEV)
+        dc = DiagnosticCollector(
+            nlev=NLEV, sigma_full=sigma_full, dsigma=np.full(NLEV, 1.0 / NLEV),
+            experiment_id="amip", cmip_output=True, n_days=30,
+            output_dir=str(tmp_path), cmip_resolution_deg=10.0)
+        w = dc.cf_writer
+        assert (w.drs_tree, w.institution_id, w.model_id, w.variant_label) == (
+            False, "CU", "legoESM-1-0", "r1i1p1f1")
+        assert w._output_path("tas", "Amon").parent == tmp_path / "cmor" / "Amon"

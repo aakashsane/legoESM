@@ -268,6 +268,10 @@ class DiagnosticCollector:
         Layer thickness in sigma.
     monthly_means : bool
         Enable monthly-mean zonal diagnostics.
+    cmip_drs_tree, cmip_institution_id, cmip_source_id, cmip_variant_label
+        Passed to the CMOR ``CFWriter`` as ``drs_tree``, ``institution_id``,
+        ``model_id`` and ``variant_label`` (``OutputConfig`` fields of the
+        same names).
     cmip_output : bool
         Enable CF/CMOR NetCDF output.
     clear_sky_diag : bool
@@ -296,6 +300,10 @@ class DiagnosticCollector:
         surface_stability_scheme: str = "dyer1974",
         surface_bulk_scheme: str = "constant",
         clubb_config=None,
+        cmip_drs_tree: bool = False,
+        cmip_institution_id: str = "CU",
+        cmip_source_id: str = "legoESM-1-0",
+        cmip_variant_label: str = "r1i1p1f1",
     ):
         self.nlev = nlev
         self.sigma_full = sigma_full
@@ -405,10 +413,13 @@ class DiagnosticCollector:
             self.cf_writer = CFWriter(
                 output_dir=cmor_dir,
                 experiment_id=experiment_id,
-                model_id="legoESM-1-0",
+                model_id=cmip_source_id,
                 freq="mon",
                 calendar="noleap",
                 ref_date=f"{start_year:04d}-01-01",
+                institution_id=cmip_institution_id,
+                variant_label=cmip_variant_label,
+                drs_tree=cmip_drs_tree,
             )
             if not monthly_means:
                 # iter-169: removed redundant local import that

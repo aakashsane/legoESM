@@ -1113,15 +1113,14 @@ class TestCMIP6Compliance(unittest.TestCase):
         from legoesm.io.cmor_output import _compute_nominal_resolution
         lat = np.linspace(-87.5, 87.5, 36)  # 5°
         lon = np.linspace(2.5, 357.5, 72)   # 5°
-        # 5° ≈ 556 km → bucket "1000 km" (smallest upper-bound that
-        # covers the spacing).
-        self.assertEqual(_compute_nominal_resolution(lat, lon), "1000 km")
+        # CMIP6 Appendix 2: area-weighted mean diagonal 714 km -> "500 km".
+        self.assertEqual(_compute_nominal_resolution(lat, lon), "500 km")
 
     def test_compute_nominal_resolution_2deg(self):
         from legoesm.io.cmor_output import _compute_nominal_resolution
         lat = np.linspace(-89, 89, 90)   # 2°
         lon = np.linspace(1, 359, 180)   # 2°
-        # 2° ≈ 222 km → bucket "250 km"
+        # mean diagonal 286 km -> "250 km"
         self.assertEqual(_compute_nominal_resolution(lat, lon), "250 km")
 
     def test_tracking_id_format(self):
@@ -1587,8 +1586,8 @@ class TestCMIP6Compliance(unittest.TestCase):
                 output_dir=tmpdir, experiment_id="amip",
                 model_id="legoESM-1-0",
             )
-            # 5° grid → nominal_resolution "1000 km" (smallest CV bucket
-            # that covers the ~556 km equatorial spacing)
+            # 5° grid → CMIP6 nominal_resolution "500 km" (714 km mean
+            # cell diagonal, Appendix 2 of the CMIP6 global-attributes doc)
             lat = np.linspace(-87.5, 87.5, 36)
             lon = np.linspace(2.5, 357.5, 72)
             data = np.full((36, 72), 288.0, dtype=np.float32)
@@ -1601,7 +1600,7 @@ class TestCMIP6Compliance(unittest.TestCase):
             nominal = ds.attrs["nominal_resolution"]
             ds.close()
 
-        self.assertEqual(nominal, "1000 km")
+        self.assertEqual(nominal, "500 km")
 
 
 if __name__ == "__main__":

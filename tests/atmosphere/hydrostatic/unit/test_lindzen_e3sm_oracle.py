@@ -111,7 +111,7 @@ def _per_column_err(ours, oracle):
 
 
 def test_default_smoothing_gap_per_column(fx):
-    """Production smoothing departs from the hard limit by the recorded per-column gap."""
+    """Production smoothing departs from the E3SM oracle by the recorded per-column gap."""
     out = _run(fx, LindzenConfig())
     for k, o in (("du_dt", "oracle_utgw"), ("dv_dt", "oracle_vtgw"), ("dT_dt", "oracle_ttgw")):
         got = _per_column_err(getattr(out, k), fx[o])

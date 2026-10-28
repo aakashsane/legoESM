@@ -781,8 +781,9 @@ def surface_buoyancy_flux(
     # ρ/N²/Ri use S-EOS — a half-applied closure).
     if rho_0_norm:
         fn = wright_eos if eos_fn is None else eos_fn
-        # Same salinity floor as the generic-EOS path below; none for Wright.
-        S_eval = (S_sfc if eos_fn is None
+        # Same salinity floor as the generic-EOS path below; none for Wright
+        # (given or defaulted), so a run passing wright_eos stays bit-identical.
+        S_eval = (S_sfc if fn is wright_eos
                   else jnp.maximum(S_sfc, _EOS_SALINITY_FLOOR))
 
         def _alpha_sfc():

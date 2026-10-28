@@ -947,3 +947,22 @@ def test_k_profile_fallback_forwards_the_eos_to_epbl(monkeypatch):
         k_profiles._vmix_K_profiles(scm.state, scm.z_coord, None, vm,
                                     eos_fn=eos, lat_deg=40.0)
     assert seen == [eos]
+
+
+def test_rho0_norm_buoyancy_same_for_none_and_explicit_wright():
+    """A run that passes wright_eos explicitly gets the default Wright
+    buoyancy bit for bit, also where the surface is nearly fresh (no
+    salinity floor for Wright)."""
+    from legoesm.ocean.eos import wright_eos
+    from legoesm.ocean.physics.vertical_mixing._shared import (
+        surface_buoyancy_flux,
+    )
+    T = jnp.asarray([5.0, 20.0])
+    S = jnp.asarray([1e-4, 35.0])
+    q, fw, salt = jnp.asarray([-100.0, 50.0]), jnp.full(2, 3e-5), jnp.full(2, 1e-6)
+    kw = dict(g=G, rho_0=RHO0, c_sw=C_SW, real_salt_in_qs=True,
+              rho_0_norm=True)
+    a = surface_buoyancy_flux(q, fw, salt, T, S, **kw)
+    b = surface_buoyancy_flux(q, fw, salt, T, S, eos_fn=wright_eos, **kw)
+    for x, y in zip(a, b):
+        np.testing.assert_array_equal(np.asarray(x), np.asarray(y))

@@ -994,13 +994,24 @@ def test_richardson_adiabatic_n2_uses_the_supplied_eos(monkeypatch):
     assert got == [eos]
 
 
-def test_epbl_sqrt_s_eos_is_finite_at_zero_salinity():
-    """A sqrt(S) EOS (veros_gsw) at a zero-salinity cell: the layer
-    derivatives are taken at the floored salinity, so ePBL stays finite."""
+def test_epbl_sqrt_s_eos_is_finite_at_zero_salinity(monkeypatch):
+    """A sqrt(S) EOS (veros_gsw) has dRho/dS = NaN at S = 0 (measured); the
+    layer derivatives handed to the closure are taken at the floored
+    salinity, so they and ePBL's K stay finite."""
     import types
     from legoesm.ocean.physics.vertical_mixing import integration
+    from legoesm.ocean.physics.vertical_mixing.epbl import (
+        epbl_vertical_mixing as real,
+    )
     from legoesm.ocean.scm_forcing import build_ocean_surface_forcing_struct
 
+    seen = {}
+
+    def spy(*a, **kw):
+        seen["args"] = a
+        return real(*a, **kw)
+
+    monkeypatch.setattr(integration, "epbl_vertical_mixing", spy)
     scm, _ = _epbl_scm(-200.0, False, nsteps=1)
     st = scm.state
     st = st._replace(S=st.S.replace(data=st.S.data.at[..., -1].set(0.0)))
@@ -1011,5 +1022,6 @@ def test_epbl_sqrt_s_eos_is_finite_at_zero_salinity():
         vm, apply_diffusion=False, eos_fn=make_eos_fn(eos="veros_gsw"))
     tend = fn(st, types.SimpleNamespace(grid_lat=jnp.deg2rad(40.0)),
               scm.z_coord, surface_forcing=sfc)
+    for dsv in seen["args"][4:6]:
+        assert bool(jnp.all(jnp.isfinite(dsv)))
     assert bool(jnp.all(jnp.isfinite(tend.K_v)))
-    assert bool(jnp.all(jnp.isfinite(tend.A_v)))

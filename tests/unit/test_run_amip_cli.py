@@ -5203,6 +5203,16 @@ def test_deck_distributed_key_counts_as_the_flag(tmp_path):
         assert _argv_federates(argv) is want, deck.name
     assert _argv_federates(["--config", str(mode_only), "--distributed"]) is True
     assert _argv_federates(["--config", str(on), "--distributed-mode", "mpi"]) is False
+    # one deck read per decision (codex): both halves see the same file
+    import scripts.run.run_amip as ra
+    reads = []
+    real = ra._read_run_yaml_prejax
+    ra._read_run_yaml_prejax = lambda path: reads.append(path) or real(path)
+    try:
+        assert _argv_federates(["--config", str(on)]) is True
+    finally:
+        ra._read_run_yaml_prejax = real
+    assert len(reads) == 1
 
 
 def test_import_hook_hands_the_federation_decision_to_early_init(monkeypatch):

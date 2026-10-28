@@ -89,12 +89,12 @@ def _argv_deck(argv: list[str]) -> dict:
     return {}
 
 
-def _argv_distributed_mode(argv: list[str]) -> str:
+def _argv_distributed_mode(argv: list[str], deck: dict | None = None) -> str:
     """``distributed_mode`` as the run will resolve it: the ``--config``
     YAML's key (a YAML-selected spmd deck must federate too -- codex), then
     an explicit ``--distributed-mode`` flag on top, else the default."""
-    mode = str(_argv_deck(argv).get("distributed_mode",
-                                    _ARGV_DISTRIBUTED_MODE_DEFAULT))
+    deck = _argv_deck(argv) if deck is None else deck
+    mode = str(deck.get("distributed_mode", _ARGV_DISTRIBUTED_MODE_DEFAULT))
     # longer than the exact `--distributed` flag: unique to --distributed-mode
     v = _argv_option(argv, "--distributed-mode", len("--distributed") + 1)
     if v in ("mpi", "spmd"):   # anything else argparse rejects anyway
@@ -102,7 +102,7 @@ def _argv_distributed_mode(argv: list[str]) -> str:
     return mode
 
 
-def _argv_distributed_flag(argv: list[str]) -> bool:
+def _argv_distributed_flag(argv: list[str], deck: dict | None = None) -> bool:
     """True iff the exact ``--distributed`` flag is on the command line, or
     the ``--config`` deck sets ``distributed`` (a deck key counts as the flag,
     the same way its ``distributed_mode`` key counts; user decision
@@ -116,15 +116,20 @@ def _argv_distributed_flag(argv: list[str]) -> bool:
     or the deck key (user decision 2026-10-28).
     """
     opts = argv[:argv.index("--")] if "--" in argv else argv
-    return "--distributed" in opts or bool(_argv_deck(argv).get("distributed"))
+    if "--distributed" in opts:
+        return True
+    deck = _argv_deck(argv) if deck is None else deck
+    return bool(deck.get("distributed"))
 
 
 def _argv_federates(argv: list[str]) -> bool:
     """The SPMD lane federates only when SPMD mode AND ``--distributed`` (flag
     or deck key) are both set, on one host or many (user decision 2026-10-28); the mpi4jax
-    lane never does (the mixed stack deadlocks)."""
-    return (_argv_distributed_mode(argv) == "spmd"
-            and _argv_distributed_flag(argv))
+    lane never does (the mixed stack deadlocks).  The deck is read once, so
+    both halves see the same file (codex)."""
+    deck = _argv_deck(argv)
+    return (_argv_distributed_mode(argv, deck) == "spmd"
+            and _argv_distributed_flag(argv, deck))
 
 
 if "--multicontroller" not in sys.argv:

@@ -815,3 +815,116 @@ def test_brine_enters_buoyancy_and_tke_forcing(monkeypatch):
             != float(none_b["tke_forcing"][..., 0].ravel()[0]))
     np.testing.assert_array_equal(np.asarray(none_b["B_flux"]),
                                   np.asarray(zero_b["B_flux"]))
+
+
+# --- the run's EOS reaches ePBL and Richardson (#2177) ----------------------
+
+def _linear_eos():
+    from legoesm.ocean.eos import LinearEOSConfig
+    return make_eos_fn(eos="linear", eos_linear=LinearEOSConfig())
+
+
+def test_epbl_uses_the_supplied_eos(monkeypatch):
+    """eos_fn=None and an explicit Wright give the same closure inputs; a
+    linear EOS changes the specific-volume derivatives and the buoyancy."""
+    import types
+    from legoesm.ocean.physics.vertical_mixing import integration
+    from legoesm.ocean.physics.vertical_mixing.epbl import (
+        epbl_vertical_mixing as real,
+    )
+    from legoesm.ocean.scm_forcing import build_ocean_surface_forcing_struct
+    from legoesm.ocean.eos import wright_eos
+
+    scm, _ = _epbl_scm(-200.0, False, nsteps=1)
+    sfc = build_ocean_surface_forcing_struct(
+        scm.forcing, 0.0, scm.state.eta.data.shape, scm.state.T.data.dtype)
+    sfc = sfc._replace(freshwater=jnp.full_like(sfc.q_net, 3e-5))
+    grid = types.SimpleNamespace(grid_lat=jnp.deg2rad(40.0))
+    vm = VerticalMixingConfig(scheme="epbl", epbl=EPBLConfig(dt_s=1200.0))
+
+    def inputs(eos_fn):
+        seen = {}
+
+        def spy(*a, **kw):
+            seen.update(kw, args=a)
+            return real(*a, **kw)
+
+        monkeypatch.setattr(integration, "epbl_vertical_mixing", spy)
+        fn = integration.make_vertical_mixing_physics(
+            vm, apply_diffusion=False, eos_fn=eos_fn)
+        fn(scm.state, grid, scm.z_coord, surface_forcing=sfc)
+        monkeypatch.setattr(integration, "epbl_vertical_mixing", real)
+        return seen
+
+    base, wright, lin = inputs(None), inputs(wright_eos), inputs(_linear_eos())
+    for k in ("B_flux", "tke_forcing"):
+        np.testing.assert_array_equal(np.asarray(base[k]), np.asarray(wright[k]))
+    np.testing.assert_array_equal(np.asarray(base["args"][4]),
+                                  np.asarray(wright["args"][4]))
+    assert not np.allclose(np.asarray(base["args"][4]),
+                           np.asarray(lin["args"][4]), rtol=1e-3)
+    assert not np.allclose(np.asarray(base["B_flux"]),
+                           np.asarray(lin["B_flux"]), rtol=1e-3)
+
+
+@pytest.mark.parametrize("n2_mode", ["insitu", "adiabatic"])
+def test_richardson_density_uses_the_supplied_eos(monkeypatch, n2_mode):
+    """The Richardson factory hands the run's EOS to the density helper."""
+    import types
+    from legoesm.ocean.physics.vertical_mixing import integration
+    from legoesm.ocean.physics.vertical_mixing.config import (
+        RichardsonVerticalMixingConfig,
+    )
+    got = []
+
+    def rho(*a, eos_fn=None, **kw):
+        got.append(eos_fn)
+        raise StopIteration
+
+    monkeypatch.setattr(integration, "_compute_rho", rho)
+    monkeypatch.setattr(integration, "_compute_rho_and_pressure", rho)
+    eos = _linear_eos()
+    vm = VerticalMixingConfig(
+        scheme="richardson",
+        richardson=RichardsonVerticalMixingConfig(n2_mode=n2_mode))
+    fn = integration.make_vertical_mixing_physics(vm, eos_fn=eos)
+    scm, _ = _epbl_scm(0.0, False, nsteps=1)
+    with pytest.raises(StopIteration):
+        fn(scm.state, types.SimpleNamespace(), scm.z_coord)
+    assert got == [eos]
+
+
+def test_latlon_model_hands_its_eos_to_the_physics(monkeypatch):
+    """The lat-lon model builds its physics with the run's EOS."""
+    from legoesm.grids.latlon import create_latlon_grid
+    from legoesm.ocean.dynamics import ocean_model_latlon_cgrid as mod
+    from legoesm.ocean.eos import LinearEOSConfig
+    from legoesm.ocean.physics.combined import OceanPhysicsConfig
+    from legoesm.ocean.physics.lateral_mixing.config import (
+        LateralMixingConfig,
+    )
+    from legoesm.ocean.state import LatLonCGridOceanConfig
+    from legoesm.ocean.vertical import create_ocean_z_star
+
+    seen = {}
+    real = mod.make_ocean_physics
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real(*a, **kw)
+
+    monkeypatch.setattr(mod, "make_ocean_physics", spy)
+    lin = LinearEOSConfig()
+    cfg = LatLonCGridOceanConfig.from_flat(
+        eos="linear", eos_linear=lin, implicit_vertical_mixing=True,
+        physics=OceanPhysicsConfig(
+            vertical_mixing=VerticalMixingConfig(
+                scheme="epbl", epbl=EPBLConfig(dt_s=600.0)),
+            lateral_mixing=LateralMixingConfig(scheme="none")))
+    mod.LatLonCGridOceanModel(create_latlon_grid(n_lat=8, n_lon=16),
+                              create_ocean_z_star(n_levels=4, H_max=400.0),
+                              cfg)
+    T, S, p = jnp.asarray(10.0), jnp.asarray(35.0), jnp.asarray(0.0)
+    want = make_eos_fn(eos="linear", eos_linear=lin)(T, S, p)
+    assert float(seen["eos_fn"](T, S, p)) == float(want)
+    assert float(want) != float(make_eos_fn()(T, S, p))

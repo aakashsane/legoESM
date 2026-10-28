@@ -700,6 +700,11 @@ def psi_m_coare(zeta, stability_scheme="dyer1974", neutral_width=COARE_NEUTRAL_W
     switch).  The two branches are selected with ``jnp.where`` on arguments
     that are valid on both sides, so the inactive branch never feeds a NaN into
     the value or the gradient.
+
+    ``neutral_width`` (default ``COARE_NEUTRAL_WIDTH`` = 1e-3, RULE 5): the
+    SIGN switch above is replaced by the logistic blend of
+    :func:`_coare_neutral_select`; ``neutral_width = 0`` is the faithful
+    AeroBulk form described here.  Same parameter on :func:`psi_h_coare`.
     """
     validate_stability_scheme(stability_scheme)
 

@@ -372,7 +372,10 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     and heat budgets still close (residual < 1e-13 of the surface flux).  At an
     exact bulk-Ri tie (``brup == brcr``, e.g. a constant-theta_v layer) the
     default is DISCONTINUOUS: the tie gets weight 0 while any perturbation off
-    it gets ~1/2.  Per-case gaps are stored in
+    it gets ~1/2.  The hard switches listed above as ``jnp.where`` (the
+    PBL-top level ``kpbl`` and the flags and level picks derived from it) are
+    not smoothed: the derivative ignores which level is the PBL top, and the
+    output jumps where one of them flips.  Per-case gaps are stored in
     ``tests/atmosphere/hydrostatic/unit/test_ysu_oracle.py::DEFAULT_GAP``.
     """
     flip = lambda a: a[:, ::-1]  # noqa: E731  top-first -> oracle bottom-up

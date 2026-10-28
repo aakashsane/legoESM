@@ -333,6 +333,7 @@ def test_default_gap_per_case_matches_recorded(fx):
 
 def test_check_grads_at_default(fx):
     keep = [i for i, n in enumerate(_names(fx)) if n not in TIE_COLUMNS]
+    assert len(keep) == len(_names(fx)) - len(TIE_COLUMNS)
     sub = {k: (v[keep] if k.startswith(("in_", "ora_")) else v) for k, v in fx.items()}
     sharp = _default_sharp()
 

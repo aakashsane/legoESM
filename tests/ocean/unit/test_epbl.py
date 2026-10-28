@@ -763,7 +763,7 @@ def _factory_forcing(monkeypatch, salt):
     seen = {}
 
     def spy(*a, **kw):
-        seen.update(kw)
+        seen.update(kw, args=a)
         return real(*a, **kw)
 
     monkeypatch.setattr(integration, "epbl_vertical_mixing", spy)
@@ -792,6 +792,15 @@ def test_buoyancy_flux_is_mom6_rho0_form_with_brine(monkeypatch):
     want = -(g / rho0) * (drho_dT * net_heat + drho_dS * net_salt)
     np.testing.assert_allclose(np.asarray(seen["B_flux"]), np.asarray(want),
                                rtol=1e-12, atol=0.0)
+    # Top-layer TKE forcing: MOM6 cTKE with the same net salt flux
+    # [psu kg/m^2/s] = -S*fw + brine*1e3.
+    _, _, _, _, dSV_dT, dSV_dS, h, cfg = seen["args"]
+    tke_want = surface_tke_forcing(
+        sfc.q_net, -S0 * sfc.freshwater + brine * 1e3, h[..., 0],
+        dSV_dT[..., 0], dSV_dS[..., 0], g=g, rho_0=rho0, c_sw=c_sw,
+        dt=cfg.dt_s)
+    np.testing.assert_allclose(np.asarray(seen["tke_forcing"][..., 0]),
+                               np.asarray(tke_want), rtol=1e-12, atol=0.0)
 
 
 def test_brine_enters_buoyancy_and_tke_forcing(monkeypatch):

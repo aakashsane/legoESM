@@ -26,6 +26,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax.test_util import check_grads
 
 from legoesm.atmosphere.physics.gravity_wave_drag.config import LindzenConfig
 from legoesm.atmosphere.physics.gravity_wave_drag.lindzen import lindzen_gwd
@@ -143,3 +144,31 @@ def test_gradient_finite_on_oracle_columns(fx, dtype, hard):
     for gr in (gu, gT, gv):
         assert bool(jnp.all(jnp.isfinite(gr)))
     assert float(jnp.abs(gu).max()) > 0.0
+
+
+# (column, s*) points where the HARD-limit tendency has a derivative jump in
+# the wind scale s (u, v of that column times s) that the default smoothing
+# removes.  Found 2026-10-28 by scanning s in [0.8, 1.2] (step 5e-4) for
+# derivative jumps present at the hard limit and absent at the default, then
+# bisecting each jump; at both points check_grads FAILS at the hard limit.
+_KINKS = ((4, 1.0525168220622896), (8, 0.984170443965446))
+
+
+@pytest.mark.parametrize("col,s_star", _KINKS)
+def test_check_grads_through_the_smoothing_at_default(fx, col, s_star):
+    """RULE 5 gradient test: finite, non-zero derivative through a switch the
+    default smoothing removes (a kink of the hard limit at s*).  eps = 1e-5,
+    as in the Vreman/AMD tests; tolerances stay JAX's."""
+    cfg = LindzenConfig()
+    f1 = {k: jnp.asarray(fx[k][col:col + 1]) for k in _KEYS}
+
+    def f(s):
+        out = lindzen_gwd(f1["u"] * s, f1["v"] * s, f1["T"], f1["p_full"], f1["p_half"],
+                          f1["z_full"], f1["z_half"], f1["rho"], f1["lat"], float(fx["dt"]),
+                          cfg, h_topo_col=f1["sgh"])
+        return jnp.sum(out.du_dt) + jnp.sum(out.dv_dt) + jnp.sum(out.dT_dt)
+
+    f = jax.jit(f)
+    s0 = jnp.asarray(s_star)
+    check_grads(f, (s0,), order=2, modes=("fwd", "rev"), eps=1e-5)
+    assert float(jax.grad(f)(s0)) != 0.0

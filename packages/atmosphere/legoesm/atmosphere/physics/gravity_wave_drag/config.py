@@ -237,7 +237,13 @@ class LindzenConfig(NamedTuple):
     h_topo : float
         Subgrid orographic standard deviation ``sgh`` [m] used in every column
         when no per-column ``h_topo_col`` is passed (default 500).  E3SM
-        displaces ``hdsp = 2*sgh``.
+        displaces ``hdsp = 2*sgh``.  KNOWN LIMITATION (user
+        decision 2026-10-28: keep 500 m): the knob is partly inert.  At 500 m,
+        4 of the 16 drag columns of the E3SM oracle fixture barely respond to
+        it (measured: a +10 % ``h_topo`` changes du_dt by < 0.5 % there and
+        by 1-81 % in the other 12).  The only committed Lindzen runs (AIMIP
+        stage-1 sweep, Gaussian lane, no subgrid-orography file) use this
+        scalar.
     k_wave : float
         Horizontal wavenumber [1/m], E3SM ``kwv`` (default ``2*pi/100e3``, the
         value the oracle audit ran; E3SM's own parameter is ``6.28e-5``).

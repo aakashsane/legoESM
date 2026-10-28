@@ -161,6 +161,15 @@ def test_check_grads_through_the_smoothstep_at_default():
     assert float(jax.grad(f)(jnp.asarray(1.0))) != 0.0
 
 
+@pytest.mark.parametrize("w", [1.0e-12, 2.0e-12, -1.0e-13])
+def test_width_at_or_above_guard_or_negative_raises(w):
+    """User decision N7: a band reaching Bbeta = 0 (w >= 1e-12) gives NaN at
+    rest, so it is refused, as is a negative width."""
+    z = jnp.zeros(3)
+    with pytest.raises(ValueError, match="bbeta_guard_width"):
+        vreman_nu_t(*([z] * 9), 1.0, 1.0, 1.0, 0.07, bbeta_guard_width=w)
+
+
 if __name__ == "__main__":
     np.savez_compressed(GAP_FILE, gap=_default_gap(_fx()),
                         width=VREMAN_BBETA_GUARD_WIDTH)

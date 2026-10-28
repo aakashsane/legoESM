@@ -128,7 +128,8 @@ def vreman_nu_t(a11, a12, a13, a21, a22, a23, a31, a32, a33,
     bbeta_guard_width : float, default ``VREMAN_BBETA_GUARD_WIDTH`` (1e-13)
         Half-width w [m⁴/s⁴] of the C1 smoothstep across the author's
         ``Bβ < 1e-12`` zero-guard (static Python float).  ``0.0`` is the
-        author's exact hard switch (the oracle).
+        author's exact hard switch (the oracle).  Widths ``>= 1e-12`` (the
+        band would reach rest, giving NaN) or negative raise ``ValueError``.
 
     Returns
     -------
@@ -156,8 +157,12 @@ def vreman_nu_t(a11, a12, a13, a21, a22, a23, a31, a32, a33,
         arg = jnp.where(small, 1.0, Bbeta / jnp.where(small, 1.0, aa))
         root = jnp.where(small, 0.0, jnp.sqrt(arg))
         return c_vreman * root + nu_floor
-    if not bbeta_guard_width > 0.0:
-        raise ValueError(f"bbeta_guard_width must be >= 0, got {bbeta_guard_width!r}")
+    if not 0.0 < bbeta_guard_width < _BBETA_ZERO_GUARD:
+        # At w >= 1e-12 the band reaches Bbeta = 0 (rest), where aa = 0 and
+        # the divide/sqrt give NaN value and gradient (user decision N7).
+        raise ValueError(
+            f"bbeta_guard_width must be 0 or in (0, {_BBETA_ZERO_GUARD!r}), "
+            f"got {bbeta_guard_width!r}")
     # Smooth default (RULE 5): multiply by a C1 smoothstep s(t) = t^2 (3 - 2t),
     # t = clip((Bbeta - (g - w)) / (2 w), 0, 1), across the guard g = 1e-12
     # +/- w.  Below g - w s = 0 exactly and the same double-where keeps the

@@ -1262,6 +1262,16 @@ def test_monthly_writer_restart_refusals(tmp_path):
     (tmp_path / "m.nc").unlink()
     with pytest.raises(ValueError, match="missing"):
         make().resume(40.0, w.restart_payload())
+    import xarray as xr
+    w3 = make()                                  # Jan + Feb flushed
+    for sst, day in ((1.0, 20.0), (2.0, 40.0), (3.0, 70.0)):
+        w3.add(st(sst), day)
+    payload = w3.restart_payload()
+    with xr.open_dataset(tmp_path / "m.nc") as ds:     # truncate: Jan only
+        ds.load().isel(time=[0]).to_netcdf(tmp_path / "t.nc")
+    (tmp_path / "t.nc").replace(tmp_path / "m.nc")
+    with pytest.raises(ValueError, match="holds 1"):
+        make().resume(70.0, payload)
     sparse = make()                              # first sample in February
     sparse.add(st(7.0), 40.0)                    # (diag cadence > 31 days)
     sparse.resume(60.0, sparse.restart_payload())   # nothing flushed: fine

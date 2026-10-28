@@ -4397,8 +4397,8 @@ class MonthlyMldSstWriter:
         (written before they existed, or by a run without --monthly-mld-sst)
         is refused.  File months from the in-flight month on, or ending after
         the restart day (a later leg that was killed), are dropped and
-        recomputed.  With the file absent although the restarted run had
-        already written months, those months cannot be recovered: refused.
+        recomputed.  A file missing, or holding fewer months than the
+        restarted run had written, cannot be recovered: refused.
         """
         import xarray as xr
         restart_day = float(restart_day)
@@ -4416,22 +4416,24 @@ class MonthlyMldSstWriter:
             self.month, self.n = key, n
             self.sum_sst = np.array(payload["monthly_sum_sst"])
             self.sum_mld = np.array(payload["monthly_sum_mld"])
-        if not self.path.exists():
-            if int(payload["monthly_n_done"]) > 0:
-                raise ValueError(
-                    f"--monthly-mld-sst: resuming at day {restart_day:g} but "
-                    f"{self.path} is missing, so the months before the "
-                    "restart would be lost. Restore the file or rerun.")
-            return
-        with xr.open_dataset(self.path) as ds:
-            ds = ds.load()
-        for i in range(ds.sizes["time"]):
-            y, m = int(ds["year_index"][i]), int(ds["month"][i])
-            if n > 0 and (y, m) >= key:
-                continue
-            if self.month_end_day(y, m) > restart_day:
-                continue
-            self.done.append((y, m, ds["sst"].values[i], ds["mld"].values[i]))
+        if self.path.exists():
+            with xr.open_dataset(self.path) as ds:
+                ds = ds.load()
+            for i in range(ds.sizes["time"]):
+                y, m = int(ds["year_index"][i]), int(ds["month"][i])
+                if n > 0 and (y, m) >= key:
+                    continue
+                if self.month_end_day(y, m) > restart_day:
+                    continue
+                self.done.append((y, m, ds["sst"].values[i],
+                                  ds["mld"].values[i]))
+        n_done = int(payload["monthly_n_done"])
+        if len(self.done) < n_done:
+            raise ValueError(
+                f"--monthly-mld-sst: the restart had written {n_done} months "
+                f"but {self.path} holds {len(self.done)} of them (missing or "
+                "truncated file), so months before the restart would be "
+                "lost. Restore the file or rerun.")
 
 
 # Extra restart-npz payload supplied by an active writer (the monthly

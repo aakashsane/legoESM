@@ -65,6 +65,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from legoesm import constants
+from legoesm.core.smooth import smoothstep_quintic
 
 # Physical constants
 KAPPA = constants.kappa_von_karman
@@ -630,9 +631,9 @@ _AB_COARE_Z0T_COEF = 5.5e-5
 _AB_COARE_Z0T_EXP = 0.6
 _AB_COARE_SMOOTH = 0.11           # smooth-flow roughness coefficient
 _AB_EQUAL_HEIGHT_TOL = 0.01       # l_zt_equal_zu = |zu - zt| < 0.01 m
-# RULE 5 smooth default (user decision 2026-10-28): width of the logistic
-# blend across zeta = 0 in psi_m_coare / psi_h_coare; 0.0 = the oracle's
-# hard SIGN switch.
+# RULE 5 smooth default (user decision 2026-10-28, form N6): half-width of the
+# compact quintic blend across zeta = 0 in psi_m_coare / psi_h_coare; 0.0 = the
+# oracle's hard SIGN switch.
 COARE_NEUTRAL_WIDTH = 1.0e-3
 
 
@@ -651,20 +652,23 @@ def _coare_neutral_select(zeta, neutral_width, stable_fn, unstable_fn):
 
     ``neutral_width == 0``: the oracle's hard ``0.5 + SIGN(0.5, zeta)`` switch
     (+0 stable, -0 unstable), branch arguments valid on both sides.
-    ``neutral_width > 0`` (RULE 5 smooth default): logistic blend
-    ``sigmoid(zeta/w) * stable(max(zeta, 0)) + (1 - sigmoid) * unstable(min(zeta, 0))``
-    (static Python float width), removing the 0.0045 jump AeroBulk's rounded
+    ``neutral_width = w > 0`` (RULE 5 smooth default, user decision N6): compact
+    quintic smootherstep ``s = smoothstep_quintic((zeta + w) / (2 w))``,
+    ``s * stable(max(zeta, -w)) + (1 - s) * unstable(min(zeta, w))`` (static
+    Python float width).  Inside ``|zeta| < w`` both branches are evaluated at
+    the true zeta; outside it ``s`` is exactly 0 or 1, so exactly one branch
+    contributes and the result is the oracle's.  The blend is C2 in zeta
+    (C-infinity inside the band), removing the 0.0045 jump AeroBulk's rounded
     constants leave at zeta = 0.
 
-    KNOWN DIFFERENCES at the default width 1e-3: (i) vs the compiled AeroBulk
-    TURB_COARE3P0 (fixture of 1549 states, Charnock 0.011) the fluxes differ by
-    up to 1.2e-3 relative in stress, 7.2e-4 in sensible/latent heat and 5.9e-4
-    in u* (per-state gaps in
-    ``tests/core/oracle_fixtures/aerobulk_coare3p0_default_gap.npz``);
-    (ii) the blend is continuous but not C1 at zeta = 0, because each branch
-    is evaluated at its clipped argument: the one-sided derivatives are
-    dpsi_m/dzeta = -3.63 / -3.01 and dpsi_h/dzeta = -3.63 / -4.88 (right /
-    left).  Width 0 recovers the oracle (<= 1e-10).
+    KNOWN DIFFERENCE at the default width 1e-3, vs the compiled AeroBulk
+    TURB_COARE3P0 (fixture of 1549 states, Charnock 0.011): the fluxes differ by
+    up to 8.0e-4 relative in stress, 5.0e-4 in sensible and latent heat and
+    4.0e-4 in u* (39 of 1549 states move at 10 m, 190 at 2 m; measured
+    2026-10-28 after the switch from the logistic blend, whose stress gap was
+    1.2e-3 and which was not C1 at zeta = 0) (per-state gaps in
+    ``tests/core/oracle_fixtures/aerobulk_coare3p0_default_gap.npz``).  Width 0
+    recovers the oracle (<= 1e-10).
     """
     if neutral_width == 0.0:
         stable = ~jnp.signbit(zeta)   # 0.5 + SIGN(0.5, zeta): +0 stable, -0 unstable
@@ -672,9 +676,9 @@ def _coare_neutral_select(zeta, neutral_width, stable_fn, unstable_fn):
                          unstable_fn(jnp.where(stable, -1.0, zeta)))
     if not neutral_width > 0.0:
         raise ValueError(f"neutral_width must be >= 0, got {neutral_width!r}")
-    wt = jax.nn.sigmoid(zeta / neutral_width)
-    return (wt * stable_fn(jnp.maximum(zeta, 0.0))
-            + (1.0 - wt) * unstable_fn(jnp.minimum(zeta, 0.0)))
+    wt = smoothstep_quintic((zeta + neutral_width) / (2.0 * neutral_width))
+    return (wt * stable_fn(jnp.maximum(zeta, -neutral_width))
+            + (1.0 - wt) * unstable_fn(jnp.minimum(zeta, neutral_width)))
 
 
 def psi_m_coare(zeta, stability_scheme="dyer1974", neutral_width=COARE_NEUTRAL_WIDTH):
@@ -702,7 +706,7 @@ def psi_m_coare(zeta, stability_scheme="dyer1974", neutral_width=COARE_NEUTRAL_W
     the value or the gradient.
 
     ``neutral_width`` (default ``COARE_NEUTRAL_WIDTH`` = 1e-3, RULE 5): the
-    SIGN switch above is replaced by the logistic blend of
+    SIGN switch above is replaced by the compact quintic blend of
     :func:`_coare_neutral_select`; ``neutral_width = 0`` is the faithful
     AeroBulk form described here.  Same parameter on :func:`psi_h_coare`.
     """
@@ -1265,7 +1269,7 @@ def compute_most_fluxes(
         STRONGER sensible/latent flux (Garratt 1992; Zilitinkevich kB^-1 range
         ~0.01-1).
     coare_neutral_width : float
-        ``coare3`` only: width of the logistic blend across zeta = 0 in
+        ``coare3`` only: half-width of the compact quintic blend across zeta = 0 in
         :func:`psi_m_coare` / :func:`psi_h_coare` (static Python float).
         Default ``COARE_NEUTRAL_WIDTH`` = 1e-3 (RULE 5 smooth default);
         ``0.0`` is AeroBulk's hard SIGN switch.  KNOWN DIFFERENCE vs the

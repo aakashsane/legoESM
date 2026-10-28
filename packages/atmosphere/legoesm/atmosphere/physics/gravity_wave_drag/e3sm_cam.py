@@ -1038,8 +1038,8 @@ def gw_drag_prof(
         at every interface (the default clean-oracle behaviour).
     softmin_sharpness, crit_level_sharpness, crit_level_floor : optional
         Smoothing used by callers that carry their own sharpness fields
-        (``lindzen.py``), in the form ``mcfarlane.py`` uses: a sigmoid blend
-        for ``min(taudmp, tausat)`` and a smooth XNOR of the two
+        (``lindzen.py``): a p-norm smooth min (p = ``softmin_sharpness``) for
+        ``min(taudmp, tausat)``, and, in the form ``mcfarlane.py`` uses, a smooth XNOR of the two
         ``(u - c) - crit_level_floor`` sign tests for the critical level.
         Each reduces to the E3SM hard switch at infinite sharpness (floor 0).
         ``None`` (default) = the exact E3SM kinks, unchanged.
@@ -1169,11 +1169,15 @@ def gw_drag_prof(
         if softmin_sharpness is None:
             tau_computed = jnp.minimum(taudmp, tausat)
         else:
-            # Smooth min(taudmp, tausat) (mcfarlane.py form), exact at the limit.
-            f_break = jax.nn.sigmoid(softmin_sharpness * (
-                safe_divide(taudmp, tausat, eps=cfg.taumin) - 1.0))
-            tau_computed = jnp.minimum(
-                taudmp * (1.0 - f_break) + tausat * f_break, taudmp)
+            # Smooth min(taudmp, tausat): p-norm (taudmp^-p + tausat^-p)^(-1/p),
+            # p = softmin_sharpness, written overflow-free as lo*(1+(lo/hi)^p)^(-1/p).
+            # C-infinity for positive stresses, in [0, min(taudmp, tausat)]; exact
+            # min at p -> inf.  (The mcfarlane.py sigmoid blend is not C1 at
+            # taudmp = tausat; user decision 2026-10-28.)
+            lo = jnp.minimum(taudmp, tausat)
+            ratio = safe_divide(lo, jnp.maximum(taudmp, tausat), eps=cfg.taumin)
+            tau_computed = lo * (1.0 + ratio ** softmin_sharpness) ** (
+                -1.0 / softmin_sharpness)
             tau_computed = jnp.where(tausat > 0.0, tau_computed, 0.0)
         # In the source region keep the launched value at interface k.
         tau_k = jnp.where(active, tau_computed, tau_launched_iface[:, :, k])

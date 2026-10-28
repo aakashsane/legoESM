@@ -139,7 +139,7 @@ __param_spec__ = {
     "LindzenConfig": {
         "scheme_key": "atm.gwd.LindzenConfig",
         "excluded": {
-            "Fr_sharpness": "sigmoid sharpness of the smooth min(taudmp, tausat) (NOT a Froude-number transition); a differentiability/smoothing width, not a closure",
+            "Fr_sharpness": "p-norm exponent of the smooth min(taudmp, tausat) (NOT a Froude-number transition); a differentiability/smoothing width, not a closure",
             "crit_level_sharpness": "sigmoid sharpness of the smooth critical-level filter; a differentiability/smoothing width, not a closure",
             "crit_level_floor": "signed source-projected wind U_proj (NOT a wind magnitude) at which the smooth critical-level filter is half-on; a smoothing/regulariser offset, not a closure",
         },
@@ -252,8 +252,9 @@ class LindzenConfig(NamedTuple):
         stress (``effkwv = kwv*fcrit2``, gw_common.F90:153), the launch Froude
         cap ``fcrit2*(U/N)^2`` and the orographic-only tendency cap.  Default 1.
     Fr_sharpness : float
-        Sigmoid sharpness of the smooth ``min(taudmp, tausat)`` (default 20.0);
-        exact E3SM ``min`` at infinite sharpness. NOT a Froude-number transition.
+        Exponent p of the p-norm smooth ``min(taudmp, tausat)`` =
+        ``(taudmp^-p + tausat^-p)^(-1/p)`` (default 20.0); exact E3SM ``min``
+        at infinite sharpness. NOT a Froude-number transition.
     crit_level_sharpness : float
         Sigmoid sharpness [s/m] of the smooth critical-level test (default
         10.0): the saturation stress is multiplied by a smooth XNOR of the two

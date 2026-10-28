@@ -46,12 +46,18 @@ Algorithm (k = 0 model top; interface k sits above midpoint k)
    dt = 1800 s, measured 2026-10-28).
 
 Smoothing (differentiability).  The existing fields reduce to the E3SM hard
-switches at their limit: ``Fr_sharpness`` (``min(taudmp, tausat)``) and
+switches at their limit: ``Fr_sharpness`` = p of the p-norm smooth min
+``(taudmp^-p + tausat^-p)^(-1/p)`` (C-infinity, never above either stress;
+2^(-1/p) = 0.966 of both at the default p = 20 where they are equal) and
 ``crit_level_sharpness`` / ``crit_level_floor`` (the sign-agreement test of
-``ubi`` across the layer; E3SM is ``crit_level_floor -> 0``), in the form
-``mcfarlane.py`` uses.  The launch gates, floors and limiters are hard, as in
+``ubi`` across the layer; E3SM is ``crit_level_floor -> 0``, in the form
+``mcfarlane.py`` uses).  The launch gates, floors and limiters are hard, as in
 E3SM (piecewise smooth).  The production smoothing values are NOT the hard
-limit; the oracle test reports that gap.
+limit; the oracle test pins that gap per column.  KNOWN DIFFERENCE at the
+defaults (vs the E3SM oracle, 17 columns): up to 6.3e-2 relative in du/dt and
+3.6e-2 in dT/dt, in the column whose stresses sit near taudmp = tausat; 2.4e-3
+elsewhere (measured 2026-10-28; with the earlier sigmoid-blend smooth min,
+which was not C1 at taudmp = tausat, it was 8.2e-4).
 
 Field mapping: ``k_wave`` = E3SM ``kwv`` (E3SM's own parameter is
 ``6.28e-5``; the default here, ``2*pi/1e5``, is the value the audit's oracle

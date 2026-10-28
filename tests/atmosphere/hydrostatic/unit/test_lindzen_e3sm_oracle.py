@@ -85,23 +85,13 @@ def test_matches_e3sm_oracle_at_hard_limit(fx):
 # Per-column gap of the production smoothing (LindzenConfig() defaults:
 # Fr_sharpness=20, crit_level_sharpness=10, crit_level_floor=0.5) vs the E3SM
 # oracle, metric = per-column max|ours - oracle| / max|oracle| (absolute where
-# the oracle column is zero).  Measured 2026-10-28 on head f4969977d6; a change
+# the oracle column is zero).  Re-measured 2026-10-28 when the smooth min became
+# the p-norm (was the not-C1 sigmoid blend; max du/dt gap 8.2e-4 -> 6.3e-2); a change
 # to the smooth form or its default widths re-measures these (CLAUDE.md RULE 5).
 _DEFAULT_GAP = {
-    "du_dt": [3.0659165041732667e-05, 1.2070343366624745e-15, 1.4293265782121547e-06,
-              7.784712682564557e-16, 0.0007024996916114065, 0.0, 0.0, 0.0,
-              0.0008229483362744398, 2.681305787889771e-15, 2.289236736313983e-15,
-              3.32658908564308e-16, 0.0, 1.2084562729151554e-15, 0.0,
-              4.228388472693467e-16, 0.0],
-    "dv_dt": [3.065916504172932e-05, 1.2858154805915862e-15, 1.4293265782121543e-06,
-              4.59687010626362e-16, 0.0007024996916115593, 0.0, 0.0, 0.0,
-              0.0008229483362744523, 0.0, 2.5842521605471702e-15,
-              3.208143539612264e-16, 0.0, 1.1374254150811316e-15, 0.0, 0.0, 0.0],
-    "dT_dt": [1.6698781552838104e-05, 1.0919564121735955e-15, 5.152346447776124e-07,
-              7.137461387092336e-16, 0.000675219987912139, 0.0, 0.0, 0.0,
-              0.0008627376098094827, 2.8898984562349595e-15, 1.978280332743015e-15,
-              3.018778614035623e-16, 0.0, 1.2686059996896405e-15, 0.0,
-              3.54575275532231e-16, 0.0],
+    "du_dt": [0.00025224682324714886, 1.2941923183954375e-08, 1.4293265782121547e-06, 6.216649127933697e-14, 0.000996002325335458, 0.0, 0.0, 0.0, 0.002379059227918465, 2.681305787889771e-15, 1.6894567113997192e-13, 6.51031633455175e-08, 0.0, 1.2084562729151554e-15, 0.0, 0.06338664129210661, 0.0],
+    "dv_dt": [0.00025224682324715217, 1.294192319320891e-08, 1.4293265782121543e-06, 6.18279029292457e-14, 0.0009960023253355, 0.0, 0.0, 0.0, 0.002379059227918476, 0.0, 1.6877154494650366e-13, 6.510316334525447e-08, 0.0, 1.1374254150811316e-15, 0.0, 0.0, 0.0],
+    "dT_dt": [0.0001373964283423139, 1.3210267007324489e-08, 5.152346447776124e-07, 6.08111710180267e-14, 0.0009572062091794744, 0.0, 0.0, 0.0, 0.0024931222954599048, 2.8898984562349595e-15, 1.5250742928782515e-13, 2.926512821452726e-08, 0.0, 1.2686059996896405e-15, 0.0, 0.036186619191781795, 0.0],
 }
 
 
@@ -149,9 +139,12 @@ def test_gradient_finite_on_oracle_columns(fx, dtype, hard):
 # (column, s*) points where the HARD-limit tendency has a derivative jump in
 # the wind scale s (u, v of that column times s) that the default smoothing
 # removes.  Found 2026-10-28 by scanning s in [0.8, 1.2] (step 5e-4) for
-# derivative jumps present at the hard limit and absent at the default, then
-# bisecting each jump; at both points check_grads FAILS at the hard limit.
-_KINKS = ((4, 1.0525168220622896), (8, 0.984170443965446))
+# derivative jumps, then bisecting each jump; at every point check_grads FAILS
+# at the hard limit.  Columns 0 and 15: the first taudmp = tausat crossing,
+# where the former sigmoid-blend smooth min also failed (non-vacuity of the
+# p-norm form); columns 4 and 8: hard-only kinks.
+_KINKS = ((0, 0.9206140787969848), (4, 1.0525168220622896),
+          (8, 0.984170443965446), (15, 1.1074788765920371))
 
 
 @pytest.mark.parametrize("col,s_star", _KINKS)

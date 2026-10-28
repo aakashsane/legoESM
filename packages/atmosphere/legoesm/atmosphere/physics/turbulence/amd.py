@@ -15,11 +15,24 @@ component u,v,w; d = direction x,y,z) and the per-direction filter widths
 with ``eps`` the fp64 machine epsilon (AMR-Wind's floors, so the "zero" of the
 minimum-dissipation clip is 2.2e-15 m²/s, not 0).
 
+RULE 5 smooth default (user decision 2026-10-28): the OUTER floor is
+``10·eps + w·softplus((x − 10·eps)/w)`` with ``x = C·N/max(10·eps, a_cd a_cd)``
+and ``w = floor_width`` (default 1e-8 m²/s); ``floor_width = 0`` is AMR-Wind's
+hard ``max`` and matches the running oracle (tests/atmosphere/test_amd_oracle.py).
+KNOWN DIFFERENCES at the default: wherever ``N`` is near 0 the viscosity sits
+up to ``w·ln2 = 6.9e-9`` m²/s above the oracle's floor (exactly that at rest or
+in a pure off-diagonal 1-D shear); points with x well below the floor and
+active points are unchanged to round-off.  On the oracle fixture 3 of 6030
+points move by more than 1e-12 m²/s, at most 6.9e-9 (signed per-point gaps in
+``tests/atmosphere/oracle_fixtures/amd_default_gap.npz``).  The DENOMINATOR
+floor ``max(10·eps, a_cd a_cd)`` is still a hard switch (follow-up).
+
 where ``g_k = (a_1k, a_2k, a_3k)`` is the k-th column of the gradient tensor
 (the derivative of the velocity VECTOR in direction k).  Key properties:
 
 * **Minimum dissipation** (all inequalities below assume ``c_amd >= 0``; a
-  negative ``c_amd`` — not validated here — flips every sign). The outer floor makes
+  negative ``c_amd`` — not validated here — flips every sign; equalities to the
+  floor below hold at ``floor_width = 0``, see the RULE 5 note above). The outer floor makes
   ν_t drop to ``ν_floor + 10·eps`` wherever the resolved flow needs no sub-grid dissipation
   (``N <= 0``) — in particular a pure off-diagonal 1-D shear (e.g. a well-resolved
   ``∂u/∂z``) gives ν_t = ν_floor + 10·eps — and the
@@ -50,6 +63,7 @@ an independent Rozema-2015 reimplementation in ``tests/unit/test_amd_faithful.py
 """
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 
 __physics_contract__ = {
@@ -65,14 +79,16 @@ __physics_contract__ = {
         "a21": "1/s", "a22": "1/s", "a23": "1/s",
         "a31": "1/s", "a32": "1/s", "a33": "1/s",
         "dx": "m", "dy": "m", "dz": "m",
-        "c_amd": "1", "nu_floor": "m^2/s",
+        "c_amd": "1", "nu_floor": "m^2/s", "floor_width": "m^2/s",
     },
     "outputs": {"nu_t": "m^2/s"},
     "sign_convention": (
         "Diagnostic eddy viscosity only (no tendency). For c_amd >= 0: nu_t >= "
         "nu_floor + 10 eps by construction (the minimum-dissipation floor; the "
-        "eddy-viscosity term is never negative), and = nu_floor + 10 eps wherever "
-        "N <= 0 (an off-diagonal 1-D shear, or an EXPANDING normal strain); a "
+        "eddy-viscosity term is never negative). At floor_width = 0 nu_t = "
+        "nu_floor + 10 eps wherever N <= 0 (an off-diagonal 1-D shear, or an "
+        "EXPANDING normal strain); at the default softplus floor (w = 1e-8 m^2/s) "
+        "it is at most nu_floor + 10 eps + w ln2 there; a "
         "COMPRESSIVE normal strain gives N>0 => nu_t > nu_floor."
     ),
     "conserves": ["none"],
@@ -86,7 +102,7 @@ __physics_contract__ = {
         "tests/atmosphere/test_amd_oracle.py (AMR-Wind amd_muvel, run); "
         "tests/unit/test_amd_sgs.py + test_amd_faithful.py (all inequalities for "
         "c_amd >= 0): a pure off-diagonal 1-D shear gives nu_t = nu_floor + "
-        "10 eps; nu_t >= nu_floor + 10 eps (never negative when nu_floor >= 0); "
+        "10 eps at floor_width = 0 (+ w ln2 at the default); nu_t >= nu_floor + 10 eps (never negative when nu_floor >= 0); "
         "a 3-D field gives nu_t > nu_floor; differentiable at rest (aa=0)."
     ),
 }
@@ -95,10 +111,13 @@ __physics_contract__ = {
 # returned viscosity are floored at ``std::numeric_limits<double>::epsilon() * 1.0e1``
 # (amrex::Real = double).  Ported as the same fp64 literal at every precision.
 _AMR_WIND_FLOOR = 10.0 * 2.220446049250313e-16
+# RULE 5 smooth default (user decision 2026-10-28): width [m^2/s] of the
+# softplus floor on nu_t; 0.0 = AMR-Wind's hard floor (the oracle).
+AMD_FLOOR_WIDTH = 1.0e-8
 
 
 def amd_nu_t(a11, a12, a13, a21, a22, a23, a31, a32, a33,
-             dx, dy, dz, c_amd, nu_floor=0.0):
+             dx, dy, dz, c_amd, nu_floor=0.0, floor_width=AMD_FLOOR_WIDTH):
     """Anisotropic Minimum-Dissipation eddy viscosity from the nine gradients.
 
     Parameters
@@ -114,6 +133,11 @@ def amd_nu_t(a11, a12, a13, a21, a22, a23, a31, a32, a33,
     nu_floor : float, default 0.0
         Optional additive background viscosity [m²/s] (legoESM extension; the
         oracle has none, so ``nu_floor=0`` is the oracle).
+    floor_width : float, default ``AMD_FLOOR_WIDTH`` (1e-8)
+        Width w [m²/s] of the softplus output floor
+        ``floor + w·softplus((x − floor)/w)`` (static Python float).  ``0.0``
+        is AMR-Wind's hard ``max(10·eps, x)`` (the oracle).  The denominator
+        floor stays hard (KNOWN DIFFERENCE: not smoothed yet).
 
     Returns
     -------
@@ -141,5 +165,13 @@ def amd_nu_t(a11, a12, a13, a21, a22, a23, a31, a32, a33,
     # gradient 0 on the floored side).  No sqrt, so AD-safe at rest (aa=0).
     denom = jnp.maximum(_AMR_WIND_FLOOR, denom)
     num_shear = num_shear * (-c_amd)
-    nu_t = jnp.maximum(_AMR_WIND_FLOOR, num_shear / denom)
+    x = num_shear / denom
+    if floor_width == 0.0:
+        nu_t = jnp.maximum(_AMR_WIND_FLOOR, x)   # hard limit = the oracle
+    elif floor_width > 0.0:
+        # RULE 5 smooth default: softplus floor (-> max(floor, x) as w -> 0).
+        nu_t = _AMR_WIND_FLOOR + floor_width * jax.nn.softplus(
+            (x - _AMR_WIND_FLOOR) / floor_width)
+    else:
+        raise ValueError(f"floor_width must be >= 0, got {floor_width!r}")
     return nu_t + nu_floor

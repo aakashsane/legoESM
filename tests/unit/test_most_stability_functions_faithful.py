@@ -209,8 +209,9 @@ def test_coare_psi_both_branches():
     z = np.concatenate([_ZU, _ZS])
     ref_m = np.array([_coare_psi_m(v) for v in z])
     ref_h = np.array([_coare_psi_h(v) for v in z])
-    _close(psi_m_coare(_a(z)), ref_m)
-    _close(psi_h_coare(_a(z)), ref_h)
+    # hard limit (neutral_width=0): the AeroBulk SIGN switch these closed forms port
+    _close(psi_m_coare(_a(z), neutral_width=0.0), ref_m)
+    _close(psi_h_coare(_a(z), neutral_width=0.0), ref_h)
 
 
 # ---------------------------------------------------------------------------

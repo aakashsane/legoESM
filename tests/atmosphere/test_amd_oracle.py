@@ -9,8 +9,14 @@ Points: the Vreman fixture's set (jax-alfa LES oracle CBL/NBL/SBL tensors, every
 grid point, plus 246 synthetic edge tensors).  C = 0.3.
 
 Tolerance (user decision 2026-10-19): max relative error <= 1e-10 in fp64.  Relative
-error is ``|a-b| / max(|a|, |b|)`` (0 where both are exactly 0); no floor.  AMD has no
-sharpness field, so the hard limit is the production setting.
+error is ``|a-b| / max(|a|, |b|)`` (0 where both are exactly 0); no floor.
+
+RULE 5 (user decision 2026-10-28): the output floor is a softplus floor of width
+``floor_width`` (default 1e-8 m2/s).  The oracle match is asserted at the hard
+limit (width 0); at the default the signed per-point gap (ours - oracle) is pinned
+against ``oracle_fixtures/amd_default_gap.npz`` (1e-6 relative, 1e-12 absolute).
+Regenerate it after a change to the smooth form or its default width with
+``python tests/atmosphere/test_amd_oracle.py``.
 """
 from __future__ import annotations
 
@@ -23,13 +29,16 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from legoesm.atmosphere.physics.turbulence.amd import amd_nu_t
+from jax.test_util import check_grads
+
+from legoesm.atmosphere.physics.turbulence.amd import AMD_FLOOR_WIDTH, amd_nu_t
 
 jax.config.update("jax_enable_x64", True)
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/atmosphere/oracle_fixtures/amd.npz"
 GENERATOR = ROOT / "scripts/validate/oracle/amd/make_fixture.py"
+GAP_FILE = ROOT / "tests/atmosphere/oracle_fixtures/amd_default_gap.npz"
 TOL = 1.0e-10
 
 
@@ -45,10 +54,14 @@ def _rel(a, b):
     return np.where(d > 0, np.abs(a - b) / np.where(d > 0, d, 1.0), 0.0)
 
 
-def _ours(fx, dtype=jnp.float64):
+def _ours(fx, dtype=jnp.float64, **kw):
     a = [jnp.asarray(x, dtype) for x in fx["a"]]
     h = [jnp.asarray(x, dtype) for x in fx["h"]]
-    return amd_nu_t(*a, *h, float(json.loads(str(fx["meta"]))["c_amd"]))
+    return amd_nu_t(*a, *h, float(json.loads(str(fx["meta"]))["c_amd"]), **kw)
+
+
+def _default_gap(fx):
+    return np.asarray(_ours(fx)) - fx["nu"]
 
 
 def test_fixture_provenance_and_edge_inputs_reproduce():
@@ -68,7 +81,7 @@ def test_fixture_provenance_and_edge_inputs_reproduce():
 
 def test_amd_matches_amr_wind():
     fx = _fx()
-    rel = _rel(_ours(fx), fx["nu"])
+    rel = _rel(_ours(fx, floor_width=0.0), fx["nu"])
     assert rel.max() <= TOL, (rel.max(), int(np.argmax(rel)))
     # the fixture exercises the oracle's outer 10*eps floor (N <= 0) and the
     # active branch
@@ -77,11 +90,24 @@ def test_amd_matches_amr_wind():
 
 
 def test_eager_jit_parity():
+    """Hard limit (floor_width=0): relative parity, no floor."""
+    fx = _fx()
+    c = float(json.loads(str(fx["meta"]))["c_amd"])
+    f = lambda a, h: amd_nu_t(*a, *h, c, floor_width=0.0)  # noqa: E731
+    a, h = jnp.asarray(fx["a"]), jnp.asarray(fx["h"])
+    assert _rel(jax.jit(f)(a, h), f(a, h)).max() <= TOL
+
+
+def test_eager_jit_parity_at_default():
+    """Default width: where num/denom is ~0 its round-off differs eager vs jit
+    (measured 3.3e-17 absolute on 6.9e-9), so the parity carries RULE 5's
+    1e-12 absolute floor."""
     fx = _fx()
     c = float(json.loads(str(fx["meta"]))["c_amd"])
     f = lambda a, h: amd_nu_t(*a, *h, c)  # noqa: E731
     a, h = jnp.asarray(fx["a"]), jnp.asarray(fx["h"])
-    assert _rel(jax.jit(f)(a, h), f(a, h)).max() <= TOL
+    np.testing.assert_allclose(np.asarray(jax.jit(f)(a, h)), np.asarray(f(a, h)),
+                               rtol=TOL, atol=1e-12)
 
 
 @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
@@ -92,3 +118,45 @@ def test_gradient_finite_on_fixture(dtype):
     h = [jnp.asarray(x, dtype) for x in fx["h"]]
     g = jax.grad(lambda aa: jnp.sum(amd_nu_t(*aa, *h, c)))(a)
     assert g.dtype == dtype and bool(jnp.all(jnp.isfinite(g)))
+
+
+def test_default_width_is_the_recorded_one():
+    from legoesm.atmosphere.dynamics.gcm.compressible_euler import CompressibleEulerConfig
+    assert AMD_FLOOR_WIDTH == 1.0e-8
+    assert CompressibleEulerConfig().amd_floor_width == AMD_FLOOR_WIDTH
+
+
+def test_default_smoothing_gap_per_point():
+    """RULE 5 KNOWN DIFFERENCE: at the default width each fixture point's signed
+    gap to AMR-Wind equals the stored measurement."""
+    fx = _fx()
+    stored = np.load(GAP_FILE)["gap"]
+    np.testing.assert_allclose(_default_gap(fx), stored, rtol=1e-6, atol=1e-12)
+    assert np.abs(stored).max() > 1e-9   # the smoothing does move floored points
+
+
+def test_check_grads_through_the_softplus_floor_at_default():
+    """RULE 5 gradient test: synthetic points whose unfloored viscosity x sits
+    within a few widths of the floor (compressive normal strain a11 < 0 gives
+    x = C dx^2 |a11|, so a11 sets x directly); a scalar scale s on the
+    gradients keeps the finite-difference step inside the band."""
+    # a pure a11 strain gives x = -C dx^2 a11; dx = 0.01 m keeps a11^2 above the
+    # (hard) denominator floor, so only the output floor is exercised.
+    w, c, dx = AMD_FLOOR_WIDTH, 0.3, 0.01
+    x = jnp.asarray([-3.0, -1.0, 0.5, 1.0, 3.0]) * w     # unfloored nu around the floor
+    a11 = -x / (c * dx * dx)
+    z = jnp.zeros_like(a11)
+
+    def f(s):   # one scale per point, so the derivative is per point
+        return amd_nu_t(a11 * s, z, z, z, z, z, z, z, z, dx, dx, dx, c)
+
+    s0 = jnp.ones_like(a11)
+    check_grads(lambda s: jnp.sum(f(s)), (s0,), order=2, modes=("fwd", "rev"), eps=1e-5)
+    d = np.asarray(jax.grad(lambda s: jnp.sum(f(s)))(s0))
+    # below the floor (x = -3w, -w) the hard limit's derivative is exactly 0
+    assert np.all(d != 0.0), d
+
+
+if __name__ == "__main__":
+    np.savez_compressed(GAP_FILE, gap=_default_gap(_fx()), width=AMD_FLOOR_WIDTH)
+    print("wrote", GAP_FILE)

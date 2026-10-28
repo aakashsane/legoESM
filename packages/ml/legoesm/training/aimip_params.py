@@ -245,6 +245,10 @@ _SURFACE_CARRYING_TURBULENCE = frozenset({
 # large_yeager (the AeroBulk TURB_NCAR port) keeps the Businger-Dyer pair but
 # not z0 (its first guess is the neutral 10 m drag of the wind, no roughness
 # seed) nor z0h/z0; large_yeager_cesm reads none.
+# No migration (user decision 2026-10-28): an AIMIP checkpoint trained with
+# coare3 or large_yeager AND the spatial z0 field no longer loads: surface_z0
+# (and so the spatial z0 read with it) left those schemes' trained set because
+# the AeroBulk ports do not read it.  No such checkpoint is committed.
 _SURFACE_KNOBS_BY_BULK = {
     "constant": ("surface_Cd_neutral", "surface_Ch_neutral"),
     "most": ("surface_z0", "surface_most_unstable_gamma",

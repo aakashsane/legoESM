@@ -882,8 +882,9 @@ def test_coare3_return_2m_scheme_sensitive():
     (codex R2 non-vacuity check).
     """
     col = _stable_column()
+    # pinned values are the port at the hard limit (coare_neutral_width=0)
     kw = dict(z_ref=10.0, z0_init=1e-4, scheme="coare3", n_iter=5,
-              gustiness_w_zi=300.0, return_2m=True)
+              gustiness_w_zi=300.0, return_2m=True, coare_neutral_width=0.0)
     out_d = compute_most_fluxes(col["u"], col["v"], col["T"], col["q_v"],
                                 col["T_sfc"], col["q_sfc"], col["rho"],
                                 stability_scheme="dyer1974", **kw)

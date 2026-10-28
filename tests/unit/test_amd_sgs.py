@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from legoesm.atmosphere.physics.turbulence import amd
-from legoesm.atmosphere.physics.turbulence.amd import amd_nu_t
+from legoesm.atmosphere.physics.turbulence.amd import AMD_FLOOR_WIDTH, amd_nu_t
 
 _AMR_WIND_FLOOR = amd._AMR_WIND_FLOOR
 
@@ -22,10 +22,13 @@ _C = 0.3
 _G = ("a11", "a12", "a13", "a21", "a22", "a23", "a31", "a32", "a33")
 
 
-def _nu(**grads):
+def _nu(floor_width=0.0, **grads):
+    """AMD at the hard limit (floor_width=0, AMR-Wind's exact floor) unless a
+    width is given."""
     a = {k: jnp.asarray(grads.get(k, 0.0)) for k in _G}
     return amd_nu_t(a["a11"], a["a12"], a["a13"], a["a21"], a["a22"], a["a23"],
-                    a["a31"], a["a32"], a["a33"], _DX, _DY, _DZ, _C)
+                    a["a31"], a["a32"], a["a33"], _DX, _DY, _DZ, _C,
+                    floor_width=floor_width)
 
 
 def test_offdiagonal_one_d_shear_gives_zero():
@@ -35,6 +38,9 @@ def test_offdiagonal_one_d_shear_gives_zero():
     assert float(_nu(a13=0.5)) == _AMR_WIND_FLOOR
     assert float(_nu(a23=0.3)) == _AMR_WIND_FLOOR
     assert float(_nu(a31=-0.7)) == _AMR_WIND_FLOOR
+    # smooth default (softplus floor): N = 0 gives floor + w*ln2
+    nu = float(_nu(floor_width=AMD_FLOOR_WIDTH, a13=0.5))
+    assert nu == pytest.approx(_AMR_WIND_FLOOR + AMD_FLOOR_WIDTH * np.log(2.0), rel=1e-12)
 
 
 def test_normal_strain_sign_dependence():

@@ -46,7 +46,8 @@ from legoesm.atmosphere.physics._shared import (
     lilly_buoyancy_factor,
 )
 from legoesm.atmosphere.physics.turbulence.lasd_core import lasd_cs2
-from legoesm.atmosphere.physics.turbulence.vreman import vreman_nu_t as _vreman_core
+from legoesm.atmosphere.physics.turbulence.vreman import (
+    VREMAN_BBETA_GUARD_WIDTH, vreman_nu_t as _vreman_core)
 from legoesm.timestepping.split_explicit import (
     SplitExplicitConfig, split_explicit_step)
 from legoesm.timestepping.tridiagonal import thomas_solve
@@ -117,6 +118,9 @@ class SpectralLESConfig(NamedTuple):
     #                                 ANISOTROPIC dx≠dz grids where Smagorinsky/LASD
     #                                 over- or under-dissipate.
     c_vreman: float = 0.07          # Vreman model constant (≈ 2.5·C_s²; Vreman 2004)
+    vreman_bbeta_guard_width: float = VREMAN_BBETA_GUARD_WIDTH  # Vreman zero-guard
+    #                                 smoothstep half-width [m^4/s^4] (RULE 5 smooth
+    #                                 default 1e-13; 0.0 = the author's hard switch)
     time_scheme: str = "rk3"        # "rk3" (SSP-RK3, Shu-Osher; projection each
     #                                 stage) or "ab2" (Adams–Bashforth-2). RK3 is
     #                                 self-starting, 3rd-order, and stable to a ~2-3×
@@ -536,7 +540,8 @@ def _vreman_nu_t(u, v, w, g: SpectralLESGrid):
     return _vreman_core(
         a["a11"], a["a12"], a["a13"], a["a21"], a["a22"], a["a23"],
         a["a31"], a["a32"], a["a33"],
-        g.dx, g.dy, g.dz, g.cfg.c_vreman, nu_floor=g.cfg.nu_floor)
+        g.dx, g.dy, g.dz, g.cfg.c_vreman, nu_floor=g.cfg.nu_floor,
+        bbeta_guard_width=g.cfg.vreman_bbeta_guard_width)
 
 
 def eddy_viscosity(u, v, w, g: SpectralLESGrid):

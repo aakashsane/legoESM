@@ -63,6 +63,14 @@ _DEFAULT_ARCO_ERA5 = (
     "full_37-1h-0p25deg-chunk-1.zarr-v3"
 )
 
+# Production aerosol (radiation + droplet-number) file: the AEROSOL default in
+# config/amip/amip_production.sh (Levante only; pinned equal by a unit test).
+# Override with --aerosol-file.
+_PRODUCTION_AEROSOL_FILE = (
+    "/work/bb1596/b309178/diffESM/legoesm_ap/data/forcing/cmip6_1979-2014/"
+    "aeropt_macv2sp_sw_b14_tot_1850-2014_MACv1bg.nc"
+)
+
 # CLAUDE.md "Constant and Parameter Discipline": never hardcode 273.15 etc.
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 from legoesm import constants  # noqa: E402
@@ -70,10 +78,11 @@ from legoesm import constants  # noqa: E402
 
 def _check_forcing_files(
     forcing_dir: Path, start_year: int, end_year: int,
-    *, require_aerosol: bool = True, require_volcanic: bool = True,
-    require_sst: bool = True,
+    *, aerosol_file: str | Path, require_aerosol: bool = True,
+    require_volcanic: bool = True, require_sst: bool = True,
 ) -> dict[str, Path]:
-    """Verify the canonical 6-file deck exists in ``forcing_dir``.
+    """Verify the canonical 6-file deck exists (the aerosol file at
+    ``aerosol_file``, the other five in ``forcing_dir``).
 
     Ozone resolution (``ozone_amip_<sy>-<ey>.nc`` interannual *vs.*
     ``ozone_amip_clim.nc`` 12-month climatology): if both are present
@@ -85,6 +94,9 @@ def _check_forcing_files(
 
     Parameters
     ----------
+    aerosol_file : str or Path
+        The aerosol file (``--aerosol-file``); it is checked at this path,
+        not in ``forcing_dir``.
     require_aerosol, require_volcanic : bool
         When False, the corresponding file is omitted from the
         missing-file check.  This lets users intentionally disable a
@@ -106,7 +118,7 @@ def _check_forcing_files(
         "ghg": forcing_dir / f"ghg_amip_{start_year}-{end_year}.nc",
         "ozone": ozone_path,
         "solar": forcing_dir / f"solar_amip_{start_year}-{end_year}.nc",
-        "aerosol": forcing_dir / "aerosol_amip_clim.nc",
+        "aerosol": Path(aerosol_file),
         "volcanic": forcing_dir / f"volcanic_amip_{start_year}-{end_year}.nc",
     }
     # Skip aerosol/volcanic from the *required* set when the caller
@@ -285,6 +297,11 @@ def main(argv: list[str] | None = None) -> int:
     # Auxiliary
     parser.add_argument("--volcanic-aerosol-scale", type=float, default=1.0,
                         help="Multiplier on volcanic AOD (0.0 disables)")
+    parser.add_argument("--aerosol-file", type=str,
+                        default=_PRODUCTION_AEROSOL_FILE,
+                        help="Aerosol AOD file (time, [band,] lat, lon) for "
+                             "radiation and the droplet-number proxy "
+                             "(default: the production file)")
     parser.add_argument("--no-aerosol", action="store_true", default=False,
                         help="Skip aerosol forcing entirely")
     parser.add_argument("--no-volcanic", action="store_true", default=False,
@@ -342,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     # would hit a spurious missing-file error before the model starts.
     files = _check_forcing_files(
         forcing_dir, args.start_year, args.end_year,
+        aerosol_file=args.aerosol_file,
         require_aerosol=aerosol_active,
         require_volcanic=volcanic_active,
         require_sst=not args.sst_file,
@@ -352,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
             _auto_generate(forcing_dir, args.start_year, args.end_year)
             files = _check_forcing_files(
                 forcing_dir, args.start_year, args.end_year,
+                aerosol_file=args.aerosol_file,
                 require_aerosol=aerosol_active,
                 require_volcanic=volcanic_active,
                 require_sst=not args.sst_file,

@@ -5734,3 +5734,20 @@ def test_model_driver_threads_cmip_identity_to_the_collector(monkeypatch):
         md.ModelDriver._create_diagnostics(ns)
     for field, _flag, val in _CMIP_ID_FLAGS:
         assert seen[field] == val, field
+
+
+def test_climateeval_ids_follow_cmip_flags_unless_given():
+    from unittest.mock import MagicMock, patch
+    from legoesm.driver.climateeval_hook import maybe_run_climateeval
+    parser = build_arg_parser()
+    cfg = build_config_from_args(_postprocess_args(parser.parse_args(
+        ["--dataset", "analytical", "--cmip-source-id", "SRC-1-0",
+         "--cmip-variant-label", "r2i1p1f1"]), parser))
+    out = cfg.output._replace(
+        evaluation=cfg.output.evaluation._replace(enabled=True))
+    with patch("legoesm.driver.climateeval_hook.subprocess.run",
+               return_value=MagicMock(returncode=0)) as run:
+        maybe_run_climateeval(cfg._replace(output=out), "/tmp/run")
+    cmd = run.call_args.args[0]
+    assert cmd[cmd.index("--model-id") + 1] == "SRC-1-0"
+    assert cmd[cmd.index("--variant-id") + 1] == "r2i1p1f1"

@@ -2438,7 +2438,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--evaluation-model-id", dest="evaluation_model_id", type=str,
         default=_EVALUATION_DEFAULTS.model_id,
         help="Model identifier for ClimateEval DataSourceInformation "
-             f"(default: {_EVALUATION_DEFAULTS.model_id!r}).")
+             "(default: empty = the CMOR files' --cmip-source-id).")
     parser.add_argument(
         "--evaluation-experiment-id", dest="evaluation_experiment_id", type=str,
         default=_EVALUATION_DEFAULTS.experiment_id,
@@ -2448,7 +2448,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--evaluation-variant-id", dest="evaluation_variant_id", type=str,
         default=_EVALUATION_DEFAULTS.variant_id,
         help="Variant identifier for ClimateEval "
-             f"(default: {_EVALUATION_DEFAULTS.variant_id!r}).")
+             "(default: empty = the CMOR files' --cmip-variant-label).")
     parser.add_argument(
         "--evaluation-data-root-dir", dest="evaluation_data_root_dir", type=str,
         default=os.environ.get(

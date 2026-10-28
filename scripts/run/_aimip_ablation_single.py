@@ -167,9 +167,8 @@ def main():
         "allow_unfilled_families": True,
     }
     logger.info(f"[{args.label}] schemes = {schemes}")
-    from legoesm.training.aimip_spatial import grid_with_zm_land_fraction
-    grid = grid_with_zm_land_fraction(grid, schemes["convection_scheme"],
-                                      gwd_scheme=schemes["gwd_scheme"])
+    from legoesm.training.aimip_spatial import grid_with_land_fraction
+    grid = grid_with_land_fraction(grid)
 
     payload = {"label": args.label, "schemes": dict(schemes)}
     t0 = time.time()

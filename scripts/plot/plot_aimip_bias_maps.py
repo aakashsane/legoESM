@@ -172,11 +172,8 @@ def _physics_fn_for(variant: str, model, grid, spec_cfg, base_cfg):
     )
 
     if variant == "classical":
-        from legoesm.training.aimip_params import CLASSICAL_DEFAULT_SCHEMES as _DS
-        from legoesm.training.aimip_spatial import grid_with_zm_land_fraction
-        # the builder runs its default schemes here (McFarlane drag included)
-        grid = grid_with_zm_land_fraction(grid, _DS["convection"],
-                                          gwd_scheme=_DS["gwd"])
+        from legoesm.training.aimip_spatial import grid_with_land_fraction
+        grid = grid_with_land_fraction(grid)
         return make_aimip_classical_spectral_physics(
             model, grid, spec_cfg.dt,
             radiation=str(base_cfg.get("aimip_radiation", "rrtmgp")),

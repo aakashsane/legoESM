@@ -397,21 +397,14 @@ def era5_land_fraction(grid, era5_config=None, *, ds=None) -> jax.Array:
     return prescribed_surface_planes(sl, grid)["land_frac"]
 
 
-def grid_with_zm_land_fraction(grid, convection_scheme: str, land=None, *,
-                               gwd_scheme: str = ""):
-    """``grid`` carrying the column land fraction Zhang-McFarlane convection or
-    McFarlane gravity-wave drag needs.
+def grid_with_land_fraction(grid, land=None):
+    """``grid`` carrying the ERA5 column land fraction, on every AIMIP run.
 
-    ZM picks its autoconversion coefficient per column from the land fraction;
-    CAM6 McFarlane scales its orographic drag by it.  Both refuse to run
-    without one; the AIMIP Gaussian grid carries none.  Once attached, every
-    scheme that reads a land fraction sees it (user 2026-10-28: Bechtold's
-    land switches included).  ``land`` is :func:`era5_land_fraction` (loaded
-    here when not given).  Otherwise ``grid`` comes back unchanged, with no
-    store access.
+    Every scheme that reads a land fraction sees the same one whatever else
+    the run selects (user 2026-10-28): ZM's autoconversion, CAM6 McFarlane's
+    orographic drag scaling, Bechtold's land/ocean switches.  ``land`` is
+    :func:`era5_land_fraction` (loaded here when not given).
     """
-    if convection_scheme != "zhang_mcfarlane" and gwd_scheme != "mcfarlane":
-        return grid
     if land is None:
         land = era5_land_fraction(grid)
     return grid._replace(land_frac=jnp.asarray(land).reshape(-1))

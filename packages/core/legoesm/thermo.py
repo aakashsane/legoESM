@@ -36,10 +36,12 @@ reference is high by ``r_sat`` relative (RH read low by that much).
 
 from __future__ import annotations
 
+import functools
 import math
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from legoesm import constants
 from legoesm.core.smooth import smooth_clamp, smooth_min
@@ -226,9 +228,23 @@ def saturation_vapor_pressure_goff(T: jax.Array) -> jax.Array:
 # formula at an oracle boundary (same as :func:`nemo_si3_saturation_over_ice`).
 
 
+def _cam_r8(*xs):
+    """CAM evaluates the Goff-Gratch curves in r8: compute at the widest
+    float JAX allows (fp64 under x64, else fp32) and hand back the inputs'
+    precision, so an fp32 caller under x64 stays fp32."""
+    out = jnp.result_type(*xs, 1.0)  # a float even for integer inputs
+    wide = jax.dtypes.canonicalize_dtype(jnp.float64)
+    return out, [jnp.asarray(x, dtype=wide) for x in xs]
+
+
 def saturation_vapor_pressure_goff_gratch(T: jax.Array) -> jax.Array:
     """Saturation vapour pressure over liquid water [Pa], CAM
     ``GoffGratch_svp_water`` (wv_sat_methods.F90:369-380)."""
+    out, (T,) = _cam_r8(T)
+    return _svp_water_goff_gratch_wide(T).astype(out)
+
+
+def _svp_water_goff_gratch_wide(T):
     tboil = constants.T_boil_cam
     return 10.0 ** (-7.90298 * (tboil / T - 1.0)
                     + 5.02808 * jnp.log10(tboil / T)
@@ -240,6 +256,11 @@ def saturation_vapor_pressure_goff_gratch(T: jax.Array) -> jax.Array:
 def saturation_vapor_pressure_ice_goff_gratch(T: jax.Array) -> jax.Array:
     """Saturation vapour pressure over ice [Pa], CAM ``GoffGratch_svp_ice``
     (wv_sat_methods.F90:382-391)."""
+    out, (T,) = _cam_r8(T)
+    return _svp_ice_goff_gratch_wide(T).astype(out)
+
+
+def _svp_ice_goff_gratch_wide(T):
     h2otrip = constants.T_triple_cam
     return 10.0 ** (-9.09718 * (h2otrip / T - 1.0)
                     - 3.56654 * jnp.log10(h2otrip / T)
@@ -281,8 +302,9 @@ def saturation_specific_humidity_goff_gratch(T: jax.Array, p: jax.Array, *,
     """Saturation specific humidity over liquid [kg/kg], CAM
     ``wv_sat_qsat_water`` (wv_sat_methods.F90:195-218), the ``qsat_water``
     MG2 calls (micro_mg2_0.F90:113-115)."""
-    return _specific_humidity_from_esat_cam(saturation_vapor_pressure_goff_gratch(T), p,
-                                            cap_sharpness=cap_sharpness)
+    out, (T, p) = _cam_r8(T, p)
+    return _specific_humidity_from_esat_cam(_svp_water_goff_gratch_wide(T), p,
+                                            cap_sharpness=cap_sharpness).astype(out)
 
 
 def saturation_specific_humidity_ice_goff_gratch(T: jax.Array, p: jax.Array, *,
@@ -290,8 +312,9 @@ def saturation_specific_humidity_ice_goff_gratch(T: jax.Array, p: jax.Array, *,
                                                  ) -> jax.Array:
     """Saturation specific humidity over ice [kg/kg], CAM ``wv_sat_qsat_ice``
     (wv_sat_methods.F90:220-243), the ``qsat_ice`` MG2 calls."""
-    return _specific_humidity_from_esat_cam(saturation_vapor_pressure_ice_goff_gratch(T), p,
-                                            cap_sharpness=cap_sharpness)
+    out, (T, p) = _cam_r8(T, p)
+    return _specific_humidity_from_esat_cam(_svp_ice_goff_gratch_wide(T), p,
+                                            cap_sharpness=cap_sharpness).astype(out)
 
 
 # ---------------------------------------------------------------------------
@@ -530,13 +553,29 @@ def saturation_vapor_pressure_trans(T: jax.Array) -> jax.Array:
                      e_liq)
 
 
+@functools.lru_cache(maxsize=None)
+def _cam_svp_table_fp64() -> np.ndarray:
+    plenest = math.ceil(_CAM_SVP_TMAX_K - _CAM_SVP_TMIN_K) + 2
+    with jax.ensure_compile_time_eval(), jax.enable_x64(True):
+        return np.asarray(saturation_vapor_pressure_trans(
+            _CAM_SVP_TMIN_K + jnp.arange(plenest, dtype=jnp.float64)))
+
+
+def cam_svp_table(dtype) -> jax.Array:
+    """CAM's ``estbl`` [Pa] (``wv_sat_init``, wv_saturation.F90:216-226): the
+    1-K table of :func:`saturation_vapor_pressure_trans` from ``tmin``, built
+    in fp64 as CAM builds it (r8) and cast to ``dtype``, so an fp32 run reads
+    CAM's values rounded once rather than an fp32-evaluated table."""
+    return jnp.asarray(_cam_svp_table_fp64(), dtype=dtype)
+
+
 def saturation_specific_humidity_cam_table(T: jax.Array, p: jax.Array, *,
                                            clamp_sharpness: float = _CAM_SVP_CLAMP_SHARPNESS,
                                            cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS
                                            ) -> jax.Array:
-    """CAM ``qsat`` (wv_saturation.F90:458-503) [kg/kg]: the 1-K table of
-    :func:`saturation_vapor_pressure_trans` from ``tmin`` (``wv_sat_init``,
-    :216-226, ``plenest = ceiling(tmax - tmin) + 2`` entries), linearly
+    """CAM ``qsat`` (wv_saturation.F90:458-503) [kg/kg]: the 1-K table
+    :func:`cam_svp_table` (``wv_sat_init``, :216-226, ``plenest =
+    ceiling(tmax - tmin) + 2`` entries, built in fp64), linearly
     interpolated by ``estblf`` (:306-321, ``T`` clamped to [tmin, tmax]), then
     CAM's ``svp_to_qsat``.  The ``qsat`` ``zm_conv_evap`` calls (zm_conv.F90:1484).
 
@@ -548,9 +587,8 @@ def saturation_specific_humidity_cam_table(T: jax.Array, p: jax.Array, *,
     where ``e_sat/p`` is away from 1 (the cap departs by 1.1e-3 at ``e_sat = p``).
     The q = 1 cap is :func:`_specific_humidity_from_esat_cam`'s.  CAM exactly
     is ``clamp_sharpness = cap_sharpness = math.inf``."""
-    plenest = math.ceil(_CAM_SVP_TMAX_K - _CAM_SVP_TMIN_K) + 2
-    estbl = saturation_vapor_pressure_trans(
-        _CAM_SVP_TMIN_K + jnp.arange(plenest, dtype=T.dtype))
+    estbl = cam_svp_table(T.dtype)
+    plenest = estbl.shape[0]
     if math.isinf(clamp_sharpness):
         t_tmp = jnp.maximum(jnp.minimum(T, _CAM_SVP_TMAX_K) - _CAM_SVP_TMIN_K, 0.0)
     else:

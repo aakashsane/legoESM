@@ -172,8 +172,6 @@ def _physics_fn_for(variant: str, model, grid, spec_cfg, base_cfg):
     )
 
     if variant == "classical":
-        from legoesm.training.aimip_spatial import grid_with_land_fraction
-        grid = grid_with_land_fraction(grid)
         return make_aimip_classical_spectral_physics(
             model, grid, spec_cfg.dt,
             radiation=str(base_cfg.get("aimip_radiation", "rrtmgp")),
@@ -223,6 +221,10 @@ def _compute_bias_for_variant(
         spectral_rollout,
     )
 
+    if variant == "classical":
+        # the rollout hands this grid to the physics, so it carries the land
+        from legoesm.training.aimip_spatial import grid_with_land_fraction
+        grid = grid_with_land_fraction(grid)
     physics_fn = _physics_fn_for(variant, model, grid, spec_cfg, base_cfg)
 
     pe_config = spec_cfg.pe_config

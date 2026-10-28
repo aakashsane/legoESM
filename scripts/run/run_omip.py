@@ -6016,10 +6016,14 @@ def run_omip_single(grid_type: str, args) -> dict:
             resolution = args.resolution
     else:
         resolution = GRID_DEFAULTS[grid_type]["resolution"]
-    if getattr(args, "monthly_mld_sst", False) and args.restart is None:
-        # Before run_config.json / the manifest are written (#2182).
-        MonthlyMldSstWriter.start_fresh(
-            Path(args.output) / grid_type / resolution / "monthly_mld_sst.nc")
+    _monthly_path = (Path(args.output) / grid_type / resolution
+                     / "monthly_mld_sst.nc")
+    if (getattr(args, "monthly_mld_sst", False) and args.restart is None
+            and grid_type == "latlon"
+            and args.forcing_mode == "jra55_do_tropical"):
+        # Before run_config.json / the manifest are written (#2182).  An
+        # unsupported grid/forcing keeps the "lat-lon JRA55-do only" error.
+        MonthlyMldSstWriter.start_fresh(_monthly_path)
     dt = args.dt or GRID_DEFAULTS[grid_type]["dt"]
     run_config = with_kpp_cfl_dt(run_config, dt)
     check_epbl_dt(run_config, dt)
@@ -7276,7 +7280,7 @@ def run_omip_single(grid_type: str, args) -> dict:
             raise ValueError("--monthly-mld-sst is implemented for the "
                              "lat-lon JRA55-do path only.")
         _monthly = MonthlyMldSstWriter(
-            Path(args.output) / grid_type / resolution / "monthly_mld_sst.nc",
+            _monthly_path,
             z_coord=z_coord, lat_deg=np.rad2deg(np.asarray(grid.lat)),
             lon_deg=np.rad2deg(np.asarray(grid.lon)))
         if args.restart is not None:

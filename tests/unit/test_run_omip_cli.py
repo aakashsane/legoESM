@@ -1289,7 +1289,10 @@ def test_restart_npz_carries_the_monthly_payload():
     assert "_RESTART_EXTRA_PAYLOAD[0] = _monthly.restart_payload" in src
     assert "_monthly.resume(" in src
     # The fresh-run refusal precedes the first write into the run folder.
-    i = src.index("MonthlyMldSstWriter.start_fresh(")
+    i = src.index("MonthlyMldSstWriter.start_fresh(_monthly_path)")
+    assert ('if (getattr(args, "monthly_mld_sst", False) and args.restart '
+            'is None\n') in src
+    assert "MonthlyMldSstWriter(\n            _monthly_path," in src
     assert i < src.index("config_dir.mkdir(")
     assert i < src.index("write_run_manifest_on_root(")
 

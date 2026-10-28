@@ -6227,8 +6227,14 @@ def _record_final_state_digest(manifest_path, state, ice_state=None) -> None:
     try:
         from legoesm.driver.restart import pytree_state_digest, record_state_digest
         digest = pytree_state_digest(state)
-        ice_digest = (None if ice_state is None
-                      else pytree_state_digest(ice_state))
+        ice_digest = None
+        if ice_state is not None:
+            # Its own best-effort: an ice failure must not cost the ocean digest.
+            try:
+                ice_digest = pytree_state_digest(ice_state)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[warn] ice_state_digest not recorded: "
+                      f"{type(exc).__name__}: {exc}")
         record_state_digest(manifest_path, digest, ice_state_digest=ice_digest)
         print(f"[done] recorded state_digest {digest[:16]}... in {manifest_path}")
     except Exception as exc:  # noqa: BLE001 — provenance is best-effort

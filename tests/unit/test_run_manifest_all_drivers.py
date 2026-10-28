@@ -356,3 +356,26 @@ def test_core2_ice_lanes_pass_the_ice_to_the_digest(fn):
 
     src = inspect.getsource(getattr(run_omip_core2, fn))
     assert "_record_final_state_digest(manifest_path, state, ice_state)" in src
+
+
+def test_core2_ice_digest_failure_keeps_the_ocean_digest(tmp_path, monkeypatch):
+    """An ice digest that raises is reported; the ocean digest is still
+    recorded and no ice field is written."""
+    import numpy as np
+    from scripts.run import run_omip_core2
+
+    real = restart.pytree_state_digest
+
+    def flaky(*trees):
+        if "h_ice" in trees[0]:
+            raise RuntimeError("not addressable")
+        return real(*trees)
+
+    monkeypatch.setattr(restart, "pytree_state_digest", flaky)
+    path = restart.write_run_manifest(tmp_path, {"runner": "x"},
+                                      config_kind="land")
+    run_omip_core2._record_final_state_digest(
+        path, {"T": np.ones(3)}, {"h_ice": np.ones(3)})
+    res = restart.read_run_manifest(path)["result"]
+    assert res["state_digest"] == real({"T": np.ones(3)})
+    assert "ice_state_digest" not in res

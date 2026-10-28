@@ -664,10 +664,13 @@ def _coare_neutral_select(zeta, neutral_width, stable_fn, unstable_fn):
     KNOWN DIFFERENCE at the default width 1e-3, vs the compiled AeroBulk
     TURB_COARE3P0 (fixture of 1549 states, Charnock 0.011): the fluxes differ by
     up to 8.0e-4 relative in stress, 5.0e-4 in sensible and latent heat and
-    4.0e-4 in u* (39 of 1549 states move at 10 m, 190 at 2 m; measured
-    2026-10-28 after the switch from the logistic blend, whose stress gap was
-    1.2e-3 and which was not C1 at zeta = 0) (per-state gaps in
-    ``tests/core/oracle_fixtures/aerobulk_coare3p0_default_gap.npz``).  Width 0
+    4.0e-4 in u* at 10 m (6.8e-4 / 4.6e-4 / 3.4e-4 at 2 m).  The blend alone
+    (fp32 Charnock) moves 39 of 1549 states by more than 1e-9 at 10 m and 190
+    at 2 m; the fp64 Charnock adds a gap of at most ~1e-9 relative in stress
+    (per-state in ``aerobulk_coare3p0_charnock0p011_width0_gap.npz``).
+    Measured 2026-10-28 after the switch from the logistic blend, whose stress
+    gap was 1.2e-3 and which was not C1 at zeta = 0.  Per-state gaps in
+    ``tests/core/oracle_fixtures/aerobulk_coare3p0_default_gap.npz``.  Width 0
     recovers the oracle (<= 1e-10).
     """
     if neutral_width == 0.0:

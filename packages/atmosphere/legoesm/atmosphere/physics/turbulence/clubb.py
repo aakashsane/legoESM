@@ -8,7 +8,7 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 7371)
+Table of contents (sections, in order; flag reference table at line 7376)
 -----------------------------------------------------------------------------
   1. [line  354] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
   2. [line  475] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
@@ -39,18 +39,18 @@ Table of contents (sections, in order; flag reference table at line 7371)
   13. [line  3052] Moment-advance building blocks + the xp2_xpyp / windm advances
       (diffusion/mean-advection LHS builders, Cauchy-Schwarz clips,
       ``advance_xp2_xpyp`` / ``advance_windm_edsclrm``)
-  14. [line  4010] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
+  14. [line  4015] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
       ``damp_coefficient`` / ``compute_C6_C7_Skw_fnc``)
-  15. [line  4075] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
+  15. [line  4080] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
       ``clip_skewness``)
-  16. [line  4748] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
+  16. [line  4753] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
       ``calc_turb_adv_range``)
-  17. [line  5029] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
+  17. [line  5034] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
       coupling + ``solve_xm_wpxp_with_single_lhs``)
-  18. [line  5412] Core orchestration (``compute_clubb_diagnostics`` /
+  18. [line  5417] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  6190] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  6195] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 
@@ -3084,6 +3084,11 @@ def cap_up2_vp2(xp2, width_m2s2):
     capped ``bomex_bigup2`` column moves above 1e-10.  Width 0 recovers the
     reference to 1e-10.  The smooth cap keeps the result <= 1000 but no
     longer equal to it.
+
+    Large widths are not checked: the shift at the variance floor
+    (w_tol^2 = 4e-4) is ``w*softplus(-1000/w)``, 1e-7 at w = 50 and above
+    the floor itself from w ~ 82, so up2/vp2 go NEGATIVE there (-4.1e-3 at
+    w = 100).  Keep the width well below ~50 m^2/s^2.
     """
     if width_m2s2 < 0.0:
         raise ValueError(

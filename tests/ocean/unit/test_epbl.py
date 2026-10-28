@@ -966,3 +966,29 @@ def test_rho0_norm_buoyancy_same_for_none_and_explicit_wright():
     b = surface_buoyancy_flux(q, fw, salt, T, S, eos_fn=wright_eos, **kw)
     for x, y in zip(a, b):
         np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+
+
+def test_richardson_adiabatic_n2_uses_the_supplied_eos(monkeypatch):
+    """The adiabatic N^2 inside the Richardson closure gets the run's EOS
+    too, not only the density."""
+    import types
+    from legoesm.ocean.physics.vertical_mixing import integration
+    from legoesm.ocean.physics.vertical_mixing.config import (
+        RichardsonVerticalMixingConfig,
+    )
+    got = []
+
+    def closure(*a, eos_fn=None, **kw):
+        got.append(eos_fn)
+        raise StopIteration
+
+    monkeypatch.setattr(integration, "richardson_vertical_mixing", closure)
+    eos = _linear_eos()
+    vm = VerticalMixingConfig(
+        scheme="richardson",
+        richardson=RichardsonVerticalMixingConfig(n2_mode="adiabatic"))
+    fn = integration.make_vertical_mixing_physics(vm, eos_fn=eos)
+    scm, _ = _epbl_scm(0.0, False, nsteps=1)
+    with pytest.raises(StopIteration):
+        fn(scm.state, types.SimpleNamespace(), scm.z_coord)
+    assert got == [eos]

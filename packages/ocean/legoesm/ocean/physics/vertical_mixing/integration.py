@@ -174,7 +174,7 @@ def _make_richardson(config: VerticalMixingConfig,
             state.u.data, state.v.data, state.T.data, state.S.data,
             rho, z_coord, J, cfg,
             apply_diffusion=apply_diffusion,
-            p_cell=p_cell,
+            p_cell=p_cell, eos_fn=eos_fn,
         )
         return _wrap_tendencies(out.du_dt, out.dv_dt, out.dT_dt, out.dS_dt, state,
                                 K_v=out.K_v if not apply_diffusion else None,

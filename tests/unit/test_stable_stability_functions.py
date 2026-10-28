@@ -900,14 +900,15 @@ def test_coare3_return_2m_scheme_sensitive():
     np.testing.assert_allclose(float(t2m_d[0]), 258.80926272241834, rtol=rtol)
     np.testing.assert_allclose(float(t2m_g[0]), 273.5002425313306, rtol=rtol)
 
-    # psi-level lock of the scheme-matched contract (stable side only).
+    # psi-level lock of the scheme-matched contract (stable side only), at the
+    # hard limit (neutral_width=0: no blend with the unstable branch).
     z_pos = jnp.linspace(1e-3, 10.0, 200)
     for scheme in NONLINEAR:
         np.testing.assert_array_equal(
-            np.asarray(psi_h_coare(z_pos, scheme)),
+            np.asarray(psi_h_coare(z_pos, scheme, neutral_width=0.0)),
             np.asarray(psi_h(z_pos, scheme)))
         np.testing.assert_array_equal(
-            np.asarray(psi_m_coare(z_pos, scheme)),
+            np.asarray(psi_m_coare(z_pos, scheme, neutral_width=0.0)),
             np.asarray(psi_m(z_pos, scheme)))
 
 

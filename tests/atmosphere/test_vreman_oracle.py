@@ -124,9 +124,8 @@ def test_default_width_is_the_recorded_one():
         PseudoIncompressibleConfig)
     from legoesm.atmosphere.dynamics.les.spectral_les_plane import SpectralLESConfig
     assert VREMAN_BBETA_GUARD_WIDTH == 1.0e-13
-    for cfg in (SpectralLESConfig(), PseudoIncompressibleConfig(),
-                CompressibleEulerConfig()):
-        assert cfg.vreman_bbeta_guard_width == VREMAN_BBETA_GUARD_WIDTH
+    for cfg in (SpectralLESConfig, PseudoIncompressibleConfig, CompressibleEulerConfig):
+        assert cfg._field_defaults["vreman_bbeta_guard_width"] == VREMAN_BBETA_GUARD_WIDTH
 
 
 def test_default_smoothing_gap_per_point():

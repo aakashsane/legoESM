@@ -83,11 +83,11 @@ def _legoesm_T_8h(q: float, dt: float, T0, S0) -> np.ndarray:
 
 @pytest.mark.parametrize("case,dt", sorted(MEASURED_GAP))
 def test_epbl_scm_reproduces_its_measured_gap_to_mom6(case, dt):
-    fx = np.load(FIXTURE)
     key = f"{case}_dt{dt}"
-    T_mom6 = fx[f"{key}_T_8h"]
-    T_lego = _legoesm_T_8h(_Q[case], float(dt), fx[f"{key}_T_init"],
-                           fx[f"{key}_S_init"])
+    with np.load(FIXTURE) as fx:
+        T_mom6, T0, S0 = (fx[f"{key}_T_8h"], fx[f"{key}_T_init"],
+                          fx[f"{key}_S_init"])
+    T_lego = _legoesm_T_8h(_Q[case], float(dt), T0, S0)
     gap = float(np.max(np.abs(T_lego - T_mom6)))
     np.testing.assert_allclose(gap, MEASURED_GAP[(case, dt)],
                                rtol=1e-6, atol=1e-12)

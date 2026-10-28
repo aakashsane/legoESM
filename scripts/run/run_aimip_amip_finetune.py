@@ -264,7 +264,8 @@ def main():
     if not is_nn:
         land_mask = era5_land_fraction(grid)
         grid = grid_with_zm_land_fraction(
-            grid, str(cfg["aimip_convection"]), land_mask)
+            grid, str(cfg["aimip_convection"]), land_mask,
+            gwd_scheme=str(cfg["aimip_gwd"]))
         sizing_ps = init_physics_state(
             ncol, nlev,
             PhysicsConfig(

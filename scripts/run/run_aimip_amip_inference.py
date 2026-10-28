@@ -264,7 +264,8 @@ def main():
     if args.variant == "classical":
         land_mask = era5_land_fraction(grid)
         grid = grid_with_zm_land_fraction(
-            grid, str(cfg["aimip_convection"]), land_mask)
+            grid, str(cfg["aimip_convection"]), land_mask,
+            gwd_scheme=str(cfg["aimip_gwd"]))
     sigma_full_np = np.asarray(sigma.sigma_full)
 
     pe = spec_cfg.pe_config

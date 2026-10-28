@@ -336,6 +336,8 @@ def test_spectral_rollout_rad_gating_one_step():
     from legoesm.driver.compiled_segments import SegmentCarry as _SC
 
     grid = create_gaussian_grid(11, dealiasing="quadratic")
+    # all-land unit fixture: the default McFarlane drag needs a land fraction
+    grid = grid._replace(land_frac=jnp.ones(grid.n_lat * grid.n_lon))
     sigma = create_sigma_coordinate(8)
 
     n_lat, n_lon, nlev = grid.n_lat, grid.n_lon, 8
@@ -387,18 +389,10 @@ def test_spectral_rollout_rad_gating_one_step():
         params, grid, dt=1800.0, radiation="gray", split_rad=True,
     )
 
-    try:
-        out_combined = spectral_rollout(
-            ic_spectral, combined_fn, grid, sigma, pe_config,
-            dt=1800.0, n_steps=1,
-        )
-    except ValueError as err:
-        if "mcfarlane_gwd needs land_frac_col" not in str(err):
-            raise
-        pytest.xfail(
-            "PENDING USER ASK (oracle follow-up row 63): mcfarlane refuses a "
-            "missing land fraction (CAM6 gw_lndscl_sgh=.true.) and the AIMIP "
-            "Gaussian grid only carries one for zhang_mcfarlane")
+    out_combined = spectral_rollout(
+        ic_spectral, combined_fn, grid, sigma, pe_config,
+        dt=1800.0, n_steps=1,
+    )
     out_gated = spectral_rollout(
         ic_spectral, non_rad_fn, grid, sigma, pe_config,
         dt=1800.0, n_steps=1,
@@ -796,3 +790,17 @@ def test_run_aimip_training_and_eval_use_the_era5_land_mask(monkeypatch):
     with pytest.raises(_Stop):
         mod._evaluate_variant("classical", None, cfg, "unused")
     np.testing.assert_array_equal(np.asarray(seen[1][0]), np.asarray(masks[-1]))
+
+
+@pytest.mark.parametrize("conv,gwd,attached", [
+    ("tiedtke", "mcfarlane", True), ("zhang_mcfarlane", "hines", True),
+    ("tiedtke", "hines", False)])
+def test_land_fraction_attaches_for_zm_or_mcfarlane(conv, gwd, attached):
+    """User 2026-10-28 (Q33): the AIMIP grid carries the ERA5 land fraction
+    whenever ZM convection or McFarlane drag runs; otherwise no store access."""
+    from legoesm.grids.gaussian import create_gaussian_grid
+    from legoesm.training.aimip_spatial import grid_with_zm_land_fraction
+    grid = create_gaussian_grid(11, dealiasing="quadratic")
+    land = jnp.zeros((grid.n_lat, grid.n_lon))
+    out = grid_with_zm_land_fraction(grid, conv, land, gwd_scheme=gwd)
+    assert (getattr(out, "land_frac", None) is not None) == attached

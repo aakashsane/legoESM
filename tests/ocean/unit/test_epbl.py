@@ -928,3 +928,22 @@ def test_latlon_model_hands_its_eos_to_the_physics(monkeypatch):
     want = make_eos_fn(eos="linear", eos_linear=lin)(T, S, p)
     assert float(seen["eos_fn"](T, S, p)) == float(want)
     assert float(want) != float(make_eos_fn()(T, S, p))
+
+
+def test_k_profile_fallback_forwards_the_eos_to_epbl(monkeypatch):
+    """The implicit K-profile fallback's ePBL branch passes its eos_fn on."""
+    from legoesm.ocean.physics.vertical_mixing import integration, k_profiles
+    seen = []
+
+    def factory(*a, eos_fn=None, **kw):
+        seen.append(eos_fn)
+        raise StopIteration
+
+    monkeypatch.setattr(integration, "make_vertical_mixing_physics", factory)
+    eos = _linear_eos()
+    scm, _ = _epbl_scm(0.0, False, nsteps=1)
+    vm = VerticalMixingConfig(scheme="epbl", epbl=EPBLConfig(dt_s=1200.0))
+    with pytest.raises(StopIteration):
+        k_profiles._vmix_K_profiles(scm.state, scm.z_coord, None, vm,
+                                    eos_fn=eos, lat_deg=40.0)
+    assert seen == [eos]

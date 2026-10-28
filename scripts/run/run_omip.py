@@ -7261,7 +7261,8 @@ def run_omip_single(grid_type: str, args) -> dict:
             lon_deg=np.rad2deg(np.asarray(grid.lon)))
         if args.restart is not None:
             with np.load(args.restart) as _rz:
-                _monthly.resume(float(_rz["time_days"]), dict(_rz))
+                # The NpzFile itself: only the monthly_* keys are read.
+                _monthly.resume(float(_rz["time_days"]), _rz)
         _RESTART_EXTRA_PAYLOAD[0] = _monthly.restart_payload
         _monthly_fn = _monthly.add
     # Disarm the process-global SPMD backend on EVERY exit of the loop (a

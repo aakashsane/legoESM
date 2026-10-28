@@ -1276,3 +1276,31 @@ def test_restart_npz_carries_the_monthly_payload():
     src = inspect.getsource(run_omip.run_omip_single)
     assert "_RESTART_EXTRA_PAYLOAD[0] = _monthly.restart_payload" in src
     assert "_monthly.resume(" in src
+
+
+def test_checkpoint_npz_round_trips_the_monthly_payload(tmp_path):
+    """The real checkpoint writer stores the active writer's in-flight month
+    and a writer resumed from that npz continues it."""
+    import numpy as np
+    from collections import namedtuple
+    from types import SimpleNamespace
+
+    from scripts.run import run_omip
+
+    make, st = _monthly_writer_and_state(tmp_path / "m.nc")
+    w = make()
+    w.add(st(10.0), 15.0)
+    w.add(st(20.0), 20.0)
+    state = namedtuple("St", ["T"])(SimpleNamespace(data=np.ones((1, 2, 4))))
+    run_omip._RESTART_EXTRA_PAYLOAD[0] = w.restart_payload
+    try:
+        fname = run_omip._save_restart(state, 20.0, 40, tmp_path / "rst")
+    finally:
+        run_omip._RESTART_EXTRA_PAYLOAD[0] = None
+    run_omip._join_restart_writer()
+    w2 = make()
+    with np.load(fname) as z:                 # the NpzFile, as the driver
+        w2.resume(float(z["time_days"]), z)
+    assert (w2.month, w2.n) == (w.month, w.n) == ((0, 1), 2)
+    np.testing.assert_array_equal(w2.sum_sst, w.sum_sst)
+    np.testing.assert_array_equal(w2.sum_mld, w.sum_mld)

@@ -54,6 +54,8 @@ _GEN_DIR = (Path(__file__).resolve().parents[2]
             / "scripts" / "validate" / "oracle" / "clubb_core")
 _TOL = 1.0e-10
 _CFG = C.CLUBBConfig(prognostic=True)
+# Hard limit of the smooth up2/vp2 cap (RULE 5): the reference's exact min().
+_CFG_HARD = _CFG._replace(up2_vp2_cap_width_m2s2=0.0)
 _CARRIED = ("rcm", "cloud_frac", "wpthvp", "wp2thvp", "rtpthvp", "thlpthvp",
             "Lscale", "Kh_zm")
 
@@ -253,7 +255,8 @@ def test_implemented_fixture_records_the_cam_call(fix_impl):
 
 @pytest.mark.parametrize("case", _IMPL_CASES)
 def test_core_matches_fortran_implemented(fix_impl, case):
-    worst = max_rel_errors(fix_impl, case)
+    """At the up2/vp2 cap's hard limit (width 0) every column matches."""
+    worst = max_rel_errors(fix_impl, case, _CFG_HARD)
     bad = {k: v for k, v in worst.items() if not v <= _TOL}
     assert not bad, f"{case}: fields above {_TOL}: {bad}"
 
@@ -262,7 +265,7 @@ def test_core_matches_fortran_implemented(fix_impl, case):
 def test_implemented_fixture_exercises_l_implemented(fix_impl, case):
     """Non-vacuity: the standalone path (mean advection of the means and, on
     every column, the Coriolis term kept) misses the CAM-call oracle."""
-    worst = max_rel_errors(fix_impl, case, l_implemented=False)
+    worst = max_rel_errors(fix_impl, case, _CFG_HARD, l_implemented=False)
     assert max(worst.values()) > 1.0e3 * _TOL, (case, worst)
 
 
@@ -272,6 +275,58 @@ def test_bigup2_column_hits_the_up2_vp2_cap(fix_impl):
         for k in ("up2", "vp2"):
             ref = fix_impl[f"bomex_bigup2/s{n}/{k}"]
             assert np.max(ref) == C._UP2_VP2_MAX and np.sum(ref == C._UP2_VP2_MAX) > 0
+
+
+# Measured KNOWN DIFFERENCE of the smooth up2/vp2 cap at the default width
+# (10 m2/s2), per l_implemented fixture column: field -> worst field-normalised
+# error vs the oracle (max_rel_errors).  Fields absent here stay <= _TOL.  Only
+# bomex_bigup2 reaches the cap; the other columns are unchanged from width 0.
+# Measured 2026-10-28 (SLURM CPU, fp64) at the cap_up2_vp2 smooth_min form.
+_DEFAULT_GAPS = {
+    "bomex": {}, "dycoms2_rf01": {}, "mpace_b": {}, "arm": {},
+    "bomex_bigup2": {
+        "wp2": 6.069554338e-04, "wp3": 1.392288763e-03, "up2": 6.36533013e-03,
+        "vp2": 4.597006535e-03, "wprtp": 7.416669653e-06,
+        "wpthlp": 1.143293102e-05, "upwp": 1.710857469e-04,
+        "vpwp": 1.36211683e-04, "rcm": 7.605580347e-07,
+        "cloud_frac": 7.466844415e-07, "wpthvp": 6.145381119e-05,
+        "wp2thvp": 4.250272206e-04, "rtpthvp": 1.379084444e-06,
+        "thlpthvp": 8.177945709e-07,
+    },
+}
+
+
+@pytest.mark.parametrize("case", _IMPL_CASES)
+def test_up2_vp2_cap_default_gap_per_case(fix_impl, case):
+    """At the default smooth cap width each column's recorded gap holds."""
+    assert _CFG.up2_vp2_cap_width_m2s2 == 10.0
+    worst = max_rel_errors(fix_impl, case)
+    gaps = _DEFAULT_GAPS[case]
+    over = {k: v for k, v in worst.items() if not v <= _TOL}
+    assert set(over) == set(gaps), (case, over)
+    for k, g in gaps.items():
+        np.testing.assert_allclose(worst[k], g, rtol=1e-6, atol=1e-12,
+                                   err_msg=f"{case}/{k}")
+
+
+def test_up2_vp2_cap_gradient_at_default():
+    """check_grads through the smooth cap at the default width, on both sides
+    of 1000 m2/s2; the derivative is finite and non-zero everywhere."""
+    from jax.test_util import check_grads
+    w = _CFG.up2_vp2_cap_width_m2s2
+    x = jnp.linspace(900.0, 1100.0, 9)
+    f = lambda v: C.cap_up2_vp2(v, w)  # noqa: E731
+    check_grads(f, (x,), order=2, modes=("fwd", "rev"))
+    d = jax.vmap(jax.grad(f))(x)
+    assert np.all(np.isfinite(np.asarray(d))) and np.all(np.asarray(d) > 0.0)
+
+
+def test_up2_vp2_cap_hard_limit_and_negative_width():
+    x = jnp.array([0.0, 4.0e-4, 999.0, 1000.0, 1500.0])
+    np.testing.assert_array_equal(np.asarray(C.cap_up2_vp2(x, 0.0)),
+                                  np.minimum(np.asarray(x), C._UP2_VP2_MAX))
+    with pytest.raises(ValueError, match="up2_vp2_cap_width_m2s2"):
+        C.cap_up2_vp2(x, -1.0)
 
 
 def test_gradient_is_finite_on_the_implemented_columns(fix_impl):

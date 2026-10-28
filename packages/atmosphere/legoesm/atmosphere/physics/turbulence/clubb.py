@@ -8,49 +8,49 @@ one-file-per-scheme convention, the remaining ``clubb_*.py`` helper modules are
 being absorbed here section by section (see the table of contents below); the
 CAM-default model-flag values are recorded as comments at the end of the file.
 
-Table of contents (sections, in order; flag reference table at line 7296)
+Table of contents (sections, in order; flag reference table at line 7371)
 -----------------------------------------------------------------------------
-  1. [line  352] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
-  2. [line  473] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
+  1. [line  354] Diagnostic ADG1-PDF closure (``diagnose_cloud_and_buoyancy``)
+  2. [line  475] Configuration (``CLUBBParams`` / ``CLUBBConfig`` + derived params;
       model flags fixed at CAM defaults — reference table at file end)
-  3. [line  775] Staggered CLUBB grid (``CLUBBGrid`` / zm-zt operators /
+  3. [line  784] Staggered CLUBB grid (``CLUBBGrid`` / zm-zt operators /
       ``make_clubb_grid[_from_levels]`` / ``flip_vertical``)
-  4. [line  1106] Flatau saturation adapters (``sat_mixrat_liq``/``sat_mixrat_ice`` over
+  4. [line  1115] Flatau saturation adapters (``sat_mixrat_liq``/``sat_mixrat_ice`` over
       the canonical ``legoesm.thermo`` curves)
-  5. [line  1160] Closure helpers (``safe_sqrt`` / ``compute_sigma_sqd_w`` /
+  5. [line  1169] Closure helpers (``safe_sqrt`` / ``compute_sigma_sqd_w`` /
       ``calc_brunt_vaisala_freq_sqd``)
-  6. [line  1334] Parcel buoyant-sorting mixing length (``compute_mixing_length`` /
+  6. [line  1343] Parcel buoyant-sorting mixing length (``compute_mixing_length`` /
       ``set_Lscale_max``)
-  7. [line  1782] Implicit band solvers (``tridiag_solve`` / ``penta_solve``)
-  8. [line  1910] Mass-conserving hole filling (``fill_holes_vertical`` /
+  7. [line  1791] Implicit band solvers (``tridiag_solve`` / ``penta_solve``)
+  8. [line  1919] Mass-conserving hole filling (``fill_holes_vertical`` /
       ``fill_holes_wp2_from_horz_tke``)
-  9. [line  2091] Skewness diagnostics (``Skx_func`` / ``compute_gamma_Skw`` / LG05 /
+  9. [line  2100] Skewness diagnostics (``Skx_func`` / ``compute_gamma_Skw`` / LG05 /
       ``compute_skewness_diagnostics``)
-  10. [line  2279] Dissipation time-scale family (``compute_tke`` / ``compute_tau_family``)
-  11. [line  2360] ADG1 assumed-PDF parameter closure (``ADG1_pdf_driver`` + the liquid
+  10. [line  2288] Dissipation time-scale family (``compute_tke`` / ``compute_tau_family``)
+  11. [line  2369] ADG1 assumed-PDF parameter closure (``ADG1_pdf_driver`` + the liquid
       cloud-fraction closure)
-  12. [line  2682] ADG1 PDF moment integrals + buoyancy-flux assembly
+  12. [line  2691] ADG1 PDF moment integrals + buoyancy-flux assembly
       (``calc_pdf_higher_order_moments`` / ``calc_pdf_xprcp_fluxes`` /
       ``calc_xpthvp_terms``) + the two-level-set reconciliation
       (``calc_trapezoid_zt`` / ``calc_trapezoid_zm`` / ``clip_rcm`` /
       ``compute_cloud_cover``). Every routine in this section is
       grid-agnostic: CAM evaluates the closure once per level set, so all
       regridding is the caller's.
-  13. [line  3043] Moment-advance building blocks + the xp2_xpyp / windm advances
+  13. [line  3052] Moment-advance building blocks + the xp2_xpyp / windm advances
       (diffusion/mean-advection LHS builders, Cauchy-Schwarz clips,
       ``advance_xp2_xpyp`` / ``advance_windm_edsclrm``)
-  14. [line  3971] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
+  14. [line  4010] Skewness-dependent C-coefficient family (``compute_skw_fnc`` users:
       ``damp_coefficient`` / ``compute_C6_C7_Skw_fnc``)
-  15. [line  4036] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
+  15. [line  4075] Coupled wp2/wp3 advance (``advance_wp2_wp3`` + penta LHS/RHS builders +
       ``clip_skewness``)
-  16. [line  4709] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
+  16. [line  4748] Monotonic turbulent-flux limiter (``monotonic_turbulent_flux_limit`` +
       ``calc_turb_adv_range``)
-  17. [line  4990] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
+  17. [line  5029] Coupled xm/wpxp advance (``advance_xm_wpxp`` + the monotonic-flux-limiter
       coupling + ``solve_xm_wpxp_with_single_lhs``)
-  18. [line  5373] Core orchestration (``compute_clubb_diagnostics`` /
+  18. [line  5412] Core orchestration (``compute_clubb_diagnostics`` /
       ``compute_pdf_closure`` / ``calc_sfc_varnce`` / ``advance_clubb_core`` +
       the ``CLUBBMomentState``/``CLUBBForcing`` carry types and pack/unpack)
-  19. [line  6151] Scheme entries (``clubb_turbulence`` diagnostic default /
+  19. [line  6190] Scheme entries (``clubb_turbulence`` diagnostic default /
       ``clubb_turbulence_prognostic`` opt-in / ``clubb_step`` bridge /
       ``integrate_clubb_column`` SCM driver)
 
@@ -148,6 +148,7 @@ from legoesm.atmosphere.physics.turbulence.vertical_diffusion import (
     implicit_vertical_diffusion,
     implicit_vertical_diffusion_theta,
 )
+from legoesm.core.smooth import smooth_min
 from legoesm.thermo import (
     saturation_vapor_pressure_flatau,
     saturation_vapor_pressure_ice_flatau,
@@ -329,6 +330,7 @@ __param_spec__ = {
             "trop_cloud_taper_lnp_width": "numerics: smooth log-pressure taper width replacing CAM's hard top_lev slice",
             "w_tol": "numerics: w-moment tolerance/floor [m/s]",
             "wp2_max": "numerics: wp2 upper clip [m^2/s^2]",
+            "up2_vp2_cap_width_m2s2": "numerics: smoothing width of the up2/vp2 <= 1000 m^2/s^2 cap (0 = the oracle's hard cap) [m^2/s^2]",
         },
         "params": {
             "q_flux_scale": {"units": "1", "bounds": (0.1, 10.0), "tunable_tier": 0, "transform": "none", "category": "mechanism_probe", "reference": "moisture-only multiplier on Kh for q_v inside a sigma band of faces; 1.0 = byte-identical (cloud-base mixing arm, 2026-09-20)", "shape": None},
@@ -633,6 +635,12 @@ class CLUBBConfig(NamedTuple):
         Tolerance for liquid-water potential temperature [K] (``thl_tol``).
     wp2_max : float
         Upper clip for ``wp2`` [m^2/s^2] (``wp2_max``).
+    up2_vp2_cap_width_m2s2 : float
+        Width [m^2/s^2] of the smooth up2/vp2 <= 1000 m^2/s^2 cap
+        (:func:`cap_up2_vp2`).  0.0 = the reference's exact hard cap (a static
+        Python switch); negative raises.  A numerics smoothing width, not a
+        tunable closure coefficient.  KNOWN DIFFERENCE at the default 10.0: see
+        :func:`cap_up2_vp2`.
     tke_min : float
         Floor for the carried TKE/wp2 state slot [m^2/s^2] (mirrors the other
         prognostic-moment schemes so ``integration.py`` can seed the state).
@@ -700,6 +708,7 @@ class CLUBBConfig(NamedTuple):
     rt_tol: float = 1.0e-8
     thl_tol: float = 1.0e-2
     wp2_max: float = 1000.0
+    up2_vp2_cap_width_m2s2: float = 10.0
     tke_min: float = 1.0e-6
     T0: float = 300.0
     prognostic: bool = False
@@ -3056,6 +3065,33 @@ _MAX_MAG_CORRELATION_FLUX = 0.99  # flux correlation bound (constants_clubb)
 # (advance_xp2_xpyp_module.F90:1137, 1170, clubb_release @ 54403a04;
 # absent from CESM2.1's vendor_clubb_r8099_n03).
 _UP2_VP2_MAX = 1000.0
+
+
+def cap_up2_vp2(xp2, width_m2s2):
+    """Smooth ``min(xp2, 1000)`` cap on up2/vp2 (RULE 5).
+
+    ``smooth_min`` = ``x - w*softplus((x - 1000)/w)``; ``width_m2s2 == 0`` is
+    the reference's exact ``min`` (static switch), ``< 0`` raises.
+
+    KNOWN DIFFERENCE (CLUBBConfig.up2_vp2_cap_width_m2s2): the reference
+    (advance_xp2_xpyp_module.F90:1137, 1170) caps hard; the port's default
+    width 10 m^2/s^2 always returns slightly less than ``min(x, 1000)``,
+    most within roughly 970-1030 (by w*ln2 = 6.9 at exactly 1000).  Values
+    well below the cap move by ``w*softplus(-(1000-x)/w)`` (4.5e-4 at 900, ~1e-43 at
+    typical values).  Measured worst field-normalised gaps vs the oracle on
+    the l_implemented fixture, per case, are pinned in
+    tests/atmosphere/test_clubb_core_oracle.py (``_DEFAULT_GAPS``); only the
+    capped ``bomex_bigup2`` column moves above 1e-10.  Width 0 recovers the
+    reference to 1e-10.  The smooth cap keeps the result <= 1000 but no
+    longer equal to it.
+    """
+    if width_m2s2 < 0.0:
+        raise ValueError(
+            f"up2_vp2_cap_width_m2s2 must be >= 0, got {width_m2s2!r}.")
+    sharp = math.inf if width_m2s2 == 0.0 else 1.0 / width_m2s2
+    return smooth_min(xp2, _UP2_VP2_MAX, sharp)
+
+
 _ZERO_THRESHOLD = 0.0
 _ONE_THIRD = 1.0 / 3.0
 _GAMMA_OVER_IMPLICIT_TS = 1.5   # over-implicit weight (constants_clubb)
@@ -3960,9 +3996,12 @@ def advance_xp2_xpyp(rtm, thlm, um, vm, rtp2, thlp2, rtpthlp, up2, vp2,
                                     hf_lower, hf_upper, _CAM_FILL_HOLES_TYPE)
     vp2_fh = pos_definite_variances(soln_vp2, rho_ds_zm, gr.dzm, w_tol_sqd,
                                     hf_lower, hf_upper, _CAM_FILL_HOLES_TYPE)
-    # Clip negative values, then excessively large ones (up2/vp2 <= 1000).
-    up2_cv = jnp.minimum(clip_variance(up2_fh, w_tol_sqd), _UP2_VP2_MAX)
-    vp2_cv = jnp.minimum(clip_variance(vp2_fh, w_tol_sqd), _UP2_VP2_MAX)
+    # Clip negative values, then excessively large ones (up2/vp2 <= 1000,
+    # smooth at the default width; see cap_up2_vp2).
+    up2_cv = cap_up2_vp2(clip_variance(up2_fh, w_tol_sqd),
+                         config.up2_vp2_cap_width_m2s2)
+    vp2_cv = cap_up2_vp2(clip_variance(vp2_fh, w_tol_sqd),
+                         config.up2_vp2_cap_width_m2s2)
 
     return rtp2_cv, thlp2_cv, rtpthlp_clip, up2_cv, vp2_cv
 

@@ -145,9 +145,11 @@ f-plane (`F_0 = 2 OMEGA sin 40`), 50 uniform 1 m Z* layers,
 `HMIX_FIXED=0.01`, `NIHALO=NJHALO=2`, `UPWIND_1ST_CONTINUITY=True` of the
 MOM6-examples single column, plus output-only settings (8 h run via
 `TIMEUNIT`/`DAYMAX`, `SAVE_INITIAL_CONDS`, `ENERGYSAVEDAYS`, `RESTART_CONTROL`);
-everything else is MOM6's default (`MOM_parameter_doc.all` in the fixture). The rebuilt
-gaps reproduce the table below (MOM6-order column) to the digits shown, except
-Q = 0 (1.0e-7 and 4.9e-8 at 1200 s and 300 s, vs 1.1e-7 and 5.2e-8).
+everything else is MOM6's default (`MOM_parameter_doc.all` in the fixture). The test
+runs legoESM under the fp64 precision policy. The rebuilt gaps reproduce the
+table below (MOM6-order column) to the digits shown, except Q = 0, where they
+are round-off (2.6e-13 and 1.0e-12 at 1200 s and 300 s, vs 1.1e-7 and 5.2e-8;
+under the default fp32 policy the rebuild gives 1.0e-7 and 4.9e-8).
 
 legoESM side:
 

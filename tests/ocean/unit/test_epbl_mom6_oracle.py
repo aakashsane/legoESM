@@ -9,6 +9,8 @@ was built.  legoESM runs the same column with the MOM6 step order
 Each case's measured max |T_legoESM - T_MOM6| at 8 h is stored below and must
 be reproduced to 1e-6 relative (1e-12 degC floor): any change to the port's
 answer, better or worse, turns this red and must re-measure the gaps.
+The column runs under legoESM's fp64 precision policy (pinned per test, as the
+MOM6 oracle is double precision); the default fp32 policy gives different gaps.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ import pytest
 jax.config.update("jax_enable_x64", True)
 
 from legoesm import constants
+from legoesm.core.precision import PrecisionPolicy, get_policy, set_policy
 from legoesm.ocean.physics.combined import OceanPhysicsConfig
 from legoesm.ocean.physics.convection.config import OceanConvectionConfig
 from legoesm.ocean.physics.vertical_mixing.config import (
@@ -35,15 +38,16 @@ from legoesm.ocean.vertical import create_ocean_z_star
 FIXTURE = (pathlib.Path(__file__).parent / "fixtures" / "mom6_epbl_scm"
            / "mom6_epbl_scm_0e9a561.npz")
 
-# Measured max |T_legoESM - T_MOM6| over the column at 8 h [degC]
-# (SLURM job in provenance.json; JAX_ENABLE_X64=1).
+# Measured max |T_legoESM - T_MOM6| over the column at 8 h [degC], fp64 policy
+# (SLURM job 28522629; JAX_ENABLE_X64=1).  Re-measured when the fp64 policy
+# pin was added: the earlier values were taken under the fp32 default policy.
 MEASURED_GAP = {
-    ("q-200", 1200): 0.00025138293528925715,
-    ("q0", 1200): 1.0444477993587498e-07,
-    ("q200", 1200): 0.0011022004679794861,
-    ("q-200", 300): 2.600674302044581e-05,
-    ("q0", 300): 4.9130193247037823e-08,
-    ("q200", 300): 0.00013372634907682368,
+    ("q-200", 1200): 0.0002513095684157918,
+    ("q0", 1200): 2.5934809855243657e-13,
+    ("q200", 1200): 0.0011014506588296058,
+    ("q-200", 300): 2.586951265470816e-05,
+    ("q0", 300): 1.0196288258157438e-12,
+    ("q200", 300): 0.00013344868003528632,
 }
 _Q = {"q-200": -200.0, "q0": 0.0, "q200": 200.0}
 
@@ -79,6 +83,16 @@ def _legoesm_T_8h(q: float, dt: float, T0, S0) -> np.ndarray:
         K_v_background=0.0, A_v_background=0.0)
     final, _ = scm.run(nsteps=int(round(8 * 3600 / dt)), save_every=10**6)
     return np.asarray(final.T.data[0, 0, 0])
+
+
+@pytest.fixture(autouse=True)
+def _fp64():
+    prev = get_policy()
+    set_policy(PrecisionPolicy.fp64())
+    try:
+        yield
+    finally:
+        set_policy(prev)
 
 
 @pytest.mark.parametrize("case,dt", sorted(MEASURED_GAP))

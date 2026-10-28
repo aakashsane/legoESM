@@ -8,7 +8,7 @@
                             "netcdf-fortran/4.5.3-openmpi-4.1.2-gcc-11.2.0"],
                 "FC": "mpif90 (GNU Fortran 11.2.0)", "FCFLAGS": "-g -O2 -fallow-argument-mismatch", "machine": "DKRZ Levante, compute partition",
                 "mpi_ranks": 1},
-  "slurm_jobs": {"build": 28519949, "runs": 28520329, "legoesm_measurement": 28520579},
+  "slurm_jobs": {"build": 28519949, "runs": 28520329, "legoesm_measurement": 28520579, "legoesm_measurement_fp64_policy": 28522629},
   "cases": {"q{Q}_dt{DT}": "MOM_input + MOM_override_q{Q}_dt{DT} (DT [s], SENSIBLE_HEAT_FLUX [W/m2, + into ocean]); Q in -200, 0, 200; DT in 1200, 300; 8 h run"},
   "parameter_record": "MOM_parameter_doc.all is from case q-200_dt1200; the other cases differ only in DT (and the DT_* defaults that follow it) and SENSIBLE_HEAT_FLUX",
   "npz_keys": {

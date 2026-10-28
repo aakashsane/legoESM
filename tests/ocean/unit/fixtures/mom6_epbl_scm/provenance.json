@@ -15,7 +15,7 @@
     "{case}_T_init": "MOM_IC.nc Temp, column (1,1), 50 layers surface->bottom [degC]",
     "{case}_S_init": "MOM_IC.nc Salt [psu]",
     "{case}_T_hourly": "prog.nc temp, instantaneous double-precision diag at hours 1..8, column (1,1) [degC]",
-    "{case}_T_8h": "temp at hour 8; checked bit-identical to RESTART/MOM.res.nc Temp and identical in all 2x2 columns",
+    "{case}_T_8h": "temp at hour 8; when the fixture was packed it was checked bit-identical to RESTART/MOM.res.nc Temp (restart not committed) and identical in all 2x2 columns",
     "{case}_S_8h": "salt at hour 8 [psu]",
     "{case}_hml_hourly": "ePBL_h_ML at hours 1..8 [m]",
     "{case}_time_h": "diag times [h]"

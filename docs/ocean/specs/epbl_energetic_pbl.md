@@ -143,7 +143,9 @@ f-plane (`F_0 = 2 OMEGA sin 40`), 50 uniform 1 m Z* layers,
 `VON_KARMAN_CONST=0.4` (legoESM's value; MOM6's default is 0.41),
 `BBL_EFFIC=0` (no bottom-drag diffusivity), and the momentum-only `HBBL=10`,
 `HMIX_FIXED=0.01`, `NIHALO=NJHALO=2`, `UPWIND_1ST_CONTINUITY=True` of the
-MOM6-examples single column; everything else is MOM6's default. The rebuilt
+MOM6-examples single column, plus output-only settings (8 h run via
+`TIMEUNIT`/`DAYMAX`, `SAVE_INITIAL_CONDS`, `ENERGYSAVEDAYS`, `RESTART_CONTROL`);
+everything else is MOM6's default (`MOM_parameter_doc.all` in the fixture). The rebuilt
 gaps reproduce the table below (MOM6-order column) to the digits shown, except
 Q = 0 (1.0e-7 and 4.9e-8 at 1200 s and 300 s, vs 1.1e-7 and 5.2e-8).
 

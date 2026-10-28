@@ -12,6 +12,9 @@ Two code paths share :func:`ysu_turbulence`:
   Fortran (``tests/atmosphere/hydrostatic/unit/test_ysu_oracle.py``).  The
   existing sharpness fields smooth the oracle's three hard switches and reduce
   to it at their hard limit; every other switch is ported as ``jnp.where``.
+  **NOT RULE 5 COMPLIANT** (user decision 2026-10-28): the PBL-top level and
+  the switches derived from it are hard at the default.  Opt-in kernel only;
+  these switches must be smoothed before any lane uses this path (#2231).
 * **Legacy surrogate (NOT-YET-FAITHFUL)** — taken when ``surface_layer`` is
   ``None``, which is what every lane does today: no lane builds the WRF
   surface-layer state (bulk Richardson number, integrated stability functions,
@@ -359,6 +362,9 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     Every other oracle switch is ported as a hard ``jnp.where``; operands of
     unselected branches are replaced by benign values only so their gradients
     stay finite (selected values are untouched).
+
+    NOT RULE 5 COMPLIANT (opt-in kernel; smooth before any lane uses it,
+    #2231): see the unsmoothed switches below.
 
     KNOWN DIFFERENCE (RULE 5, measured 2026-10-28 on the 23-column oracle
     fixture plus its 8-level upper-endpoint column, fp64): the oracle uses the

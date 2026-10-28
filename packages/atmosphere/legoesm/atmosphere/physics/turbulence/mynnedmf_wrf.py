@@ -25,6 +25,11 @@ by zero or take a log/root of an invalid argument, it is evaluated on a safe
 argument (``_sel``), which leaves every selected value unchanged.  The oracle
 has no smoothing knobs on this path.
 
+**NOT RULE 5 COMPLIANT** (user decision 2026-10-28): every switch on traced
+state, including the PBL-height first crossing, is hard at the default; there
+is no recorded default gap and no gradient test through a switch.  This is an
+unwired, opt-in kernel; it must be smoothed before any lane uses it (#2231).
+
 Constants: the scheme's own (module_bl_mynnedmf_common.F90) are module-level
 constants below; the host physical constants that module USEs from WRF's
 ``module_model_constants`` are legoESM's (``legoesm.constants``), which is how

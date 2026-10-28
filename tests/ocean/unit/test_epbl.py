@@ -992,3 +992,24 @@ def test_richardson_adiabatic_n2_uses_the_supplied_eos(monkeypatch):
     with pytest.raises(StopIteration):
         fn(scm.state, types.SimpleNamespace(), scm.z_coord)
     assert got == [eos]
+
+
+def test_epbl_sqrt_s_eos_is_finite_at_zero_salinity():
+    """A sqrt(S) EOS (veros_gsw) at a zero-salinity cell: the layer
+    derivatives are taken at the floored salinity, so ePBL stays finite."""
+    import types
+    from legoesm.ocean.physics.vertical_mixing import integration
+    from legoesm.ocean.scm_forcing import build_ocean_surface_forcing_struct
+
+    scm, _ = _epbl_scm(-200.0, False, nsteps=1)
+    st = scm.state
+    st = st._replace(S=st.S.replace(data=st.S.data.at[..., -1].set(0.0)))
+    sfc = build_ocean_surface_forcing_struct(
+        scm.forcing, 0.0, st.eta.data.shape, st.T.data.dtype)
+    vm = VerticalMixingConfig(scheme="epbl", epbl=EPBLConfig(dt_s=1200.0))
+    fn = integration.make_vertical_mixing_physics(
+        vm, apply_diffusion=False, eos_fn=make_eos_fn(eos="veros_gsw"))
+    tend = fn(st, types.SimpleNamespace(grid_lat=jnp.deg2rad(40.0)),
+              scm.z_coord, surface_forcing=sfc)
+    assert bool(jnp.all(jnp.isfinite(tend.K_v)))
+    assert bool(jnp.all(jnp.isfinite(tend.A_v)))

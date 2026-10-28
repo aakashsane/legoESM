@@ -23,7 +23,10 @@ from legoesm.ocean.physics.vertical_mixing.epbl import (
     epbl_vertical_mixing,
     surface_tke_forcing,
 )
-from legoesm.ocean.physics.vertical_mixing._shared import surface_buoyancy_flux
+from legoesm.ocean.physics.vertical_mixing._shared import (
+    eos_salinity,
+    surface_buoyancy_flux,
+)
 from legoesm.ocean.physics.tendencies import make_none_physics_fn, wrap_ocean_tendencies
 
 
@@ -322,8 +325,11 @@ def _make_epbl(config: VerticalMixingConfig,
         # applyBoundaryFluxesInOut computes them (MOM_diabatic_aux.F90:909).
         d_pres = (g * rho_0) * h
         p_lay = jnp.cumsum(d_pres, axis=-1) - 0.5 * d_pres
-        rho = eos_fn(T, S, p_lay)
-        drho_dT, drho_dS = eos_density_derivatives(eos_fn, T, S, p_lay)
+        # sqrt(S) EOSes have an infinite dRho/dS at S = 0 (land / fill cells):
+        # floor S for them as the surface-buoyancy helper does; Wright as is.
+        S_eos = eos_salinity(S, eos_fn)
+        rho = eos_fn(T, S_eos, p_lay)
+        drho_dT, drho_dS = eos_density_derivatives(eos_fn, T, S_eos, p_lay)
         inv_rho2 = 1.0 / (rho * rho)
         dSV_dT = -drho_dT * inv_rho2
         dSV_dS = -drho_dS * inv_rho2

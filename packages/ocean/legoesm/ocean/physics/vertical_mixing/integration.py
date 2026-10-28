@@ -322,6 +322,16 @@ def _make_epbl(config: VerticalMixingConfig,
         q_net = getattr(surface_forcing, "q_net", None) if surface_forcing else None
         fw = getattr(surface_forcing, "freshwater", None) if surface_forcing else None
         salt = getattr(surface_forcing, "salt_flux", None) if surface_forcing else None
+        # Missing forcing is an error, as in MOM6: a zero would run the
+        # boundary layer unforced and no downstream guard could see it.
+        missing = [n for n, x in (("tau_x", tau_x), ("tau_y", tau_y),
+                                  ("q_net", q_net), ("freshwater", fw))
+                   if x is None]
+        if missing:
+            raise ValueError(
+                "ePBL needs wind stress, net heat and freshwater forcing; "
+                f"surface_forcing supplies no {', '.join(missing)}. Pass "
+                "explicit zeros for an unforced column.")
 
         # Surface buoyancy flux through the shared helper (#2178), MOM6 form:
         # derivatives at surface pressure divided by rho_0 (GoRho = g/Rho0),
@@ -333,15 +343,14 @@ def _make_epbl(config: VerticalMixingConfig,
             q_net, fw, salt, T[..., 0], S[..., 0],
             g=g, rho_0=rho_0, c_sw=c_sw, real_salt_in_qs=True,
             rho_0_norm=True)
-        B_flux = (jnp.zeros_like(T[..., 0]) if B_f is None else -B_f)
+        B_flux = -B_f        # never None: q_net and fw are required above
 
         # Energy released (or required) by mixing the surface fluxes through
         # the top layer, with the same net salt flux [psu kg/m^2/s] as the
         # buoyancy.  Only the top layer is forced: no penetrating shortwave
         # profile is supplied on this path.
         tke_top = surface_tke_forcing(
-            jnp.zeros_like(T[..., 0]) if q_net is None else q_net,
-            None if Q_sfc_S is None else Q_sfc_S * rho_0,
+            q_net, Q_sfc_S * rho_0,
             h[..., 0], dSV_dT[..., 0], dSV_dS[..., 0],
             g=g, rho_0=rho_0, c_sw=c_sw, dt=cfg.dt_s)
         tke_forcing = jnp.zeros_like(T).at[..., 0].set(tke_top)

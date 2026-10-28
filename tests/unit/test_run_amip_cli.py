@@ -5184,6 +5184,42 @@ def test_federation_needs_spmd_mode_and_the_distributed_flag():
     assert _argv_federates(["--distributed-mode", "spmd", "--", "--distributed"]) is False
 
 
+def test_deck_distributed_key_counts_as_the_flag(tmp_path):
+    """User decision 2026-10-28 (codex + GLM): a deck's ``distributed: true``
+    counts as --distributed, as the deck's ``distributed_mode`` key already
+    counts; the hook agrees with what argparse resolves from the deck."""
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    on = tmp_path / "on.yaml"
+    on.write_text("distributed_mode: spmd\ndistributed: true\n")
+    off = tmp_path / "off.yaml"
+    off.write_text("distributed_mode: spmd\ndistributed: false\n")
+    mode_only = tmp_path / "mode.yaml"
+    mode_only.write_text("distributed_mode: spmd\n")
+    inc_base = tmp_path / "inc_base.yaml"
+    inc_base.write_text("distributed: true\n")
+    inc = tmp_path / "inc.yaml"   # the key arrives through an include
+    inc.write_text(f"include: {inc_base.name}\ndistributed_mode: spmd\n")
+    for deck, want in ((on, True), (off, False), (mode_only, False),
+                       (inc, True)):
+        p = build_arg_parser()
+        p.set_defaults(**load_yaml_config(str(deck), p))
+        argv = ["--config", str(deck)]
+        assert _argv_distributed_flag(argv) is bool(p.parse_args(argv).distributed)
+        assert _argv_federates(argv) is want, deck.name
+    assert _argv_federates(["--config", str(mode_only), "--distributed"]) is True
+    assert _argv_federates(["--config", str(on), "--distributed-mode", "mpi"]) is False
+    # one deck read per decision (codex): both halves see the same file
+    import scripts.run.run_amip as ra
+    reads = []
+    real = ra._read_run_yaml_prejax
+    ra._read_run_yaml_prejax = lambda path: reads.append(path) or real(path)
+    try:
+        assert _argv_federates(["--config", str(on)]) is True
+    finally:
+        ra._read_run_yaml_prejax = real
+    assert len(reads) == 1
+
+
 def test_import_hook_hands_the_federation_decision_to_early_init(monkeypatch):
     """The import-time call itself passes _argv_federates: SPMD mode alone
     does not federate, SPMD mode with --distributed does."""

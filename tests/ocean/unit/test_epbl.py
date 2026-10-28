@@ -705,6 +705,44 @@ def test_budget_check_catches_overspending():
     assert _budget_residual(_ref_cfg(), 0.0, 0.05, kd_scale=3.0) > 1e-6
 
 
+# --- missing forcing (#2179) ------------------------------------------------
+
+@pytest.mark.parametrize("drop", ["tau_x", "tau_y", "q_net", "freshwater"])
+def test_factory_refuses_missing_forcing(drop):
+    """A missing wind, heat or freshwater channel raises (as MOM6 does)
+    instead of silently running the boundary layer unforced."""
+    import types
+    from legoesm.ocean.scm_forcing import build_ocean_surface_forcing_struct
+    scm, _ = _epbl_scm(-200.0, False, nsteps=1)
+    sfc = build_ocean_surface_forcing_struct(
+        scm.forcing, 0.0, scm.state.eta.data.shape, scm.state.T.data.dtype)
+    grid = types.SimpleNamespace(grid_lat=jnp.deg2rad(40.0))
+    scm.physics_fn(scm.state, grid, scm.z_coord, surface_forcing=sfc)
+    with pytest.raises(ValueError, match=drop):
+        scm.physics_fn(scm.state, grid, scm.z_coord,
+                       surface_forcing=sfc._replace(**{drop: None}))
+    with pytest.raises(ValueError, match="tau_x"):
+        scm.physics_fn(scm.state, grid, scm.z_coord, surface_forcing=None)
+
+
+@pytest.mark.parametrize("fn", ["epbl_vertical_mixing", "epbl_diagnostics"])
+@pytest.mark.parametrize("drop", ["tau_x", "tau_y", "B_flux", "tke_forcing"])
+def test_kernels_refuse_missing_forcing(fn, drop):
+    """The public kernels no longer default absent forcing to zero."""
+    from legoesm.ocean.physics.vertical_mixing import epbl as mod
+    cfg = _ref_cfg()
+    h, T, S, dSV_dT, dSV_dS = _column()
+    kw = dict(tau_x=jnp.asarray([0.2]), tau_y=jnp.asarray([0.0]),
+              B_flux=jnp.asarray([0.0]), tke_forcing=jnp.zeros_like(T)[None],
+              absf=jnp.asarray([1e-4]), g=G, rho_0=RHO0)
+    args = (T[None] * 0.0, T[None] * 0.0, T[None], S[None],
+            dSV_dT[None], dSV_dS[None], h, cfg)
+    getattr(mod, fn)(*args, **kw)
+    kw[drop] = None
+    with pytest.raises(ValueError, match=drop):
+        getattr(mod, fn)(*args, **kw)
+
+
 # --- surface buoyancy through the shared helper (#2178) ---------------------
 
 def _factory_forcing(monkeypatch, salt):

@@ -12,7 +12,9 @@ from scripts.run.run_amip import (
     _ARGV_DISTRIBUTED_MODE_DEFAULT,
     _apply_aimip_classical_overrides,
     _apply_spectral_scheme_fallback,
+    _argv_distributed_flag,
     _argv_distributed_mode,
+    _argv_federates,
     _postprocess_args,
     _print_forcing_activity,
     _require_full_physics_for_amip,
@@ -5159,6 +5161,45 @@ def test_argv_distributed_mode_reads_the_config_yaml(tmp_path):
     assert _argv_distributed_mode(["--config", str(bad)]) == "mpi"
 
 
+def test_federation_needs_spmd_mode_and_the_distributed_flag():
+    """User decision 2026-10-28: the import-time hook federates only when
+    SPMD mode AND --distributed are both set.  The flag reader agrees with
+    argparse on every spelling; SPMD mode alone, or --distributed alone,
+    does not federate.
+    """
+    p = build_arg_parser()
+    for argv in (["--distributed"], [], ["--distributed-mode", "spmd"],
+                 ["--days", "1", "--distributed", "--distributed-mode", "spmd"],
+                 ["--distributed-mode=spmd", "--distributed"]):
+        assert _argv_distributed_flag(argv) is p.parse_args(argv).distributed, argv
+    # every prefix of --distributed is ambiguous with --distributed-mode
+    for abbrev in ("--distrib", "--distribute"):
+        with pytest.raises(SystemExit):
+            p.parse_args([abbrev])
+    assert _argv_distributed_flag(["--", "--distributed"]) is False
+    assert _argv_federates(["--distributed", "--distributed-mode", "spmd"]) is True
+    assert _argv_federates(["--distributed-mode", "spmd"]) is False
+    assert _argv_federates(["--distributed"]) is False
+    assert _argv_federates(["--distributed", "--distributed-mode", "mpi"]) is False
+    assert _argv_federates(["--distributed-mode", "spmd", "--", "--distributed"]) is False
+
+
+def test_import_hook_hands_the_federation_decision_to_early_init(monkeypatch):
+    """The import-time call itself passes _argv_federates: SPMD mode alone
+    does not federate, SPMD mode with --distributed does."""
+    import runpy
+    import legoesm.parallel.early_init as ei
+    seen = []
+    monkeypatch.setattr(ei, "maybe_init_jax_distributed",
+                        lambda **kw: seen.append(kw["federate"]))
+    script = str(_repo_root() / "scripts" / "run" / "run_amip.py")
+    for extra in (["--distributed-mode", "spmd"],
+                  ["--distributed", "--distributed-mode", "spmd"]):
+        monkeypatch.setattr(sys, "argv", [script, *extra])
+        runpy.run_path(script, run_name="_federation_hook_probe")
+    assert seen == [False, True]
+
+
 def test_land_snow_scheme_and_emissivity_round_trip_and_decks():
     """--land-snow-scheme / --land-snow-emissivity reach ExperimentConfig, and each
     deck states its snowpack explicitly: both bulk (moving production to the
@@ -5608,6 +5649,36 @@ def test_dry_run_exit_code_reaches_the_shell(tmp_path):
     assert proc.returncode == 1, proc.stderr[-2000:]
 
 
+def test_latlon48_deck_resolves_div4_and_cam_polar_cutoff_into_the_dycore():
+    """The lat-lon production deck (NEW lat-lon baseline 2026-10-13) resolves
+    to the MPAS deck's div-4 scale and CAM's polar-filter start, and both
+    reach the dycore the run steps (resolved config + factory, not deck text)."""
+    import math
+    from legoesm.driver.component_factory import create_atmosphere_dycore
+    from legoesm.driver.run_config_yaml import load_yaml_config
+    from legoesm.grids.latlon import create_latlon_grid
+    from legoesm.grids.vertical import make_cam6_l32_levels
+    amip = _repo_root() / "config" / "amip"
+    ll = _resolved_deck_fields(amip / "amip_production_latlon48.yaml")
+    mpas = _resolved_deck_fields(amip / "amip_production.yaml")
+    assert ll["dycore.mpas_div_damp4_scale"] == mpas["dycore.mpas_div_damp4_scale"] == 1.0
+    assert ll["dycore.use_polar_filter"] is True
+    # CAM: acos(min(0.81, 96/94)), a LATITUDE (CAM compares cos(lat) with it)
+    assert ll["dycore.polar_filter_cutoff_deg"] == 35.9041
+    assert abs(ll["dycore.polar_filter_cutoff_deg"] - math.degrees(math.acos(0.81))) < 1e-4
+    parser = build_arg_parser()
+    keys = load_yaml_config(str(amip / "amip_production_latlon48.yaml"), parser)
+    parser.set_defaults(**keys, _config_keys=frozenset(keys))
+    cfg = build_config_from_args(_postprocess_args(parser.parse_args(
+        _AMIP_DUMMY_PATHS + ["--clm-surfdata-path", "/dummy/surfdata.nc"]), parser))
+    grid = create_latlon_grid(n_lat=cfg.grid.resolution, radius=constants.R_earth,
+                              omega=constants.Omega)
+    dyn = create_atmosphere_dycore(cfg, grid, make_cam6_l32_levels(),
+                                   latlon_native_grid=grid).dyn
+    assert dyn.config.nu_div4_scale == 1.0
+    assert dyn.config.use_polar_filter is True
+    assert dyn.config.polar_filter_cutoff_deg == 35.9041
+    assert dyn.dt == cfg.dycore.dt == 450.0
 def test_mcfarlane_effgw_oro_flag_flows_to_config():
     """--mcfarlane-effgw-oro round-trips into ExperimentConfig (#1712); the
     default is CAM6's 0.125 and the production deck pins that value."""

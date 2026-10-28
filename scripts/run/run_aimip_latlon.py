@@ -103,6 +103,11 @@ def _load_run_amip():
     return mod
 
 
+def _resolved_era5_zarr(args):
+    from legoesm.training.era5_to_state import TrainingERA5Config
+    return args.era5_zarr or TrainingERA5Config().zarr_store
+
+
 def build_latlon_config(args):
     """Build an ExperimentConfig for a lat-lon C-grid AMIP run."""
     ra = _load_run_amip()
@@ -170,6 +175,10 @@ def build_latlon_config(args):
         "--days", "1",
         "--dataset", "analytical",   # IC/forcing replaced by ERA5 below
         "--ic", "standard",
+        # One coastline for land model, convection and drag: ERA5's, from the
+        # same store the run trains on (user 2026-10-28, R3/R4/R5).
+        "--land-fraction-source", "era5",
+        "--land-fraction-era5-zarr", _resolved_era5_zarr(args),
     ]
     if args.ice_skin_prognostic is not None:
         argv.append("--ice-skin-prognostic" if args.ice_skin_prognostic

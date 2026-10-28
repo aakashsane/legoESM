@@ -1314,6 +1314,14 @@ class ExperimentConfig(NamedTuple):
     # the land fraction is taken from this file and the slab-land tile
     # is activated; empty → ocean-only surface.
     land_mask_path: str = ""
+    # Where the column land fraction comes from, for the land model AND the
+    # physics alike (one coastline; user 2026-10-28, R3/R5/R6):
+    #   "topography" -- the terrain / land_mask_path above (every lane so far);
+    #   "era5"       -- the ERA5 land-sea mask from land_fraction_era5_zarr
+    #                   (required, no default); lat-lon grids only;
+    #   "zero"       -- an all-ocean column set, chosen explicitly; lat-lon only.
+    land_fraction_source: str = "topography"
+    land_fraction_era5_zarr: str = ""
     # Optional land-surface-albedo NetCDF (e.g. ICON-extpar ALB on a
     # regular lat-lon grid).  When set AND ``land_mask_path`` is set, the
     # static land albedo field replaces the latitude-band fallback used
@@ -2161,6 +2169,30 @@ class ExperimentConfig(NamedTuple):
         g = self.grid
         d = self.dycore
         errors: list[str] = []
+        if self.land_fraction_source not in ("topography", "era5", "zero"):
+            errors.append(
+                f"land_fraction_source must be topography, era5 or zero, got "
+                f"{self.land_fraction_source!r}")
+        elif self.land_fraction_source != "topography":
+            if self.grid.grid_type != "latlon":
+                errors.append(
+                    f"land_fraction_source={self.land_fraction_source!r} is only "
+                    f"supported on the lat-lon grid, not {self.grid.grid_type!r}")
+            if (self.land_fraction_source == "era5"
+                    and not self.land_fraction_era5_zarr):
+                errors.append("land_fraction_source='era5' needs "
+                              "land_fraction_era5_zarr (no default store)")
+            if self.land_mask_path:
+                errors.append(
+                    f"land_mask_path={self.land_mask_path!r} and "
+                    f"land_fraction_source={self.land_fraction_source!r} name "
+                    "two coastlines; drop one")
+            if (self.land_fraction_source == "zero"
+                    and (self.use_multilayer_land or self.slab_land_active)):
+                errors.append(
+                    "land_fraction_source='zero' with a land tile "
+                    "(use_multilayer_land / slab_land_active): land physics "
+                    "on no land")
         # Owner decision 2026-08-16: conserving form always, and any
         # NON-conserving form must ANNOUNCE itself when invoked. These are
         # warnings, not errors — the legacy/exception paths stay selectable
@@ -3181,6 +3213,7 @@ class ExperimentConfig(NamedTuple):
         # campaign three tuning waves. Refused, not warned.
         if ((self.use_multilayer_land or self.slab_land_active)
                 and not self.land_mask_path
+                and self.land_fraction_source != "era5"
                 and _idealized_topography):
             errors.append(
                 f"a land tile was requested (use_multilayer_land="
@@ -3188,8 +3221,8 @@ class ExperimentConfig(NamedTuple):
                 f"{self.slab_land_active}) with an idealized "
                 f"topography={self.topography!r} and no land-mask file, which "
                 "has NO land anywhere (f_land is 0 in every cell), so the tile "
-                "would silently no-op — pass a real elevation file to --topography, or a "
-                "--land-mask-file."
+                "would silently no-op — pass a real elevation file to --topography, a "
+                "--land-mask-file, or --land-fraction-source era5."
             )
         # The same "no land anywhere" trap, on the MESH lane, which does not use
         # surface_tiled and so never reached the check above: the flux handoff

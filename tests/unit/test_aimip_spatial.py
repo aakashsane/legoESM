@@ -719,7 +719,7 @@ def test_era5_land_fraction_on_the_aimip_t21_grid_is_earths():
 
 
 @pytest.mark.parametrize("conv,gwd", [
-    ("zhang_mcfarlane", "mcfarlane"), ("tiedtke", "none")])
+    ("zhang_mcfarlane", "mcfarlane"), ("tiedtke", "hines")])
 def test_run_aimip_training_and_eval_use_the_era5_land_mask(monkeypatch, conv,
                                                             gwd):
     """run_aimip's classical training AND its in-script eval take the spatial
@@ -792,7 +792,9 @@ def test_run_aimip_training_and_eval_use_the_era5_land_mask(monkeypatch, conv,
     with pytest.raises(_Stop):
         mod._evaluate_variant("classical", None, cfg, "unused")
     np.testing.assert_array_equal(np.asarray(seen[1][0]), np.asarray(masks[-1]))
-    assert seen[1][1] is not None   # the eval grid carries it too
+    # the eval grid carries an ERA5 load too, in grid order
+    assert any(np.array_equal(np.asarray(seen[1][1]), np.asarray(m).reshape(-1))
+               for m in masks[1:])
 
 
 def test_land_fraction_helper_always_attaches():

@@ -442,14 +442,15 @@ def test_sundqvist_rain_survival_rebuild_drains_incoming_qr():
     so an ML model trained against a teacher snapshot that exhibited
     this bug would learn to leak rain mass.
     """
-    T = jnp.array([[282.0, 276.0]])
-    q_v = jnp.array([[5.0e-3, 3.0e-3]])  # subsaturated to suppress autoconv
+    # top-down (level 0 = upper), positive dp
+    T = jnp.array([[276.0, 282.0]])
+    q_v = jnp.array([[3.0e-3, 5.0e-3]])  # subsaturated to suppress autoconv
     q_c = jnp.zeros((1, 2))
-    q_r = jnp.array([[3.0e-4, 2.0e-4]])  # nonzero rain on input
-    p_full = jnp.array([[8.5e4, 6.5e4]])
-    p_half = jnp.array([[9.5e4, 7.5e4, 5.5e4]])
-    rho = jnp.array([[1.05, 0.82]])
-    dz = jnp.array([[1200.0, 1500.0]])
+    q_r = jnp.array([[2.0e-4, 3.0e-4]])  # nonzero rain on input
+    p_full = jnp.array([[6.5e4, 8.5e4]])
+    p_half = jnp.array([[5.5e4, 7.5e4, 9.5e4]])
+    rho = jnp.array([[0.82, 1.05]])
+    dz = jnp.array([[1500.0, 1200.0]])
     hydrometeors = HydrometeorState(
         q_c=q_c, q_r=q_r,
         q_i=jnp.zeros_like(q_c),
@@ -483,5 +484,6 @@ def test_sundqvist_rain_survival_rebuild_drains_incoming_qr():
     expected_drain = float(
         jnp.sum(q_r * dp, axis=1)[0] / (constants.g * dt)
     )
+    assert expected_drain > 0.0
     assert float(physical.precipitation[0]) >= expected_drain - 1e-12
     assert float(rebuilt.precipitation[0]) >= expected_drain - 1e-12

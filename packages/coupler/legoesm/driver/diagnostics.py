@@ -519,6 +519,9 @@ class DiagnosticCollector:
             )
             if self.cf_writer is not None:
                 self.cf_writer.require_centre_sampling_on_append = True
+            self._set_cmip_regridded_grid(
+                f"the C{n} cubed-sphere grid",
+                "face-aware bilinear interpolation")
         elif grid_type in ("latlon", "gaussian") and grid is not None:
             # Structured grids: native 1-D coordinates are radians.
             native_lat = np.asarray(grid.lat)  # radians, 1-D
@@ -547,6 +550,9 @@ class DiagnosticCollector:
                 )
                 if self.cf_writer is not None:
                     self.cf_writer.require_centre_sampling_on_append = True
+                self._set_cmip_regridded_grid(
+                    f"the native {n_lat_native} x {n_lon_native} {grid_type} "
+                    "grid", "bilinear interpolation (periodic in longitude)")
         elif grid_type in ("mpas", "voronoi") and grid is not None:
             # SCVT/Voronoi unstructured cells → regular lat-lon via IDW
             # k-nearest weights (the AMIP forcing path does the inverse,
@@ -562,6 +568,24 @@ class DiagnosticCollector:
             )
             if self.cf_writer is not None:
                 self.cf_writer.require_centre_sampling_on_append = True
+            _k = int(self._voronoi_regrid_weights.idx.shape[1])
+            self._set_cmip_regridded_grid(
+                f"the MPAS Voronoi (SCVT) mesh of "
+                f"{np.asarray(grid.latCell).size} cells",
+                f"inverse-distance weighting of the {_k} nearest cell centres")
+
+    def _set_cmip_regridded_grid(self, source: str, method: str) -> None:
+        """Stamp CMIP6 ``grid_label="gr"`` and a ``grid`` description on the
+        CMOR writer: every field on this path is regridded to the regular
+        lat-lon target, so ``gn`` (native) would be false.  The writer's
+        ``gn`` default stays only where the native grid IS the target."""
+        if self.cf_writer is None:
+            return
+        self.cf_writer.grid_label = "gr"
+        self.cf_writer.grid = (
+            f"data regridded from {source} to a regular "
+            f"{180.0 / self._cmip_nlat:g} x {360.0 / self._cmip_nlon:g} "
+            f"degree latitude-longitude grid by {method}")
 
     def set_fixed_fields(
         self,

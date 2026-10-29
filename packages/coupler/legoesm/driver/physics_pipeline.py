@@ -3673,9 +3673,29 @@ def _build_gray_radiation_fn(config):
     return radiation_fn, {"scheme": gray_config, "orbit": orbit}
 
 
+def rrtmgp_config_from_experiment(config, **lane_fields):
+    """The RRTMGP config fields every lane takes from the experiment config,
+    plus the lane's own (``lane_fields``).  One builder so a new RRTMGP knob
+    reaches every lane: ``rrtmgp_use_scan`` used to reach only this pipeline.
+    ``use_scan`` None defers to ``rte_utils.recurrent_op_with_halos``, which
+    picks scan on GPU/TPU and the unrolled loop on CPU/Metal (issue #273)."""
+    from legoesm.atmosphere.physics.radiation.config import RRTMGPConfig
+    return RRTMGPConfig(
+        co2_ppmv=config.co2_ppmv,
+        ch4_ppbv=config.ch4_ppbv,
+        n2o_ppbv=config.n2o_ppbv,
+        S_0=config.S_0,
+        use_scan=getattr(config, 'rrtmgp_use_scan', None),
+        gpoint_batch_size=getattr(config, 'rrtmgp_gpoint_batch_size', 0),
+        gpoint_checkpoint=getattr(config, 'rrtmgp_gpoint_checkpoint', True),
+        column_chunk_size=getattr(config, 'rrtmgp_column_chunk_size', 0),
+        overhead_layer=bool(getattr(config, 'rrtmgp_overhead_layer', False)),
+        **lane_fields,
+    )
+
+
 def _build_rrtmgp_radiation_fn(config):
     """Build a JIT-compiled RRTMGP radiation wrapper from config."""
-    from legoesm.atmosphere.physics.radiation.config import RRTMGPConfig
     from legoesm.atmosphere.physics.radiation.rrtmgp.rrtmgp import RRTMGP
     from legoesm.atmosphere.physics.radiation.solar import (
         cos_zenith_angle, daily_mean_insolation, daylight_fraction,
@@ -3689,26 +3709,10 @@ def _build_rrtmgp_radiation_fn(config):
     # so idealized runs are bit-for-bit unchanged.
     orbit = earth_orbit() if getattr(config, "orbital_insolation", False) else None
 
-    # Issue #273 GPU tuning: defer the scan-vs-unroll choice to
-    # ``rte_utils.recurrent_op_with_halos`` when the experiment
-    # config leaves ``rrtmgp_use_scan`` at its ``None`` default —
-    # auto-picks ``True`` on GPU/TPU (one fused scan kernel) and
-    # ``False`` on CPU/Metal (unrolled).  Explicit ``True``/``False``
-    # in the experiment config still overrides for benchmarking and
-    # AD workflows.
-    _exp_use_scan = getattr(config, 'rrtmgp_use_scan', None)
-    rrtmg_config = RRTMGPConfig(
-        co2_ppmv=config.co2_ppmv,
-        ch4_ppbv=config.ch4_ppbv,
-        n2o_ppbv=config.n2o_ppbv,
+    rrtmg_config = rrtmgp_config_from_experiment(
+        config,
         sfc_emissivity=config.sfc_emissivity,
         sfc_albedo=config.albedo_ocean,
-        S_0=S_0,
-        use_scan=_exp_use_scan,
-        gpoint_batch_size=getattr(config, 'rrtmgp_gpoint_batch_size', 0),
-        gpoint_checkpoint=getattr(config, 'rrtmgp_gpoint_checkpoint', True),
-        column_chunk_size=getattr(config, 'rrtmgp_column_chunk_size', 0),
-        overhead_layer=bool(getattr(config, 'rrtmgp_overhead_layer', False)),
         include_clouds=(getattr(config, 'cloud_scheme', 'none') != 'none'),
     )
 

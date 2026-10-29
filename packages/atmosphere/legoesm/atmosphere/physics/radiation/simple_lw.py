@@ -34,8 +34,10 @@ Only CLOUD condensate enters the optical depth. Rain does not (gSAM line 54
 sums ``qcl + qci``, never ``qpl``), and RF01 is non-drizzling in any case.
 
 FAITHFULNESS. With ``cp_j_kg_k=DYCOMS_SPEC_CP_J_KG_K``,
-``density_at_inversion=False`` and gSAM's face density passed as
-``rho_half``, this module reproduces gSAM 1.8.8 ``rad_simple.f90`` to
+``density_at_inversion=False``, gSAM's face density passed as ``rho_half``
+and the hard condensate guard ``condensate_smooth_width_kg_kg=1e-30`` (see
+Edge guards; at the default width the gap is recorded there), this module
+reproduces gSAM 1.8.8 ``rad_simple.f90`` to
 round-off (oracle test: ``tests/atmosphere/test_simple_lw_oracle.py``). The
 DEFAULT configuration is the RF01 specification form instead, which differs
 from gSAM in two places, both deliberate and documented below; a third note

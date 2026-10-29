@@ -176,7 +176,7 @@ def test_effgw_oro_is_read(fx):
 # max|ours - oracle| / max|oracle| (absolute where the oracle column is zero).
 # Measured 2026-10-29 when the smooth min became the p-norm (#2241; was the
 # not-C1 sigmoid blend), re-measured the same day on the #2238 merge
-# (crit_level_floor -> CAM's c = 0, among its changes; columns 2 and 12
+# (crit_level_floor -> CAM's c = 0, among its changes; columns 1 (dT only), 2 and 12
 # changed); a change to the smooth form or its default widths
 # re-measures these (CLAUDE.md RULE 5).
 _DEFAULT_GAP = {

@@ -192,6 +192,32 @@ def _land_columns_to_local(arr, partition):
     return arr
 
 
+def _wait_for_mpi_device_work():
+    """Block until every dispatched mpi4jax op has run.  Host mpi4py
+    collectives share COMM_WORLD with mpi4jax, whose ops execute on the XLA
+    thread after async dispatch; issuing a host collective while one is in
+    flight lets ranks enter collectives in different orders (Cray MPICH:
+    "collective tags ... do not match", or a hang).  mpi4jax ops carry an
+    ordered effect, so effects_barrier waits for them.  A failure it
+    surfaces may be on this rank only, while peers walk into the next host
+    collective, so under MPI it aborts the job rather than strand them."""
+    try:
+        jax.effects_barrier()
+    except BaseException as exc:  # noqa: BLE001 - re-raised after Abort
+        try:
+            from mpi4py import MPI
+        except ImportError:
+            raise exc from None
+        comm = MPI.COMM_WORLD
+        if comm.Get_size() > 1:
+            logger.critical(
+                "  queued device work FAILED on rank %d before a host "
+                "collective (%s: %s); aborting so peers do not hang.",
+                comm.Get_rank(), type(exc).__name__, exc)
+            comm.Abort(1)
+        raise
+
+
 def _exchange_halo_cell_fields(halo_ex, fields):
     """Refresh the halo rows of several ``(n_local_cells,)`` cell fields from
     their owners in ONE message: stack the non-None fields along a trailing
@@ -1118,7 +1144,15 @@ class _MPASSfcFluxAccum:
     # 8/9 = sw_down_sfc / lw_down_sfc: CMOR rsds/rlds, and with slots 0/1
     # the upwelling pair rsus/rlus (down - net).  Strongly diurnal, so a
     # fixed-clock snapshot would carry the #1353 defect under a mean label.
-    SLOTS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13)
+    # 14 = precip_frozen (the frozen part of slot 2): CMOR prsn, a flux
+    # averaged like pr.  KNOWN BEHAVIOUR (user decision, PR #2204): a run
+    # resumed MID-WINDOW from a checkpoint written before slot 14 existed
+    # publishes prsn for that one window as the mean of the post-restart
+    # steps only (the CMOR feed gates on the window's step count,
+    # ``is_complete``, not on per-slot counts), while pr covers the whole
+    # window -- the same behaviour slots 8/9/13 shipped with.  Later
+    # windows are complete.
+    SLOTS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14)
     #: The slots the column energy budget reads (sw/lw net sfc, lw_up, sw_up,
     #: sw_dn, hfss, hfls).  After the first radiation call every one of them
     #: is non-None on EVERY step (the MPAS model holds the last radiation
@@ -5385,8 +5419,15 @@ class ModelDriver:
             # column-only volcanic file (profile None) stays in the column.
             volc_sw = get_aerosol_sw_volcanic_at_time(_acfg, day, lat_grid=lat_col)
             _trop_cfg = _acfg._replace(volcanic_enabled=False)
+            # Both reads below are at each column's own longitude, as CAM's
+            # prescribed aerosol reaches radiation (tracer_data.F90 bilinear
+            # lon/lat lininterp); radiation and the droplet proxy see the
+            # same local aerosol.
+            lon_col = jnp.asarray(
+                self._owned_lon() if lon is None else lon).reshape(ncol)
             aerosol_col = get_aerosol_at_time(
                 _acfg if volc_sw is None else _trop_cfg, day, lat_grid=lat_col,
+                lon_grid=lon_col,
             )
             aerosol_od = distribute_column_aod_to_layers(
                 jnp.asarray(aerosol_col), p_half_col,
@@ -5401,8 +5442,6 @@ class ModelDriver:
             # column's own longitude (the Andreae 2009 fit is local total
             # AOT; a zonal mean gave polluted E China and the clean N Pacific
             # one droplet number).
-            lon_col = jnp.asarray(
-                self._owned_lon() if lon is None else lon).reshape(ncol)
             self._aerosol_ccn_aod = jnp.asarray(get_aerosol_at_time(
                 _trop_cfg._replace(path=_acfg.ccn_path or _acfg.path),
                 day, lat_grid=lat_col, band="vis", lon_grid=lon_col,
@@ -7768,6 +7807,7 @@ class ModelDriver:
         canonical file.  For replicated state, only rank 0 writes and
         signals completion via a lightweight barrier.
         """
+        _wait_for_mpi_device_work()
         self._last_checkpoint_step = step
         elapsed_day = day - self.config.start_day
 
@@ -8168,6 +8208,10 @@ class ModelDriver:
             if _llc is not None:
                 _nat = _llc.to_bundle(s)
                 _save["latloncol_schema"] = np.asarray("latloncol_ckpt_v1")
+                # the div-4 scale the run stepped with (a resume refuses a
+                # different one; user decision 2026-10-26)
+                _save["latloncol_div4_scale"] = np.asarray(
+                    float(_llc.dyn.config.nu_div4_scale))
                 for _k in ("u", "v", "T", "p_s", "phis"):
                     _save[f"latloncol_{_k}"] = np.asarray(getattr(_nat, _k))
                 _names = sorted(_nat.tracers)
@@ -8944,6 +8988,19 @@ class ModelDriver:
                         "view cannot rebuild the face winds, so only a "
                         "checkpoint written by the lat-lon column lane can "
                         "restart it.")
+                # div-4 stamp (user decision 2026-10-26): a checkpoint
+                # without it predates the damping, i.e. scale 0
+                _ck_dd4 = (float(d["latloncol_div4_scale"])
+                           if "latloncol_div4_scale" in d.files else 0.0)
+                _run_dd4 = float(_llc.dyn.config.nu_div4_scale)
+                if _ck_dd4 != _run_dd4:
+                    raise ValueError(
+                        f"MPAS checkpoint {path.name} was written with div-4 "
+                        f"damping scale {_ck_dd4} (0 when the file carries no "
+                        f"latloncol_div4_scale) but this run steps with "
+                        f"{_run_dd4}: the trajectory would change at the "
+                        "restart.  Resume with the checkpoint's scale, or "
+                        "start a new run.")
                 from legoesm.atmosphere.dynamics.gcm.primitive_eq_latlon_cgrid import (
                     CGridLatLonHydrostaticState,
                 )
@@ -9992,6 +10049,7 @@ class ModelDriver:
         from legoesm.diagnostics.energy_budget import (
             column_moist_static_energy,
         )
+        _wait_for_mpi_device_work()
         comm = _MPI.COMM_WORLD
         root = comm.Get_rank() == 0
         nan_out = {k: float("nan") for k in self._ENERGY_SERIES_KEYS}
@@ -10007,6 +10065,7 @@ class ModelDriver:
         # --- B: edge halo refresh (collective).
         try:
             u_ex = vl.halo_exchange.exchange_edge_field(self.state.u.data)
+            _wait_for_mpi_device_work()
         except BaseException as exc:  # noqa: BLE001 - re-raised after Abort
             logger.critical(
                 "  energy tracker: the edge halo exchange FAILED on rank %d "
@@ -10104,6 +10163,7 @@ class ModelDriver:
         quasi-uniform SCVT).
         """
         from mpi4py import MPI as _MPI
+        _wait_for_mpi_device_work()
         vl = self._voronoi_layout
         om_c = vl.owned_mask_cells          # (n_local_cells,) bool
         om_e = vl.owned_mask_edges          # (n_local_edges,) bool
@@ -10689,6 +10749,10 @@ class ModelDriver:
         hfss = _sfc_slot(6)
         hfls = _sfc_slot(7)
         evspsbl = _sfc_slot(_evap_sfc_slot())   # the column's water flux, window mean
+        # Snowfall: the physics' own frozen surface flux (microphysics
+        # ice+snow+graupel + convective snow, the slot the land's snowfall
+        # reads), published raw like pr; None when not exported.
+        prsn = _sfc_slot(_sfc_diag_slot("precip_frozen"))
         # Clear-sky TOA pair (#843): slots populated only when
         # --clear-sky-diag is on, so these are None (fields absent from the
         # CMOR output, byte-identical) in the default configuration.
@@ -10767,6 +10831,7 @@ class ModelDriver:
             u_east=u_east,
             v_north=v_north,
             precip=precip,
+            prsn=prsn,
             phis=state.phis.data,
             tas=tas,
             ts=ts,
@@ -10938,6 +11003,7 @@ class ModelDriver:
         # deadlocking it.
         try:
             u_ex = vlayout.halo_exchange.exchange_edge_field(u_local)
+            _wait_for_mpi_device_work()
         except BaseException as exc:  # noqa: BLE001 - re-raised after Abort
             logger.critical(
                 "  CMOR feed at day %.2f: the edge halo exchange FAILED on "

@@ -752,7 +752,11 @@ def test_prognostic_clubb_couples_to_microphysics_total_water_budget():
     CLUBB conserves total water (``Σ mass·dq_v|clubb ≈ 0`` at zero surface flux),
     and ``sundqvist``'s column water budget closes to the surface precip sink, so
 
-        Σ mass·(dq_v|clubb + dq_v|μ + dq_c|μ + dq_r|μ) + precip ≈ 0 .
+        Σ (rho dz)·dq_v|clubb + Σ (dp/g)·(dq_v|μ + dq_c|μ + dq_r|μ) + precip ≈ 0 ,
+
+    each scheme in its own layer mass (CLUBB rho*dz, ``sundqvist`` dp/g since
+    R9).  Where rho*dz != dp/g this is the sum of two separate closures, not
+    the summed inventory in one coordinate.
 
     Scope: the spun-up column is supersaturated (independent of CLUBB), so the
     branch exercised is condensation → autoconversion → surface precip — exactly

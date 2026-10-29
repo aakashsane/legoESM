@@ -147,9 +147,9 @@ def test_mpas_clubb_bridge_books_dlf_on_the_post_clubb_state(mpas_case, monkeypa
     cap = {}
     real = TI.cam_pblintd_height
 
-    def spy(*a):
+    def spy(*a, **kw):
         cap["T"] = a[0]
-        return real(*a)
+        return real(*a, **kw)
     monkeypatch.setattr(TI, "cam_pblintd_height", spy)
     dt = 600.0
     fn = TI._make_mpas_turbulence(

@@ -350,8 +350,9 @@ def make_convection_physics(
         (``dq_c_conv_dt``) is NOT booked into ``q_c``; it is published as
         ``"conv_dlf"`` ``(ncol, nlev)`` in the returned carry dict for the
         combined physics to hand to the CLUBB host, which books it per
-        macmic sub-step as CAM6 does (clubb_intr.F90:2345-2386).  Only when
-        the state carries both ``q_c`` and ``q_i``; otherwise unchanged.
+        macmic sub-step as CAM6 does (clubb_intr.F90:2345-2386).  The state
+        must carry ``q_c``, ``q_i``, ``N_c`` and ``N_i`` (the species that
+        booking writes); a state lacking any of them raises ``ValueError``.
 
     Returns
     -------
@@ -888,10 +889,18 @@ def _make_hydrostatic_convection(
             # CAM6: ZM's own physics_update carries no cloud water; the CLUBB
             # host books dlf per macmic sub-step into CLDLIQ and CLDICE
             # (clubb_intr.F90:2345-2386), so it leaves here as a hand-off, not
-            # a tendency -- when the state carries both receiving species
-            # (otherwise the pre-existing all-liquid booking is kept).
-            _defer = (defer_detrainment and state.tracers is not None
-                      and "q_c" in state.tracers and "q_i" in state.tracers)
+            # a tendency.  The booking writes q_c, q_i, N_c and N_i; a state
+            # missing one would silently lose part of it, so refuse.
+            _defer = defer_detrainment
+            if _defer:
+                _missing = [n for n in ("q_c", "q_i", "N_c", "N_i")
+                            if state.tracers is None or n not in state.tracers]
+                if _missing:
+                    raise ValueError(
+                        "defer_detrainment (ZM + CLUBB macmic on the MPAS "
+                        "lane) books ZM's detrained condensate into q_c, q_i, "
+                        f"N_c and N_i; the state lacks {_missing}. Carry them "
+                        "(e.g. MG2 microphysics) or run cld_macmic_num_steps=1.")
             if _defer:
                 _dlf_pub = dq_c_conv_dt.reshape(ncol, nlev)
                 dq_c_conv_dt = jnp.zeros_like(dq_c_conv_dt)

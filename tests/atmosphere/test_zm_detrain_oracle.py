@@ -367,8 +367,9 @@ def _zm_bridge(fx, defer, names):
 
 def test_real_zm_bridge_hands_dlf_over_instead_of_booking_it():
     """With deferral the bridge books only the convective transport into q_c
-    and hands CAM's dlf over (once, not twice); without q_i it keeps the
-    pre-existing all-liquid booking and hands nothing over."""
+    and hands CAM's dlf over (once, not twice); without deferral it keeps the
+    all-liquid booking and hands nothing over; deferral on a state lacking a
+    species the CLUBB booking writes is refused."""
     fx = dict(np.load(ROOT / "tests" / "atmosphere" / "oracle_fixtures" / "zm_pblh_cam.npz"))
     all_names = tuple(nm for _, nm, _ in TRACERS)
     tend, carry = _zm_bridge(fx, True, all_names)
@@ -376,12 +377,11 @@ def test_real_zm_bridge_hands_dlf_over_instead_of_booking_it():
     assert _rel(tend.tracer_tendencies["q_c"].data, fx["oracle_dqc_convtran"]) <= TOL
     off, c_off = _zm_bridge(fx, False, all_names)
     assert "conv_dlf" not in c_off
-    no_qi = tuple(n for n in all_names if n != "q_i")
-    t2, c2 = _zm_bridge(fx, True, no_qi)
-    assert "conv_dlf" not in c2
-    for t in (off, t2):
-        assert _rel(t.tracer_tendencies["q_c"].data,
-                    fx["oracle_dlf"] + fx["oracle_dqc_convtran"]) <= TOL
+    assert _rel(off.tracer_tendencies["q_c"].data,
+                fx["oracle_dlf"] + fx["oracle_dqc_convtran"]) <= TOL
+    for drop in ("q_i", "N_c", "N_i"):
+        with pytest.raises(ValueError, match=rf"lacks \['{drop}'\]"):
+            _zm_bridge(fx, True, tuple(n for n in all_names if n != drop))
 
 
 def test_no_deferral_off_the_production_combination():

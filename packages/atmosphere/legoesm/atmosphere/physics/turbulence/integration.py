@@ -1297,12 +1297,13 @@ def _make_mpas_turbulence(
             else:
                 tracer_tends["q_c"] = turb_out.dq_c_dt.reshape(_qc_raw.shape)
         if _det is not None:
-            for _nm, _d in zip(("q_c", "q_i", "N_c", "N_i"), _det[1:]):
+            for _nm, _d, _u in zip(("q_c", "q_i", "N_c", "N_i"), _det[1:],
+                                   ("kg/kg/s", "kg/kg/s", "1/kg/s", "1/kg/s")):
                 _d = _d.reshape(state.T.data.shape)
                 _prev = tracer_tends.get(_nm)
                 if _prev is None:
                     tracer_tends[_nm] = state.T.replace(
-                        data=_d, name=f"d{_nm}_dt_detrain", units="1/s")
+                        data=_d, name=f"d{_nm}_dt_detrain", units=_u)
                 elif hasattr(_prev, "replace"):
                     tracer_tends[_nm] = _prev.replace(data=_prev.data + _d)
                 else:

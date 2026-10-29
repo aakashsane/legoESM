@@ -17,9 +17,10 @@ The exact limit of each is the MOM6 oracle test
 
 1. the smooth-default gap to MOM6, per fixture case, stored for the run with
    every switch smooth and for each unit class smooth alone (the others
-   exact), to 1e-6 relative with a 1e-12 degC floor.  Reverting any one of the
-   smoothed sites changes at least one stored gap (per-site measurements in
-   the PR for #2180);
+   exact), to 1e-6 relative with a 1e-12 degC floor.  Reverting any one of
+   the smoothed sites changes at least one stored gap, except the mech_TKE
+   spend (C6b/c), which is value-blind in the fixture and is caught by the
+   top-layer gradient test (per-site measurements in the PR for #2180);
 2. ``jax.test_util.check_grads`` at the default, on each kernel exactly at its
    kink (order 2, forward and reverse), and on the full column (order 1).
    The inputs are scaled by the default width so that the finite-difference
@@ -231,6 +232,20 @@ def test_top_layer_energy_gradient_through_zero_forcing():
 
     _check(f)
     assert float(jnp.min(jnp.abs(jax.jacfwd(f)(0.0)))) > 0.0
+    # C6c's own kink, mech_TKE + TKE_forced = 0, sits at x = -10.
+    _check(f, x0=-10.0)
+    assert float(jnp.abs(jax.jacfwd(f)(-10.0))[1]) > 0.0
+
+
+@pytest.mark.parametrize("tkef0", [-2.0, -1.0, -0.5, 0.0, 0.5])
+def test_top_layer_energy_exact_limit_is_mom6(tkef0):
+    """At sharpness = inf both outputs are MOM6's expressions exactly,
+    including the mech_TKE cap at mech_TKE + TKE_forced = 0 (tkef0 = -1)."""
+    cfg = _ref_cfg(smooth_energy_sharpness_m2j=math.inf)
+    mech = 1.0
+    conv, m = _top_layer_energy(cfg, jnp.asarray(tkef0), jnp.asarray(mech))
+    assert float(conv) == (tkef0 if tkef0 > 0.0 else 0.0)
+    assert float(m) == (max(0.0, mech + tkef0) if tkef0 <= 0.0 else mech)
 
 
 def test_full_column_gradient_at_the_cooling_case():

@@ -112,10 +112,13 @@ smooth forms are not exact at their kinks: ``max(0, 0)`` is ``ln 2 / sharpness``
   and every ``ColHt_chg`` within a few widths of 0 (either sign) is charged a
   little more, so mixing there is slightly MORE expensive than in MOM6.  The
   kernel's other three outputs (dPEc_dKd, dPE_max, dPEc_dKd_0) keep MOM6's
-  exact ``min(., 0)`` (the fixture does not exercise them), so within a width
-  of ``ColHt_chg = 0`` the returned slope is not the derivative of the smoothed
-  PE change; the Kd solve brackets with false position, so this changes only
-  its iteration path.
+  exact ``min(., 0)`` (smoothing them moves no fixture gap beyond the test
+  tolerance), so within a width of ``ColHt_chg = 0`` the returned slope is not
+  the derivative of the smoothed PE change.  The energy-limited Kd solve uses
+  that slope for its Newton steps and for its first guess, so there it can
+  take different iterates and, if it has not converged within
+  ``max_kd_its``, return a different Kd; a converged solve still lands on a
+  root of the smoothed energy balance.
   The fixture gap at Q = -200 / dt 300 s goes from 2.6e-5 to 4.7e-6 degC; Q = 0
   goes to 6.9e-6 / 2.2e-5 degC.
 - ``smooth_energy_sharpness_m2j`` (default 1e6 m^2/J, width 1e-6 J/m^2): the

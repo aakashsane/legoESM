@@ -1146,11 +1146,20 @@ class CFWriter:
         DRS-correct either way.
         """
         if self.drs_tree:
-            table_dir = (
+            dataset_dir = (
                 self.output_dir / "CMIP6" / "CMIP" / self.institution_id
                 / self.model_id / self.experiment_id / self.variant_label
-                / table_id / var_name / self.grid_label / self._drs_version
+                / table_id / var_name / self.grid_label
             )
+            # A restart leg on a later UTC date would otherwise open a new
+            # vYYYYMMDD directory and split the series; extend the latest
+            # version an earlier leg already wrote.
+            existing = sorted(
+                d.name for d in dataset_dir.glob("v*")
+                if d.is_dir() and re.fullmatch(r"v\d{8}", d.name)
+            ) if dataset_dir.is_dir() else []
+            table_dir = dataset_dir / (existing[-1] if existing
+                                       else self._drs_version)
         else:
             table_dir = self.output_dir / table_id
         table_dir.mkdir(parents=True, exist_ok=True)

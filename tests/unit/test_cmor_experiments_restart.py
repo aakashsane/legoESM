@@ -193,6 +193,29 @@ class TestCFWriter(unittest.TestCase):
             self.assertEqual(ds.attrs["Conventions"], "CF-1.7 CMIP-6.2")
             ds.close()
 
+    def test_drs_tree_restart_on_later_date_extends_same_version(self):
+        """A DRS-tree restart leg built on a later UTC date appends to the
+        version directory the first leg wrote, not a new vYYYYMMDD."""
+        from legoesm.io.cmor_output import CFWriter
+
+        lat = np.linspace(-87.5, 87.5, 36)
+        lon = np.linspace(2.5, 357.5, 72)
+        data = np.full((36, 72), 288.0, dtype=np.float32)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for leg, version in enumerate(("v20261028", "v20261029")):
+                w = CFWriter(output_dir=tmpdir, experiment_id="amip",
+                             model_id="legoESM-1-0", freq="mon",
+                             drs_tree=True)
+                w._drs_version = version  # the leg's construction date
+                w.write_field(var_name="tas", data=data,
+                              time=15.0 + 31.0 * leg,
+                              time_bounds=(31.0 * leg, 31.0 * leg + 31.0),
+                              lat=lat, lon=lon)
+                w.close()
+            files = sorted(Path(tmpdir).rglob("*.nc"))
+            self.assertEqual(len(files), 1, [str(f) for f in files])
+            self.assertEqual(files[0].parent.name, "v20261028")
+
     def test_write_3d_field(self):
         """Can write a 3D (pressure-level) field."""
         from legoesm.io.cmor_output import CFWriter, CMIP6_PLEV19

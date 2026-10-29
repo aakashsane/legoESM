@@ -208,6 +208,11 @@ class PhysicsPipeline:
         # rad_update_steps is the radiation sub-cycle cadence; the slab
         # land steps by ``rad_update_steps * dt`` each radiation call.
         self.f_land = None
+        # True only when the driver has checked that the run has NO land
+        # anywhere; then McFarlane gets an explicit zero land fraction.  A
+        # pipeline the driver never marked (built elsewhere, e.g. the lat-band
+        # SPMD band pipeline) keeps passing None, which McFarlane refuses.
+        self.run_has_no_land = False
         self.albedo_land = None
         self.rad_update_steps = 1
         # Optional MULTILAYER (Richards) land tile.  When ``land_ml_cfg`` is set the
@@ -2278,14 +2283,33 @@ class PhysicsPipeline:
                     self.sigma_coord, T_col.dtype)
             _mcf_kw = {}
             if self._gwd_mcfarlane:
-                # CAM6 gw_oro: pref_edge = coordinate at p_ref (CAM psr) and
-                # cam_in%landfrac.  Tracer diffusion is not threaded on this
-                # lane (tracers=None).
+                # CAM6 gw_oro: pref_edge = coordinate at p_ref (CAM psr),
+                # cam_in%landfrac and every carried constituent (CAM diffuses
+                # all pcnst, gw_common.F90:673-678).  p_ref_half is evaluated
+                # at trace time so the kernel's model-top check runs under jit.
+                with jax.ensure_compile_time_eval():
+                    _p_ref_half = reference_interface_pressures(
+                        self.sigma_coord, T_col.dtype)
                 _mcf_kw = {
-                    "p_ref_half": reference_interface_pressures(
-                        self.sigma_coord, T_col.dtype),
-                    "land_frac_col": (None if self.f_land is None
-                                      else ad.flatten_2d(self.f_land)),
+                    "p_ref_half": _p_ref_half,
+                    # A run the driver marked as having no land anywhere
+                    # (aquaplanet, land_fraction_source = zero) IS CAM
+                    # landfrac = 0: zero orographic drag, not a missing input
+                    # (codex + GLM, PR #2238).  Unmarked + None stays None so
+                    # the kernel refuses it loudly.
+                    "land_frac_col": (
+                        ad.flatten_2d(self.f_land) if self.f_land is not None
+                        else jnp.zeros((ad.ncol,), dtype=T_col.dtype)
+                        if self.run_has_no_land else None),
+                    # N_c / N_r carries are per MASS [1/kg] (checkpoint stamp
+                    # number_convention = per_mass), N_i per mass too, so the
+                    # mixing-ratio diffusion applies to them unchanged.
+                    "tracers": {
+                        k: ad.flatten_3d(x) for k, x in (
+                            ("q_v", q_v), ("q_c", q_c), ("q_r", q_r),
+                            ("q_i", q_i), ("q_s", q_s), ("q_g", q_g),
+                            ("N_c", N_c), ("N_r", N_r), ("N_i", N_i))
+                        if x is not None},
                 }
             if self._gwd_prognostic:
                 # Prognostic spectral GWD (issue #413): the wave-action
@@ -2346,6 +2370,19 @@ class PhysicsPipeline:
             du_dt = du_dt + ad.unflatten_3d(gwd_out.du_dt)
             dv_dt = dv_dt + ad.unflatten_3d(gwd_out.dv_dt)
             dT_dt = dT_dt + ad.unflatten_3d(gwd_out.dT_dt)
+            # GW eddy diffusion of the constituents (mcfarlane).
+            _gdq = {k: ad.unflatten_3d(x)
+                    for k, x in (gwd_out.dq_dt or {}).items()}
+            if _gdq:
+                dq_v_dt = dq_v_dt + _gdq["q_v"]
+                dq_c_dt = dq_c_dt + _gdq.get("q_c", 0.0)
+                dq_r_dt = dq_r_dt + _gdq.get("q_r", 0.0)
+                dq_i_dt = dq_i_dt + _gdq.get("q_i", 0.0)
+                dq_s_dt = dq_s_dt + _gdq.get("q_s", 0.0)
+                dq_g_dt = dq_g_dt + _gdq.get("q_g", 0.0)
+                dN_c_dt = dN_c_dt + _gdq.get("N_c", 0.0)
+                dN_r_dt = dN_r_dt + _gdq.get("N_r", 0.0)
+                dN_i_dt = dN_i_dt + _gdq.get("N_i", 0.0)
 
         # JOINT vapour donor clamp (codex cycle-3, applied on ASSEMBLED totals).
         # Kessler reports the saturation condensation it performed

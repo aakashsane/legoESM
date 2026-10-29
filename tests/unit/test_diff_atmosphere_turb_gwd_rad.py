@@ -223,7 +223,9 @@ def _gwd_leaf(scheme):
     if scheme == "mcfarlane":
         # CAM6 gw_oro needs the reference interfaces (CAM pref_edge).
         import functools
-        fn = functools.partial(fn, p_ref_half=_gwd_p_ref_half())
+        fn = functools.partial(
+            fn, p_ref_half=_gwd_p_ref_half(),
+            land_frac_col=jnp.ones(_gwd_column()["u"].shape[0]))
     return fn, cfg
 
 
@@ -836,7 +838,8 @@ class TestGWDCompositeGrad:
         def loss(u):
             out, _spec = fn(*_gwd_args(col, u=u), 300.0, cfg, None,
                             h_topo_col=jnp.full((ncol,), 400.0),
-                            mcfarlane_kwargs={"p_ref_half": _gwd_p_ref_half()})
+                            mcfarlane_kwargs={"p_ref_half": _gwd_p_ref_half(),
+                                              "land_frac_col": jnp.ones(ncol)})
             return jnp.sum(out.du_dt ** 2)
 
         grad = jax.grad(loss)(col["u"])
@@ -862,7 +865,8 @@ class TestGWDCompositeGrad:
         def loss(spectrum_in):
             out, spec_new = fn(*_gwd_args(col), 300.0, cfg, spectrum_in,
                                h_topo_col=jnp.full((ncol,), 400.0),
-                               mcfarlane_kwargs={"p_ref_half": _gwd_p_ref_half()})
+                               mcfarlane_kwargs={"p_ref_half": _gwd_p_ref_half(),
+                                              "land_frac_col": jnp.ones(ncol)})
             return jnp.sum(spec_new ** 2) + jnp.sum(out.du_dt ** 2)
 
         grad = jax.grad(loss)(spec)
@@ -1041,7 +1045,7 @@ class TestGWDHydrostaticBridgeGrad:
         from legoesm.grids.cubed_sphere import create_cubed_sphere
         from legoesm.grids.vertical import create_sigma_coordinate
 
-        grid = create_cubed_sphere(n)
+        grid = create_cubed_sphere(n)._replace(land_frac=jnp.ones(6 * n * n))
         sigma = create_sigma_coordinate(nlev, dtype=jnp.float64)
         sigma_full = jnp.asarray(sigma.sigma_full, dtype=jnp.float64)
         shape_3d = (6, n, n, nlev)

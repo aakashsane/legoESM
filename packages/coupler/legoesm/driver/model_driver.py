@@ -3044,6 +3044,27 @@ class ModelDriver:
                 f"  Land-sea mask: {land_mask_path} "
                 f"(land fraction mean={float(jnp.mean(self._f_land)):.3f})"
             )
+        _lf_src = self.config.land_fraction_source
+        if _lf_src != "topography":
+            # validate_strict keeps era5/zero to lat-lon grids
+            if _lf_src == "era5":
+                from legoesm.training.aimip_spatial import era5_land_fraction
+                from legoesm.training.era5_to_state import TrainingERA5Config
+                # column lane: regrid on the native grid, then flatten
+                _nat = getattr(self, "_latlon_native_grid", None)
+                self._f_land = era5_land_fraction(
+                    self.grid if _nat is None else _nat, TrainingERA5Config(
+                        zarr_store=self.config.land_fraction_era5_zarr,
+                        flux_zarr="")   # "" = the named store, no other
+                ).reshape(shape_2d).astype(_sd)
+            elif _lf_src == "zero":
+                self._f_land = jnp.zeros(shape_2d, dtype=_sd)
+            else:
+                raise ValueError(
+                    f"unknown land_fraction_source {_lf_src!r}")
+            logger.info(
+                f"  Land fraction source: {_lf_src} "
+                f"(mean={float(jnp.mean(self._f_land)):.3f})")
 
         # Attach land_frac for convection and orographic GWD on grids carrying
         # the field (VoronoiMesh and GaussianGrid).  Where it comes from:
@@ -4017,6 +4038,7 @@ class ModelDriver:
                  else bool(jnp.any(self._f_land > 0)))
         )
         self._has_land_anywhere = _has_land
+        self.physics.run_has_no_land = not _has_land
         if _has_land:
             from legoesm.surface_albedo import land_vegetation_albedo
             from legoesm.core.precision import get_policy
@@ -17884,7 +17906,8 @@ class ModelDriver:
         # REAL unified physics at TILE ncol (refuses land / horizontal-
         # operator convection inside).
         tile_su, _tile_pipeline = build_tile_step_unified(
-            self.grid, self.sigma, cfg, kt)
+            self.grid, self.sigma, cfg, kt,
+            run_has_no_land=self.physics.run_has_no_land)
         self._record_pipeline_physics(_tile_pipeline)
 
         ghg_vmr = ctx["ghg_vmr"]
@@ -18478,6 +18501,10 @@ class ModelDriver:
         band_grid = build_band_grids_atm(self.grid, n_dev)[0]
         band_physics = build_physics_pipeline(
             band_grid, self.sigma, cfg, spacing_grid=self.grid)
+        # the band pipeline carries no f_land; a land-free run's mark still
+        # holds per band (McFarlane then gets zeros, a land run gets None
+        # and refuses)
+        band_physics.run_has_no_land = self.physics.run_has_no_land
         self._record_pipeline_physics(band_physics)
         # Radiation cadence.  ``make_sharded_operator_split_step`` computes the
         # serial prologue's predicate per step (``_need_rad_and_time``,

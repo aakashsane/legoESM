@@ -62,10 +62,23 @@ concerns cloud ice:
    whatever it calls cloud condensate. Both stratocumulus decks are warm, so
    the two agree for every case currently driven by this module.
 
-Edge guards follow gSAM exactly, in every configuration: a layer contributes
-optical depth only where its condensate is strictly positive (line 54,
-``if(qcl+qci .gt. 0.)``), and the inversion is the face above the highest
-layer with ``q_t`` STRICTLY above the isoline (line 57, ``.gt. 0.008``).
+Edge guards. The inversion is the face above the highest layer with ``q_t``
+STRICTLY above the isoline, as gSAM (line 57, ``.gt. 0.008``), in every
+configuration. gSAM counts optical depth only where condensate is strictly
+positive (line 54, ``if(qcl+qci .gt. 0.)``); condensate is traced state, so
+the default is the smooth form ``q * sigmoid(q / w)`` with
+``w = condensate_smooth_width_kg_kg`` (1e-6 kg/kg): exactly zero at ``q = 0``,
+derivative 1/2 there instead of 0, NaN propagates.  The hard gSAM guard is the
+limit ``w -> 0`` (``w = 1e-30`` reproduces it; ``w <= 0`` is refused).
+KNOWN DIFFERENCE at the default ``w`` vs the gSAM oracle (gSAM knobs, 9
+fixture columns, pinned per column in the oracle test, metric
+|a-b|/max(|a|,|b|)): flux up to 5.5e-5 relative (1.2e-3 W/m^2, stretched RF01
+grid) on the ordinary cloudy columns and 1.4e-4 (3.0e-3 W/m^2) on the
+negative-condensate columns; heating up to 1.1e-2 relative (9.2e-8 K/s) on the
+ordinary columns and 1.0 relative (4.9e-7 K/s) on the negative-condensate
+columns; the clear column is unchanged.  Cells with 0 < q_cond ~< 1e-5 kg/kg
+lose some optical depth (sigmoid(q/w) < 1); negative condensate keeps a small
+negative optical depth.  Measured 2026-10-29 (#2222).
 
 VALIDITY: this is a boundary-layer fit, not a column radiation solver. The
 clear-sky term grows as ``(z - z_i)^(4/3)``, so on a deep column it reaches
@@ -86,6 +99,7 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 
 from legoesm import constants
@@ -180,6 +194,10 @@ __param_spec__ = {
                 "the inversion as the 8 g/kg q_t isoline, and it enters through "
                 "an integer level selection that carries no gradient anyway."
             ),
+            "condensate_smooth_width_kg_kg": (
+                "smoothing width of the gSAM q_cond > 0 guard (RULE 5), not a "
+                "closure; the hard guard is w -> 0."
+            ),
             "cp_j_kg_k": (
                 "thermodynamic constant, not a closure: constants.c_pd here, "
                 "the DycomsII intercomparison's own value when reproducing "
@@ -196,6 +214,8 @@ _F1_W_M2 = 22.0             # cloud-base flux jump [W/m^2]     (gSAM coef1)
 _KAPPA_M2_KG = 85.0         # LW mass absorption [m^2/kg]      (gSAM xk)
 _DIVERGENCE_S = 3.75e-6     # large-scale divergence D [1/s]   (gSAM f0)
 _QT_INVERSION_KG_KG = 8.0e-3   # q_t isoline defining z_i [kg/kg]
+# Width of the smooth q_cond > 0 guard (codex + GLM 2026-10-29, RULE 5).
+_CONDENSATE_SMOOTH_WIDTH_KG_KG = 1.0e-6
 # The DycomsII intercomparison's own c_p (gSAM ``cp_spec``), kept for callers
 # that want to match the spec rather than this repo's thermodynamic constant.
 DYCOMS_SPEC_CP_J_KG_K = 1015.0   # const-ok: DycomsII intercomparison spec c_p,
@@ -221,6 +241,9 @@ class SimpleLWConfig(NamedTuple):
     #         the module docstring, Faithfulness point 2). The caller must
     #         then pass ``rho_half``.
     density_at_inversion: bool = True
+    # Width w of the smooth condensate guard q*sigmoid(q/w) [kg/kg]; gSAM's
+    # hard q > 0 guard is w -> 0 (1e-30 reproduces it).  Must be > 0.
+    condensate_smooth_width_kg_kg: float = _CONDENSATE_SMOOTH_WIDTH_KG_KG
 
 
 def simple_lw_inversion_height(q_total, z_half, config: SimpleLWConfig):
@@ -276,9 +299,15 @@ def simple_lw_net_upward_flux(q_cond, q_total, rho, dz, z_half,
     All profile axes are ordered BOTTOM-UP (index 0 nearest the surface),
     which is the orientation the cumulative optical depths are defined in.
     """
-    # Optical-depth increment per layer, cloud condensate only, and only
-    # where it is strictly positive (gSAM line 54: if(qcl+qci .gt. 0.)).
-    dq = config.kappa_m2_kg * rho * jnp.where(q_cond > 0.0, q_cond, 0.0) * dz
+    # Optical-depth increment per layer, cloud condensate only; gSAM counts
+    # it only where strictly positive (line 54: if(qcl+qci .gt. 0.)), here the
+    # smooth q*sigmoid(q/w) whose limit w -> 0 is that guard (RULE 5).
+    w = config.condensate_smooth_width_kg_kg
+    if not w > 0.0:
+        raise ValueError(
+            f"simple_lw: condensate_smooth_width_kg_kg must be > 0, got {w!r} "
+            "(the hard gSAM guard is the limit w -> 0, e.g. 1e-30)")
+    dq = config.kappa_m2_kg * rho * q_cond * jax.nn.sigmoid(q_cond / w) * dz
     # Cumulative optical depth at the TOP face of each layer, padded with the
     # surface face, where nothing lies below.
     pad = [(0, 0)] * (dq.ndim - 1) + [(1, 0)]

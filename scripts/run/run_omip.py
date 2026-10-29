@@ -2963,6 +2963,7 @@ def _jra55_step(state, step_idx, dt, model, jra55_state):
         jra55_to_freshwater,
         load_jra55_slice,
     )
+    from legoesm.ocean.freshwater import net_freshwater_flux
     from legoesm.ocean.state import OceanSurfaceForcing
 
     day = float(step_idx) * dt / 86400.0
@@ -3025,7 +3026,10 @@ def _jra55_step(state, step_idx, dt, model, jra55_state):
         q_net=q_net,
         tau_x=tile_resp.tau_x * ramp,
         tau_y=tile_resp.tau_y * ramp,
-        freshwater=None,  # using the structured FreshwaterForcing path
+        # Mass and salt go through model.step(freshwater=fw); this copy is the
+        # vertical-mixing surface-buoyancy channel only (#2234), same form as
+        # the sea-ice blend: P - E + R + ice_fw, SSS restoring excluded.
+        freshwater=net_freshwater_flux(fw._replace(restoring=None)),
     )
 
     if jra55_state.get("enable_sponge", False):
@@ -3609,7 +3613,7 @@ def _build_jra55_block_fn(model, jra55_state, dt, spmd_step=None):
     from legoesm.coupler.coupler import ocean_tile_response
     from legoesm.coupler.ocean_forcing import omip_sea_ice_surface_forcing
     from legoesm.core.coupling_fields import AtmToSurface
-    from legoesm.ocean.freshwater import FreshwaterForcing
+    from legoesm.ocean.freshwater import FreshwaterForcing, net_freshwater_flux
     from legoesm.ocean.state import OceanSurfaceForcing
 
     coupler_cfg = jra55_state["coupler_cfg"]
@@ -3844,6 +3848,12 @@ def _build_jra55_block_fn(model, jra55_state, dt, spmd_step=None):
                     dt=dt, grid=ice_grid,
                     ocean_mask=state_in.land_mask.data,
                 )
+            else:
+                # Ice off: fill the vertical-mixing buoyancy channel the blend
+                # fills when ice is on (#2234); mass and salt still go through
+                # freshwater=fw only.
+                sf = sf._replace(freshwater=net_freshwater_flux(
+                    fw._replace(restoring=None)))
             if zero_fluxes:
                 fw = jax.tree_util.tree_map(jnp.zeros_like, fw)
                 sf = jax.tree_util.tree_map(jnp.zeros_like, sf)
@@ -3925,7 +3935,7 @@ def _build_jra55_block_fn_interp(model, jra55_state, dt, spmd_step=None):
     from legoesm.coupler.coupler import ocean_tile_response
     from legoesm.coupler.ocean_forcing import omip_sea_ice_surface_forcing
     from legoesm.core.coupling_fields import AtmToSurface
-    from legoesm.ocean.freshwater import FreshwaterForcing
+    from legoesm.ocean.freshwater import FreshwaterForcing, net_freshwater_flux
     from legoesm.ocean.state import OceanSurfaceForcing
     from legoesm.atmosphere.physics.radiation.solar import (
         cos_zenith_angle, solar_declination,
@@ -4220,6 +4230,11 @@ def _build_jra55_block_fn_interp(model, jra55_state, dt, spmd_step=None):
                         dt=dt, grid=ice_grid,
                         ocean_mask=state_in.land_mask.data,
                     )
+                else:
+                    # Ice off: same buoyancy-channel fill as the block path
+                    # (#2234).
+                    sf = sf._replace(freshwater=net_freshwater_flux(
+                        fw._replace(restoring=None)))
                 if zero_fluxes:
                     fw = jax.tree_util.tree_map(jnp.zeros_like, fw)
                     sf = jax.tree_util.tree_map(jnp.zeros_like, sf)

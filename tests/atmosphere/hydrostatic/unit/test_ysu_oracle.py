@@ -45,9 +45,10 @@ FIXTURE = Path(__file__).resolve().parents[2] / "oracle_fixtures" / "ysu.npz"
 # Hard limit = 1e300: the oracle's bulk-Ri test compares values that are 0 in
 # exact arithmetic (a constant-theta_v layer against brcr = 0) and differ from 0
 # by round-off (~1e-13); a sharpness of 1e12 leaves such a level half-crossed.
-HARD = dict(pbl_sharpness=1e300, region_sharpness=1e300, ri_sharpness=1e300)
+HARD = dict(pbl_sharpness=1e300, region_sharpness=1e300, ri_sharpness=1e300,
+            entrainment_cutoff_sharpness=1e300)
 HARD_CFG = dict(pbl_smooth_sharpness=1e300, blend_pbl_sharpness=1e300,
-                blend_ri_sharpness=1e300)
+                blend_ri_sharpness=1e300, entrainment_cutoff_sharpness=1e300)
 SFC_KEYS = ("br", "psim", "psih", "wspd", "znt", "u10", "v10", "xland")
 
 
@@ -89,7 +90,7 @@ def _kernel(fx, sharp=HARD, dtype=jnp.float64, **over):
                       float(fx["dt"]), **sharp)
 
 
-def _wrapper(fx, cfg_kw, dtype=jnp.float64):
+def _wrapper(fx, cfg_kw, dtype=jnp.float64, wrf=True):
     """ysu_turbulence on the WRF path with the oracle's surface fluxes
     prescribed (ustar = sqrt(|tau|/rho_low) reproduces the oracle's ust)."""
     f = {k: jnp.asarray(fx[f"in_{k}"], dtype) for k in
@@ -105,7 +106,7 @@ def _wrapper(fx, cfg_kw, dtype=jnp.float64):
     zm = 0.5 * (f["zi"][:, :-1] + f["zi"][:, 1:])
     return ysu_turbulence(f["u"], f["v"], f["T"], f["q"], f["p_full"], f["p_half"], zm,
                           f["zi"], f["T"][:, -1], f["q"][:, -1], rho, float(fx["dt"]), cfg,
-                          surface_layer=_sfc(fx, dtype))
+                          surface_layer=_sfc(fx, dtype) if wrf else None)
 
 
 def test_fixture_provenance(fx):
@@ -209,6 +210,12 @@ def test_surrogate_only_fields_refused_on_wrf_path(fx):
         _wrapper(fx, dict(countergrad_coeff=jnp.asarray(6.5)))
 
 
+def test_wrf_only_fields_refused_on_legacy_path(fx):
+    assert _wrapper(fx, {}, wrf=False).h_pbl.shape == (fx["in_T"].shape[0],)
+    with pytest.raises(ValueError, match="entrainment_cutoff_sharpness"):
+        _wrapper(fx, dict(entrainment_cutoff_sharpness=5.0), wrf=False)
+
+
 def _budgets(fx, dT, dq, du):
     """Column theta-enthalpy and water change minus the surface sensible-heat
     and water flux (the oracle's flux-form solve conserves both), and the
@@ -246,11 +253,8 @@ def _grads(fx, dtype, sharp):
 @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
 @pytest.mark.parametrize("smooth", ["default", "hard"])
 def test_grad_finite_on_fixture_columns(fx, dtype, smooth):
-    cfg = YSUConfig()
     # near-hard 1e12 (1e300 is not representable in fp32)
-    sharp = dict.fromkeys(HARD, 1e12) if smooth == "hard" else dict(
-        pbl_sharpness=cfg.pbl_smooth_sharpness, region_sharpness=cfg.blend_pbl_sharpness,
-        ri_sharpness=cfg.blend_ri_sharpness)
+    sharp = dict.fromkeys(HARD, 1e12) if smooth == "hard" else _default_sharp()
     for gr in _grads(fx, dtype, sharp):
         assert gr.dtype == dtype
         assert bool(jnp.all(jnp.isfinite(gr)))
@@ -265,46 +269,46 @@ def test_eager_jit_parity(fx):
 
 
 # ---------------------------------------------------------------------------
-# RULE 5: the smooth default (YSUConfig's three sharpness fields) vs the oracle.
+# RULE 5: the smooth default (YSUConfig's four sharpness fields) vs the oracle.
 # The hard limit (1e300) matches the oracle to TOL (tests above); at the
 # default the port differs from the oracle by the per-case gaps below,
 # max |ours - oracle| / max |oracle| per fixture column and field (``_rel``:
-# 0 where both are identically 0), measured 2026-10-28 on this fixture
+# 0 where both are identically 0; inf where only the oracle is 0: weak_unstable's
+# delta, whose soft PBL flag is small but non-zero), measured 2026-10-29 on this fixture
 # (fp64, CPU).  A change to the smooth forms or their default widths
 # re-measures and updates this table in the same PR.
 # ---------------------------------------------------------------------------
 GAP_FIELDS = ('hpbl', 'wstar', 'delta', 'exch_h', 'exch_m', 'du', 'dv', 'dT', 'dq')
 DEFAULT_GAP = {
-    'real_cell8116':             (8.4731860680e-02, 9.8436741230e-02, 8.5737611029e-02, 2.2702037809e-01, 2.3827153421e-01, 5.7733396013e-02, 1.1568139105e-01, 1.5519775383e-01, 1.8961917825e-01),
-    'real_cell17416':            (4.3535691580e-10, 1.9438892394e-03, 4.2736257331e-04, 3.2970522479e-03, 6.2668372076e-03, 6.3476961029e-02, 3.9500966466e-02, 4.2334320536e-02, 4.7862830004e-02),
-    'real_cell33109':            (2.5383587192e-01, 0.0000000000e+00, 0.0000000000e+00, 2.0366651120e-01, 7.8574564883e-02, 1.3946716456e-03, 3.6328458986e-02, 9.8720765100e-04, 2.2421662894e-03),
-    'trop_ocean_deep':           (7.1008499141e-02, 1.9615891892e-02, 2.3496995909e-02, 4.8745704002e-01, 4.4310826249e-01, 1.1111646052e-01, 1.7854590176e-01, 7.4184100592e-02, 2.3365157575e-01),
-    'midlat_land_summer':        (1.2832474287e-02, 1.8664372671e-03, 5.7541302808e-03, 2.8135324884e-02, 3.5866117534e-02, 1.3768929465e-01, 1.5851171515e-01, 6.1043272267e-02, 1.4945056676e-01),
-    'cin_capped':                (2.6080970433e-02, 1.7298818987e-02, 7.0110201362e-03, 8.7421926545e-02, 7.5654027996e-02, 1.2772171354e-02, 3.5318630403e-01, 1.2485679898e-01, 1.4413307749e-01),
-    'polar_dry':                 (1.4054477763e-02, 0.0000000000e+00, 0.0000000000e+00, 1.8453365252e-02, 1.7023634124e-02, 1.9995343377e-03, 1.4654436807e-02, 7.2439923901e-03, 1.3773539264e-02),
-    'desert_high_lcl':           (2.3177394423e-03, 1.0386601117e-03, 1.2250237587e-03, 7.3275295804e-03, 7.6505043351e-03, 7.7933287061e-02, 1.0725848733e-01, 3.1788312253e-02, 8.7079972268e-02),
-    'trop_zero_q_aloft':         (8.6365127963e-02, 3.0613778765e-02, 2.5949642572e-02, 4.9452326624e-01, 4.4640370001e-01, 1.2800178100e-01, 1.7261822831e-01, 5.5057029916e-02, 2.1374891135e-01),
-    'trop_ocean_strong':         (8.1077580980e-02, 3.0601043181e-02, 1.8521205321e-02, 4.2053781904e-01, 3.7846604994e-01, 8.4654936313e-02, 1.4879302327e-01, 5.6985234685e-02, 1.3144955942e-01),
-    'midlat_supercell':          (1.7913598158e-01, 1.8895896431e-02, 8.5996327246e-02, 2.9955721496e-01, 3.3041438863e-01, 6.4119545860e-01, 2.7709183282e-01, 1.9571010088e-01, 1.1966387344e-01),
-    'monsoon_land':              (2.1350582376e-02, 6.0518455423e-03, 1.2243142325e-03, 1.7853278670e-02, 2.4420698224e-02, 5.9736980717e-02, 8.1930733159e-02, 2.3561825253e-02, 9.8223309649e-02),
-    'nocturnal_elevated':        (2.6808412351e-12, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 8.2427689320e-15, 3.0442823667e-13, 8.4418774577e-14, 1.3122861773e-14),
-    'cold_deep_ocean':           (6.9769108256e-02, 6.0158393743e-02, 2.4105397376e-02, 1.7102755105e-01, 1.3534186549e-01, 1.0399512658e-02, 1.2398671514e-01, 4.4781563019e-02, 1.1245826012e-01),
-    'all_snow_land':             (1.4593130608e-02, 0.0000000000e+00, 0.0000000000e+00, 8.4582059064e-02, 1.2222151912e-01, 2.6233069219e-03, 2.0539578709e-01, 5.2857619766e-03, 8.5127399762e-02),
-    'tibet_elevated':            (1.0491659874e-02, 1.2141788641e-03, 3.5087913379e-03, 2.4896132455e-02, 3.1215103573e-02, 8.1512353696e-02, 1.2686038334e-01, 3.6869685936e-02, 1.0947924748e-01),
-    'calm_zero_flux':            (3.3218986694e-01, 0.0000000000e+00, 0.0000000000e+00, 1.5298252124e-01, 2.1840396376e-02, 8.0372666077e-05, 0.0000000000e+00, 2.9845717748e-02, 7.8614996707e-02),
-    'weak_unstable':             (2.8289002534e-01, 8.6583596884e-02, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 4.8216789781e-15, 8.6190803420e-13, 3.8686214824e-11, 1.5400999024e-12),
-    'neutral_windy':             (1.5499090324e-01, 0.0000000000e+00, 0.0000000000e+00, 3.9354134796e-01, 4.1040465099e-01, 9.4863703721e-02, 2.1806462207e-01, 1.9514400430e-01, 1.9517440440e-01),
-    'tibet_deep_mixed':          (2.5010214120e-01, 1.9762073588e-01, 1.1617481935e-01, 9.4962673659e-01, 7.3491168980e-01, 8.9299914456e-01, 0.0000000000e+00, 3.2500694400e-01, 9.0033540129e-02),
-    'polar_dry_water':           (5.8828941867e-03, 0.0000000000e+00, 0.0000000000e+00, 7.0548397153e-03, 6.5398889078e-03, 7.9533797967e-04, 5.5271497003e-03, 2.9220089920e-03, 5.1612531529e-03),
-    'nocturnal_elevated_water':  (6.5758077549e-12, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 8.2427689320e-15, 3.0442823667e-13, 8.4418774577e-14, 1.3122861773e-14),
+    'real_cell8116':             (8.4731867948e-02, 9.8436741230e-02, 8.5737634218e-02, 2.2702038777e-01, 2.3827154930e-01, 7.1020089117e-02, 1.7562551585e-01, 1.6052306169e-01, 1.9270952295e-01),
+    'real_cell17416':            (1.3014312549e-03, 1.9438892394e-03, 3.6219935601e-03, 5.7256676331e-03, 8.4242178175e-03, 7.0008422628e-02, 4.3647567106e-02, 4.4592670311e-02, 5.3636421887e-02),
+    'real_cell33109':            (2.5383386001e-01, 0.0000000000e+00, 0.0000000000e+00, 2.0366597700e-01, 7.8574318887e-02, 1.3925748648e-03, 3.6327926018e-02, 9.8515471066e-04, 2.2375310393e-03),
+    'trop_ocean_deep':           (4.6682589947e-02, 1.9615891892e-02, 1.8737140639e-01, 2.5083504226e-01, 2.2618182208e-01, 3.2354157152e-02, 7.7563519221e-02, 5.4322080003e-02, 1.1567922154e-01),
+    'midlat_land_summer':        (1.5343935638e-02, 1.8664372671e-03, 1.0983823856e-02, 3.2364821823e-02, 4.1234500571e-02, 1.3461381780e-01, 1.6571094701e-01, 6.3036911598e-02, 1.6182134969e-01),
+    'cin_capped':                (1.3498342241e-02, 1.7298818987e-02, 6.0602193756e-02, 4.5749624873e-02, 3.8515692505e-02, 2.5527696896e-02, 3.0392120605e-01, 1.0839795951e-01, 1.2401910440e-01),
+    'polar_dry':                 (2.4152472865e-02, 0.0000000000e+00, 0.0000000000e+00, 4.5262078124e-02, 4.1751401132e-02, 4.9305825446e-03, 3.6033691757e-02, 1.7893218305e-02, 3.4023203812e-02),
+    'desert_high_lcl':           (4.9735629404e-03, 1.0386601117e-03, 6.4769668595e-03, 1.0257709391e-02, 1.0553927991e-02, 7.8609845545e-02, 1.0753770773e-01, 3.1895862654e-02, 8.7173757694e-02),
+    'trop_zero_q_aloft':         (7.2598178813e-02, 3.0613778765e-02, 9.5148151372e-02, 3.8569316991e-01, 3.4754618647e-01, 4.1641931483e-02, 1.2873795904e-01, 5.6779252497e-02, 1.6536280267e-01),
+    'trop_ocean_strong':         (6.8281314566e-02, 3.0601043181e-02, 8.6348153404e-02, 3.3251021300e-01, 2.9860250859e-01, 2.0849256607e-02, 1.1303968916e-01, 4.8663891803e-02, 1.0506287787e-01),
+    'midlat_supercell':          (1.8035906493e-01, 1.8895896431e-02, 8.8871828461e-02, 3.0204393736e-01, 3.3184147253e-01, 6.5943561141e-01, 2.7342964824e-01, 1.9971485606e-01, 1.1590020722e-01),
+    'monsoon_land':              (2.4579548802e-02, 6.0518455423e-03, 8.2605207022e-03, 1.9937450993e-02, 2.7342358120e-02, 6.7476536165e-02, 8.6116650043e-02, 2.5199677277e-02, 1.0533210566e-01),
+    'nocturnal_elevated':        (7.5234073296e-04, 0.0000000000e+00, 0.0000000000e+00, 5.4761069559e-05, 4.9269960156e-05, 3.8616540061e-06, 2.7938186073e-04, 4.5913302909e-06, 1.6486032725e-05),
+    'cold_deep_ocean':           (6.9006210182e-02, 6.0158393743e-02, 2.0284717182e-02, 1.6981985431e-01, 1.3437287531e-01, 1.3918593696e-02, 1.2408119326e-01, 4.5469139512e-02, 1.0856690490e-01),
+    'all_snow_land':             (1.6758066605e-03, 0.0000000000e+00, 0.0000000000e+00, 7.1463628761e-02, 1.0326531851e-01, 2.3912005401e-03, 1.8788356744e-01, 4.4392225704e-03, 7.1550500108e-02),
+    'tibet_elevated':            (1.2939753065e-02, 1.2141788641e-03, 8.1190082408e-03, 2.9457528715e-02, 3.6843264660e-02, 8.4212712126e-02, 1.2693143483e-01, 3.7057197410e-02, 1.0803703038e-01),
+    'calm_zero_flux':            (3.3218986694e-01, 0.0000000000e+00, 0.0000000000e+00, 1.5298252550e-01, 2.1840396928e-02, 8.0361255016e-05, 0.0000000000e+00, 2.9842476347e-02, 7.8622535546e-02),
+    'weak_unstable':             (2.8289073299e-01, 8.6583596884e-02, float("inf"), 1.5047225164e-06, 6.3305736880e-07, 1.8145088837e-07, 1.4478579410e-04, 1.4372633602e-03, 1.4654213597e-03),
+    'neutral_windy':             (1.5499090324e-01, 0.0000000000e+00, 0.0000000000e+00, 4.0375379292e-01, 4.2107946596e-01, 9.8189034801e-02, 2.2570769656e-01, 2.0192375413e-01, 2.0195403613e-01),
+    'tibet_deep_mixed':          (2.5010214120e-01, 1.9762073588e-01, 1.1617481935e-01, 9.4956473148e-01, 7.3489279196e-01, 8.9294799209e-01, 0.0000000000e+00, 3.2004858398e-01, 9.0032637406e-02),
+    'polar_dry_water':           (1.6313597815e-02, 0.0000000000e+00, 0.0000000000e+00, 3.2716766418e-02, 3.0325305811e-02, 3.7052471566e-03, 2.5584567769e-02, 1.3648015114e-02, 2.4109563836e-02),
+    'nocturnal_elevated_water':  (1.1279065626e-03, 0.0000000000e+00, 0.0000000000e+00, 8.8917916152e-05, 8.0001764414e-05, 6.2703599073e-06, 4.5364623999e-04, 7.4551498197e-06, 2.6769114157e-05),
     'tibet_deep_mixed_noflux':   (4.8341819621e-01, 0.0000000000e+00, 0.0000000000e+00, 8.6913969017e-01, 8.5563536304e-01, 3.7612234301e-01, 0.0000000000e+00, 2.7966532646e-03, 2.0000000000e+00),
-    'upper_endpoint':            (0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 1.5024352576e-02, 1.4974643327e-02, 1.9699344907e-01, 0.0000000000e+00, 4.4196367122e-01, 0.0000000000e+00),
+    'upper_endpoint':            (0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 4.9258867216e-01, 4.9408931006e-01, 1.9785548515e-01, 0.0000000000e+00, 4.3985948261e-01, 0.0000000000e+00),
 }
 # The two constant-theta_v columns sit on an exact bulk-Ri tie (brup == brcr),
 # where the default is discontinuous (see ysu.py, KNOWN DIFFERENCE): the tie
-# keeps the oracle's weight 0, and even without that rule check_grads fails
-# there on the unsmoothed kpbl switches (#2231).  The gradient check below runs
-# on the other columns.
+# keeps the oracle's weight 0, so check_grads cannot hold there.  The gradient
+# check below runs on the other columns.
 TIE_COLUMNS = ("tibet_deep_mixed", "tibet_deep_mixed_noflux")
 
 
@@ -312,7 +316,8 @@ def _default_sharp():
     cfg = YSUConfig()
     return dict(pbl_sharpness=cfg.pbl_smooth_sharpness,
                 region_sharpness=cfg.blend_pbl_sharpness,
-                ri_sharpness=cfg.blend_ri_sharpness)
+                ri_sharpness=cfg.blend_ri_sharpness,
+                entrainment_cutoff_sharpness=cfg.entrainment_cutoff_sharpness)
 
 
 def _gap_per_column(o, f):

@@ -1125,8 +1125,9 @@ def _call_radiation_backend(
         # CAM draws different uniforms in every column; the per-column shift
         # (seeded from the bottom pressure, as for mcica) does the same, so a
         # layer with cf < 1/n_sub is cloudy in some columns instead of never.
-        _mask = _sub.generate_subcolumns(cloud_props.cloud_fraction, _n_sub,
-                                         shift=_sub.cam_seed_shift(p_full))
+        _mask = _sub.generate_subcolumns(
+            cloud_props.cloud_fraction, _n_sub, shift=_sub.cam_seed_shift(p_full),
+            width=float(cloud_config.cloud_subcolumn_mask_width))
         _lwp, _iwp = _sub.subcolumn_paths(
             _mask, cloud_props.cloud_fraction, cloud_props.lwp, cloud_props.iwp)
         _rad_kwargs = _sub.expand_kwargs(_rad_kwargs, _n_sub, _ncol)
@@ -1141,6 +1142,7 @@ def _call_radiation_backend(
          _rad_kwargs["cloud_path_ice"]) = _sub.in_cloud_paths(
             cloud_props.cloud_fraction, cloud_props.lwp, cloud_props.iwp)
         _rad_kwargs["mcica_cloud_fraction"] = cloud_props.cloud_fraction
+        _rad_kwargs["mcica_mask_width"] = float(cloud_config.cloud_subcolumn_mask_width)
     elif _ov != "none":
         # Dispatch hardening: a typo must never silently run the legacy
         # single-column path (validated on the static config value).

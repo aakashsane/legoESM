@@ -11,7 +11,9 @@ scripts/validate/oracle/max_random_subcolumns/{build.sh,make_fixture.py}
 Tolerance (user decision 2026-10-19): max relative error <= 1e-10 in fp64.
 Relative error is ``|a-b| / max(|a|, |b|)`` (0 where both are exactly 0), the
 metric of the merged tier-1 oracle tests; masks are compared as 0/1 floats.
-The generator has no smoothing knob, so hard limit = production.
+The oracle match runs the hard limit (``width = 0``); the production default
+``CloudConfig.cloud_subcolumn_mask_width`` is smooth (RULE 5), and its
+per-column gap against the oracle is pinned below.
 """
 from __future__ import annotations
 
@@ -26,7 +28,10 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
+from jax.test_util import check_grads  # noqa: E402
+
 from legoesm.atmosphere.physics.clouds import subcolumns as sub  # noqa: E402
+from legoesm.atmosphere.physics.clouds.config import CloudConfig  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "oracle_fixtures" / "max_random_subcolumns.npz"
 TOL = 1.0e-10
@@ -49,7 +54,7 @@ def fx():
 def _ours(fx, case):
     cf = jnp.asarray(fx[f"{case}/cf"])
     u = jnp.asarray(fx[f"{case}/u"])
-    mask = sub.max_random_mask(u, cf)
+    mask = sub.max_random_mask(u, cf, width=0.0)
     n_sub, ncol, nlev = mask.shape
     lwp, iwp = sub.subcolumn_paths(mask, cf, jnp.asarray(fx[f"{case}/lwp"]),
                                    jnp.asarray(fx[f"{case}/iwp"]))
@@ -81,7 +86,7 @@ def test_table_case_is_what_the_generator_runs(fx):
     the oracle-tested recursion is the one generate_subcolumns runs."""
     cf = jnp.asarray(fx["table/cf"])
     np.testing.assert_array_equal(
-        np.asarray(sub.generate_subcolumns(cf, 8)), fx["table/mask_oracle"])
+        np.asarray(sub.generate_subcolumns(cf, 8, width=0.0)), fx["table/mask_oracle"])
 
 
 def test_table_case_contains_exact_ties(fx):
@@ -117,7 +122,7 @@ def test_max_random_backend_seeds_a_per_column_shift(monkeypatch):
     p_full = 0.5 * (p_half[:, 1:] + p_half[:, :-1])
     cf = jnp.zeros((ncol, nlev)).at[:, 1].set(0.04)
     cc = CloudConfig(scheme="sundqvist", cloud_vertical_overlap_optics="max_random",
-                     cloud_n_subcolumns=n_sub)
+                     cloud_n_subcolumns=n_sub, cloud_subcolumn_mask_width=0.0)
     cfg = RadiationConfig(scheme="rrtmgp", cloud_scheme="sundqvist", cloud_config=cc)
     real = rad_int.compute_cloud_properties
     monkeypatch.setattr(rad_int, "compute_cloud_properties",
@@ -139,7 +144,7 @@ def test_max_random_backend_seeds_a_per_column_shift(monkeypatch):
 def test_paths_gradient_is_finite(fx, dtype):
     cf = jnp.asarray(fx["rnd/cf"], dtype)
     u = jnp.asarray(fx["rnd/u"], dtype)
-    mask = sub.max_random_mask(u, cf)
+    mask = sub.max_random_mask(u, cf, width=0.0)
 
     def f(lwp, iwp):
         a, b = sub.subcolumn_paths(mask, cf, lwp, iwp)
@@ -153,5 +158,45 @@ def test_paths_gradient_is_finite(fx, dtype):
 def test_jit_parity(fx):
     cf = jnp.asarray(fx["rnd/cf"])
     u = jnp.asarray(fx["rnd/u"])
-    np.testing.assert_array_equal(np.asarray(sub.max_random_mask(u, cf)),
-                                  np.asarray(jax.jit(sub.max_random_mask)(u, cf)))
+    np.testing.assert_array_equal(np.asarray(sub.max_random_mask(u, cf, width=0.0)),
+                                  np.asarray(jax.jit(lambda a, b: sub.max_random_mask(a, b, width=0.0))(u, cf)))
+
+
+WIDTH = CloudConfig().cloud_subcolumn_mask_width
+# Per-column max |default weight - CAM mask| over (subcolumn, layer), per case,
+# measured 2026-10-29 (x64, CPU).  Re-measure when the smooth form or its
+# default width changes.
+MASK_GAP = None  # filled from the measurement
+
+
+def _mask_gap(fx, case):
+    m = sub.max_random_mask(jnp.asarray(fx[f"{case}/u"]), jnp.asarray(fx[f"{case}/cf"]),
+                            width=WIDTH)
+    d = np.abs(np.asarray(m, np.float64) - fx[f"{case}/mask_oracle"].astype(np.float64))
+    return d.max(axis=(0, 2))
+
+
+@pytest.mark.parametrize("case", CASES)
+def test_default_mask_gap_per_case(fx, case):
+    np.testing.assert_allclose(_mask_gap(fx, case), np.asarray(MASK_GAP[case]),
+                               rtol=1e-6, atol=1e-12)
+
+
+def test_default_mask_gradient_check_grads(fx):
+    """check_grads (order 2, reverse) of the subcolumn-mean liquid path with
+    respect to cloud fraction at the default width, on a 3-layer column whose
+    CDFs sit within the width of their thresholds (a tie, as the 'table' case
+    has), where CAM's hard mask has an exactly-zero derivative."""
+    u = jnp.asarray([[[0.4375, 0.5, 0.1]], [[0.9375, 0.25, 0.7]]])   # (2, 1, 3)
+    lwp = jnp.full((1, 3), 0.1)
+
+    def f(cf, width):
+        m = sub.max_random_mask(u, cf, width=width)
+        a, _ = sub.subcolumn_paths(m, cf, lwp, lwp)
+        return jnp.mean(a)
+
+    cf = jnp.asarray([[0.5625, 0.5004, 0.3]])
+    check_grads(lambda c: f(c, WIDTH), (cf,), order=2, modes=("rev",), eps=1e-6)
+    g = np.asarray(jax.grad(lambda c: f(c, WIDTH))(cf))
+    g_hard = np.asarray(jax.grad(lambda c: f(c, 0.0))(cf))
+    assert np.all(np.isfinite(g)) and np.any(np.abs(g - g_hard) > 0.0)

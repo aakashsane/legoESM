@@ -68,6 +68,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from legoesm.core.smooth import sigmoid_switch
+
 __physics_contract__ = {
     "summary": (
         "CAM McICA maximum-random-overlap subcolumn generator for cloud "
@@ -147,8 +149,11 @@ def _stratified_table(n_sub: int, nlev: int) -> np.ndarray:
 
 
 def generate_subcolumns(cloud_fraction, n_sub: int = N_SUBCOLUMNS_DEFAULT,
-                        shift=None):
-    """Boolean cloud mask ``(n_sub, ncol, nlev)`` under maximum-random overlap.
+                        shift=None, *, width):
+    """Cloud mask ``(n_sub, ncol, nlev)`` under maximum-random overlap.
+
+    ``width`` (``CloudConfig.cloud_subcolumn_mask_width``): 0 returns CAM's
+    boolean mask; > 0 the smooth weights of :func:`max_random_mask`.
 
     Descending from the model top (index 0), a subcolumn already cloudy in the
     layer above keeps its CDF value, so adjacent cloudy layers overlap
@@ -180,20 +185,41 @@ def generate_subcolumns(cloud_fraction, n_sub: int = N_SUBCOLUMNS_DEFAULT,
         off = (jnp.asarray(shift, dtype=cf.dtype)[:, None] * (1.0 + k * _SHIFT_LAYER_SLOPE)
                + k * _SHIFT_LAYER_STEP)                  # (ncol, nlev)
         u = jnp.mod(u + off[None, :, :], 1.0)
-    return max_random_mask(u, cf)
+    return max_random_mask(u, cf, width=width)
 
 
-def max_random_mask(u, cloud_fraction):
+def max_random_mask(u, cloud_fraction, *, width):
     """CAM case(2) maximum-random recursion on given uniforms.
 
     ``u`` is ``(n_sub, ncol or 1, nlev)`` uniforms in [0, 1) (CAM's ``CDF``
     before the recursion), ``cloud_fraction`` ``(ncol, nlev)``, index 0 =
-    model top.  Returns the boolean cloud mask ``(n_sub, ncol, nlev)``.
+    model top.  ``width == 0`` returns CAM's boolean cloud mask
+    ``(n_sub, ncol, nlev)``.
+
+    KNOWN DIFFERENCE (RULE 5): both switches compare against the traced cloud
+    fraction, so for ``width > 0`` (the default,
+    ``CloudConfig.cloud_subcolumn_mask_width`` = 1e-3) they are smooth: the
+    recursion keeps ``a*CDF_above + (1-a)*u*clear_above`` with
+    ``a = sigmoid((CDF_above - clear_above)/width)`` and the returned float
+    weights are ``sigmoid((CDF - clear)/width)``.  A cell whose CDF lies d
+    from its threshold departs from CAM's 0/1 by sigmoid(-|d|/width)
+    (4.5e-5 at d = 0.01, 1/2 at an exact tie, where CAM's ``>=`` gives 1).
+    Per-case gaps: tests/atmosphere/test_max_random_subcolumns_oracle.py.
     """
+    if not width >= 0.0:
+        raise ValueError(f"cloud_subcolumn_mask_width must be >= 0, got {width!r}")
     cf = jnp.clip(jnp.asarray(cloud_fraction), 0.0, 1.0)
     ncol, nlev = cf.shape
     u = jnp.asarray(u, dtype=cf.dtype)
     clear = 1.0 - cf                                    # (ncol, nlev)
+    if width > 0.0:
+        sharp = 1.0 / width
+        col = u[:, :, 0] * jnp.ones((1, ncol), dtype=cf.dtype)
+        cdf = [col]
+        for k in range(1, nlev):
+            a = sigmoid_switch(cdf[k - 1] - clear[None, :, k - 1], sharp)
+            cdf.append(a * cdf[k - 1] + (1.0 - a) * u[:, :, k] * clear[None, :, k - 1])
+        return sigmoid_switch(jnp.stack(cdf, axis=-1) - clear[None, :, :], sharp)
 
     # nlev is static and small, so the recursion unrolls; a lax.scan would add
     # a carry for no benefit at this size.
@@ -262,8 +288,15 @@ def subcolumn_paths(mask, cloud_fraction, lwp, iwp,
     """
     n_sub, ncol, nlev = mask.shape
     return tuple(
-        jnp.reshape(jnp.where(mask, ic[None, :, :], 0.0), (n_sub * ncol, nlev))
+        jnp.reshape(apply_mask(mask, ic[None, :, :]), (n_sub * ncol, nlev))
         for ic in in_cloud_paths(cloud_fraction, lwp, iwp, cf_floor))
+
+
+def apply_mask(mask, x):
+    """``x`` on cloudy cells: a boolean mask selects, smooth weights scale."""
+    if mask.dtype == jnp.bool_:
+        return jnp.where(mask, x, 0.0)
+    return mask * x
 
 
 def average_over_subcolumns(field, n_sub: int, ncol: int):

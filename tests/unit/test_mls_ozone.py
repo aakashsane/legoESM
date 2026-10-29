@@ -70,8 +70,8 @@ def test_dispatch_through_compute_ozone_vmr():
 
 def test_cd_grid_lane_uses_layer_means():
     """The driver's inline-ozone precompute (cd-grid / lat-lon pipeline) gives
-    the gSAM layer means on the model layers and the top model layer's value
-    to the overhead layer."""
+    the gSAM layer means on the model layers and gSAM's own extra layer above
+    the model top to the overhead layer."""
     from types import SimpleNamespace
 
     from legoesm.driver.config import ExperimentConfig
@@ -94,4 +94,21 @@ def test_cd_grid_lane_uses_layer_means():
     o3, _, _ = ModelDriver._precompute_external_forcing(fake, 15.5, p_s, lat)
     p_half = fake.sigma.pressure_at_half(p_s).reshape(ncol, -1)
     np.testing.assert_array_equal(np.asarray(o3), np.asarray(mls_ozone_layer_vmr(p_half)[0]))
-    np.testing.assert_allclose(np.asarray(fake._o3_top_vmr), np.asarray(o3)[:, 0], rtol=1e-12)
+    assert float(jnp.min(p_half[:, 0])) > 0.0
+    above = np.asarray(mls_ozone_layer_vmr(p_half)[1])
+    assert np.max(np.abs(above - np.asarray(o3)[:, 0]) / above) > 1e-3   # not the top layer
+    np.testing.assert_allclose(np.asarray(fake._o3_top_vmr), above, rtol=1e-12)
+
+
+def test_zero_pressure_gradient_outside_the_table():
+    """Layers lying wholly below the sounding bottom take its node value, so
+    their VMR does not depend on the interfaces: the
+    reverse-mode derivative is zero to round-off (the old pointwise test's
+    property, on the layer means)."""
+    def f(ph):
+        lay, _ = mls_ozone_layer_vmr(ph)
+        return jnp.sum(lay[:, 1:])          # the two layers below 1053.63 hPa
+    ph = jnp.asarray([[1.0e4, 1.06e5, 1.08e5, 1.10e5]])
+    g = np.asarray(jax.grad(f)(ph))
+    assert np.all(np.isfinite(g))
+    assert np.max(np.abs(g)) <= 1.0e-12 * _MLS_O3_VMR[0] / 1.0e3   # per Pa

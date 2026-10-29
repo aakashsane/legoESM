@@ -187,7 +187,7 @@ def test_overhead_with_mcica_and_fused_clear_sky():
     liq = jnp.zeros((NCOL, NLEV)).at[:, 4:6].set(0.08)   # in-cloud paths
     ice = jnp.zeros((NCOL, NLEV))
     fused = on.solve_columns(**inp, o3_top_vmr=o3_top, cloud_path_liq=liq,
-                             cloud_path_ice=ice, mcica_cloud_fraction=cf,
+                             cloud_path_ice=ice, mcica_cloud_fraction=cf, mcica_mask_width=0.0,
                              clear_sky=True)
     for leaf in jax.tree_util.tree_leaves(fused):
         assert np.all(np.isfinite(np.asarray(leaf)))
@@ -233,7 +233,7 @@ def test_mcica_model_layer_mask_is_identical_with_overhead_on_or_off(
         RRTMGP.from_legoesm_config(
             RRTMGPConfig(overhead_layer=ov, include_clouds=True)).solve_columns(
             **inp, o3_top_vmr=jnp.full((NCOL,), 3e-6), cloud_path_liq=liq,
-            cloud_path_ice=ice, mcica_cloud_fraction=cf)
+            cloud_path_ice=ice, mcica_cloud_fraction=cf, mcica_mask_width=0.0)
     assert len(calls["off"]) == len(calls["on"]) == 2          # LW + SW
     for (cf0, s0, m0), (cf1, s1, m1) in zip(calls["off"], calls["on"]):
         assert cf0.shape == cf1.shape == (NCOL, NLEV)

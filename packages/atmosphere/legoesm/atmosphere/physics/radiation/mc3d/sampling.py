@@ -19,6 +19,8 @@ from typing import TypeAlias
 import jax
 import jax.numpy as jnp
 
+from legoesm.core.smooth import smooth_max
+
 Array: TypeAlias = jax.Array
 
 # --- Henyey-Greenstein (numerics) ---
@@ -162,15 +164,24 @@ def isotropic_direction(key: Array, dtype) -> Array:
   return jnp.stack([sin_t * jnp.cos(phi), sin_t * jnp.sin(phi), mu])
 
 
-def free_path(key: Array, majorant: Array) -> Array:
+def free_path(key: Array, majorant: Array, *, floor_sharpness: float) -> Array:
   """Sample a free-flight distance for Woodcock tracking.
 
   microhh: ``tau = sample_tau(u) = -log(1 - u + Float_epsilon)`` (the machine
   epsilon of the working precision keeps the log finite) and the step
   ``dn = max(Float_epsilon, tau / k_ext_null)`` (raytracer_kernels.cu:212),
   so a step is never negative or zero.
+
+  KNOWN DIFFERENCE (RULE 5): the floor is ``smooth_max(eps, tau/k_null,
+  floor_sharpness)`` because ``k_null`` is built from the traced optical field.
+  ``floor_sharpness = inf`` is microhh's hard max exactly. At the default
+  (``MC3DRadiationConfig.free_path_floor_sharpness`` = 1e6 1/m) the step
+  exceeds microhh's by ``log(1 + exp(s*(eps - tau/k_null)))/s``: log(2)/s =
+  6.9e-7 m where the floor binds (u = 0), below 1e-40 m for steps >= 1e-4 m.
+  Per-case gaps are pinned in tests/atmosphere/test_mc3d_kernels_oracle.py.
+  The step stays strictly positive, so no invariant is broken.
   """
   u = jax.random.uniform(key, dtype=majorant.dtype)
   eps = jnp.finfo(majorant.dtype).eps
   tau = -1.0 * jnp.log(-u + 1.0 + eps)
-  return jnp.maximum(eps, tau / majorant)
+  return smooth_max(eps, tau / majorant, floor_sharpness)

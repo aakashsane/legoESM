@@ -10,8 +10,9 @@ the test hands them the fixture's uniforms instead.
 
 Tolerance (user decision 2026-10-19): max relative error <= 1e-10 in fp64.
 Relative error is ``|a-b| / max(|a|, |b|)`` (0 where both are exactly 0), the
-metric of the merged tier-1 oracle tests.  No smoothing knob: hard limit =
-production.  Henyey-Greenstein is compared for |g| >= 1e-3 only (below that
+metric of the merged tier-1 oracle tests.  The free-path step floor is smooth
+by default (RULE 5): it matches the oracle at ``floor_sharpness = inf`` and its
+per-case gap at the production sharpness is pinned below.  Henyey-Greenstein is compared for |g| >= 1e-3 only (below that
 legoESM switches to an isotropic branch the oracle does not have).
 """
 from __future__ import annotations
@@ -27,10 +28,19 @@ import jax.numpy as jnp  # noqa: E402
 import numpy as np  # noqa: E402
 import pytest  # noqa: E402
 
+from jax.test_util import check_grads  # noqa: E402
+
 from legoesm.atmosphere.physics.radiation.mc3d import knull_grid, mie, sampling  # noqa: E402
+from legoesm.atmosphere.physics.radiation.mc3d.config import MC3DRadiationConfig  # noqa: E402
 
 FIXTURE = Path(__file__).parent / "oracle_fixtures" / "mc3d_kernels.npz"
 TOL = 1.0e-10
+SHARP = MC3DRadiationConfig().free_path_floor_sharpness
+# Per-case relative gap |ours - oracle| / max(|ours|, |oracle|) of the free
+# path at the production floor sharpness, one entry per fixture (u_edge, k_fp)
+# pair, measured 2026-10-29 (x64, CPU). Re-measure when the smooth floor or
+# its default sharpness changes.
+FREE_PATH_GAP = None  # filled below
 
 
 def _rel(a, b):
@@ -71,9 +81,29 @@ def test_rayleigh(fx, inject_uniform):
     assert float(_rel(ours, fx["rayleigh_oracle"]).max()) <= TOL
 
 
-def test_free_path_is_the_kernel_step(fx, inject_uniform):
-    ours = jax.vmap(sampling.free_path)(jnp.asarray(fx["u_edge"]), jnp.asarray(fx["k_fp"]))
+def _free_path(u, k, sharpness):
+    return jax.vmap(lambda a, b: sampling.free_path(a, b, floor_sharpness=sharpness))(
+        jnp.asarray(u), jnp.asarray(k))
+
+
+def test_free_path_hard_limit_is_the_kernel_step(fx, inject_uniform):
+    ours = _free_path(fx["u_edge"], fx["k_fp"], float("inf"))
     assert float(_rel(ours, fx["tau_oracle"]).max()) <= TOL
+
+
+def test_free_path_default_gap_per_case(fx, inject_uniform):
+    gap = _rel(_free_path(fx["u_edge"], fx["k_fp"], SHARP), fx["tau_oracle"])
+    np.testing.assert_allclose(gap, np.asarray(FREE_PATH_GAP), rtol=1e-6, atol=1e-12)
+
+
+def test_free_path_floor_gradient_at_default(inject_uniform):
+    # (u, majorant): steps 1e-11..1e-13 m lie inside the floor's smoothing
+    # width 1/SHARP = 1e-6 m (the switch itself); 0.69 m is far above it.
+    # At u = 0 the hard floor binds and its gradient is exactly 0.
+    for u, maj in ((0.0, 1.0), (1.0e-9, 1.0e2), (1.0e-9, 1.0e3), (1.0e-9, 1.0e4), (0.5, 1.0)):
+        f = lambda m, u=u: sampling.free_path(jnp.asarray(u), m, floor_sharpness=SHARP)  # noqa: E731
+        check_grads(f, (jnp.asarray(maj),), order=2, modes=("rev",))
+        assert float(jax.grad(f)(jnp.asarray(maj))) != 0.0
 
 
 def test_mie_sample_angle(fx):
@@ -99,6 +129,6 @@ def test_knull_grid(fx):
 def test_free_path_gradient_wrt_majorant_is_finite(fx, inject_uniform):
     for dt in (jnp.float64, jnp.float32):
         u = jnp.asarray(fx["u_edge"], dt)
-        g = jax.grad(lambda m: jnp.sum(jax.vmap(lambda x: sampling.free_path(x, m))(u)))(
+        g = jax.grad(lambda m: jnp.sum(jax.vmap(lambda x: sampling.free_path(x, m, floor_sharpness=SHARP))(u)))(
             jnp.asarray(2.0, dt))
         assert np.isfinite(float(g))

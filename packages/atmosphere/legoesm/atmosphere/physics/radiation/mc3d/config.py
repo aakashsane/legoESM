@@ -18,6 +18,11 @@ from typing import NamedTuple
 # Floor on the majorant extinction so the free-path sampler never divides by a
 # (near-)zero majorant in optically empty columns. microhh uses the same 1e-3.
 _KNULL_FLOOR_DEFAULT = 1.0e-3  # [1/m]
+# Sharpness of the smooth free-path step floor (RULE 5): the step is
+# smooth_max(eps, tau/k_null, s). microhh's hard ``max(eps, tau/k_null)``
+# (raytracer_kernels.cu:212) is reached at s = inf. At s = 1e6 1/m the floor
+# adds log(2)/s ~ 6.9e-7 m at u = 0 and < 1e-40 m for steps >= 1e-4 m.
+_FREE_PATH_FLOOR_SHARPNESS_DEFAULT = 1.0e6  # [1/m]
 
 
 class MC3DRadiationConfig(NamedTuple):
@@ -33,6 +38,8 @@ class MC3DRadiationConfig(NamedTuple):
   max_iterations: int = 4096
   # Majorant extinction floor [1/m]; see module constant above.
   knull_floor: float = _KNULL_FLOOR_DEFAULT
+  # Smooth free-path step floor sharpness [1/m]; inf = microhh hard max.
+  free_path_floor_sharpness: float = _FREE_PATH_FLOOR_SHARPNESS_DEFAULT
   # Coarse majorant-grid block sizes in fine cells (Phase 1.1 speedup). 0 = no
   # coarsening (one coarse cell per axis = global scalar majorant). A smaller
   # block tightens the majorant in clear air beside thick clouds, cutting
@@ -62,6 +69,15 @@ __param_spec__ = {
         "transform": "none",
         "category": "numerics",
         "reference": "microhh rte-rrtmgp-cpp create_knull_grid (1e-3 floor)",
+        "shape": None,
+    },
+    "free_path_floor_sharpness": {
+        "units": "1/m",
+        "bounds": (1e3, float("inf")),
+        "tunable_tier": 0,
+        "transform": "none",
+        "category": "numerics",
+        "reference": "microhh rte-rrtmgp-cpp raytracer_kernels.cu:212 max(eps, tau/k_null) at inf",
         "shape": None,
     },
 }

@@ -404,7 +404,11 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     (``sflux > 0``), the zero-10 m-wind guard of the water Rossby number, the
     momentum entrainment thresholds (``|du| > tmin``, a jump), the floors and
     caps (``max(dthvx, tmin)``, ``min(dqx, 0)``, ``clip(zfac, zfmin, 1)``,
-    the diffusivity bounds, ...).  Operands of unselected branches are
+    the diffusivity bounds, ...), and the Ri-sign branch arguments
+    ``min(ri, 0)`` / ``max(ri, 0)``: each branch is flat on the far side, so
+    the blended free-atmosphere K is continuous but its slope in ``ri`` jumps
+    at ``ri = 0`` exactly (heat: -4 dk vs -5 dk; read off the formulas, not
+    measured).  Operands of unselected branches are
     replaced by benign values only so their gradients stay finite.
 
     KNOWN DIFFERENCE (RULE 5, measured 2026-10-29 on the 23-column oracle

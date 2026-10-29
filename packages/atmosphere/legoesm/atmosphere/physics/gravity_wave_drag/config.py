@@ -159,7 +159,7 @@ __param_spec__ = {
             "crit_level_floor": "signed source-projected wind U_proj (NOT a wind magnitude) at which the smooth critical-level filter is half-on; a smoothing/regulariser offset, not a closure",
             "crit_level_sharpness": "sigmoid sharpness of the smooth critical-level filter; a differentiability/smoothing width, not a closure",
             "min_wind_sharpness": "sigmoid sharpness of the smooth min-wind activation; a differentiability/smoothing width, not a closure",
-            "softmin_sharpness": "sigmoid sharpness of the saturation-cap blend; a differentiability/smoothing width, not a closure",
+            "softmin_sharpness": "p of the p-norm smooth min of the saturation cap min(taudmp, tausat); a differentiability/smoothing width, not a closure",
         },
         "params": {
             # --- orographic launch amplitude / efficiency ---
@@ -313,10 +313,10 @@ class McFarlaneConfig(NamedTuple):
         Sigmoid sharpness for the smooth ``U > min_wind`` activation
         (default 20.0).  Higher values approach a hard step.
     softmin_sharpness : float
-        Sigmoid sharpness of the saturation-cap blend (default 50.0): the
-        smooth form of CAM's ``tau = min(taudmp, tausat)``, blending toward
-        ``tausat`` with ``sigmoid(softmin_sharpness*(taudmp/tausat - 1))``;
-        exact ``min`` as the sharpness -> inf.
+        Exponent p of the p-norm smooth min (default 50.0): the smooth form
+        of CAM's ``tau = min(taudmp, tausat)``,
+        ``(taudmp^-p + tausat^-p)^(-1/p)`` (the Lindzen form, #2241); never
+        above either stress, exact ``min`` as p -> inf.
     fcrit2 : float
         Critical Froude number squared (default 1.0, CAM ``fcrit2``).  Used in
         the McFarlane (1987) / E3SM ``gw_oro_src`` displacement-height cap

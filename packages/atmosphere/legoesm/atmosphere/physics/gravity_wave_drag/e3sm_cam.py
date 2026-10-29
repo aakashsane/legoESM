@@ -161,7 +161,6 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
-from legoesm.atmosphere.physics._shared import safe_divide
 from legoesm.atmosphere.physics.gravity_wave_drag.config import (
     E3SMBeresConfig,
     E3SMCAMConfig,
@@ -170,6 +169,7 @@ from legoesm.atmosphere.physics.gravity_wave_drag.oro_source import (
     depth_averaged_oro_source,
 )
 from legoesm.atmosphere.physics.gravity_wave_drag.output import GWDOutput
+from legoesm.core.smooth import pnorm_smooth_min
 
 # Machine-checked scheme contract (see tests/test_physics_contracts.py). Applies
 # to the top-level driver ``e3sm_cam_gwd``; the ``gw_*`` functions above/below
@@ -1170,14 +1170,10 @@ def gw_drag_prof(
             tau_computed = jnp.minimum(taudmp, tausat)
         else:
             # Smooth min(taudmp, tausat): p-norm (taudmp^-p + tausat^-p)^(-1/p),
-            # p = softmin_sharpness, written overflow-free as lo*(1+(lo/hi)^p)^(-1/p).
-            # C-infinity for positive stresses, in [0, min(taudmp, tausat)]; exact
-            # min at p -> inf.  (The mcfarlane.py sigmoid blend is not C1 at
-            # taudmp = tausat; user decision 2026-10-28.)
-            lo = jnp.minimum(taudmp, tausat)
-            ratio = safe_divide(lo, jnp.maximum(taudmp, tausat), eps=cfg.taumin)
-            tau_computed = lo * (1.0 + ratio ** softmin_sharpness) ** (
-                -1.0 / softmin_sharpness)
+            # p = softmin_sharpness (shared with mcfarlane.py; user decision
+            # 2026-10-28).  C-infinity for positive stresses, in
+            # [0, min(taudmp, tausat)]; exact min at p -> inf.
+            tau_computed = pnorm_smooth_min(taudmp, tausat, softmin_sharpness, cfg.taumin)
             tau_computed = jnp.where(tausat > 0.0, tau_computed, 0.0)
         # In the source region keep the launched value at interface k.
         tau_k = jnp.where(active, tau_computed, tau_launched_iface[:, :, k])

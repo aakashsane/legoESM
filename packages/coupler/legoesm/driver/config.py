@@ -454,9 +454,12 @@ class EvaluationConfig(NamedTuple):
     """
     enabled: bool = False
     suites: tuple[str, ...] = ()  # empty = ALL bundled suites (every tier)
-    model_id: str = "legoESM-1-0"
+    # Empty = the CMOR writer's OutputConfig.cmip_source_id /
+    # cmip_variant_label (one source of truth: the ids ClimateEval looks
+    # up are the ones stamped on the files; owner decision 2026-10-28).
+    model_id: str = ""
     experiment_id: str = "amip"
-    variant_id: str = "r1i1p1f1"
+    variant_id: str = ""
     data_root_dir: str = ""
     fail_on_missing_data: bool = False
     download_missing_data: bool = False
@@ -491,6 +494,15 @@ class OutputConfig(NamedTuple):
     checkpoint_format: str = "npz"  # npz, zarr
     diagnostics_perf_mode: str = "auto"  # auto, always, never
     cmip_resolution_deg: float = 5.0  # lat-lon grid spacing for CMIP output [degrees]
+    # CMOR writer identity / layout (CFWriter's own defaults).  The
+    # institution_id / source_id defaults are NOT registered in the CMIP6
+    # CV (docs/validation/cmip6_publication_blockers.md); registration and
+    # the values are the owner's call.  cmip_drs_tree=True writes the ESGF
+    # DRS directory tree instead of cmor/<table>/.
+    cmip_drs_tree: bool = False
+    cmip_institution_id: str = "CU"
+    cmip_source_id: str = "legoESM-1-0"
+    cmip_variant_label: str = "r1i1p1f1"
     # Wallclock-aware mid-job checkpointing for long (century-scale) HPC chains.
     # ``max_wallclock_seconds=0`` disables it (default); set it to the SLURM
     # ``--time`` budget so the run checkpoints and exits cleanly with
@@ -1508,8 +1520,11 @@ class ExperimentConfig(NamedTuple):
     tau_pole: float = 1.8
     tau_moist_coeff: float = 0.0115        # gray-rad moisture LW optical depth [m²/kg]
     # Additional gray-radiation knobs (GrayRadiationConfig fields), exposed on
-    # ExperimentConfig so the calibration can tune them.  They are threaded to
-    # the gray radiation kernel as a `gray_cfg_overrides` dict.  NOTE:
+    # ExperimentConfig so the calibration can tune them.  NOT YET WIRED: no
+    # consumer threads them to the gray kernel (the pipeline gray builder passes
+    # only tau_equator, tau_pole, S_0 and albedo_ocean), so linear_frac,
+    # lw_diff_factor, sw_tau_0, sw_exponent and tau_moist_coeff currently have
+    # no effect on gray radiation (tier-2 oracle audit probe).  NOTE:
     # sfc_emissivity (above) is NOT honoured by gray radiation — gray keeps its
     # idealized black-surface convention (eps=1.0, Held-Suarez/Frierson); the
     # sfc_emissivity value feeds RRTMGP and the dynamic surface-emissivity blend

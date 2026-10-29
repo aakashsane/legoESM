@@ -208,6 +208,11 @@ class PhysicsPipeline:
         # rad_update_steps is the radiation sub-cycle cadence; the slab
         # land steps by ``rad_update_steps * dt`` each radiation call.
         self.f_land = None
+        # True only when the driver has checked that the run has NO land
+        # anywhere; then McFarlane gets an explicit zero land fraction.  A
+        # pipeline the driver never marked (built elsewhere, e.g. the lat-band
+        # SPMD band pipeline) keeps passing None, which McFarlane refuses.
+        self.run_has_no_land = False
         self.albedo_land = None
         self.rad_update_steps = 1
         # Optional MULTILAYER (Richards) land tile.  When ``land_ml_cfg`` is set the
@@ -2287,14 +2292,15 @@ class PhysicsPipeline:
                         self.sigma_coord, T_col.dtype)
                 _mcf_kw = {
                     "p_ref_half": _p_ref_half,
-                    # The driver leaves ``f_land`` None only when the run
-                    # has no land anywhere (aquaplanet, land_fraction_source
-                    # = zero): that IS CAM landfrac = 0, i.e. zero orographic
-                    # drag, not a missing input (codex + GLM, PR #2238).
+                    # A run the driver marked as having no land anywhere
+                    # (aquaplanet, land_fraction_source = zero) IS CAM
+                    # landfrac = 0: zero orographic drag, not a missing input
+                    # (codex + GLM, PR #2238).  Unmarked + None stays None so
+                    # the kernel refuses it loudly.
                     "land_frac_col": (
-                        jnp.zeros((ad.ncol,), dtype=T_col.dtype)
-                        if self.f_land is None
-                        else ad.flatten_2d(self.f_land)),
+                        ad.flatten_2d(self.f_land) if self.f_land is not None
+                        else jnp.zeros((ad.ncol,), dtype=T_col.dtype)
+                        if self.run_has_no_land else None),
                     # N_c / N_r carries are per MASS [1/kg] (checkpoint stamp
                     # number_convention = per_mass), N_i per mass too, so the
                     # mixing-ratio diffusion applies to them unchanged.

@@ -181,6 +181,7 @@ def test_fv_pipeline_all_ocean_run_passes_zero_land_fraction():
 
     grid, pipe = _pipe("mcfarlane")
     pipe.f_land = None
+    pipe.run_has_no_land = True
     rec = {}
 
     def kernel(**kw):
@@ -194,6 +195,29 @@ def test_fv_pipeline_all_ocean_run_passes_zero_land_fraction():
     lf = rec["land_frac_col"]
     assert lf is not None and lf.shape == (NLAT * NLON,)
     np.testing.assert_array_equal(np.asarray(lf), 0.0)
+
+
+def test_fv_pipeline_unmarked_missing_land_fraction_stays_none():
+    """A pipeline the driver never marked land-free (e.g. the lat-band SPMD
+    band pipeline, which carries no land fraction) still hands McFarlane
+    None, so the kernel refuses it instead of silently dropping the drag."""
+    from legoesm.atmosphere.physics.gravity_wave_drag import GWDOutput
+    from tests.unit.test_gwd_landfrac_wiring import _pipe, _run_step
+
+    grid, pipe = _pipe("mcfarlane")
+    pipe.f_land = None
+    assert pipe.run_has_no_land is False
+    rec = {}
+
+    def kernel(**kw):
+        rec.update(kw)
+        z = jnp.zeros(kw["u"].shape)
+        return GWDOutput(du_dt=z, dv_dt=z, dT_dt=z,
+                         eps_gwd=jnp.zeros(z.shape[0]), dq_dt=None)
+
+    pipe.gwd_fn = kernel
+    _run_step(grid, pipe)
+    assert rec["land_frac_col"] is None
 
 
 def test_spectral_lane_returns_constituent_diffusion():

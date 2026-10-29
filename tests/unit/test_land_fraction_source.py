@@ -65,6 +65,7 @@ def test_driver_takes_the_era5_land_fraction(monkeypatch, tmp_path, column_lane)
     assert (seen["store"], seen["flux"]) == ("my.zarr", "")
     assert f.shape == tuple(d.grid.grid_shape_2d)
     assert np.all(f == 0.25)          # flat topography alone would give 0
+    assert d.physics.run_has_no_land is False   # land present: no zero bypass
 
 
 def test_driver_zero_source_is_explicit_zeros(monkeypatch, tmp_path):
@@ -79,6 +80,8 @@ def test_driver_zero_source_is_explicit_zeros(monkeypatch, tmp_path):
                     output_dir=str(tmp_path / "run"))
     f = d.static_land_fraction()
     assert f is not None and not bool(jnp.any(f))
+    # marked land-free, so McFarlane gets an explicit zero land fraction
+    assert d.physics.run_has_no_land is True
 
 
 def test_run_amip_flags_reach_the_config():

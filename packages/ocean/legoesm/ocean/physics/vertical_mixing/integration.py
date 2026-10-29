@@ -201,7 +201,11 @@ def _make_kpp(config: VerticalMixingConfig,
         J = compute_ocean_jacobian(state.eta.data, state.H_bathy.data, z_coord)
         # The run's constants, not the library's: this density is what
         # every downstream pressure integrates (#1627).
-        rho = _compute_rho(state, z_coord, J, eos_fn=eos_fn,
+        # sqrt(S) EOSes have an infinite dRho/dS at S = 0 (land / fill
+        # cells): floor S for the density as ePBL does; Wright as is.
+        rho_state = state._replace(
+            S=state.S.replace(data=eos_salinity(state.S.data, eos_fn)))
+        rho = _compute_rho(rho_state, z_coord, J, eos_fn=eos_fn,
                            rho0=constants_config.rho_0,
                            g=constants_config.g)
 

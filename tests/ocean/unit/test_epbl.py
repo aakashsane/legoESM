@@ -1135,3 +1135,45 @@ def test_kpp_buoyancy_same_for_none_and_explicit_wright():
     b = surface_buoyancy_flux(q, fw, salt, T, S, eos_fn=wright_eos, **kw)
     for x, y in zip(a, b):
         np.testing.assert_array_equal(np.asarray(x), np.asarray(y))
+
+
+@pytest.mark.parametrize("path", ["explicit", "k_profile_fallback"])
+def test_kpp_sqrt_s_eos_gradient_finite_at_zero_salinity(path):
+    """A sqrt(S) EOS (veros_gsw) has an infinite dRho/dS at S = 0; KPP's
+    density sees the floored salinity in both paths (explicit factory and
+    implicit K-profile fallback), as ePBL's does, so d(sum K_v)/dS stays
+    finite at a zero-salinity cell (#2243)."""
+    import types
+    from legoesm.ocean.physics.combined import OceanPhysicsConfig
+    from legoesm.ocean.physics.vertical_mixing import integration
+    from legoesm.ocean.physics.vertical_mixing.k_profiles import (
+        compute_vertical_K_profiles,
+    )
+    from legoesm.ocean.scm_forcing import build_ocean_surface_forcing_struct
+
+    scm, _ = _epbl_scm(-200.0, False, nsteps=1)
+    st = scm.state
+    sfc = build_ocean_surface_forcing_struct(
+        scm.forcing, 0.0, st.eta.data.shape, st.T.data.dtype)
+    vm = VerticalMixingConfig(scheme="kpp")
+    eos = make_eos_fn(eos="veros_gsw")
+    if path == "explicit":
+        fn = integration.make_vertical_mixing_physics(
+            vm, apply_diffusion=False, eos_fn=eos)
+
+        def k_v(s):
+            return fn(st._replace(S=st.S.replace(data=s)),
+                      types.SimpleNamespace(), scm.z_coord,
+                      surface_forcing=sfc).K_v
+    else:
+        phys = OceanPhysicsConfig(vertical_mixing=vm)
+
+        def k_v(s):
+            return compute_vertical_K_profiles(
+                st._replace(S=st.S.replace(data=s)), scm.z_coord, sfc,
+                phys, eos_fn=eos)[0]
+
+    S0 = st.S.data.at[..., -1].set(0.0)
+    grad = jax.grad(lambda s: jnp.sum(k_v(s)))(S0)
+    assert bool(jnp.all(jnp.isfinite(k_v(S0))))
+    assert bool(jnp.all(jnp.isfinite(grad)))

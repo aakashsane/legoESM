@@ -1232,6 +1232,13 @@ def _make_mpas_turbulence(
                     "forcing['conv_dlf'] (ZM's detrained condensate) was handed "
                     "to the MPAS turbulence bridge, but it was built without "
                     "zm_config, whose smoothing widths the booking needs.")
+            _missing = [n for n in ("q_c", "q_i", "N_c", "N_i")
+                        if state.tracers is None or n not in state.tracers]
+            if _missing:
+                raise ValueError(
+                    "forcing['conv_dlf'] is booked into q_c, q_i, N_c and N_i; "
+                    f"the state lacks {_missing}, whose tendencies the MPAS "
+                    "step would drop.")
             _det = cam6_detrain_condensate(
                 T_col + dt * turb_out.dT_dt,
                 jnp.asarray(_dlf).reshape(nCells, nlev), zm_config)

@@ -256,6 +256,12 @@ def test_dlf_handoff_without_zm_config_is_refused(mpas_case):
     with pytest.raises(ValueError, match="zm_config"):
         TI.make_turbulence_physics(cfg, "spectral_pe", 600.0,
                                    zm_config=ZhangMcFarlaneConfig())
+    fn = TI._make_mpas_turbulence(cfg, 600.0, f_land=jnp.ones((ncell,)),
+                                  zm_config=ZhangMcFarlaneConfig())
+    no_ni = state._replace(tracers={k: v for k, v in state.tracers.items() if k != "N_i"})
+    with pytest.raises(ValueError, match=r"lacks \['N_i'\]"):
+        fn(no_ni, mesh, sigma, forcing={**_land_forcing(ncell),
+                                        "conv_dlf": jnp.ones((ncell, nlev)) * 1e-8})
 
 
 # ---------------------------------------------------------------------------

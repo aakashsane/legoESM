@@ -171,6 +171,31 @@ def test_fv_pipeline_diffuses_every_carried_constituent():
             1.0e-3, rtol=0, atol=1e-15)
 
 
+
+def test_fv_pipeline_all_ocean_run_passes_zero_land_fraction():
+    """A run with no land (pipeline ``f_land`` None) hands McFarlane an
+    explicit zero land fraction (CAM landfrac = 0: no orographic drag)
+    instead of None, which the kernel refuses at the first step."""
+    from legoesm.atmosphere.physics.gravity_wave_drag import GWDOutput
+    from tests.unit.test_gwd_landfrac_wiring import NLAT, NLON, _pipe, _run_step
+
+    grid, pipe = _pipe("mcfarlane")
+    pipe.f_land = None
+    rec = {}
+
+    def kernel(**kw):
+        rec.update(kw)
+        z = jnp.zeros(kw["u"].shape)
+        return GWDOutput(du_dt=z, dv_dt=z, dT_dt=z,
+                         eps_gwd=jnp.zeros(z.shape[0]), dq_dt=None)
+
+    pipe.gwd_fn = kernel
+    _run_step(grid, pipe)
+    lf = rec["land_frac_col"]
+    assert lf is not None and lf.shape == (NLAT * NLON,)
+    np.testing.assert_array_equal(np.asarray(lf), 0.0)
+
+
 def test_spectral_lane_returns_constituent_diffusion():
     from legoesm.atmosphere.dynamics.gcm.spectral_pe import (
         isothermal_rest_state_spectral,

@@ -2287,8 +2287,17 @@ class PhysicsPipeline:
                         self.sigma_coord, T_col.dtype)
                 _mcf_kw = {
                     "p_ref_half": _p_ref_half,
-                    "land_frac_col": (None if self.f_land is None
-                                      else ad.flatten_2d(self.f_land)),
+                    # The driver leaves ``f_land`` None only when the run
+                    # has no land anywhere (aquaplanet, land_fraction_source
+                    # = zero): that IS CAM landfrac = 0, i.e. zero orographic
+                    # drag, not a missing input (codex + GLM, PR #2238).
+                    "land_frac_col": (
+                        jnp.zeros((ad.ncol,), dtype=T_col.dtype)
+                        if self.f_land is None
+                        else ad.flatten_2d(self.f_land)),
+                    # N_c / N_r carries are per MASS [1/kg] (checkpoint stamp
+                    # number_convention = per_mass), N_i per mass too, so the
+                    # mixing-ratio diffusion applies to them unchanged.
                     "tracers": {
                         k: ad.flatten_3d(x) for k, x in (
                             ("q_v", q_v), ("q_c", q_c), ("q_r", q_r),

@@ -296,7 +296,8 @@ def simple_lw_net_upward_flux(q_cond, q_total, rho, dz, z_half,
         the clear-sky term through the interpolation.
     rho_half : array (nlev+1,), optional
         Face density [kg/m^3] (gSAM ``rhow``), bottom-up. Required when
-        ``config.density_at_inversion`` is False and ignored otherwise.
+        ``config.density_at_inversion`` is False; passing it when
+        that flag is True raises ``ValueError``.
 
     All profile axes are ordered BOTTOM-UP (index 0 nearest the surface),
     which is the orientation the cumulative optical depths are defined in.
@@ -321,6 +322,12 @@ def simple_lw_net_upward_flux(q_cond, q_total, rho, dz, z_half,
     # there exactly as gSAM's `k = itop+1, nzm` loop bound does.
     dz_i = jnp.clip(z_half - z_i, 0.0, None)
     if config.density_at_inversion:
+        if rho_half is not None:
+            raise ValueError(
+                "simple_lw: rho_half was passed but density_at_inversion=True "
+                "uses the layer density interpolated to the inversion and "
+                "would ignore it; set density_at_inversion=False for gSAM's "
+                "face-density form, or drop rho_half.")
         centres = (0.5 * (z_half[:-1] + z_half[1:]) if z_full is None
                    else z_full)
         rho_ref = jnp.interp(z_i[..., 0], centres, rho)[..., None]

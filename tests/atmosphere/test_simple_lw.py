@@ -131,6 +131,15 @@ def test_gsam_local_density_differs_from_the_specification_form():
     assert not np.allclose(np.asarray(spec), np.asarray(gsam), rtol=1e-6)
 
 
+def test_rho_half_with_density_at_inversion_raises():
+    """rho_half is gSAM-form only; the specification form must not ignore it."""
+    z_half, dz, rho, q_cond, q_tot = _cloud_column()
+    with pytest.raises(ValueError, match="rho_half"):
+        simple_lw_net_upward_flux(
+            q_cond, q_tot, rho, dz, z_half, SimpleLWConfig(density_at_inversion=True),
+            rho_half=1.2 * jnp.exp(-z_half / 8000.0))
+
+
 def test_spec_cp_scales_the_heating_rate():
     z_half, dz, rho, q_cond, q_tot = _cloud_column()
     a = SimpleLWConfig(divergence_s=0.0)

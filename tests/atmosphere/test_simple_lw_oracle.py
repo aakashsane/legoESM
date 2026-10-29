@@ -132,6 +132,8 @@ def test_gradient_finite_on_fixture_columns(dtype, cfg):
     fx = _fx()
     for name in fx["col_names"]:
         (cond, qt, rho, dzk, zi), kw = _args(fx, str(name), dtype)
+        if cfg.density_at_inversion:
+            kw.pop("rho_half")
 
         def loss(cond, rho):
             return jnp.sum(simple_lw_temperature_tendency(cond, qt, rho, dzk, zi, cfg, **kw) ** 2)

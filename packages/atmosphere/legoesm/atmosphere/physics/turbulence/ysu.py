@@ -11,7 +11,8 @@ Two code paths share :func:`ysu_turbulence`:
   ``ctopo`` absent, no ocean current), oracle-tested against the running
   Fortran (``tests/atmosphere/hydrostatic/unit/test_ysu_oracle.py``).  Four
   sharpness fields smooth the bulk-Ri first crossing, the PBL-top level and
-  everything derived from it, the in/above-PBL selection, the Ri sign and the
+  the switches derived from it (except the one marked PENDING in
+  :func:`bl_ysu_run`), the in/above-PBL selection, the Ri sign and the
   entrainment-layer cutoff, and reduce to the oracle at their hard limit.
   **NOT RULE 5 COMPLIANT** (#2231): the switches listed in :func:`bl_ysu_run`
   as still hard are hard at the default.  Opt-in kernel only; they must be
@@ -370,7 +371,10 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
       The entrainment-level picks apply the oracle's max/min/products per
       candidate level, then average over the distribution; "interface above
       kpbl" is the cumulative distribution; ``delta`` is the PBL weight times
-      its PBL value, and ``entfac`` uses that PBL value everywhere.
+      its PBL value, and ``entfac`` uses that PBL value everywhere.  The PBL
+      flag implies ``kpbl > 1``, so the level weights it multiplies (the
+      entrainment layer, the in-PBL nonlocal fluxes) are conditioned on
+      ``kpbl > 1``.
     * ``entrainment_cutoff_sharpness``: the entrainment layer ``entfac < 4.6``
       as ``sigmoid(s*(4.6 - entfac))``.
     The hard ``kpbl`` and ``pblflg`` outputs are diagnostics computed as the
@@ -396,8 +400,8 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     up to 48 % in PBL height (median 4 %), up to 95 % in the diffusivities
     (medians 6-11 %), up to 19 % in the entrainment thickness delta (one
     column has a small non-zero delta where the oracle's is 0), and up to
-    89 % / 30 % / 44 % in the u / v / temperature tendencies (medians 4 % /
-    8 % / 4 %); one column's moisture tendency changes sign (200 %).  Setting
+    89 % / 31 % / 44 % in the u / v / temperature tendencies (medians 4 % /
+    8 % / 5 %); one column's moisture tendency changes sign (200 %).  Setting
     all four fields to 1e300 recovers the oracle to 1e-10.  The column water
     and heat budgets still close (residual < 1e-13 of the surface flux).  At an
     exact bulk-Ri tie (``brup == brcr``, e.g. a constant-theta_v layer) the
@@ -518,7 +522,8 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
         1.0 - _soft_gt0(hpbl / zq[:, 1] - 1.0, region_sharpness, 1.0))
     water = (sfc.xland - _XLAND_WATER) >= 0.0
     s10 = sfc.u10 * sfc.u10 + sfc.v10 * sfc.v10
-    ok = stab & water & (s10 > 0.0)
+    # the Rossby brcr is pass 3's whenever over water; st weighs pass 3 in
+    ok = water & (s10 > 0.0)
     ross = jnp.sqrt(jnp.where(ok, s10, 1.0)) / (_CORI * sfc.znt)
     # zero 10 m wind: (1e-7*ross)**(-0.18) is +inf and min() returns 0.3
     brcr_sbro = jnp.minimum(jnp.where(
@@ -616,8 +621,12 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     kh_f = jnp.minimum((1.0 - w_st) * kh_u + w_st * kh_s + _XKZMINH, _XKZMAX)
 
     # --- entrainment layer above the PBL top (l.1059-1063, l.1339-1342) ---
-    ent = pf[:, None] * above * _soft_gt0(_ENTFAC_MAX - entfac,
-                                          entrainment_cutoff_sharpness, 0.0)
+    # pblflg implies kpbl > 1, and pf already carries that probability, so the
+    # level weights that multiply pf are conditioned on kpbl > 1
+    p_gt1 = 1.0 - dist[:, :1]
+    inv_gt1 = jnp.where(p_gt1 > 0.0, 1.0 / jnp.where(p_gt1 > 0.0, p_gt1, 1.0), 0.0)
+    ent = pf[:, None] * (above - dist[:, :1]) * inv_gt1 * _soft_gt0(
+        _ENTFAC_MAX - entfac, entrainment_cutoff_sharpness, 0.0)
     ke2 = -we_dza[:, None] * jnp.exp(-entfac) * kh_f      # >= 0 (we <= 0)
     kh_e = jnp.clip(jnp.where(ke2 > 0.0, jnp.sqrt(jnp.where(ke2 > 0.0, ke2, 1.0)), 0.0),
                     _XKZMINH, _XKZMAX)
@@ -628,13 +637,13 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     # level kpbl when brint rounds to 1): the sigmoid would give 1/2 at any
     # sharpness, so equality takes the oracle's k < kpbl
     zr = za[:, :-1] / hpbl[:, None] - 1.0
-    wp = (1.0 - dist[:, :1]) * jnp.where(
-        zr == 0.0, 1.0 - above, 1.0 - jax.nn.sigmoid(region_sharpness * zr))
+    in_pbl = jnp.where(zr == 0.0, 1.0 - above, 1.0 - jax.nn.sigmoid(region_sharpness * zr))
+    wp = p_gt1 * in_pbl
     kh_a = ent * kh_e + (1.0 - ent) * kh_f
     Kh = wp * kh_p + (1.0 - wp) * kh_a
     Kq = wp * kq_p + (1.0 - wp) * kh_a
     Km = wp * km_p + (1.0 - wp) * (ent * km_e + (1.0 - ent) * km_f)
-    fw = pf[:, None] * wp     # in-PBL nonlocal fluxes
+    fw = pf[:, None] * in_pbl     # in-PBL nonlocal fluxes (conditioned as ent)
 
     # --- implicit solves over 2*dt (l.1031-1405) ---
     dsig = p2d[:, :-1] - p2d[:, 1:]

@@ -1137,11 +1137,13 @@ class CFWriter:
         full ESGF DRS tree
         ``<mip_era>/<activity>/<institution>/<source>/<experiment>/
         <variant>/<table>/<var>/<grid_label>/<version>/`` is available via
-        ``CFWriter(drs_tree=True)`` but is NOT the default: every
-        downstream legoESM consumer (``scripts/validate/
-        run_amip_climateeval.py`` and the analysis notebooks) globs
-        ``cmor/<table>/*.nc``, so flipping the default would break them
-        for a layout that only matters at the moment of ESGF submission.
+        ``CFWriter(drs_tree=True)`` (run flag ``--cmip-drs-tree``) but is
+        NOT the default: the analysis notebooks and the AMIP bias
+        validators glob ``cmor/<table>/*.nc`` (``scripts/validate/
+        run_amip_climateeval.py`` reads both layouts), so flipping the
+        default would break them for a layout that only matters at the
+        moment of ESGF submission.  A dataset that already has a
+        ``v<YYYYMMDD>`` directory is extended in its latest one.
         The filenames -- which are what validators actually check -- are
         DRS-correct either way.
         """

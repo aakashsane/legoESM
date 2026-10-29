@@ -3,13 +3,14 @@
 gSAM M2005 (module_mp_graupel.f90:1806/2843) switches autoconversion on with a
 hard step at 1e-6 kg/kg cloud water.  The port's default is the C2 quintic
 ramp, 0 at 1e-6 and 1 at ``sb2001_autoconv_ramp_top`` (2e-6 kg/kg, codex+GLM
-2026-10-29); ``ramp_top <= 1e-6`` is gSAM's step.  Three tests:
+2026-10-29); ``ramp_top <= 1e-6`` is gSAM's step.  RULE 5's three tests (plus config and
+validation checks):
 
 1. hard limit matches gSAM: the existing oracle tests run at ``ramp_top=0``
    (test_sb2001_warm_rain_oracle.py, test_gsam_sb_liquid_oracle.py, 1e-10);
    here the hard value is checked to reproduce the pre-ramp kernel exactly;
 2. per-case gap at the default, pinned per kernel-fixture point and per
-   whole-call column;
+   whole-call column, plus the quintic shape inside the ramp;
 3. ``check_grads`` through the ramp: NOT YET ADDED -- its fixed inputs
    (q_r, N_c, rho) are an open user question on the PR (reviewers split).
 """
@@ -102,3 +103,19 @@ def test_default_gap_per_column_is_zero():
             gap = np.abs(np.asarray(a) - np.asarray(b)).reshape(len(np.asarray(a)), -1)
             np.testing.assert_allclose(gap.max(axis=1), 0.0, rtol=RTOL, atol=ATOL,
                                        err_msg=f"{g} {name}")
+
+
+@pytest.mark.parametrize("x", [0.25, 0.5, 0.75])
+def test_default_ramp_is_the_quintic_inside(x):
+    """Inside (1e-6, 2e-6) the default rate is gSAM's times the C2 quintic
+    6x^5 - 15x^4 + 10x^3 (the fixture has no interior q_c, so the 168
+    threshold points are moved to q_c = 1e-6 (1 + x), keeping q_r, N_c, rho)."""
+    fx = dict(np.load(FIXTURE))
+    m = fx["q_c"] == GATE
+    q_c = jnp.asarray(fx["q_c"][m] * (1.0 + x))
+    q_r, N_c, rho = (jnp.asarray(fx[k][m]) for k in ("q_r", "N_c", "rho"))
+    hard = np.asarray(autoconversion_sb2001(q_c, q_r, N_c, rho, ramp_top=0.0)[0])
+    dflt = np.asarray(autoconversion_sb2001(q_c, q_r, N_c, rho, ramp_top=DEFAULT)[0])
+    assert m.sum() == 168 and np.all(hard > 0.0)
+    np.testing.assert_allclose(dflt / hard, 6 * x**5 - 15 * x**4 + 10 * x**3,
+                               rtol=1.0e-12, atol=0.0)

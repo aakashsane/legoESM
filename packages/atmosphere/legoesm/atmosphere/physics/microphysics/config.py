@@ -167,6 +167,7 @@ __param_spec__ = {
             "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
+            "sb2001_autoconv_ramp_top": "numerics: smooth-switch width (RULE 5), value decided by codex+GLM 2026-10-29 (#2232)",
             "cam_qsat_cap_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             # Fall-speed power-law EXPONENTS feed math.gamma(4 + b) / math.gamma(1 + b)
             # (morrison.py, _warm_rain.py) to precompute the cons* moment factors.
@@ -316,6 +317,7 @@ __param_spec__ = {
             "gsam_satadj_excess_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             "gsam_satadj_qc_floor_sharpness": "numerics: smooth-switch sharpness (RULE 5), value approved by user 2026-10-21",
             "gsam_satadj_p_min_width_pa": "numerics: smooth-switch width (RULE 5), value approved by user 2026-10-21",
+            "sb2001_autoconv_ramp_top": "numerics: smooth-switch width (RULE 5), value decided by codex+GLM 2026-10-29 (#2232)",
             "autoconversion_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "breakup_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "saturation_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
@@ -558,6 +560,11 @@ class SeifertBehengConfig(NamedTuple):
     gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step [-]
     gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
     gsam_satadj_p_min_width_pa: float = 100.0     # p >= 5000 Pa gate width [Pa]
+    # RULE 5 smoothing of gSAM's SB2001 autoconversion gate q_c >= 1e-6 kg/kg
+    # (module_mp_graupel.f90:1806/2843): the C2 step reaches 1 at this value
+    # [kg/kg]; <= 1e-6 = gSAM's hard step (codex+GLM 2026-10-29, #2232; KNOWN
+    # DIFFERENCE in _warm_rain.autoconversion_sb2001).
+    sb2001_autoconv_ramp_top: float = 2.0e-6
 
 
 # Unset Morrison DCS per flavour [m] (MorrisonConfig.ice_snow_d_auto=None,
@@ -1119,6 +1126,11 @@ class MorrisonConfig(NamedTuple):
     gsam_satadj_excess_sharpness: float = 1.0e4   # saturation step, on (q_t - q_s)/q_sat [-]
     gsam_satadj_qc_floor_sharpness: float = 1.0e4  # positivity, on T1 - T_l [1/K]
     gsam_satadj_p_min_width_pa: float = 100.0     # on/off, p >= 5000 Pa gate width [Pa]
+    # RULE 5 smoothing of gSAM's SB2001 autoconversion gate q_c >= 1e-6 kg/kg
+    # (module_mp_graupel.f90:1806/2843): the C2 step reaches 1 at this value
+    # [kg/kg]; <= 1e-6 = gSAM's hard step (codex+GLM 2026-10-29, #2232; KNOWN
+    # DIFFERENCE in _warm_rain.autoconversion_sb2001).
+    sb2001_autoconv_ramp_top: float = 2.0e-6
     # MG2's CAM Goff-Gratch q_sat = 1 cap (RULE 5, limiter class): sharpness
     # on e_sat/p; math.inf = CAM's hard cap.  Value approved by user 2026-10-21.
     cam_qsat_cap_sharpness: float = CAM_QSAT_CAP_SHARPNESS

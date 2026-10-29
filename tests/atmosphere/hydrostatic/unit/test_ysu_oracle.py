@@ -389,3 +389,95 @@ def test_exact_tie_weight_counts_p_kpbl_gt1_once():
     sig = 1.0 - jax.nn.sigmoid(s * zr[1:])
     np.testing.assert_array_equal(np.asarray(in_pbl[1:]), np.asarray(sig))
     np.testing.assert_array_equal(np.asarray(wp[1:]), np.asarray(p_gt1 * sig))
+
+
+# ---------------------------------------------------------------------------
+# RULE 5 per smoothed switch group: one fixture column placed inside that
+# switch's transition, one scalar input theta, one output that responds to the
+# switch.  Each case pins the output and its derivative at theta = 0 (measured
+# 2026-10-29, fp64 CPU, rtol 1e-6 / atol 1e-12 as DEFAULT_GAP) and checks the
+# derivative against finite differences (check_grads, eps 1e-5 as above).  A
+# group with its own sharpness field runs with that field at its default and
+# the others at the hard limit, and its derivative at the all-hard limit must
+# differ from the pinned one (the switch is what moves it).  Code-only groups
+# (no field of their own) run at the full default; replacing them by their
+# hard switch changes the pinned numbers (shown when the cases were added).
+#   case: (field or None, column, base edits, theta input, output, value, d/dtheta)
+#   base edits: T (top-first level, shift K), dz (top-first level, factor), hfx
+#   (factor); theta input:
+#   ("T", level) shift K, ("u10",) shift m/s, ("hfx",) relative change.
+# ---------------------------------------------------------------------------
+BRANCH_CASES = {
+    # bulk-Ri first crossing: the level above the crossing (hard: d/dT = 0)
+    "first_crossing": ("pbl_sharpness", "real_cell33109", {}, ("T", 30), ("hpbl", None),
+                       2.7795337688e+02, -1.9697736153e+03),
+    # kpbl = 1 rule / PBL flag / in-above-PBL selection (hard: d/dT = 0)
+    "pbl_region": ("region_sharpness", "all_snow_land", {}, ("T", 31), ("exch_h", 28),
+                   1.5409784478e-01, -3.4992903317e-01),
+    # Ri sign of the free-atmosphere diffusivity, a level cooled onto ri ~ 0
+    "ri_sign": ("ri_sharpness", "nocturnal_elevated_water", {"T": (23, -0.95)}, ("T", 23),
+                ("exch_h", 23), 1.3541236366e+01, -2.9399286972e+02),
+    # entrainment-layer cutoff entfac < 4.6: level kpbl thinned to 2 % so the
+    # interface above the PBL top sits inside the layer's edge (hard: d/dhfx = 0)
+    "entrainment_cutoff": ("entrainment_cutoff_sharpness", "monsoon_land", {"dz": (29, 0.02)},
+                           ("hfx",), ("exch_h", 28), 1.1003636749e-01, -1.9182368090e-02),
+    # Rossby critical Ri over water: the first-guess top just above zq(2), where
+    # the hard stable test is off but its smooth weight is not (old hard-gated
+    # brcr: d/du10 = 0)
+    "rossby_brcr": (None, "polar_dry_water", {"T": (30, -0.65)}, ("u10",), ("hpbl", None),
+                    1.8576759529e+02, -1.8660416144e+00),
+    # entrainment layer conditioned on kpbl > 1 (unconditioned: value +9e-5 rel)
+    "entrainment_conditioning": (None, "monsoon_land", {"hfx": 0.900459014487698}, ("hfx",),
+                                 ("exch_h", 29), 1.6809703680e-02, -1.1614489881e-02),
+    # zfac denominator mixed by P(kpbl > 1) (hard kpbl > 1 switch: d/dT +10 %)
+    "zfac_denominator": (None, "polar_dry_water", {}, ("T", 31), ("exch_h", 30),
+                         1.0903842173e+00, 4.7898647644e-01),
+}
+
+
+def _branch_phi(fx, case, sharp):
+    field, col, base, wrt, (out, idx), _, _ = case
+    c = _names(fx).index(col)
+    T = jnp.asarray(fx["in_T"])
+    if "T" in base:
+        T = T.at[c, base["T"][0]].add(base["T"][1])
+    hfx = jnp.asarray(fx["in_hfx"]).at[c].multiply(base.get("hfx", 1.0))
+    dz = jnp.asarray(fx["in_dz"])
+    if "dz" in base:
+        dz = dz.at[c, base["dz"][0]].multiply(base["dz"][1])
+    sfc0 = {k: jnp.asarray(fx[f"in_{k}"]) for k in SFC_KEYS}
+
+    def phi(th):
+        sfc, Tt, h = dict(sfc0), T, hfx
+        if wrt[0] == "T":
+            Tt = T.at[c, wrt[1]].add(th)
+        elif wrt[0] == "u10":
+            sfc["u10"] = sfc["u10"].at[c].add(th)
+        else:
+            h = hfx.at[c].multiply(1.0 + th)
+        f = {k: jnp.asarray(fx[f"in_{k}"]) for k in
+             ("u", "v", "q", "p_full", "p_half", "exner", "ust", "qfx")}
+        o = bl_ysu_run(f["u"], f["v"], Tt, f["q"], f["p_full"], f["p_half"], f["exner"],
+                       dz, f["ust"], h, f["qfx"], YSUSurfaceLayer(**sfc),
+                       float(fx["dt"]), **sharp)
+        y = getattr(o, out)
+        return y[c] if idx is None else y[c, idx]
+    return phi
+
+
+def _case_sharp(field):
+    if field is None:
+        return _default_sharp()
+    return {**HARD, field: _default_sharp()[field]}
+
+
+@pytest.mark.parametrize("name", list(BRANCH_CASES))
+def test_smoothed_switch_derivative_in_transition(fx, name):
+    case = BRANCH_CASES[name]
+    phi = jax.jit(_branch_phi(fx, case, _case_sharp(case[0])))
+    value, grad = float(phi(0.0)), float(jax.grad(phi)(0.0))
+    np.testing.assert_allclose([value, grad], [case[5], case[6]], rtol=1e-6, atol=1e-12)
+    check_grads(phi, (0.0,), order=2, modes=("rev",), eps=1e-5)
+    if case[0] is not None:
+        hard = float(jax.grad(_branch_phi(fx, case, HARD))(0.0))
+        assert not np.isclose(hard, grad, rtol=1e-6, atol=1e-12), (hard, grad)

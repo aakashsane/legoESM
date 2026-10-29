@@ -392,10 +392,11 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     * ``entrainment_cutoff_sharpness``: the entrainment layer ``entfac < 4.6``
       as ``sigmoid(s*(4.6 - entfac))``.
     The hard ``kpbl`` and ``pblflg`` outputs are diagnostics computed as the
-    oracle does (on the smooth hpbl); nothing in the computation reads them.
-    The ``zfac`` denominator (``hpbl - zl1`` if ``kpbl > 1``, else 1) is both
-    branches' raw in-PBL diffusivities and ``zfacent`` mixed by P(kpbl > 1),
-    capped once after the mix.
+    oracle does (on the smooth hpbl), with the hard stable test they need;
+    none of these feeds hpbl, delta, the diffusivities or the tendencies.
+    The ``zfac`` denominator (``hpbl - zl1`` if ``kpbl > 1``, else 1): both
+    branches' raw in-PBL diffusivities and ``zfacent`` are mixed by
+    P(kpbl > 1), and the caps applied once after the mix.
 
     NOT RULE 5 COMPLIANT (opt-in kernel; smooth before any lane uses it,
     #2231).  Still hard ``jnp.where`` / ``max`` / ``min`` / ``clip`` on traced

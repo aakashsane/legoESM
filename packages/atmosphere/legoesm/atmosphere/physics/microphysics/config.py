@@ -351,7 +351,7 @@ __param_spec__ = {
             "rh_crit": {"units": "1", "bounds": (0.5, 1.0), "tunable_tier": 1, "transform": "sigmoid", "category": "critical_rh", "reference": "Sundqvist et al. (1989)", "shape": None},
             "qc_crit": {"units": "kg/kg", "bounds": (0.0001, 0.0015), "tunable_tier": 1, "transform": "sigmoid", "category": "autoconversion", "reference": "Sundqvist et al. (1989)", "shape": None},
             "auto_rate": {"units": "1/s", "bounds": (0.0001, 0.01), "tunable_tier": 1, "transform": "sigmoid", "category": "autoconversion", "reference": "Sundqvist et al. (1989)", "shape": None},
-            "evap_coeff": {"units": "1", "bounds": (0.0001, 0.0015), "tunable_tier": 2, "transform": "sigmoid", "category": "evaporation", "reference": "Sundqvist et al. (1989)", "shape": None},
+            "evap_coeff": {"units": "1", "bounds": (1.0e-5, 0.0015), "tunable_tier": 2, "transform": "sigmoid", "category": "evaporation", "reference": "Zhao-Carr evpco: GFS operational 2e-5 (zhaocarr_precpd.f:215); lower bound 1e-5 to hold it (user 2026-10-27). Sundqvist et al. (1989)", "shape": None},
             # SBK89 Sec. 5 precipitation-release enhancements: coalescence F1
             # (function of the precipitation flux from above) and Bergeron F2
             # (mixed-phase temperature window); c_0 is multiplied and q_c,crit
@@ -459,16 +459,16 @@ class SundqvistConfig(NamedTuple):
     auto_rate: float = 1e-3           # Liquid release rate c_0 [1/s] (oracle prautco)
     # Critical cloud water m_r of the SBK89 release
     # (1 - exp(-(m*F1*F2/(m_r*max(b, 0.01)))^2)) [kg/kg] (oracle 1/cmr).
-    qc_crit: float = 5e-4
+    qc_crit: float = 3e-4             # oracle m_r (tier-2 decision R14)
     # Rain-evaporation coefficient (oracle evpco):
-    # E = evap_coeff*sqrt(1/dt)*(rh_crit - RH)*(rho dz dt)*sqrt(P_r).
-    evap_coeff: float = 5e-4
+    # E = evap_coeff*sqrt(1/dt)*(rh_crit - RH)*(dp/g dt)*sqrt(P_r).
+    evap_coeff: float = 2e-5          # GFS operational evpco (tier-2 decision R12)
     # --- SBK89 (Sec. 5) precipitation-release enhancements ---
     # Coalescence F1 = 1 + c1*sqrt(P/dt), P the precipitation [kg m^-2] per
     # step falling in from above (oracle c1).
     coalescence_enh_coeff: float = 300.0   # c1 [(kg m^-2 s^-1)^-1/2]
     # Bergeron-Findeisen F2 = 1 + c2*sqrt(min(max(0, 268 K - T), 20 K)) (oracle c2).
-    bergeron_enh_coeff: float = 3.0        # c2 [K^-1/2]
+    bergeron_enh_coeff: float = 0.5        # c2 [K^-1/2], oracle (tier-2 decision R13)
     # Parameters of the PRE-PORT Gaussian F2; no counterpart in the oracle.
     # Setting either to a non-default value raises.
     bergeron_T_peak_K: float = constants.T_freeze - 15.0   # [K]

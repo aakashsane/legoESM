@@ -11,8 +11,9 @@ validation checks):
    here the hard value is checked to reproduce the pre-ramp kernel exactly;
 2. per-case gap at the default, pinned per kernel-fixture point and per
    whole-call column, plus the quintic shape inside the ramp;
-3. ``check_grads`` through the ramp: NOT YET ADDED -- its fixed inputs
-   (q_r, N_c, rho) are an open user question on the PR (reviewers split).
+3. ``check_grads`` through the ramp at the default (user 2026-10-29):
+   q_c = 1e-6 (1 + x), x in {0, 0.5, 0.9}, q_r = 1e-6, N_c = 1e8 /m^3,
+   rho = 1.0, rate normalised by gSAM's rate at the ramp top (codex+GLM).
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from pathlib import Path
 
 import jax
 import jax.numpy as jnp
+from jax.test_util import check_grads
 import numpy as np
 import pytest
 
@@ -119,3 +121,27 @@ def test_default_ramp_is_the_quintic_inside(x):
     assert m.sum() == 168 and np.all(hard > 0.0)
     np.testing.assert_allclose(dflt / hard, 6 * x**5 - 15 * x**4 + 10 * x**3,
                                rtol=1.0e-12, atol=0.0)
+
+
+@pytest.mark.parametrize("x", [0.0, 0.5, 0.9])
+def test_default_ramp_gradient(x):
+    """RULE 5 gradient test at the default: q_c = 1e-6 (1 + x) with q_r = 1e-6,
+    N_c = 1e8 /m^3, rho = 1.0 (user 2026-10-29).  The raw rate is ~1e-18
+    kg/kg/s, below check_grads' absolute tolerance, so it is divided by gSAM's
+    hard-step rate at the ramp top (q_c = 2e-6) to make the check bind
+    (codex+GLM 2026-10-29).  The C2 ramp has zero slope at x = 0, so the
+    derivative is exactly 0 there and non-zero inside."""
+    q_r, N_c, rho = jnp.asarray(1.0e-6), jnp.asarray(1.0e8), jnp.asarray(1.0)
+    ref = float(autoconversion_sb2001(jnp.asarray(2.0 * GATE), q_r, N_c, rho,
+                                      ramp_top=0.0)[0])
+    assert ref > 0.0
+
+    def f(x):
+        return autoconversion_sb2001(GATE * (1.0 + x), q_r, N_c, rho,
+                                     ramp_top=DEFAULT)[0] / ref
+
+    x = jnp.asarray(x)
+    check_grads(f, (x,), order=2)
+    g = float(jax.grad(f)(x))
+    assert math.isfinite(g)
+    assert g == 0.0 if float(x) == 0.0 else g != 0.0

@@ -478,6 +478,14 @@ def test_smoothed_switch_derivative_in_transition(fx, name):
     value, grad = float(phi(0.0)), float(jax.grad(phi)(0.0))
     np.testing.assert_allclose([value, grad], [case[5], case[6]], rtol=1e-6, atol=1e-12)
     check_grads(phi, (0.0,), order=2, modes=("rev",), eps=1e-5)
+    # finite differences converge at second order onto the derivative (both
+    # reviewers' pick): err(1e-3)/err(1e-4) in [10, 1000] unless err(1e-4) is
+    # at round-off, and err(1e-5) <= err(1e-4) unless err(1e-5) is
+    floor = lambda e: 1e2 * np.finfo(np.float64).eps * abs(value) / e  # noqa: E731
+    err = {e: abs((float(phi(e)) - float(phi(-e))) / (2.0 * e) - grad) for e in (1e-3, 1e-4, 1e-5)}
+    if err[1e-4] > floor(1e-4):
+        assert 10.0 <= err[1e-3] / err[1e-4] <= 1000.0, err
+    assert err[1e-5] <= err[1e-4] or err[1e-5] <= floor(1e-5), err
     if case[0] is not None:
         hard = float(jax.grad(_branch_phi(fx, case, HARD))(0.0))
         assert not np.isclose(hard, grad, rtol=1e-6, atol=1e-12), (hard, grad)

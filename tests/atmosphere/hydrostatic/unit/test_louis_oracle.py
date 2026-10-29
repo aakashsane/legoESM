@@ -194,6 +194,7 @@ def _calm_column(fx, du):
 
 
 def _km_sum(fx, f, u):
+    u = jnp.asarray(u)   # check_grads' finite differences hand in NumPy arrays
     rho = compute_rho(f["T"], f["p_full"], q_v=f["q"])
     ustar = jnp.sqrt(jnp.hypot(f["taux"], f["tauy"]) / rho[:, -1])
     o = L.louis_turbulence(

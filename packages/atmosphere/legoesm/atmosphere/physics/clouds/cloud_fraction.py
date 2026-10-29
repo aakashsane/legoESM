@@ -1530,6 +1530,14 @@ def compute_cloud_properties(
             # CAM's REL reads the number after MG2's mean-size re-adjust
             # (micro_mg2_0.F90:2826-2834, applied before micro_mg_cam.F90:2534;
             # follow-up row 48), both limits smooth at the RULE 5 widths.
+            # KNOWN DIFFERENCE (RULE 5): CAM runs the PSD clamp twice (MG2's
+            # re-adjust, then REL); the hard clamp is idempotent, the smooth one
+            # is not.  Where the raw slope saturates a bound, the second call
+            # moves ln(lambda) by a further ~w ln 2 (w = mg2_drop_slope_log_width),
+            # i.e. a radius ~0.69% larger at w = 0.01 than one smooth clamp; the
+            # fixture has no bound-saturated column, so its per-column gaps do
+            # not show this.  Width 0 recovers CAM exactly (codex + GLM chose to
+            # keep CAM's two-call structure, 2026-10-29).
             psd_widths = dict(
                 number_cap_log_width=config.mg2_drop_number_cap_log_width,
                 slope_log_width=config.mg2_drop_slope_log_width)

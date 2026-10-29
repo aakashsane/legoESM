@@ -290,8 +290,8 @@ TUNING_PARAMETERS: dict[str, TuningParameter] = {
         notes=(
             "Rate at which falling rain re-evaporates in subsaturated "
             "layers (Zhao-Carr form, GFS evpco): evap = evap_coeff * "
-            "sqrt(1/dt) * (rh_crit - RH) * sqrt(P_r), P_r the rain flux "
-            "entering the layer. Higher = more rain lost to evaporation, "
+            "sqrt(1/dt) * (rh_crit - RH) * sqrt(P_r), P_r the rain amount "
+            "per step [kg/m^2] entering the layer (not a flux). Higher = more rain lost to evaporation, "
             "drier surface precip and moister mid-troposphere; lower = more "
             "rain reaches the surface. Zhao and Carr (1997)."
         ),

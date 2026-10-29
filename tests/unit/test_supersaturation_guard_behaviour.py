@@ -468,12 +468,14 @@ _SUNDQVIST_PREGUARD_DQ_V_DT = (-8.795268697736346e-08, -4.83298763445925e-07, 0.
 
 
 def test_sundqvist_default_matches_the_pre_guard_baseline_bit_for_bit():
-    """Numeric byte-identity against values computed BEFORE the guard existed.
+    """Guard-OFF tripwire: the default path matches pinned numbers.
 
-    The monkeypatch "bomb" tests prove the new code is not INVOKED; this proves
-    the numbers are unchanged, which is the claim that actually protects every
-    tuned parameter set and prior comparison. Arrays are compared, never
-    printed summaries (CLAUDE.md)."""
+    The pins were first measured BEFORE the guard existed and have since been
+    re-pinned on the current scheme (2026-10-20 port, 2026-10-27 top-down
+    fixture and defaults), so this proves the guard does not leak into the
+    guard-OFF path; it does NOT prove results are comparable with runs made
+    before those re-pins.  The monkeypatch "bomb" tests prove the new code is
+    not INVOKED.  Arrays are compared, never printed summaries (CLAUDE.md)."""
     # top-down (level 0 = model top), the scheme's convention
     T = jnp.array([[205.0, 230.0, 260.0, 285.0, 300.0]], dtype=jnp.float64)
     p = jnp.array([[15000.0, 35000.0, 60000.0, 85000.0, 95000.0]],

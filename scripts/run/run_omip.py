@@ -4306,7 +4306,13 @@ class MonthlyMldSstWriter:
     the shared de Boyer Montegut diagnostic (0.03 kg/m3 wrt 10 m).
     """
 
-    def __init__(self, path, *, z_coord, lat_deg, lon_deg):
+    def __init__(self, path, *, z_coord, lat_deg, lon_deg, io_rank=True,
+                 multiproc=False):
+        # Every rank accumulates the same (gathered) samples; only the I/O
+        # rank writes the file (#2237).  In a multi-process run a failed write
+        # warns instead of raising, so the ranks stay in lockstep; the next
+        # flush rewrites every completed month.
+        self.io_rank, self.multiproc = bool(io_rank), bool(multiproc)
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         zh = np.asarray(z_coord.z_half_ref)
@@ -4362,9 +4368,19 @@ class MonthlyMldSstWriter:
             coords={"year_index": ("time", [d[0] for d in self.done]),
                     "month": ("time", [d[1] for d in self.done]),
                     "lat": self.lat, "lon": self.lon})
+        if not self.io_rank:
+            return
         tmp = self.path.with_name(self.path.name + ".tmp")
-        ds.to_netcdf(tmp)
-        os.replace(tmp, self.path)
+        try:
+            ds.to_netcdf(tmp)
+            os.replace(tmp, self.path)
+        except Exception as e:
+            if not self.multiproc:
+                raise
+            print(f"    WARNING: rank-0 monthly MLD/SST write failed "
+                  f"(continuing to keep the ranks in lockstep; the next "
+                  f"month rewrites the file): {type(e).__name__}: {e}",
+                  flush=True)
 
     def close(self) -> None:
         self._flush()
@@ -7284,7 +7300,9 @@ def run_omip_single(grid_type: str, args) -> dict:
         _monthly = MonthlyMldSstWriter(
             _monthly_path,
             z_coord=z_coord, lat_deg=np.rad2deg(np.asarray(grid.lat)),
-            lon_deg=np.rad2deg(np.asarray(grid.lon)))
+            lon_deg=np.rad2deg(np.asarray(grid.lon)),
+            io_rank=jax.process_index() == 0,
+            multiproc=jax.process_count() > 1)
         if args.restart is not None:
             with np.load(args.restart) as _rz:
                 # The NpzFile itself: only the monthly_* keys are read.

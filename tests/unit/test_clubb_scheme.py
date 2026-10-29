@@ -817,6 +817,9 @@ def test_prognostic_clubb_couples_to_microphysics_total_water_budget():
     assert np.all(-np.sum(mass_mu * resid_h, axis=1) <= fusion_cap * (1.0 + 1e-12))
     # (c) Headline: summed turbulence+microphysics tendencies close the column
     # water budget to the surface precip sink (CLUBB conserves; sundqvist closes).
+    # Each term is integrated in its own scheme's layer mass (CLUBB rho*dz,
+    # Sundqvist dp/g), so this checks each scheme's own closure, not the column
+    # inventory in one coordinate (the two weights need not agree).
     clubb_col_dqv = np.sum(mass * np.asarray(out.dq_v_dt), axis=1)
     micro_col = np.sum(mass_mu * (dqv_m + dqc + dqr), axis=1)
     col_water = np.sum(mass * np.asarray(q_f), axis=1)

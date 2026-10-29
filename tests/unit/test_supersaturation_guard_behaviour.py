@@ -459,7 +459,10 @@ _PREGUARD_RTOL = 1.0e-13
 # no cloud-cover gate) were dT_dt (0.07790655134982057, 0.0042109453424112216,
 # -2.6370890683278935e-06, 0.00120314759851969, 0.00021895372484426559).
 # 2026-10-27: the fixture is now top-down with real interfaces (Zhao-Carr reads
-# dp/g); re-measured, the same values in top-down order.
+# dp/g); re-measured, the same values in top-down order.  Since then these are
+# re-pinned on the current scheme, NOT the pre-guard numbers: the test proves the
+# guard-OFF path is unchanged by the guard, not that results are comparable with
+# runs made before the 2026-10-20 port or the 2026-10-27 default changes.
 _SUNDQVIST_PREGUARD_DT_DT = (0.0002189537248470955, 0.0012031476025026462, 0.0, 0.0042110534620482185, 0.07790655142391562)
 _SUNDQVIST_PREGUARD_DQ_V_DT = (-8.795268697736346e-08, -4.83298763445925e-07, 0.0, -1.6915604758545073e-06, -3.129469725010899e-05)
 

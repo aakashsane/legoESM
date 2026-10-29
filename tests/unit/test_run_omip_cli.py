@@ -1169,7 +1169,8 @@ def test_monthly_writer_month_boundaries_and_means(tmp_path):
     nz = 4
     zc = SimpleNamespace(z_half_ref=-np.array([0.0, 10.0, 20.0, 40.0, 80.0]))
     w = MonthlyMldSstWriter(tmp_path / "m.nc", z_coord=zc,
-                            lat_deg=np.array([0.0]), lon_deg=np.array([0.0, 1.0]))
+                            lat_deg=np.array([0.0]), lon_deg=np.array([0.0, 1.0]),
+                            io_rank=True, multiproc=False)
 
     def st(sst):
         T = np.full((1, 2, nz), 5.0)
@@ -1198,9 +1199,10 @@ def _monthly_writer_and_state(path):
 
     zc = SimpleNamespace(z_half_ref=-np.array([0.0, 10.0, 20.0, 40.0, 80.0]))
 
-    def make(**kw):
+    def make(io_rank=True, multiproc=False):
         return MonthlyMldSstWriter(path, z_coord=zc, lat_deg=np.array([0.0]),
-                                   lon_deg=np.array([0.0, 1.0]), **kw)
+                                   lon_deg=np.array([0.0, 1.0]),
+                                   io_rank=io_rank, multiproc=multiproc)
 
     def st(sst):
         T = np.full((1, 2, 4), 5.0)

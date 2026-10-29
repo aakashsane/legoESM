@@ -4306,8 +4306,8 @@ class MonthlyMldSstWriter:
     the shared de Boyer Montegut diagnostic (0.03 kg/m3 wrt 10 m).
     """
 
-    def __init__(self, path, *, z_coord, lat_deg, lon_deg, io_rank=True,
-                 multiproc=False):
+    def __init__(self, path, *, z_coord, lat_deg, lon_deg, io_rank,
+                 multiproc):
         # Every rank accumulates the same (gathered) samples; only the I/O
         # rank writes the file (#2237).  In a multi-process run a failed write
         # warns instead of raising, so the ranks stay in lockstep; the next

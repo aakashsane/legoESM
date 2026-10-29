@@ -412,10 +412,10 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     ``blend_pbl_sharpness`` 10, ``blend_ri_sharpness`` 100,
     ``entrainment_cutoff_sharpness`` 2) the port differs from it per column by
     up to 48 % in PBL height (median 4 %), up to 95 % in the diffusivities
-    (medians 6-11 %), up to 19 % in the entrainment thickness delta (one
+    (medians 7-11 %), up to 19 % in the entrainment thickness delta (one
     column has a small non-zero delta where the oracle's is 0), and up to
     89 % / 31 % / 44 % in the u / v / temperature tendencies (medians 4 % /
-    8 % / 5 %); one column's moisture tendency changes sign (200 %).  Setting
+    7 % / 5 %); one column's moisture tendency changes sign (200 %).  Setting
     all four fields to 1e300 recovers the oracle to 1e-10.  The column water
     and heat budgets still close (residual < 1e-13 of the surface flux).  At an
     exact bulk-Ri tie (``brup == brcr``, e.g. a constant-theta_v layer) the

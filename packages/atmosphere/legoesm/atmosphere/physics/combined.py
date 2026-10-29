@@ -818,8 +818,11 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
         _turb_sn, _, _turb_sc = get_turbulence_fn(config.turbulence)
         _turb_field = turbulence_carry_field(_turb_sn, _turb_sc)
         tagged_fns.append((
-            make_turbulence_physics(config.turbulence, model_type, _dt_sub,
-                                    f_land=f_land, land_beta=land_beta),
+            make_turbulence_physics(
+                config.turbulence, model_type, _dt_sub,
+                f_land=f_land, land_beta=land_beta,
+                zm_config=(config.convection.zhang_mcfarlane
+                           if _defer_dlf else None)),
             True,
             _turb_field,
         ))

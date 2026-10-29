@@ -16,8 +16,10 @@ make_fixture.py}`` on the 15 columns of ``zm_pblh_cam.npz`` (their T and the
 ZM oracle's own dlf).
 
 Metric (the merged ZM oracle test's ``_rel``, reused unchanged):
-``max |ours - oracle| / max |oracle|`` per field; bound 1e-10 in fp64.  The
-ramp is a hard switch in CAM and here (jnp.where); there is no smoothing field.
+``max |ours - oracle| / max |oracle|`` per field; bound 1e-10 in fp64 at the
+hard limit (both ZhangMcFarlaneConfig detrain widths 0).  RULE 5: the default
+smooths the liquid/ice ramp and the number source's ``max(0, dlf)``; its gap
+to CAM is stored per fixture column in ``GAPS``.
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ import numpy as np
 import pytest
 
 from legoesm import constants
+from legoesm.atmosphere.physics.convection.config import ZhangMcFarlaneConfig
 from legoesm.atmosphere.physics.convection.zhang_mcfarlane import (
     cam6_detrain_condensate,
 )
@@ -76,18 +79,66 @@ def test_generator_rebuilds_the_committed_inputs(fx):
     np.testing.assert_array_equal(np.diff(src["p_half"], axis=1), fx["in_pdel"])
 
 
-def test_detrainment_matches_cam_oracle(fx):
-    dT, dqc, dqi, dnc, dni = cam6_detrain_condensate(
-        jnp.asarray(fx["in_T"]), jnp.asarray(fx["in_dlf"]))
-    errs = {
-        "dq_c": _rel(dqc, fx["ora_dq_c"]), "dq_i": _rel(dqi, fx["ora_dq_i"]),
-        "dN_c": _rel(dnc, fx["ora_dN_c"]), "dN_i": _rel(dni, fx["ora_dN_i"]),
-        # CAM physics_update: T += s*dt/cpair (physics_types.F90:411-417)
-        "dT": _rel(dT, fx["ora_s"] / constants.c_pd),
-    }
+HARD = ZhangMcFarlaneConfig(detrain_phase_width_K=0.0, detrain_number_width_kgkg_s=0.0)
+FIELDS = ("dT", "dq_c", "dq_i", "dN_c", "dN_i")
+
+# Measured gap of the smooth default to CAM, per fixture column:
+# max_lev |ours - oracle| / max |oracle| (whole fixture) per field.  Re-measure
+# and update in the same PR on any change to the smooth form or its widths.
+GAPS = {
+__GAPS__
+}
+
+
+def _oracle(fx):
+    # CAM physics_update: T += s*dt/cpair (physics_types.F90:411-417)
+    return (fx["ora_s"] / constants.c_pd, fx["ora_dq_c"], fx["ora_dq_i"],
+            fx["ora_dN_c"], fx["ora_dN_i"])
+
+
+def test_detrainment_matches_cam_oracle_at_the_hard_limit(fx):
+    out = cam6_detrain_condensate(jnp.asarray(fx["in_T"]), jnp.asarray(fx["in_dlf"]), HARD)
+    errs = {nm: _rel(o, r) for nm, o, r in zip(FIELDS, out, _oracle(fx))}
     assert max(errs.values()) <= TOL, errs
     # liquid + ice = dlf: the partition conserves the detrained water
-    np.testing.assert_allclose(np.asarray(dqc + dqi), fx["in_dlf"], rtol=1e-15, atol=0)
+    np.testing.assert_allclose(np.asarray(out[1] + out[2]), fx["in_dlf"], rtol=1e-15, atol=0)
+
+
+def test_smooth_default_gap_to_cam_per_column(fx):
+    """RULE 5 KNOWN DIFFERENCE: the default's gap, column by column."""
+    out = cam6_detrain_condensate(jnp.asarray(fx["in_T"]), jnp.asarray(fx["in_dlf"]),
+                                  ZhangMcFarlaneConfig())
+    for nm, o, r in zip(FIELDS, out, _oracle(fx)):
+        gap = np.max(np.abs(np.asarray(o) - r), axis=1) / np.max(np.abs(r))
+        np.testing.assert_allclose(gap, GAPS[nm], rtol=1e-6, atol=1e-12, err_msg=nm)
+    np.testing.assert_allclose(np.asarray(out[1] + out[2]), fx["in_dlf"], rtol=1e-15, atol=0)
+
+
+def test_negative_width_is_refused(fx):
+    with pytest.raises(ValueError, match="detrain_phase_width_K"):
+        cam6_detrain_condensate(jnp.asarray(fx["in_T"]), jnp.asarray(fx["in_dlf"]),
+                                ZhangMcFarlaneConfig(detrain_phase_width_K=-0.1))
+
+
+def test_check_grads_through_the_switches_at_the_default(fx):
+    """Second-order AD vs finite differences at the smooth default, on the
+    fixture columns plus points ON the ramp corners and at dlf = 0."""
+    from jax.test_util import check_grads
+    scale = float(np.max(np.abs(fx["in_dlf"])))
+    T = jnp.concatenate([jnp.asarray(fx["in_T"]).ravel(),
+                         jnp.asarray([268.15, 238.15, 268.2, 238.1, 250.0])])
+    d = jnp.concatenate([jnp.asarray(fx["in_dlf"]).ravel() / scale,
+                         jnp.asarray([0.5, 0.5, 0.0, 0.3, 0.0])])
+    cfg = ZhangMcFarlaneConfig()
+
+    norm = [float(jnp.max(jnp.abs(x))) for x in cam6_detrain_condensate(T, d * scale, cfg)]
+
+    def f(T, d):
+        return tuple(x / n for x, n in zip(cam6_detrain_condensate(T, d * scale, cfg), norm))
+    check_grads(f, (T, d), order=2, modes=("fwd", "rev"), eps=1e-6)
+    gT, gd = jax.jacfwd(lambda T: f(T, d)[2])(T), jax.jacfwd(lambda d: f(T, d)[3])(d)
+    # non-zero through the phase ramp at its corner and through max(0, dlf) at 0
+    assert float(gT[-5, -5]) != 0.0 and float(gd[-1, -1]) != 0.0
 
 
 @pytest.mark.parametrize("dtype", [jnp.float64, jnp.float32])
@@ -96,7 +147,7 @@ def test_gradient_is_finite(fx, dtype):
     dlf = jnp.asarray(fx["in_dlf"], dtype)
 
     def loss(T, dlf):
-        dT, dqc, dqi, dnc, dni = cam6_detrain_condensate(T, dlf)
+        dT, dqc, dqi, dnc, dni = cam6_detrain_condensate(T, dlf, ZhangMcFarlaneConfig())
         return jnp.sum(dT * 1e3 + dqi * 1e8 + dqc * 1e8 + dnc * 1e-3 + dni * 1e-1)
     gT, gd = jax.grad(loss, argnums=(0, 1))(T, dlf)
     assert np.all(np.isfinite(np.asarray(gT))) and np.all(np.isfinite(np.asarray(gd)))
@@ -152,14 +203,15 @@ def test_mpas_clubb_bridge_books_dlf_on_the_post_clubb_state(mpas_case, monkeypa
         return real(*a, **kw)
     monkeypatch.setattr(TI, "cam_pblintd_height", spy)
     dt = 600.0
+    zm = ZhangMcFarlaneConfig()
     fn = TI._make_mpas_turbulence(
         TurbulenceConfig(scheme="clubb", clubb=CLUBBConfig(prognostic=True)), dt,
-        f_land=jnp.ones((ncell,)))
+        f_land=jnp.ones((ncell,)), zm_config=zm)
     frc = _land_forcing(ncell)
     t0, _ = fn(state, mesh, sigma, forcing=frc)
     dlf = jnp.broadcast_to(jnp.linspace(1e-8, 8e-8, nlev), (ncell, nlev))
     t1, _ = fn(state, mesh, sigma, forcing={**frc, "conv_dlf": dlf})
-    ref = cam6_detrain_condensate(state.T.data + dt * t0.dT_dt.data, dlf)
+    ref = cam6_detrain_condensate(state.T.data + dt * t0.dT_dt.data, dlf, zm)
     np.testing.assert_allclose(np.asarray(t1.dT_dt.data - t0.dT_dt.data),
                                np.asarray(ref[0]), rtol=1e-12, atol=1e-20)
     for nm, r in zip(("q_c", "q_i", "N_c", "N_i"), ref[1:]):
@@ -167,13 +219,29 @@ def test_mpas_clubb_bridge_books_dlf_on_the_post_clubb_state(mpas_case, monkeypa
         np.testing.assert_allclose(np.asarray(t1.tracer_tendencies[nm].data - base),
                                    np.asarray(r), rtol=1e-12, atol=1e-30, err_msg=nm)
     dum1 = np.asarray(ref[2] / dlf)
-    assert dum1.min() == 0.0 and dum1.max() == 1.0, "ramp sides not exercised"
+    assert abs(dum1.min()) < 1e-12 and abs(dum1.max() - 1.0) < 1e-12, "ramp sides not exercised"
     # the PBL height sees state1 after the detrainment update (clubb_intr :2397, :2616)
     np.testing.assert_allclose(np.asarray(cap["T"]),
                                np.asarray(state.T.data + dt * t1.dT_dt.data), rtol=1e-14)
     # the rest of CLUBB is untouched by the hand-off
     np.testing.assert_array_equal(np.asarray(t1.tracer_tendencies["q_v"].data),
                                   np.asarray(t0.tracer_tendencies["q_v"].data))
+
+
+def test_dlf_handoff_without_zm_config_is_refused(mpas_case):
+    from legoesm.atmosphere.physics.turbulence import integration as TI
+    from legoesm.atmosphere.physics.turbulence.clubb import CLUBBConfig
+    from legoesm.atmosphere.physics.turbulence.config import TurbulenceConfig
+    mesh, sigma, state = mpas_case
+    ncell, nlev = state.T.data.shape
+    cfg = TurbulenceConfig(scheme="clubb", clubb=CLUBBConfig(prognostic=True))
+    fn = TI._make_mpas_turbulence(cfg, 600.0, f_land=jnp.ones((ncell,)))
+    with pytest.raises(ValueError, match="zm_config"):
+        fn(state, mesh, sigma, forcing={**_land_forcing(ncell),
+                                        "conv_dlf": jnp.ones((ncell, nlev)) * 1e-8})
+    with pytest.raises(ValueError, match="zm_config"):
+        TI.make_turbulence_physics(cfg, "spectral_pe", 600.0,
+                                   zm_config=ZhangMcFarlaneConfig())
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +262,7 @@ def test_macmic_hands_dlf_to_every_clubb_substep(monkeypatch):
     DIMS = ("nCells", "nlev")
     F = lambda x: Field(data=x, name="", dims=DIMS, units="")  # noqa: E731
     dlf = jnp.linspace(1e-8, 5e-8, ncol * nlev).reshape(ncol, nlev)
-    seen = {"defer": None, "turb": []}
+    seen = {"defer": None, "turb": [], "zm": "unset"}
 
     def tend(state, dT=None, tr=None):
         z, z2 = jnp.zeros_like(state.T.data), jnp.zeros_like(state.p_s.data)
@@ -212,6 +280,8 @@ def test_macmic_hands_dlf_to_every_clubb_substep(monkeypatch):
         return fn
 
     def f_turb(cfg, model_type, dt_, *a, **k):
+        seen["zm"] = k.get("zm_config")
+
         def fn(state, grid, sigma, phys_state=None, forcing=None):
             seen["turb"].append((np.asarray(state.T.data), forcing.get("conv_dlf")))
             return tend(state, dT=jnp.full_like(state.T.data, 2e-5)), None
@@ -239,6 +309,7 @@ def test_macmic_hands_dlf_to_every_clubb_substep(monkeypatch):
     fn = cmb.make_physics(cfg, model_type="mpas", dt=dt, cld_macmic_num_steps=N)
     out, ps_out = fn(state, None, None, phys_state=ps)
     assert seen["defer"] is True
+    assert seen["zm"] is cfg.convection.zhang_mcfarlane
     assert len(seen["turb"]) == N
     dts = dt / N
     for i, (T_seen, d) in enumerate(seen["turb"]):

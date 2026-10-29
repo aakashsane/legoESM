@@ -520,6 +520,8 @@ def make_turbulence_physics(
     dt: float = 300.0,  # coeff-ok: default physics timestep [s]
     f_land=None,
     land_beta: float = 1.0,
+    *,
+    zm_config=None,
 ) -> Callable:
     """Create a physics function for turbulence matching a model's signature.
 
@@ -540,6 +542,10 @@ def make_turbulence_physics(
         Land evaporation efficiency in [0, 1] applied on the ``f_land``
         fraction of the surface humidity (MPAS-only, with ``f_land``).
         ``1.0`` (default) keeps the saturated wet surface, byte-identical.
+    zm_config : ZhangMcFarlaneConfig or None
+        MPAS-only: the ZM config whose detrainment smoothing widths the CLUBB
+        bridge uses to book a ``forcing["conv_dlf"]`` hand-off (CAM6
+        clubb_intr.F90:2345-2376).  ``None``: a handed ``conv_dlf`` raises.
 
     Returns
     -------
@@ -563,6 +569,11 @@ def make_turbulence_physics(
             "TurbulenceConfig.liquid_partition needs prognostic CLUBB "
             "(CLUBBConfig(prognostic=True)); the diagnostic closure does not "
             "advance the total water the exchange partitions.")
+    if model_type != "mpas" and zm_config is not None:
+        raise ValueError(
+            "zm_config feeds the MPAS CLUBB bridge's booking of ZM's detrained "
+            f"condensate; the {model_type!r} turbulence lane does not book it "
+            "(it would be silently inert here).")
     if model_type != "mpas" and (f_land is not None or land_beta != 1.0):
         raise ValueError(
             "f_land/land_beta are the MPAS land surface boundary knobs; the "
@@ -618,7 +629,8 @@ def make_turbulence_physics(
         # temperature from the per-step ``forcing["T_sfc"]`` (AMIP SST) when
         # supplied, so the surface sensible/latent fluxes are SST-driven.
         _mpas_turb_fn = _make_mpas_turbulence(
-            turbulence_config, dt, f_land=f_land, land_beta=land_beta)
+            turbulence_config, dt, f_land=f_land, land_beta=land_beta,
+            zm_config=zm_config)
         # Forcing-aware: the combined-physics dispatcher forwards
         # ``forcing["T_sfc"]`` to fns advertising this (mirrors radiation).
         _mpas_turb_fn._wants_forcing = True
@@ -808,6 +820,7 @@ def _make_mpas_turbulence(
     dt: float,
     f_land=None,
     land_beta: float = 1.0,
+    zm_config=None,
 ) -> Callable:
     """Create turbulence physics_fn for MPASPrimitiveEquationModel.
 
@@ -1214,9 +1227,14 @@ def _make_mpas_turbulence(
         _dlf = None if forcing is None else forcing.get("conv_dlf")
         _det = None
         if _dlf is not None:
+            if zm_config is None:
+                raise ValueError(
+                    "forcing['conv_dlf'] (ZM's detrained condensate) was handed "
+                    "to the MPAS turbulence bridge, but it was built without "
+                    "zm_config, whose smoothing widths the booking needs.")
             _det = cam6_detrain_condensate(
                 T_col + dt * turb_out.dT_dt,
-                jnp.asarray(_dlf).reshape(nCells, nlev))
+                jnp.asarray(_dlf).reshape(nCells, nlev), zm_config)
             turb_out = turb_out._replace(dT_dt=turb_out.dT_dt + _det[0])
         if scheme_name == "clubb" and _surface_flux is not None:
             # CAM6 PBL height (oracle row 48): clubb_intr.F90:2594-2617 runs

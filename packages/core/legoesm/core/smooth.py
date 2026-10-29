@@ -103,9 +103,12 @@ def pnorm_smooth_min(a: jax.Array, b: jax.Array, p: float, eps: float) -> jax.Ar
 
     Written overflow-free as ``lo*(1 + (lo/hi)^p)^(-1/p)`` (``lo``/``hi`` =
     elementwise min/max); the ratio is 0 where ``hi <= eps`` (where-before-
-    divide, AD-safe).  Scale-free (unlike the additive :func:`smooth_min`),
-    C-infinity for positive inputs, never above ``min(a, b)``, equal to
-    ``2^(-1/p)*a`` where ``a = b``; exact ``min`` as ``p -> inf``.
+    divide, AD-safe), so there the result is the exact ``min`` and it jumps
+    (from ``eps`` to ``2^(-1/p)*eps`` where ``a = b``) as ``hi`` crosses
+    ``eps``: callers zero inputs ``<= eps`` first (both GWD callers zero
+    stresses ``<= taumin = eps``).  Above ``eps``: scale-free (unlike the
+    additive :func:`smooth_min`), C-infinity, never above ``min(a, b)``,
+    equal to ``2^(-1/p)*a`` where ``a = b``; exact ``min`` as ``p -> inf``.
     Used for the GWD stress cap ``min(taudmp, tausat)`` (Lindzen, McFarlane).
     """
     lo = jnp.minimum(a, b)

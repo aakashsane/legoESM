@@ -18,7 +18,8 @@ The exact limit of each is the MOM6 oracle test
 1. the smooth-default gap to MOM6, per fixture case, stored for the run with
    every switch smooth and for each unit class smooth alone (the others
    exact), to 1e-6 relative with a 1e-12 degC floor.  Reverting any one of
-   the smoothed sites changes at least one stored gap, except the mech_TKE
+   the smoothed sites (one site, the others still smooth) changes at least
+   one stored gap of the all-smooth run, except the mech_TKE
    spend (C6b/c), which is value-blind in the fixture and is caught by the
    top-layer gradient test (per-site measurements in the PR for #2180);
 2. ``jax.test_util.check_grads`` at the default, on each kernel exactly at its

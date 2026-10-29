@@ -1121,11 +1121,12 @@ def test_momentum_diagnostic_script_passes_its_eos():
 def test_kpp_buoyancy_same_for_none_and_explicit_wright():
     """The KPP / CATKE surface buoyancy (rho(T,S,0)-normalised form) is the
     same bit for bit for eos_fn=None and an explicit wright_eos, also where
-    the surface is nearly fresh: Wright gets no salinity floor (#2243)."""
-    from legoesm.ocean.eos import wright_eos
+    the surface is nearly fresh: Wright gets no salinity floor (#2243).
+    The EOS comes from make_eos_fn, as the models build it."""
     from legoesm.ocean.physics.vertical_mixing._shared import (
         surface_buoyancy_flux,
     )
+    wright_eos = make_eos_fn("wright")
     T = jnp.asarray([10.0, 10.0, 20.0])
     S = jnp.asarray([0.0, 1e-4, 35.0])
     q, fw, salt = jnp.full(3, -150.0), jnp.full(3, 3e-5), jnp.full(3, 1e-6)

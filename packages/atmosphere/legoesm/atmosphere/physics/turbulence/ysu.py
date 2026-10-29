@@ -12,6 +12,9 @@ Two code paths share :func:`ysu_turbulence`:
   Fortran (``tests/atmosphere/hydrostatic/unit/test_ysu_oracle.py``).  The
   existing sharpness fields smooth the oracle's three hard switches and reduce
   to it at their hard limit; every other switch is ported as ``jnp.where``.
+  **NOT RULE 5 COMPLIANT** (user decision 2026-10-28): the PBL-top level and
+  the switches derived from it are hard at the default.  Opt-in kernel only;
+  these switches must be smoothed before any lane uses this path (#2231).
 * **Legacy surrogate (NOT-YET-FAITHFUL)** — taken when ``surface_layer`` is
   ``None``, which is what every lane does today: no lane builds the WRF
   surface-layer state (bulk Richardson number, integrated stability functions,
@@ -359,6 +362,27 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     Every other oracle switch is ported as a hard ``jnp.where``; operands of
     unselected branches are replaced by benign values only so their gradients
     stay finite (selected values are untouched).
+
+    NOT RULE 5 COMPLIANT (opt-in kernel; smooth before any lane uses it,
+    #2231): see the unsmoothed switches below.
+
+    KNOWN DIFFERENCE (RULE 5, measured 2026-10-28 on the 23-column oracle
+    fixture plus its 8-level upper-endpoint column, fp64): the oracle uses the
+    hard switches; at the ``YSUConfig`` defaults (``pbl_smooth_sharpness`` 20,
+    ``blend_pbl_sharpness`` 10, ``blend_ri_sharpness`` 100) the port differs
+    from it per column by up to 48 % in PBL height (median 5 %), up to 95 % in
+    the diffusivities (medians 6-9 %), and up to 89 % / 35 % / 44 % in the
+    u / v / temperature tendencies (medians 6 % / 12 % / 4 %); one column's moisture
+    tendency changes sign (200 %), and one column's ``kpbl`` differs.  Setting
+    all three fields to 1e300 recovers the oracle to 1e-10.  The column water
+    and heat budgets still close (residual < 1e-13 of the surface flux).  At an
+    exact bulk-Ri tie (``brup == brcr``, e.g. a constant-theta_v layer) the
+    default is DISCONTINUOUS: the tie gets weight 0 while any perturbation off
+    it gets ~1/2.  The hard switches listed above as ``jnp.where`` (the
+    PBL-top level ``kpbl`` and the flags and level picks derived from it) are
+    not smoothed: the derivative ignores which level is the PBL top, and the
+    output jumps where one of them flips.  Per-case gaps are stored in
+    ``tests/atmosphere/hydrostatic/unit/test_ysu_oracle.py::DEFAULT_GAP``.
     """
     flip = lambda a: a[:, ::-1]  # noqa: E731  top-first -> oracle bottom-up
     ux, vx, tx, qx = flip(u), flip(v), flip(T), flip(q_v)

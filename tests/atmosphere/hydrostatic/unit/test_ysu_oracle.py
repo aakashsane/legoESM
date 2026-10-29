@@ -27,6 +27,7 @@ import pytest
 
 import jax
 import jax.numpy as jnp
+from jax.test_util import check_grads
 
 from legoesm import constants
 from legoesm.atmosphere.physics._shared import compute_rho
@@ -59,17 +60,20 @@ def _names(fx):
     return json.loads(str(fx["meta"]))["names"]
 
 
-def _err(ours, ref, per_column=False):
-    """max|ours-ref| / max|ref| (0 when both are identically 0): over the whole
-    fixture, or per column (``per_column``, worst column returned)."""
+def _rel(ours, ref, ax):
+    """max|ours-ref| / max|ref| along ``ax`` (0 when both are identically 0)."""
     ref = np.asarray(ref, np.float64)
     ref = ref.reshape(ref.shape[0], -1)
     ours = np.asarray(ours, np.float64).reshape(ref.shape)
     assert np.all(np.isfinite(ours)) and np.all(np.isfinite(ref))
-    ax = 1 if per_column else None
     num, den = np.max(np.abs(ours - ref), axis=ax), np.max(np.abs(ref), axis=ax)
-    e = np.where(den > 0, num / np.where(den > 0, den, 1.0), np.where(num > 0, np.inf, 0.0))
-    return float(np.max(e))
+    return np.where(den > 0, num / np.where(den > 0, den, 1.0), np.where(num > 0, np.inf, 0.0))
+
+
+def _err(ours, ref, per_column=False):
+    """``_rel`` over the whole fixture, or per column (``per_column``, worst
+    column returned)."""
+    return float(np.max(_rel(ours, ref, 1 if per_column else None)))
 
 
 def _sfc(fx, dtype=jnp.float64):
@@ -258,3 +262,96 @@ def test_eager_jit_parity(fx):
     jitted = jax.jit(lambda: _kernel(fx))()
     for a, b in zip(eager, jitted):
         assert _err(np.asarray(b, float), np.asarray(a, float)) <= TOL
+
+
+# ---------------------------------------------------------------------------
+# RULE 5: the smooth default (YSUConfig's three sharpness fields) vs the oracle.
+# The hard limit (1e300) matches the oracle to TOL (tests above); at the
+# default the port differs from the oracle by the per-case gaps below,
+# max |ours - oracle| / max |oracle| per fixture column and field (``_rel``:
+# 0 where both are identically 0), measured 2026-10-28 on this fixture
+# (fp64, CPU).  A change to the smooth forms or their default widths
+# re-measures and updates this table in the same PR.
+# ---------------------------------------------------------------------------
+GAP_FIELDS = ('hpbl', 'wstar', 'delta', 'exch_h', 'exch_m', 'du', 'dv', 'dT', 'dq')
+DEFAULT_GAP = {
+    'real_cell8116':             (8.4731860680e-02, 9.8436741230e-02, 8.5737611029e-02, 2.2702037809e-01, 2.3827153421e-01, 5.7733396013e-02, 1.1568139105e-01, 1.5519775383e-01, 1.8961917825e-01),
+    'real_cell17416':            (4.3535691580e-10, 1.9438892394e-03, 4.2736257331e-04, 3.2970522479e-03, 6.2668372076e-03, 6.3476961029e-02, 3.9500966466e-02, 4.2334320536e-02, 4.7862830004e-02),
+    'real_cell33109':            (2.5383587192e-01, 0.0000000000e+00, 0.0000000000e+00, 2.0366651120e-01, 7.8574564883e-02, 1.3946716456e-03, 3.6328458986e-02, 9.8720765100e-04, 2.2421662894e-03),
+    'trop_ocean_deep':           (7.1008499141e-02, 1.9615891892e-02, 2.3496995909e-02, 4.8745704002e-01, 4.4310826249e-01, 1.1111646052e-01, 1.7854590176e-01, 7.4184100592e-02, 2.3365157575e-01),
+    'midlat_land_summer':        (1.2832474287e-02, 1.8664372671e-03, 5.7541302808e-03, 2.8135324884e-02, 3.5866117534e-02, 1.3768929465e-01, 1.5851171515e-01, 6.1043272267e-02, 1.4945056676e-01),
+    'cin_capped':                (2.6080970433e-02, 1.7298818987e-02, 7.0110201362e-03, 8.7421926545e-02, 7.5654027996e-02, 1.2772171354e-02, 3.5318630403e-01, 1.2485679898e-01, 1.4413307749e-01),
+    'polar_dry':                 (1.4054477763e-02, 0.0000000000e+00, 0.0000000000e+00, 1.8453365252e-02, 1.7023634124e-02, 1.9995343377e-03, 1.4654436807e-02, 7.2439923901e-03, 1.3773539264e-02),
+    'desert_high_lcl':           (2.3177394423e-03, 1.0386601117e-03, 1.2250237587e-03, 7.3275295804e-03, 7.6505043351e-03, 7.7933287061e-02, 1.0725848733e-01, 3.1788312253e-02, 8.7079972268e-02),
+    'trop_zero_q_aloft':         (8.6365127963e-02, 3.0613778765e-02, 2.5949642572e-02, 4.9452326624e-01, 4.4640370001e-01, 1.2800178100e-01, 1.7261822831e-01, 5.5057029916e-02, 2.1374891135e-01),
+    'trop_ocean_strong':         (8.1077580980e-02, 3.0601043181e-02, 1.8521205321e-02, 4.2053781904e-01, 3.7846604994e-01, 8.4654936313e-02, 1.4879302327e-01, 5.6985234685e-02, 1.3144955942e-01),
+    'midlat_supercell':          (1.7913598158e-01, 1.8895896431e-02, 8.5996327246e-02, 2.9955721496e-01, 3.3041438863e-01, 6.4119545860e-01, 2.7709183282e-01, 1.9571010088e-01, 1.1966387344e-01),
+    'monsoon_land':              (2.1350582376e-02, 6.0518455423e-03, 1.2243142325e-03, 1.7853278670e-02, 2.4420698224e-02, 5.9736980717e-02, 8.1930733159e-02, 2.3561825253e-02, 9.8223309649e-02),
+    'nocturnal_elevated':        (2.6808412351e-12, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 8.2427689320e-15, 3.0442823667e-13, 8.4418774577e-14, 1.3122861773e-14),
+    'cold_deep_ocean':           (6.9769108256e-02, 6.0158393743e-02, 2.4105397376e-02, 1.7102755105e-01, 1.3534186549e-01, 1.0399512658e-02, 1.2398671514e-01, 4.4781563019e-02, 1.1245826012e-01),
+    'all_snow_land':             (1.4593130608e-02, 0.0000000000e+00, 0.0000000000e+00, 8.4582059064e-02, 1.2222151912e-01, 2.6233069219e-03, 2.0539578709e-01, 5.2857619766e-03, 8.5127399762e-02),
+    'tibet_elevated':            (1.0491659874e-02, 1.2141788641e-03, 3.5087913379e-03, 2.4896132455e-02, 3.1215103573e-02, 8.1512353696e-02, 1.2686038334e-01, 3.6869685936e-02, 1.0947924748e-01),
+    'calm_zero_flux':            (3.3218986694e-01, 0.0000000000e+00, 0.0000000000e+00, 1.5298252124e-01, 2.1840396376e-02, 8.0372666077e-05, 0.0000000000e+00, 2.9845717748e-02, 7.8614996707e-02),
+    'weak_unstable':             (2.8289002534e-01, 8.6583596884e-02, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 4.8216789781e-15, 8.6190803420e-13, 3.8686214824e-11, 1.5400999024e-12),
+    'neutral_windy':             (1.5499090324e-01, 0.0000000000e+00, 0.0000000000e+00, 3.9354134796e-01, 4.1040465099e-01, 9.4863703721e-02, 2.1806462207e-01, 1.9514400430e-01, 1.9517440440e-01),
+    'tibet_deep_mixed':          (2.5010214120e-01, 1.9762073588e-01, 1.1617481935e-01, 9.4962673659e-01, 7.3491168980e-01, 8.9299914456e-01, 0.0000000000e+00, 3.2500694400e-01, 9.0033540129e-02),
+    'polar_dry_water':           (5.8828941867e-03, 0.0000000000e+00, 0.0000000000e+00, 7.0548397153e-03, 6.5398889078e-03, 7.9533797967e-04, 5.5271497003e-03, 2.9220089920e-03, 5.1612531529e-03),
+    'nocturnal_elevated_water':  (6.5758077549e-12, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 8.2427689320e-15, 3.0442823667e-13, 8.4418774577e-14, 1.3122861773e-14),
+    'tibet_deep_mixed_noflux':   (4.8341819621e-01, 0.0000000000e+00, 0.0000000000e+00, 8.6913969017e-01, 8.5563536304e-01, 3.7612234301e-01, 0.0000000000e+00, 2.7966532646e-03, 2.0000000000e+00),
+    'upper_endpoint':            (0.0000000000e+00, 0.0000000000e+00, 0.0000000000e+00, 1.5024352576e-02, 1.4974643327e-02, 1.9699344907e-01, 0.0000000000e+00, 4.4196367122e-01, 0.0000000000e+00),
+}
+# The two constant-theta_v columns sit on an exact bulk-Ri tie (brup == brcr),
+# where the default is discontinuous (see ysu.py, KNOWN DIFFERENCE): the tie
+# keeps the oracle's weight 0, and even without that rule check_grads fails
+# there on the unsmoothed kpbl switches (#2231).  The gradient check below runs
+# on the other columns.
+TIE_COLUMNS = ("tibet_deep_mixed", "tibet_deep_mixed_noflux")
+
+
+def _default_sharp():
+    cfg = YSUConfig()
+    return dict(pbl_sharpness=cfg.pbl_smooth_sharpness,
+                region_sharpness=cfg.blend_pbl_sharpness,
+                ri_sharpness=cfg.blend_ri_sharpness)
+
+
+def _gap_per_column(o, f):
+    pairs = (o.hpbl[:, None], f["ora_hpbl"][:, None]), (o.wstar[:, None], f["ora_wstar"][:, None]), \
+        (o.delta[:, None], f["ora_delta"][:, None]), (o.exch_h, f["ora_exch_h"]), \
+        (o.exch_m, f["ora_exch_m"]), (o.du_dt, f["ora_du"]), (o.dv_dt, f["ora_dv"]), \
+        (o.dT_dt, f["ora_dT"]), (o.dq_v_dt, f["ora_dq"])
+    return np.stack([_rel(a, b, 1) for a, b in pairs], axis=1)
+
+
+def test_default_gap_per_case_matches_recorded(fx):
+    up = {k[3:]: v for k, v in fx.items() if k.startswith("up_")}
+    up["dt"] = fx["dt"]
+    got = np.concatenate([_gap_per_column(_kernel(fx, sharp=_default_sharp()), fx),
+                          _gap_per_column(_kernel(up, sharp=_default_sharp()), up)])
+    names = _names(fx) + ["upper_endpoint"]
+    assert list(DEFAULT_GAP) == names
+    want = np.array([DEFAULT_GAP[n] for n in names])
+    np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-12)
+    assert np.max(want) > TOL  # the default is not the oracle
+
+
+def test_check_grads_at_default(fx):
+    keep = [i for i, n in enumerate(_names(fx)) if n not in TIE_COLUMNS]
+    assert len(keep) == len(_names(fx)) - len(TIE_COLUMNS)
+    sub = {k: (v[keep] if k.startswith(("in_", "ora_")) else v) for k, v in fx.items()}
+    sharp = _default_sharp()
+    q_scale = 1e-3  # moisture enters as q / q_scale so the finite-difference step suits it
+
+    def f(T, qs, u):
+        o = _kernel(sub, sharp=sharp, T=T, q=qs * q_scale, u=u)
+        return (jnp.sum(o.hpbl) + jnp.sum(o.exch_h)
+                + 1e4 * jnp.sum(o.dT_dt) + 1e4 * jnp.sum(o.du_dt))
+
+    args = (jnp.asarray(sub["in_T"]), jnp.asarray(sub["in_q"]) / q_scale, jnp.asarray(sub["in_u"]))
+    # reverse mode only: the implicit solve (thomas_solve_batched) is a custom_vjp
+    check_grads(f, args, order=2, modes=("rev",))
+    gq = jax.grad(f, argnums=1)(*args)  # the moisture path is exercised
+    assert bool(jnp.all(jnp.isfinite(gq))) and float(jnp.max(jnp.abs(gq))) > 0.0
+    # finite, non-zero derivative through the PBL-top selection
+    g = jax.grad(lambda T: jnp.sum(_kernel(sub, sharp=sharp, T=T).hpbl))(args[0])
+    assert bool(jnp.all(jnp.isfinite(g))) and float(jnp.max(jnp.abs(g))) > 0.0

@@ -626,9 +626,12 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     kh_f = jnp.minimum((1.0 - w_st) * kh_u + w_st * kh_s + _XKZMINH, _XKZMAX)
 
     # --- entrainment layer above the PBL top (l.1059-1063, l.1339-1342) ---
+    # pf times P(2 <= kpbl <= k | kpbl > 1) (a product, not one joint expectation)
     ent = pf[:, None] * (above - dist[:, :1]) * inv_gt1 * _soft_gt0(
         _ENTFAC_MAX - entfac, entrainment_cutoff_sharpness, 0.0)
-    ke2 = -we_dza[:, None] * jnp.exp(-entfac) * kh_f      # >= 0 (we <= 0)
+    # >= 0 (we <= 0); ke2 == 0 gives sqrt(0) -> xkzminh as in the oracle (do
+    # not substitute the old benign 1.0 there: it would break the hard limit)
+    ke2 = -we_dza[:, None] * jnp.exp(-entfac) * kh_f
     kh_e = jnp.clip(jnp.where(ke2 > 0.0, jnp.sqrt(jnp.where(ke2 > 0.0, ke2, 1.0)), 0.0),
                     _XKZMINH, _XKZMAX)
     km_e = jnp.clip(jnp.sqrt(_PRPBL * kh_e * km_f), _XKZMINM, _XKZMAX)
@@ -638,8 +641,12 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     # level kpbl when brint rounds to 1): the sigmoid would give 1/2 at any
     # sharpness, so equality takes the oracle's k < kpbl
     zr = za[:, :-1] / hpbl[:, None] - 1.0
-    in_pbl = jnp.where(zr == 0.0, 1.0 - above, 1.0 - jax.nn.sigmoid(region_sharpness * zr))
-    wp = p_gt1 * in_pbl
+    # given kpbl > 1: k < kpbl at equality (P(kpbl > k) already implies
+    # kpbl > 1, hence the division), else the height sigmoid
+    eq = zr == 0.0
+    in_pbl = jnp.where(eq, (1.0 - above) * inv_gt1,
+                       1.0 - jax.nn.sigmoid(region_sharpness * zr))
+    wp = jnp.where(eq, 1.0 - above, p_gt1 * in_pbl)
     kh_a = ent * kh_e + (1.0 - ent) * kh_f
     Kh = wp * kh_p + (1.0 - wp) * kh_a
     Kq = wp * kq_p + (1.0 - wp) * kh_a

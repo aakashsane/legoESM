@@ -317,7 +317,10 @@ def cam6_detrain_condensate(T: jax.Array, dlf: jax.Array,
     negative there;
     the number sources gain ``~ln 2 w_n`` of ``dlf`` where CAM's ``dlf`` is 0
     (a spurious droplet source ~0.3 /kg/s).  ``dq_c + dq_i = dlf`` still
-    holds.  Per-case gaps are stored in tests/atmosphere/test_zm_detrain_oracle.py.
+    holds.  Measured on the 15 CAM oracle columns (max |ours - CAM| / max |CAM|
+    per field): heating and dq_c / dq_i <= 1.6e-8, dN_c 1.1e-4 and dN_i
+    1.3e-4 (the dlf = 0 levels).  Per-case gaps are stored in
+    tests/atmosphere/test_zm_detrain_oracle.py.
 
     Returns ``(dT_dt [K/s], dq_c_dt, dq_i_dt [kg/kg/s], dN_c_dt, dN_i_dt
     [1/kg/s])``; signed as sources (+ = gain), same shape as ``T``.

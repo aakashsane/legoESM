@@ -800,7 +800,9 @@ def _make_hydrostatic_combined(config: PhysicsConfig, dt: float,
     # state of every macmic sub-step (clubb_intr.F90:2345-2376): liquid/ice
     # ramp, fusion heating and number source.  Ported on the MPAS/column lane,
     # whose CLUBB bridge applies it; ZM then publishes dlf instead of booking
-    # it into q_c.
+    # it into q_c.  N=1 is the parallel split (every module sees the same
+    # pre-physics state, so there is no post-CLUBB state to book on): ZM
+    # keeps the all-liquid booking there.
     _defer_dlf = (model_type == "mpas" and _n_macmic >= 2
                   and config.convection.scheme == "zhang_mcfarlane"
                   and config.turbulence.scheme == "clubb")

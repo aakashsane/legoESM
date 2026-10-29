@@ -166,7 +166,10 @@ WIDTH = CloudConfig().cloud_subcolumn_mask_width
 # Per-column max |default weight - CAM mask| over (subcolumn, layer), per case,
 # measured 2026-10-29 (x64, CPU).  Re-measure when the smooth form or its
 # default width changes.
-MASK_GAP = None  # filled from the measurement
+MASK_GAP = {
+    "rnd": [0.0, 0.0, 0.1791456608712556, 0.0, 0.0, 0.0, 0.2881408765918543, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1690434793066311, 0.0, 0.0, 0.3536470890307591, 0.0, 0.0, 2.7714696162463165e-05, 0.0, 0.00010428809608618292, 0.0, 0.03136443875366504, 0.0, 0.010878546472738115, 0.040158931543432766, 0.0, 0.0, 0.3256991519526324, 0.0, 0.3309865305586743],
+    "table": [0.5, 1.5811690900591202e-05, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5],
+}
 
 
 def _mask_gap(fx, case):
@@ -200,3 +203,16 @@ def test_default_mask_gradient_check_grads(fx):
     g = np.asarray(jax.grad(lambda c: f(c, WIDTH))(cf))
     g_hard = np.asarray(jax.grad(lambda c: f(c, 0.0))(cf))
     assert np.all(np.isfinite(g)) and np.any(np.abs(g - g_hard) > 0.0)
+
+
+def test_default_mask_keeps_overcast_and_clear_layers_exact():
+    """At the default width an overcast layer stays fully cloudy and a clear
+    one fully clear (CDFs outside the band), so the subcolumn mean of the
+    water path is the grid mean there, as at the hard limit."""
+    cf = jnp.asarray([[1.0, 0.0, 1.0, 0.4]])
+    lwp = jnp.asarray([[0.2, 0.0, 0.05, 0.1]])
+    m = sub.generate_subcolumns(cf, 8, width=WIDTH)
+    a, _ = sub.subcolumn_paths(m, cf, lwp, lwp)
+    mean = np.asarray(sub.average_over_subcolumns(a, 8, 1))
+    np.testing.assert_array_equal(np.asarray(m)[:, 0, :3], np.asarray(cf)[0, :3] * np.ones((8, 1)))
+    np.testing.assert_allclose(mean[0, :3], np.asarray(lwp)[0, :3], rtol=1e-15)

@@ -38,8 +38,6 @@ class MC3DRadiationConfig(NamedTuple):
   max_iterations: int = 4096
   # Majorant extinction floor [1/m]; see module constant above.
   knull_floor: float = _KNULL_FLOOR_DEFAULT
-  # Smooth free-path step floor sharpness [1/m]; inf = microhh hard max.
-  free_path_floor_sharpness: float = _FREE_PATH_FLOOR_SHARPNESS_DEFAULT
   # Coarse majorant-grid block sizes in fine cells (Phase 1.1 speedup). 0 = no
   # coarsening (one coarse cell per axis = global scalar majorant). A smaller
   # block tightens the majorant in clear air beside thick clouds, cutting
@@ -57,6 +55,8 @@ class MC3DRadiationConfig(NamedTuple):
   # effective radius + band; False (default) -> Henyey-Greenstein with the cloud
   # asymmetry g. Mie is the oracle-faithful cloud phase (RRTMGP optics path).
   use_mie: bool = False
+  # Smooth free-path step floor sharpness [1/m]; inf = microhh hard max.
+  free_path_floor_sharpness: float = _FREE_PATH_FLOOR_SHARPNESS_DEFAULT
 
 
 # Excluded from trainable collection: counts are int (auto-exempt) and

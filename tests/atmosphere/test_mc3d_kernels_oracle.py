@@ -38,9 +38,11 @@ TOL = 1.0e-10
 SHARP = MC3DRadiationConfig().free_path_floor_sharpness
 # Per-case relative gap |ours - oracle| / max(|ours|, |oracle|) of the free
 # path at the production floor sharpness, one entry per fixture (u_edge, k_fp)
-# pair, measured 2026-10-29 (x64, CPU). Re-measure when the smooth floor or
-# its default sharpness changes.
-FREE_PATH_GAP = None  # filled below
+# pair, measured 2026-10-29 (x64, CPU), in oracle_fixtures/
+# mc3d_free_path_default_gaps.json. Re-measure when the smooth floor or its
+# default sharpness changes.
+FREE_PATH_GAP = json.loads(
+    FIXTURE.with_name("mc3d_free_path_default_gaps.json").read_text())["gaps"]
 
 
 def _rel(a, b):

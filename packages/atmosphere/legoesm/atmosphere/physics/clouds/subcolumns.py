@@ -68,7 +68,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from legoesm.core.smooth import sigmoid_switch
+from legoesm.core.smooth import smoothstep_quintic
 
 __physics_contract__ = {
     "summary": (
@@ -198,13 +198,16 @@ def max_random_mask(u, cloud_fraction, *, width):
 
     KNOWN DIFFERENCE (RULE 5): both switches compare against the traced cloud
     fraction, so for ``width > 0`` (the default,
-    ``CloudConfig.cloud_subcolumn_mask_width`` = 1e-3) they are smooth: the
-    recursion keeps ``a*CDF_above + (1-a)*u*clear_above`` with
-    ``a = sigmoid((CDF_above - clear_above)/width)`` and the returned float
-    weights are ``sigmoid((CDF - clear)/width)``.  A cell whose CDF lies d
-    from its threshold departs from CAM's 0/1 by sigmoid(-|d|/width)
-    (4.5e-5 at d = 0.01, 1/2 at an exact tie, where CAM's ``>=`` gives 1).
-    Per-case gaps: tests/atmosphere/test_max_random_subcolumns_oracle.py.
+    ``CloudConfig.cloud_subcolumn_mask_width`` = 1e-3) they are smooth: with
+    ``s(d) = smoothstep_quintic(d/width + 1/2)`` (C2, EXACTLY 0 for
+    d <= -width/2 and 1 for d >= width/2) the recursion keeps
+    ``a*CDF_above + (1-a)*u*clear_above`` with ``a = s(CDF_above -
+    clear_above)`` and the returned float weights are ``s(CDF - clear)``.
+    Only cells whose CDF lies within width/2 of the threshold differ from
+    CAM's 0/1 (an exact tie gives 1/2 where CAM's ``>=`` gives 1).  An
+    overcast layer (cf = 1) is fully cloudy except in a subcolumn whose CDF
+    is below width/2.  Per-case gaps:
+    tests/atmosphere/test_max_random_subcolumns_oracle.py.
     """
     if not width >= 0.0:
         raise ValueError(f"cloud_subcolumn_mask_width must be >= 0, got {width!r}")
@@ -213,13 +216,14 @@ def max_random_mask(u, cloud_fraction, *, width):
     u = jnp.asarray(u, dtype=cf.dtype)
     clear = 1.0 - cf                                    # (ncol, nlev)
     if width > 0.0:
-        sharp = 1.0 / width
+        def s(d):
+            return smoothstep_quintic(d / width + 0.5)
         col = u[:, :, 0] * jnp.ones((1, ncol), dtype=cf.dtype)
         cdf = [col]
         for k in range(1, nlev):
-            a = sigmoid_switch(cdf[k - 1] - clear[None, :, k - 1], sharp)
+            a = s(cdf[k - 1] - clear[None, :, k - 1])
             cdf.append(a * cdf[k - 1] + (1.0 - a) * u[:, :, k] * clear[None, :, k - 1])
-        return sigmoid_switch(jnp.stack(cdf, axis=-1) - clear[None, :, :], sharp)
+        return s(jnp.stack(cdf, axis=-1) - clear[None, :, :])
 
     # nlev is static and small, so the recursion unrolls; a lax.scan would add
     # a carry for no benefit at this size.

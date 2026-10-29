@@ -17883,7 +17883,8 @@ class ModelDriver:
         # REAL unified physics at TILE ncol (refuses land / horizontal-
         # operator convection inside).
         tile_su, _tile_pipeline = build_tile_step_unified(
-            self.grid, self.sigma, cfg, kt)
+            self.grid, self.sigma, cfg, kt,
+            run_has_no_land=self.physics.run_has_no_land)
         self._record_pipeline_physics(_tile_pipeline)
 
         ghg_vmr = ctx["ghg_vmr"]
@@ -18477,6 +18478,10 @@ class ModelDriver:
         band_grid = build_band_grids_atm(self.grid, n_dev)[0]
         band_physics = build_physics_pipeline(
             band_grid, self.sigma, cfg, spacing_grid=self.grid)
+        # the band pipeline carries no f_land; a land-free run's mark still
+        # holds per band (McFarlane then gets zeros, a land run gets None
+        # and refuses)
+        band_physics.run_has_no_land = self.physics.run_has_no_land
         self._record_pipeline_physics(band_physics)
         # Radiation cadence.  ``make_sharded_operator_split_step`` computes the
         # serial prologue's predicate per step (``_need_rad_and_time``,

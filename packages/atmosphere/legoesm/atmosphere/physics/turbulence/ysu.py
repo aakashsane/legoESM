@@ -372,8 +372,8 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
       candidate level, then average over the distribution; "interface above
       kpbl" is the cumulative distribution; ``delta`` is the PBL weight times
       its PBL value, and ``entfac`` uses that PBL value everywhere.  The PBL
-      flag implies ``kpbl > 1``, so the level weights it multiplies (the
-      entrainment layer, the in-PBL nonlocal fluxes) are conditioned on
+      flag implies ``kpbl > 1``, so what it multiplies (the level averages,
+      the entrainment layer, the in-PBL nonlocal fluxes) is conditioned on
       ``kpbl > 1``.
     * ``entrainment_cutoff_sharpness``: the entrainment layer ``entfac < 4.6``
       as ``sigmoid(s*(4.6 - entfac))``.
@@ -540,10 +540,15 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     # The oracle picks the jumps at k = kpbl-1 (0-based kb = kpbl-2) and then
     # applies its max/min/products: done here per candidate level L = 1..n
     # (kb = clip(L-2, 0, n-2)), then averaged over the kpbl distribution.
+    # pblflg implies kpbl > 1, and pf already carries that probability, so
+    # everything that multiplies pf (these averages, the entrainment-layer and
+    # in-PBL nonlocal weights) is conditioned on kpbl > 1.
+    p_gt1 = 1.0 - dist[:, :1]
+    inv_gt1 = jnp.where(p_gt1 > 0.0, 1.0 / jnp.where(p_gt1 > 0.0, p_gt1, 1.0), 0.0)
     lev = jnp.arange(1, n + 1)
     kbl = jnp.clip(lev - 2, 0, n - 2)
     jump = lambda a: a[:, kbl + 1] - a[:, kbl]  # noqa: E731
-    expect = lambda a: jnp.sum(dist * a, axis=1)  # noqa: E731
+    expect = lambda a: jnp.sum(dist[:, 1:] * a[:, 1:], axis=1) * inv_gt1[:, 0]  # noqa: E731
     wm3 = wstar3 + _WM3_UST_COEFF * ust3
     wm2 = wm3 ** _H2
     bfxpbl = -_ENT_BFX_COEFF * thvx[:, 0] / g * wm3 / hpbl
@@ -621,10 +626,6 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     kh_f = jnp.minimum((1.0 - w_st) * kh_u + w_st * kh_s + _XKZMINH, _XKZMAX)
 
     # --- entrainment layer above the PBL top (l.1059-1063, l.1339-1342) ---
-    # pblflg implies kpbl > 1, and pf already carries that probability, so the
-    # level weights that multiply pf are conditioned on kpbl > 1
-    p_gt1 = 1.0 - dist[:, :1]
-    inv_gt1 = jnp.where(p_gt1 > 0.0, 1.0 / jnp.where(p_gt1 > 0.0, p_gt1, 1.0), 0.0)
     ent = pf[:, None] * (above - dist[:, :1]) * inv_gt1 * _soft_gt0(
         _ENTFAC_MAX - entfac, entrainment_cutoff_sharpness, 0.0)
     ke2 = -we_dza[:, None] * jnp.exp(-entfac) * kh_f      # >= 0 (we <= 0)

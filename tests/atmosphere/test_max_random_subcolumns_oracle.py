@@ -199,7 +199,7 @@ def test_default_mask_gradient_check_grads(fx):
         return jnp.mean(a)
 
     cf = jnp.asarray([[0.5625, 0.5004, 0.3]])
-    check_grads(lambda c: f(c, WIDTH), (cf,), order=2, modes=("rev",), eps=1e-6)
+    check_grads(lambda c: f(c, WIDTH), (cf,), order=2, modes=("rev",), eps=1e-7)
     g = np.asarray(jax.grad(lambda c: f(c, WIDTH))(cf))
     g_hard = np.asarray(jax.grad(lambda c: f(c, 0.0))(cf))
     assert np.all(np.isfinite(g)) and np.any(np.abs(g - g_hard) > 0.0)

@@ -215,8 +215,8 @@ def test_mcica_model_layer_mask_is_identical_with_overhead_on_or_off(
     orig = sub.generate_subcolumns
     calls = {}
 
-    def spy(cf, n_sub, shift=None):
-        mask = orig(cf, n_sub, shift=shift)
+    def spy(cf, n_sub, shift=None, *, width):
+        mask = orig(cf, n_sub, shift=shift, width=width)
         calls.setdefault(spy.tag, []).append(
             (np.asarray(cf), None if shift is None else np.asarray(shift),
              np.asarray(mask)))
@@ -242,5 +242,5 @@ def test_mcica_model_layer_mask_is_identical_with_overhead_on_or_off(
         np.testing.assert_array_equal(m0, m1)                   # bit-identical
         # control: the nlev+1 draw with the top row dropped is NOT the same
         cf_pad = jnp.concatenate([jnp.zeros((NCOL, 1)), jnp.asarray(cf0)], 1)
-        m_pad = np.asarray(orig(cf_pad, m0.shape[0], shift=jnp.asarray(s0)))
+        m_pad = np.asarray(orig(cf_pad, m0.shape[0], shift=jnp.asarray(s0), width=0.0))
         assert not np.array_equal(m_pad[:, :, 1:], m0)

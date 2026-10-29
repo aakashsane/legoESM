@@ -125,6 +125,9 @@ def test_smooth_default_gap_to_mom6_is_the_recorded_one(run, case, dt):
 
 
 def _check(f, x0=0.0, order=2):
+    """check_grads with jax's default tolerances, which are ABSOLUTE as well
+    as relative: every ``f`` below is scaled to O(1) in value and slope so a
+    kink cannot hide under the absolute tolerance."""
     check_grads(f, (jnp.asarray(x0),), order=order, modes=("fwd", "rev"))
 
 
@@ -185,13 +188,14 @@ def test_pe_change_gradient_through_zero_column_height_change():
                 / (a["h_k"] * a["b_den_1"]))
 
     # The PE change of the T/S redistribution itself is zeroed, so pe_chg is
-    # the column-height term -pres_z * min(ColHt_chg, 0) alone.
+    # the column-height term -pres_z * min(ColHt_chg, 0) alone, here in units
+    # of pres_z * width.
     no_pe = {**a, "dt_to_dpe_k": 0.0, "ds_to_dpe_k": 0.0,
              "dt_to_dpe_a": 0.0, "ds_to_dpe_a": 0.0}
 
     def f(x):
         return _find_pe_chg_orig(x / (s * slope), **no_pe,
-                                 colht_sharpness=s)[0]
+                                 colht_sharpness=s)[0] * (s / a["pres_z"])
 
     _check(f)
     assert float(jnp.abs(jax.grad(f)(0.0))) > 0.0
@@ -220,15 +224,22 @@ def test_top_layer_energy_gradient_through_zero_forcing():
     cfg = _ref_cfg()
     w = 1.0 / cfg.smooth_energy_sharpness_m2j
 
+    # mech_TKE = 10 widths keeps its own max(0, .) kink 10 widths away; the
+    # outputs are in units of the width.
     def f(x):
-        return jnp.stack(_top_layer_energy(cfg, x * w, jnp.asarray(0.6)))
+        return jnp.stack(_top_layer_energy(cfg, x * w, jnp.asarray(10.0 * w))) / w
 
     _check(f)
     assert float(jnp.min(jnp.abs(jax.jacfwd(f)(0.0)))) > 0.0
 
 
 def test_full_column_gradient_at_the_cooling_case():
-    """End to end, order 1, at the Q = -200 W/m^2 fixture state."""
+    """End to end, order 1, at the Q = -200 W/m^2 fixture state.
+
+    Not a per-switch RULE 5 test (the perturbations stay on one side of every
+    smoothed kink): it checks that the smoothed column, with all switches
+    composed, still has finite AD derivatives that match finite differences.
+    """
     cfg = _ref_cfg()
     eps = 1e-4
 

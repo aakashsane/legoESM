@@ -87,8 +87,8 @@ MOM6 cap.
 
 KNOWN DIFFERENCES: RULE 5 smooth switches (issue #2180)
 -------------------------------------------------------
-Five of MOM6's switches on traced state (the ones the MOM6 single-column
-fixture exercises; each site is marked ``# RULE5:<id>``) are smooth by
+MOM6's switches on traced state at the five places the MOM6 single-column
+fixture exercises (each site is marked ``# RULE5:<id>``) are smooth by
 default, using ``legoesm.core.smooth`` (softplus / logsumexp / sigmoid).  Each
 unit class has one sharpness field on ``EPBLConfig``; ``math.inf`` gives
 MOM6's exact switch, and at that limit the port reproduces its exact-port gap
@@ -100,22 +100,35 @@ smooth forms are not exact at their kinks: ``max(0, 0)`` is ``ln 2 / sharpness``
   the MSTAR_CONV_ADJ reduction (C2).  At ``B = 0`` the stabilising mstar term
   is ``cs1 * ((ln2 * width)**2 * BLD / (u*^5 f))**cs2`` instead of 0 (the
   ``cs2 = 0.4`` power amplifies the width), and the convective reduction is
-  slightly below 1.  This is the largest gap: the fixture's Q = 0 case moves
+  slightly below 1, so a neutral surface gets slightly MORE mechanical TKE
+  (deeper mixing) than in MOM6.  This is the largest gap: the fixture's Q = 0 case moves
   from 2.6e-13 / 1.0e-12 degC (dt 1200 / 300 s) to 3.5e-3 / 4.0e-3 degC at 8 h.
 - ``smooth_ratio_sharpness`` (default 1e3, width 1e-3): the
   ``sigma_max`` clip to [0.1, 0.7] of the equation-discovery shape (C3);
   largest fixture change 5.7e-5 relative (Q = -200, dt 300 s).
 - ``smooth_colht_sharpness_per_m`` (default 1e10 1/m, width 1e-10 m):
   ``min(ColHt_chg, 0)`` in ``_find_pe_chg_orig``'s PE change (C5).  A zero
-  diffusivity now prices a PE change of ``pres_z * ln2 * width`` instead of 0.
+  diffusivity now prices a PE change of ``pres_z * ln2 * width`` instead of 0,
+  and every ``ColHt_chg`` within a few widths of 0 (either sign) is charged a
+  little more, so mixing there is slightly MORE expensive than in MOM6.  The
+  kernel's other three outputs (dPEc_dKd, dPE_max, dPEc_dKd_0) keep MOM6's
+  exact ``min(., 0)`` (the fixture does not exercise them), so within a width
+  of ``ColHt_chg = 0`` the returned slope is not the derivative of the smoothed
+  PE change; the Kd solve brackets with false position, so this changes only
+  its iteration path.
   The fixture gap at Q = -200 / dt 300 s goes from 2.6e-5 to 4.7e-6 degC; Q = 0
   goes to 6.9e-6 / 2.2e-5 degC.
 - ``smooth_energy_sharpness_m2j`` (default 1e6 m^2/J, width 1e-6 J/m^2): the
   top-layer ``conv_PErel = max(TKE_forced, 0)`` (C6a) and the matching
   ``mech_TKE`` spend ``where(TKE_forced <= 0, max(0, mech + TKE_forced), mech)``
-  (C6b/c, same kink; value-identical in the fixture, smoothed so the gradient
-  at the kink exists).  At ``TKE_forced = 0`` the column starts with
-  ``ln2 * width`` of convective PE; fixture Q = 0 goes to 1.9e-8 / 8.6e-8 degC.
+  (C6b/c, same kink; smoothing C6b/c alone leaves every fixture gap unchanged
+  (measured), it is smoothed so the gradient at the kink exists).  At
+  ``TKE_forced = 0`` the column starts with ``ln2 * width`` of convective PE.
+  The two smooth forms are not complementary near the kink: for
+  ``0 < TKE_forced <~ width`` the convective PE gets ``softplus >= TKE_forced``
+  AND ``mech_TKE`` still gets ``sigmoid(-s TKE_forced) * TKE_forced``, so the
+  column starts with up to ~``(ln2 + 0.3) * width`` [J/m^2] more energy than
+  MOM6 gives it.  Fixture Q = 0 goes to 1.9e-8 / 8.6e-8 degC.
 
 With every switch smooth the six fixture gaps are 2.47e-4, 3.49e-3, 1.10e-3
 (dt 1200 s; Q = -200, 0, +200) and 4.70e-6, 3.99e-3, 1.34e-4 (dt 300 s).  No
@@ -629,6 +642,12 @@ def _top_layer_energy(cfg: EPBLConfig, tkef0, mech_tke_0):
     energy.  Both switches kink at ``tkef0 = 0`` and are smooth by default.
     """
     s_e = cfg.smooth_energy_sharpness_m2j
+    if s_e == math.inf:
+        # MOM6's switches verbatim (a 0/1 blend would turn an overflowed
+        # branch into NaN where MOM6 selects the other one).
+        return (jnp.where(tkef0 > 0.0, tkef0, 0.0),
+                jnp.where(tkef0 <= 0.0,
+                          jnp.maximum(0.0, mech_tke_0 + tkef0), mech_tke_0))
     conv_perel_0 = smooth_relu(tkef0, s_e)  # RULE5:C6a
     spent = sigmoid_switch(-tkef0, s_e)  # RULE5:C6b
     mech_tke_0 = (spent * smooth_relu(mech_tke_0 + tkef0, s_e)  # RULE5:C6c

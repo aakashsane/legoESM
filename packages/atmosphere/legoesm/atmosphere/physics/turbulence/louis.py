@@ -50,6 +50,7 @@ import jax
 import jax.numpy as jnp
 
 from legoesm import constants
+from legoesm.core.smooth import smooth_max
 from legoesm.thermo import saturation_specific_humidity
 from legoesm.atmosphere.physics._shared import (
     buoyancy_coefficient,
@@ -268,9 +269,16 @@ def louis_turbulence(
 
     # Wind shear at half-levels with the OpenIFS velocity-difference floor
     # (vdfexcu.F90:361-363: ZDU2 = MAX(REPDU2, du^2+dv^2), ZDUDZ = sqrt(ZDU2)/dz).
-    dU2 = jnp.maximum(
+    # KNOWN DIFFERENCE (RULE 5): the floor is smooth_max(., REPDU2,
+    # shear_floor_sharpness) because du, dv are traced; inf is the hard MAX.
+    # At the default 1e4 s^2/m^2 |dV|^2 exceeds vdfexcu's by
+    # log(1 + exp(-s*|x - REPDU2|))/s: 6.9e-5 m^2/s^2 at |dV|^2 = REPDU2,
+    # < 1e-40 m^2/s^2 once |dV|^2 >= 2*REPDU2.  Per-case gaps are pinned in
+    # tests/atmosphere/hydrostatic/unit/test_louis_oracle.py.
+    dU2 = smooth_max(
         (u[:, :-1] - u[:, 1:]) ** 2 + (v[:, :-1] - v[:, 1:]) ** 2,
         _REPDU2_M2_S2,
+        config.shear_floor_sharpness,
     )
     S2 = dU2 / dz_half ** 2
     S = jnp.sqrt(S2)

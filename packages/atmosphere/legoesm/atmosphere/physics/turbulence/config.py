@@ -96,6 +96,7 @@ __param_spec__ = {
     "LouisConfig": {
         "scheme_key": "atm.turb.LouisConfig",
         "excluded": {
+            "shear_floor_sharpness": "numerics: smoothing sharpness of the RULE 5 smooth OpenIFS shear floor (inf = hard MAX), not a tunable",
             "blend_ri_sharpness": "numerics: solver/smoothing/tolerance/iteration parameter",
             "cloudtop_entrainment_efficiency": "opt-in marine-Sc cloud-top entrainment lever, default 0.0 (off) = the physical floor; not a well-posed sigmoid tunable (default on the bound)",
         },
@@ -470,6 +471,10 @@ class LouisConfig(NamedTuple):
     # constant float, so --params can both SET and ACTIVATE it (no separate bool
     # that --params could not reach).
     cloudtop_entrainment_efficiency: float = 0.0   # A: K_ent = A·W_REF·dz·(drying·inverted·cloudy); 0 = off
+    # Smooth OpenIFS shear floor (RULE 5): |dV|^2 -> smooth_max(|dV|^2, REPDU2,
+    # s) [s^2/m^2]; inf = vdfexcu.F90:361 hard MAX.  At 1e4 the floor adds
+    # log(2)/s = 6.9e-5 m^2/s^2 where |dV|^2 = REPDU2 = 0.01 m^2/s^2.
+    shear_floor_sharpness: float = 1.0e4
 
 
 class TKEConfig(NamedTuple):

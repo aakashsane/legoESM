@@ -26,12 +26,16 @@ Metric (the tier-1 audit metric, as tests/atmosphere/test_clubb_core_oracle.py
 and test_holtslag_boville_oracle.py): per field, ``max |ours - oracle| /
 max |oracle|`` per column over the interfaces of the compared branch; bound
 1e-10 in fp64 (user decision 2026-10-19) with ``blend_ri_sharpness`` at its
-hard-switch limit (1e12).
+hard-switch limit (1e12) and ``shear_floor_sharpness`` at inf (the hard
+vdfexcu MAX; the fixture was generated with the hard floor).  At the
+production defaults of the two smooth switches the per-column gaps are pinned
+in ``oracle_fixtures/louis_default_gaps.json`` (RULE 5).
 """
 
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -43,12 +47,15 @@ import jax.numpy as jnp
 from legoesm import constants
 from legoesm.atmosphere.physics._shared import compute_rho
 from legoesm.atmosphere.physics.turbulence import louis as L
+from jax.test_util import check_grads
+
 from legoesm.atmosphere.physics.turbulence.config import LouisConfig
 
 jax.config.update("jax_enable_x64", True)
 
 TOL = 1.0e-10
 FIXTURE = Path(__file__).resolve().parents[2] / "oracle_fixtures" / "louis.npz"
+GAPS = FIXTURE.with_name("louis_default_gaps.json")
 FIELDS = ("T", "q", "u", "v", "p_full", "p_half", "zm", "zi",
           "taux", "tauy", "shflx", "lhflx")
 
@@ -59,7 +66,9 @@ def fx():
 
 
 def _arm(fx, name):
-    return json.loads(str(fx["meta"]))["arms"][name]
+    """The oracle arm's coefficients at both hard limits (the fixture's meta
+    predates the shear-floor field; its floor was the hard MAX)."""
+    return dict(json.loads(str(fx["meta"]))["arms"][name], shear_floor_sharpness=math.inf)
 
 
 def _err(ours, ref, per_column=False):
@@ -142,16 +151,67 @@ def test_unstable_diffusivities_match_icon_louis79(fx, monkeypatch):
     assert max(e.values()) <= TOL, e
 
 
-def test_default_smoothing_gap_is_reported(fx, monkeypatch):
-    """Production blend_ri_sharpness (100) vs its hard limit: printed for the
-    PR record, not bounded (the default-smoothing gap is a reported number)."""
-    for arm in ("ifs", "icon"):
-        kw = dict(_arm(fx, arm))
-        _, _, Km_h, Kh_h = _captured(fx, monkeypatch, kw)
-        kw["blend_ri_sharpness"] = LouisConfig().blend_ri_sharpness
-        _, _, Km_d, Kh_d = _captured(fx, monkeypatch, kw)
-        print(arm, "default-smoothing gap (per-column max rel): Km %.2e Kh %.2e"
-              % (_err(Km_d, Km_h, True), _err(Kh_d, Kh_h, True)))
+_SWITCHES = {"blend": "blend_ri_sharpness", "floor": "shear_floor_sharpness"}
+
+
+def _default_gaps(fx, monkeypatch):
+    """Per arm and smooth switch (the other at its hard limit): per-column
+    max rel gap of K_m, K_h vs the oracle on that arm's branch interfaces."""
+    out = {}
+    for arm, (key, sign) in {"ifs": ("ifs", 1.0), "icon": ("icon", -1.0)}.items():
+        m = sign * fx[f"{key}_Ri"] > 0.0
+        for sw, field in _SWITCHES.items():
+            kw = dict(_arm(fx, arm), **{field: getattr(LouisConfig(), field)})
+            _, _, Km, Kh = _captured(fx, monkeypatch, kw)
+            out[f"{arm}_{sw}"] = {
+                k: [_err(_masked(a, m)[i:i + 1], _masked(fx[f"ora_{key}_{k}"], m)[i:i + 1])
+                    for i in range(m.shape[0])]
+                for k, a in (("km", Km), ("kh", Kh))}
+    return out
+
+
+def test_default_smoothing_gap_per_case(fx, monkeypatch):
+    """RULE 5: each smooth switch at its production default against the
+    oracle, per fixture column, to the stored measurement (rtol 1e-6, atol
+    1e-12).  Re-measure when a smooth form or its default changes."""
+    stored = json.loads(GAPS.read_text())
+    got = _default_gaps(fx, monkeypatch)
+    assert set(got) == set(stored["gaps"])
+    for case, fields in got.items():
+        for k, v in fields.items():
+            np.testing.assert_allclose(v, stored["gaps"][case][k], rtol=1e-6, atol=1e-12,
+                                       err_msg=f"{case}/{k}")
+
+
+def _calm_column(fx, du):
+    """Fixture column 0 with u stepping by ``du`` per level and v = 0, so
+    every interface's |dV|^2 = du^2 sits at the shear floor's knee."""
+    f = {k: jnp.asarray(fx[f"in_{k}"][:1]) for k in FIELDS}
+    nlev = f["u"].shape[1]
+    f["u"] = du * jnp.arange(nlev, dtype=jnp.float64)[None, :]
+    f["v"] = jnp.zeros_like(f["u"])
+    return f
+
+
+def _km_sum(fx, f, u):
+    rho = compute_rho(f["T"], f["p_full"], q_v=f["q"])
+    ustar = jnp.sqrt(jnp.hypot(f["taux"], f["tauy"]) / rho[:, -1])
+    o = L.louis_turbulence(
+        u, f["v"], f["T"], f["q"], f["p_full"], f["p_half"], f["zm"], f["zi"],
+        f["T"][:, -1], f["q"][:, -1], rho, float(fx["dt"]), LouisConfig(),
+        surface_flux=(f["taux"], f["tauy"], f["shflx"], f["lhflx"], ustar))
+    return jnp.sum(o.Km)
+
+
+@pytest.mark.parametrize("du", [0.099, 0.1, 0.11])
+def test_shear_floor_check_grads_at_default(fx, du):
+    """RULE 5 gradient test: check_grads (order 2, reverse) through the smooth
+    shear floor at its default, below, at and above the knee; below the knee
+    the hard MAX has an exactly-zero derivative, the default does not."""
+    f = _calm_column(fx, du)
+    g = lambda u: _km_sum(fx, f, u)  # noqa: E731
+    check_grads(g, (f["u"],), order=2, modes=("rev",), eps=1e-6)
+    assert float(jnp.max(jnp.abs(jax.grad(g)(f["u"])))) > 0.0
 
 
 def test_column_water_budget_closes(fx):

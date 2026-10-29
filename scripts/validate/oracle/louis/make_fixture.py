@@ -51,9 +51,9 @@ from legoesm.atmosphere.physics.turbulence.config import LouisConfig  # noqa: E4
 HARD = 1.0e12
 ARMS = {
     "ifs": dict(b_louis=5.0, c_louis=5.0, d_louis=1.0, b_heat_ratio=1.0,
-                l_mix_max=30.0, blend_ri_sharpness=HARD),
+                l_mix_max=30.0, blend_ri_sharpness=HARD, shear_floor_sharpness=float("inf")),
     "icon": dict(b_louis=5.0, c_louis=5.0, d_louis=5.0, b_heat_ratio=1.5,
-                 blend_ri_sharpness=HARD),
+                 blend_ri_sharpness=HARD, shear_floor_sharpness=float("inf")),
 }
 ICON_CB = ICON_CC = 5.0  # mo_turb_vdiff_params.f90:35-36
 IN_FIELDS = ("T", "q", "u", "v", "p_full", "p_half", "zm", "zi",

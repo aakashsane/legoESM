@@ -34,6 +34,7 @@ from legoesm.atmosphere.physics._shared import compute_rho
 from legoesm.atmosphere.physics.turbulence.config import SurfaceLayerConfig, YSUConfig
 from legoesm.atmosphere.physics.turbulence.ysu import (
     YSUSurfaceLayer,
+    _pbl_weights,
     bl_ysu_run,
     ysu_turbulence,
 )
@@ -371,3 +372,20 @@ def test_check_grads_at_default(fx):
     # finite, non-zero derivative through the PBL-top selection
     g = jax.grad(lambda T: jnp.sum(_kernel(sub, sharp=sharp, T=T).hpbl))(args[0])
     assert bool(jnp.all(jnp.isfinite(g))) and float(jnp.max(jnp.abs(g))) > 0.0
+
+
+def test_exact_tie_weight_counts_p_kpbl_gt1_once():
+    """At an exact za == hpbl tie the in-PBL weight is P(kpbl > k) itself and
+    the nonlocal-flux weight its conditional on kpbl > 1; off the tie, the
+    height sigmoid times P(kpbl > 1).  Not reachable through the kernel's
+    outputs (hard limit: P(kpbl > 1) is 0 or 1; default: no fixture tie), so
+    the helper the kernel calls is tested on synthetic inputs."""
+    s = 10.0
+    zr = jnp.array([0.0, 1e-12, -0.3, 0.3])
+    p_gt1, above = 0.5, 0.75
+    wp, in_pbl = _pbl_weights(zr, jnp.full(4, above), p_gt1, 1.0 / p_gt1, s)
+    assert float(wp[0]) == 1.0 - above          # not p_gt1 * (1 - above)
+    assert float(in_pbl[0]) == (1.0 - above) / p_gt1  # not 1 - above
+    sig = 1.0 - jax.nn.sigmoid(s * zr[1:])
+    np.testing.assert_array_equal(np.asarray(in_pbl[1:]), np.asarray(sig))
+    np.testing.assert_array_equal(np.asarray(wp[1:]), np.asarray(p_gt1 * sig))

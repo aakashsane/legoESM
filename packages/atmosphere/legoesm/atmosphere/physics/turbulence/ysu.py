@@ -11,8 +11,7 @@ Two code paths share :func:`ysu_turbulence`:
   ``ctopo`` absent, no ocean current), oracle-tested against the running
   Fortran (``tests/atmosphere/hydrostatic/unit/test_ysu_oracle.py``).  Four
   sharpness fields smooth the bulk-Ri first crossing, the PBL-top level and
-  the switches derived from it (except the one marked PENDING in
-  :func:`bl_ysu_run`), the in/above-PBL selection, the Ri sign and the
+  the switches derived from it, the in/above-PBL selection, the Ri sign and the
   entrainment-layer cutoff, and reduce to the oracle at their hard limit.
   **NOT RULE 5 COMPLIANT** (#2231): the switches listed in :func:`bl_ysu_run`
   as still hard are hard at the default.  Opt-in kernel only; they must be
@@ -328,6 +327,21 @@ def _soft_gt0(x, sharpness, at_zero):
     return jnp.where(x == 0.0, at_zero, jax.nn.sigmoid(sharpness * x))
 
 
+def _pbl_weights(zr, above, p_gt1, inv_gt1, region_sharpness):
+    """In-PBL weight ``wp`` and its conditional on ``kpbl > 1`` (``in_pbl``)
+    per interface, from ``zr = za/hpbl - 1``, ``above = P(kpbl <= k)``,
+    ``p_gt1 = P(kpbl > 1)`` and ``inv_gt1 = 1/p_gt1`` (0 where p_gt1 is 0).
+
+    Given kpbl > 1: k < kpbl at the exact tie ``zr == 0`` (P(kpbl > k) already
+    implies kpbl > 1, hence the division and no second factor p_gt1), else the
+    height sigmoid."""
+    eq = zr == 0.0
+    in_pbl = jnp.where(eq, (1.0 - above) * inv_gt1,
+                       1.0 - jax.nn.sigmoid(region_sharpness * zr))
+    wp = jnp.where(eq, 1.0 - above, p_gt1 * in_pbl)
+    return wp, in_pbl
+
+
 def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
                sfc: YSUSurfaceLayer, dt, *, pbl_sharpness, region_sharpness,
                ri_sharpness, entrainment_cutoff_sharpness) -> YSUOutput:
@@ -378,8 +392,10 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     * ``entrainment_cutoff_sharpness``: the entrainment layer ``entfac < 4.6``
       as ``sigmoid(s*(4.6 - entfac))``.
     The hard ``kpbl`` and ``pblflg`` outputs are diagnostics computed as the
-    oracle does (on the smooth hpbl); nothing in the computation reads them,
-    except the item marked PENDING below.
+    oracle does (on the smooth hpbl); nothing in the computation reads them.
+    The ``zfac`` denominator (``hpbl - zl1`` if ``kpbl > 1``, else 1) is both
+    branches' raw in-PBL diffusivities and ``zfacent`` mixed by P(kpbl > 1),
+    capped once after the mix.
 
     NOT RULE 5 COMPLIANT (opt-in kernel; smooth before any lane uses it,
     #2231).  Still hard ``jnp.where`` / ``max`` / ``min`` / ``clip`` on traced
@@ -387,9 +403,7 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     (``sflux > 0``), the zero-10 m-wind guard of the water Rossby number, the
     momentum entrainment thresholds (``|du| > tmin``, a jump), the floors and
     caps (``max(dthvx, tmin)``, ``min(dqx, 0)``, ``clip(zfac, zfmin, 1)``,
-    the diffusivity bounds, ...), and PENDING a user decision: the ``zfac``
-    denominator still switches on the hard ``kpbl > 1`` (the in-PBL weight
-    carries the smooth P(kpbl > 1)).  Operands of unselected branches are
+    the diffusivity bounds, ...).  Operands of unselected branches are
     replaced by benign values only so their gradients stay finite.
 
     KNOWN DIFFERENCE (RULE 5, measured 2026-10-29 on the 23-column oracle
@@ -578,26 +592,37 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
 
     # --- diffusivities below the PBL top, k < kpbl (l.937-980) ---
     sf = sfcflg[:, None]
-    # PENDING (#2231, reviewers split): the denominator still switches on the
-    # HARD kpbl > 1; the in-PBL weight wp below carries the smooth P(kpbl > 1).
-    zfac = jnp.clip(1.0 - (zqi - zl1[:, None]) / jnp.where(
-        kpbl > 1, hpbl - zl1, 1.0)[:, None], _ZFMIN, 1.0)
-    zfacent = (1.0 - zfac) ** 3.0
-    wscalek = (ust3[:, None] + _PHIFAC * karman * wstar3[:, None] * (1.0 - zfac)) ** _H1
-    # wscalek2 = (phifac*karman*wstar3_2*zfac)**h1 is 0: wstar3_2 is set only on
-    # the cloud-top branch, which needs condensate (not ported).
+    # The oracle's zfac denominator switches on kpbl > 1 (hpbl - zl1, else 1):
+    # both branches are evaluated and their raw (uncapped) diffusivities and
+    # zfacent mixed by P(kpbl > 1), then capped once (user pick 2026-10-29).
+    # hpbl - zl1 <= 0 (unreachable at the hard limit: kpbl > 1 gives
+    # hpbl >= zq(2) > zl1) uses 1.0, i.e. branch B there.
     prfac = jnp.where(sfcflg, _BFAC * karman * _SFCFRAC, 0.0)[:, None]
     prfac2 = jnp.where(sfcflg, _HGAMU_COEFF * wstar3 / ust3 / (
         1.0 + _PRFAC2_COEFF * karman * wstar3 / ust3), 0.0)[:, None]
     prnumfac = jnp.where(sf, -_PRNUMFAC_COEFF * jnp.maximum(
         zqi - _SFCFRAC * hpbl[:, None], 0.0) ** 2.0 / hpbl[:, None] ** 2.0, 0.0)
     phim8z = jnp.where(sf, 1.0, 1.0 + _APHI5 * zol1[:, None] * zqi / zl1[:, None])
-    wscalek = jnp.where(sf, wscalek, jnp.maximum(ust[:, None] / phim8z, _WSCALEK_MIN))
     prnum0 = jnp.clip((phih / phim)[:, None] + prfac, _PRMIN, _PRMAX)
-    km_p = wscalek * karman * zqi * zfac ** _PFAC
-    kq_p = km_p / (1.0 + (prnum0 - 1.0) * jnp.exp(prnumfac)) * zfac ** (_PFAC_Q - _PFAC)
-    prnum0 = prnum0 / (1.0 + prfac2 * karman * _SFCFRAC)
-    kh_p = km_p / (1.0 + (prnum0 - 1.0) * jnp.exp(prnumfac))
+    prnum0h = prnum0 / (1.0 + prfac2 * karman * _SFCFRAC)
+
+    def pbl_k(den):
+        """Raw in-PBL km, kh, kq and zfacent for zfac denominator ``den``."""
+        zfac = jnp.clip(1.0 - (zqi - zl1[:, None]) / den[:, None], _ZFMIN, 1.0)
+        wscalek = (ust3[:, None] + _PHIFAC * karman * wstar3[:, None]
+                   * (1.0 - zfac)) ** _H1
+        # wscalek2 = (phifac*karman*wstar3_2*zfac)**h1 is 0: wstar3_2 is set
+        # only on the cloud-top branch, which needs condensate (not ported).
+        wscalek = jnp.where(sf, wscalek, jnp.maximum(ust[:, None] / phim8z, _WSCALEK_MIN))
+        km = wscalek * karman * zqi * zfac ** _PFAC
+        kq = km / (1.0 + (prnum0 - 1.0) * jnp.exp(prnumfac)) * zfac ** (_PFAC_Q - _PFAC)
+        kh = km / (1.0 + (prnum0h - 1.0) * jnp.exp(prnumfac))
+        return km, kh, kq, (1.0 - zfac) ** 3.0
+
+    d_a = hpbl - zl1
+    k_a = pbl_k(jnp.where(d_a > 0.0, d_a, 1.0))
+    k_b = pbl_k(jnp.ones_like(hpbl))
+    km_p, kh_p, kq_p, zfacent = (p_gt1 * a + (1.0 - p_gt1) * b for a, b in zip(k_a, k_b))
     km_p = jnp.minimum(km_p + _XKZMINM, _XKZMAX)
     kh_p = jnp.minimum(kh_p + _XKZMINH, _XKZMAX)
     kq_p = jnp.minimum(kq_p + _XKZMINH, _XKZMAX)
@@ -641,12 +666,7 @@ def bl_ysu_run(u, v, T, q_v, p_full, p_half, exner, dz, ust, hfx, qfx,
     # level kpbl when brint rounds to 1): the sigmoid would give 1/2 at any
     # sharpness, so equality takes the oracle's k < kpbl
     zr = za[:, :-1] / hpbl[:, None] - 1.0
-    # given kpbl > 1: k < kpbl at equality (P(kpbl > k) already implies
-    # kpbl > 1, hence the division), else the height sigmoid
-    eq = zr == 0.0
-    in_pbl = jnp.where(eq, (1.0 - above) * inv_gt1,
-                       1.0 - jax.nn.sigmoid(region_sharpness * zr))
-    wp = jnp.where(eq, 1.0 - above, p_gt1 * in_pbl)
+    wp, in_pbl = _pbl_weights(zr, above, p_gt1, inv_gt1, region_sharpness)
     kh_a = ent * kh_e + (1.0 - ent) * kh_f
     Kh = wp * kh_p + (1.0 - wp) * kh_a
     Kq = wp * kq_p + (1.0 - wp) * kh_a
